@@ -27,7 +27,7 @@ afterEach(cleanup);
 
 const answer = async (res: Response): Promise<[number, any]> => [res.status, await res.json()];
 const refusal = (code: string, message: string) => ({ error: { code, message } });
-const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+const PROJECTS = "/v1/workspaces/ws_a/containers";
 /// The shared-cell profile's CONTAINER_STORED_BYTES_DEFAULT, 0: no stored-bytes
 /// limit (edge change #244). Every project the issuer places carries it
 /// explicitly.
@@ -47,9 +47,9 @@ describe("creating a project", () => {
     const res = await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "Orders" });
     const [status, body] = await answer(res);
     expect(status).toBe(201);
-    expect(Object.keys(body)).toEqual(["project", "endpoint", "credential", "secret"]);
+    expect(Object.keys(body)).toEqual(["container", "endpoint", "credential", "secret"]);
     const state = cellState(cell);
-    const id = body.project.id;
+    const id = body.container.id;
     const cid = body.credential.id;
     expect(id).toMatch(/^sp_[0-9a-f]{32}$/);
     expect(cid).toMatch(/^strcred_[0-9a-f]{32}$/);
@@ -60,7 +60,7 @@ describe("creating a project", () => {
       ...state.cell.ceilings, requests_per_sec: FREE_TIER_REQUESTS_PER_SEC, append_records_per_sec: 0,
       max_stored_bytes: STORED_DEFAULT, request_weight: 1, byte_weight: 1,
     };
-    expect(body.project).toEqual({
+    expect(body.container).toEqual({
       id, workspaceId: "ws_a", displayName: "Orders", status: "active", createdAt: state.projects[id].admitted_at,
       createdBy: by, cellId: CELL, endpoint: CELL_ORIGIN, quotas,
     });
@@ -109,7 +109,7 @@ describe("creating a project", () => {
     const res = await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "Orders" });
     const [status, body] = await answer(res);
     expect([status, failed]).toEqual([201, 1]);
-    expect(cellState(cell).projects[body.project.id].phase).toBe("active");
+    expect(cellState(cell).projects[body.container.id].phase).toBe("active");
     expect(readBundle(cell.state).keys.feed_version).toBe(published);
     // The secret works at once, and the next revalidation publishes.
     const minted = await m.issuer.fetch(new Request("https://issuer.example.com/v1/token/streams", {
@@ -118,7 +118,7 @@ describe("creating a project", () => {
     expect(minted.status).toBe(200);
     await m.cache.refresh();
     expect(readBundle(cell.state).keys.feed_version).toBe(published + 1);
-    expect((customerOnly(readBundle(cell.state)).policies.containers as any[]).map((p) => p.container_id)).toEqual([body.project.id]);
+    expect((customerOnly(readBundle(cell.state)).policies.containers as any[]).map((p) => p.container_id)).toEqual([body.container.id]);
   });
 
   test("answers a store it cannot reach 503 issuer_unavailable, audited, and any other failure 500 with its request id", async () => {
@@ -197,33 +197,37 @@ describe("creating a project", () => {
     const m = await managed(cell);
     const ceilings = cellState(cell).cell.ceilings;
     const a = await answer(await m.send("POST", PROJECTS, m.signIn("ws_a"), { displayName: "A" }));
-    const b = await answer(await m.send("POST", "/v1/workspaces/ws_b/streams/projects", m.signIn("ws_b"), { displayName: "B" }));
+    const b = await answer(await m.send("POST", "/v1/workspaces/ws_b/containers", m.signIn("ws_b"), { displayName: "B" }));
     expect(FREE_TIER_REQUESTS_PER_SEC).toBe(10);
     const rest = { append_records_per_sec: 0, max_stored_bytes: STORED_DEFAULT, request_weight: 1, byte_weight: 1 };
-    expect([a[0], a[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 10, ...rest }]);
-    expect([b[0], b[1].project.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 50, ...rest }]);
+    expect([a[0], a[1].container.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 10, ...rest }]);
+    expect([b[0], b[1].container.quotas]).toEqual([201, { ...ceilings, requests_per_sec: 50, ...rest }]);
   });
 
-  test("holds a workspace to one project unless the allow-list names more, 409 project_limit", async () => {
-    const cell = await allowedCell();
+  test("a cell initialised without --workspace-cap holds a workspace to 1,000 containers, the control plane's cap", async () => {
+    expect(cellState(await issuerCell()).cell.workspace_cap).toBe(1000);
+  });
+
+  test("holds a workspace to the cell's cap of one unless the allow-list names more, 409 container_limit", async () => {
+    const cell = await issuerCell(["--workspace-cap", "1"]);
+    await admin(cell, "allow", "--workspace", "ws_a");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    // The cell's workspace cap, 1 unless init's --workspace-cap says otherwise (I6 (a)).
     expect(cellState(cell).cell.workspace_cap).toBe(1);
     expect((await m.send("POST", PROJECTS, a, { displayName: "One" })).status).toBe(201);
-    const limit = refusal("project_limit", "workspace ws_a already has 1 Streams project(s), its limit");
+    const limit = refusal("container_limit", "workspace ws_a already has 1 container(s), its limit");
     expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Two" }))).toEqual([409, limit]);
     await admin(cell, "allow", "--workspace", "ws_a", "--max-projects", "2");
     m.clock.t += 5_001; // the allow-list is re-read
     expect((await m.send("POST", PROJECTS, a, { displayName: "Two" })).status).toBe(201);
     expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Three" }))).toEqual([
-      409, refusal("project_limit", "workspace ws_a already has 2 Streams project(s), its limit"),
+      409, refusal("container_limit", "workspace ws_a already has 2 container(s), its limit"),
     ]);
     expect(managementAudits(cell).map((r) => [r.outcome, r.reason])).toEqual([
       ["done", undefined],
-      ["refused", "project_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
+      ["refused", "container_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
       ["done", undefined],
-      ["refused", "project_limit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 2)"],
+      ["refused", "container_limit: workspace ws_a already has 2 project(s) on cell cell_sc1 (cap 2)"],
     ]);
   });
 
@@ -235,7 +239,7 @@ describe("creating a project", () => {
     expect((await m.send("POST", PROJECTS, a, { displayName: "One" })).status).toBe(201);
     expect((await m.send("POST", PROJECTS, a, { displayName: "Two" })).status).toBe(201);
     expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Three" }))).toEqual([
-      409, refusal("project_limit", "workspace ws_a already has 2 Streams project(s), its limit"),
+      409, refusal("container_limit", "workspace ws_a already has 2 container(s), its limit"),
     ]);
     // The allow-list entry's own limit still wins over the cell's.
     await admin(cell, "allow", "--workspace", "ws_a", "--max-projects", "3");
@@ -244,23 +248,24 @@ describe("creating a project", () => {
   });
 
   test("counts a project being deleted toward the cell's max_projects but not toward its workspace's cap", async () => {
-    const cell = await allowedCell();
+    const cell = await issuerCell(["--workspace-cap", "1"]);
+    await admin(cell, "allow", "--workspace", "ws_a");
     await admin(cell, "allow", "--workspace", "ws_b");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    const first = (await (await m.send("POST", PROJECTS, a, { displayName: "One" })).json()).project.id;
+    const first = (await (await m.send("POST", PROJECTS, a, { displayName: "One" })).json()).container.id;
     await admin(cell, "offboard", "--project", first);
     await m.cache.refresh();
     const second = await answer(await m.send("POST", PROJECTS, a, { displayName: "Two" }));
     expect(second[0]).toBe(201);
     const listed = await answer(await m.get(PROJECTS, a));
-    expect(listed[1].projects.map((p: any) => [p.id, p.status])).toEqual([[first, "deleting"], [second[1].project.id, "active"]]);
+    expect(listed[1].containers.map((p: any) => [p.id, p.status])).toEqual([[first, "deleting"], [second[1].container.id, "active"]]);
     // The owner's admit counts the same way (I9 (a), one rule on a cell):
     // the active project fills ws_a's cap, the one being deleted does not.
     let r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
     expect(r.err).toBe("cell-admin admit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)");
     await m.cache.refresh();
-    expect((await m.send("DELETE", `${PROJECTS}/${second[1].project.id}`, a)).status).toBe(202);
+    expect((await m.send("DELETE", `${PROJECTS}/${second[1].container.id}`, a)).status).toBe(202);
     r = await run("admit", "--state", cell.state, "--project", "proj_x", "--workspace", "ws_a");
     expect([r.code, r.err]).toEqual([0, ""]);
     await m.cache.refresh();
@@ -268,7 +273,7 @@ describe("creating a project", () => {
     await m.cache.mutate((s) => {
       s.cell.max_projects = 2;
     });
-    expect(await answer(await m.send("POST", "/v1/workspaces/ws_b/streams/projects", m.signIn("ws_b"), { displayName: "B" })))
+    expect(await answer(await m.send("POST", "/v1/workspaces/ws_b/containers", m.signIn("ws_b"), { displayName: "B" })))
       .toEqual([409, refusal("beta_at_capacity", "the Streams beta is at capacity; try again later")]);
     expect(managementAudits(cell).at(-1)?.reason).toBe("beta_at_capacity: cell cell_sc1 already holds its 2 projects");
   });
@@ -296,7 +301,7 @@ describe("creating a project", () => {
   });
 
   test("places one of two creates made at once for a workspace with room for one, refusing the other on the state it lands on", async () => {
-    const cell = await allowedCell();
+    const cell = await allowedCell("--max-projects", "1");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
     // Both pass the checks on the issuer's copy before either commits; the
@@ -307,13 +312,13 @@ describe("creating a project", () => {
     ]);
     const answers = (await Promise.all(sent.map(answer))).sort(([x], [y]) => x - y);
     expect(answers.map(([status]) => status)).toEqual([201, 409]);
-    expect(answers[1][1]).toEqual(refusal("project_limit", "workspace ws_a already has 1 Streams project(s), its limit"));
+    expect(answers[1][1]).toEqual(refusal("container_limit", "workspace ws_a already has 1 container(s), its limit"));
     const placed = Object.entries(cellState(cell).projects).filter(([, p]) => p.workspace_id === "ws_a");
-    expect(placed.map(([id]) => id)).toEqual([answers[0][1].project.id]);
+    expect(placed.map(([id]) => id)).toEqual([answers[0][1].container.id]);
     expect(customerOnly(readBundle(cell.state)).policies.containers.length).toBe(1);
     expect(managementAudits(cell).map((r) => [r.outcome, r.reason]).sort()).toEqual([
       ["done", undefined],
-      ["refused", "project_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
+      ["refused", "container_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
     ]);
   });
 
@@ -394,7 +399,7 @@ describe("creating a project", () => {
       expect(await answer(await m.send("POST", PROJECTS, a, body))).toEqual([400, refusal("invalid_request", message)]);
     }
     const created = await answer(await m.send("POST", PROJECTS, a, { displayName: "  Orders  " }));
-    expect([created[0], created[1].project.displayName]).toEqual([201, "Orders"]);
+    expect([created[0], created[1].container.displayName]).toEqual([201, "Orders"]);
   });
 });
 
@@ -416,12 +421,12 @@ describe("a project's readiness", () => {
     fake.now = () => m.clock.t;
     const a = m.signIn("ws_a");
     const body = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
-    const id: string = body.project.id;
-    return { cell, fake, m, a, id, cid: body.credential.id as string, creds: `/v1/projects/${id}/streams/credentials` };
+    const id: string = body.container.id;
+    return { cell, fake, m, a, id, cid: body.credential.id as string, creds: `/v1/containers/${id}/credentials` };
   }
   /// The project as the workspace's listing shows it.
   const listed = async (m: Awaited<ReturnType<typeof managed>>, a: string) =>
-    (await (await m.get(PROJECTS, a)).json()).projects[0];
+    (await (await m.get(PROJECTS, a)).json()).containers[0];
   const fakes: FakeCell[] = [];
   afterEach(() => {
     for (const f of fakes.splice(0)) f.stop();
@@ -433,7 +438,7 @@ describe("a project's readiness", () => {
     const got = async () => answer(await m.get(project, a));
     const [status, body] = await got();
     expect(status).toBe(200);
-    expect(body).toEqual({ ...(await (await m.get(PROJECTS, a)).json()).projects[0], ready: false });
+    expect(body).toEqual({ ...(await (await m.get(PROJECTS, a)).json()).containers[0], ready: false });
     expect(fake.requests.map((r) => [r.path, r.status])).toEqual([["/v1/streams?limit=1", 421]]);
     // Within 5 s of a probe, no other.
     fake.publish(readBundle(cell.state));
@@ -466,11 +471,11 @@ describe("a project's readiness", () => {
     const { cell, fake, m, a, id } = await created();
     await customerSecret(cell, "sp_other");
     await m.cache.refresh();
-    const missing = (p: string): [number, any] => [404, refusal("not_found", `workspace ws_a has no Streams project ${p}`)];
+    const missing = (p: string): [number, any] => [404, refusal("not_found", `workspace ws_a has no container ${p}`)];
     for (const p of ["sp_other", "sp_canary_cell_sc1", `sp_${"0".repeat(32)}`]) {
       expect(await answer(await m.get(`${PROJECTS}/${p}`, a))).toEqual(missing(p));
     }
-    expect(await answer(await m.get(`/v1/workspaces/ws_sp_other/streams/projects/${id}`, a))).toEqual([
+    expect(await answer(await m.get(`/v1/workspaces/ws_sp_other/containers/${id}`, a))).toEqual([
       403, refusal("forbidden", "this session is signed in to workspace ws_a, not ws_sp_other: sign in to ws_sp_other"),
     ]);
     expect(fake.requests).toEqual([]);
@@ -481,7 +486,7 @@ describe("a project's readiness", () => {
     await admin(cell, "offboard", "--project", id);
     await m.cache.refresh();
     const body = await (await m.get(`${PROJECTS}/${id}`, a)).json();
-    expect([body.status, body.ready, body.reason]).toEqual(["deleting", false, "project_deleting"]);
+    expect([body.status, body.ready, body.reason]).toEqual(["deleting", false, "container_deleting"]);
     expect(fake.requests).toEqual([]);
   });
 
@@ -496,7 +501,7 @@ describe("a project's readiness", () => {
     await admin(cell, "suspend", "--project", id);
     await m.cache.refresh();
     expect(await answer(await m.get(project, a))).toEqual([
-      200, { ...(await listed(m, a)), ready: false, reason: "project_suspended" },
+      200, { ...(await listed(m, a)), ready: false, reason: "container_suspended" },
     ]);
     expect(statuses()).toEqual([200]);
     // The cell takes the suspension, then the owner resumes the project:
@@ -573,12 +578,12 @@ describe("deleting a project", () => {
     const m = await managed(cell);
     const a = m.signIn("ws_a");
     const made = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
-    const id: string = made.project.id;
-    const creds = `/v1/projects/${id}/streams/credentials`;
+    const id: string = made.container.id;
+    const creds = `/v1/containers/${id}/credentials`;
     const second = await (await m.send("POST", creds, a, {})).json();
     const before = cellState(cell);
     const res = await m.send("DELETE", `${PROJECTS}/${id}`, a);
-    expect(await answer(res)).toEqual([202, { project: { ...made.project, status: "deleting" } }]);
+    expect(await answer(res)).toEqual([202, { container: { ...made.container, status: "deleting" } }]);
     const after = cellState(cell);
     expect(after.projects[id]).toMatchObject({ phase: "offboarding", status: "active", project_policy_version: 1 });
     const operator = Object.entries(after.credentials).find(([, c]) => c.project_id === id && c.role === "operator")!;
@@ -596,7 +601,7 @@ describe("deleting a project", () => {
       method: "POST", headers: { authorization: `StreamsCredential ${second.secret}` },
     }));
     expect(minted.status).toBe(403);
-    expect((await (await m.get(PROJECTS, a)).json()).projects.map((p: any) => p.status)).toEqual(["deleting"]);
+    expect((await (await m.get(PROJECTS, a)).json()).containers.map((p: any) => p.status)).toEqual(["deleting"]);
     expect((await (await m.get(creds, a)).json()).credentials.map((c: any) => c.status)).toEqual(["revoked", "revoked"]);
     expect(managementAudits(cell).at(-1)).toMatchObject({
       action: "project.delete", outcome: "done", project_id: id,
@@ -614,7 +619,7 @@ describe("deleting a project", () => {
       fake.stop();
     }
     await m.cache.refresh();
-    expect((await (await m.get(PROJECTS, a)).json()).projects).toEqual([]);
+    expect((await (await m.get(PROJECTS, a)).json()).containers).toEqual([]);
     expect((await m.get(`${PROJECTS}/${id}`, a)).status).toBe(404);
     expect(cellState(cell).projects[id].phase).toBe("offboarded");
   });
@@ -623,7 +628,7 @@ describe("deleting a project", () => {
     const cell = await allowedCell();
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    const id: string = (await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json()).project.id;
+    const id: string = (await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json()).container.id;
     await customerSecret(cell, "sp_other");
     await admin(cell, "suspend", "--project", id);
     await m.cache.refresh();
@@ -637,10 +642,10 @@ describe("deleting a project", () => {
     ]);
     expect((await m.send("DELETE", `${PROJECTS}/${id}`, a, {})).status).toBe(202);
     expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
-      409, refusal("container_not_active", `project ${id} is already being deleted`),
+      409, refusal("container_not_active", `container ${id} is already being deleted`),
     ]);
     expect(await answer(await m.send("DELETE", `${PROJECTS}/sp_other`, a))).toEqual([
-      404, refusal("not_found", "workspace ws_a has no Streams project sp_other"),
+      404, refusal("not_found", "workspace ws_a has no container sp_other"),
     ]);
     expect(cellState(cell).projects.sp_other.phase).toBe("active");
   });

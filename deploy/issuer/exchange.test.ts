@@ -242,7 +242,7 @@ describe("the exchange", () => {
     writeStateText(cell.state, JSON.stringify(state));
     await cache.refresh();
     expect(await answer(await post(issuer, secret))).toEqual([
-      403, refusal("container_not_active", "project sp_a is being deleted"),
+      403, refusal("container_not_active", "container sp_a is being deleted"),
     ]);
   });
 

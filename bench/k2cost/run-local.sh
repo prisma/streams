@@ -464,7 +464,7 @@ else
   SCOPES='["streams.metadata.read","streams.records.read","streams.records.append","streams.create","streams.lifecycle.manage","streams.consumers.pull","streams.consumers.settle","streams.consumers.configure","streams.forks.create","streams.dlq.configure","streams.watches.manage","streams.catalog.read","streams.usage.read"]'
   curl -sf -X POST -H 'content-type: application/json' \
     -d "{\"displayName\":\"k2gen $POINT_NAME\",\"scopes\":$SCOPES}" \
-    "$EMU/v1/projects/$CUSTOMER_PROJECT/streams/credentials" > "$SECRETS/credential.json"
+    "$EMU/v1/containers/$CUSTOMER_PROJECT/credentials" > "$SECRETS/credential.json"
   umask 077
   jq -r '"authorization: StreamsCredential " + .secret' "$SECRETS/credential.json" > "$SECRETS/exchange.hdr"
   umask 022

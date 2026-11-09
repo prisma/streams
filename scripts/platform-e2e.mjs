@@ -79,7 +79,7 @@ await sleep(800);
 // 100s, so a grant published after its boot feed load stays invisible
 // until the first cadence tick — and the nudge leg needs the grant in
 // the boot snapshot so only the KID is unknown.
-const credC = await (await fetch(`http://127.0.0.1:${EMU_PORT}/v1/projects/proj-c/streams/credentials`, {
+const credC = await (await fetch(`http://127.0.0.1:${EMU_PORT}/v1/containers/proj-c/credentials`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ displayName: "c ingest" }),
 })).json().then((body) => ({ status: 201, body }));
@@ -155,7 +155,7 @@ const aBase = `http://127.0.0.1:${A_PORT}`;
 const bBase = `http://127.0.0.1:${B_PORT}`;
 const cBase = `http://127.0.0.1:${C_PORT}`;
 const mkCred = async (pid, name, scopes) =>
-  j(await sfetch(`${emuBase}/v1/projects/${pid}/streams/credentials`, {
+  j(await sfetch(`${emuBase}/v1/containers/${pid}/credentials`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ displayName: name, ...(scopes ? { scopes } : {}) }),
   }));
@@ -172,7 +172,7 @@ const SECRET = created.body.secret;
 // The client's tokenProvider must survive the rotation leg: it closes
 // over a MUTABLE secret, updated when the credential rotates.
 let CURRENT_SECRET = SECRET;
-const listed = await j(await sfetch(`${emuBase}/v1/projects/proj-e2e/streams/credentials`));
+const listed = await j(await sfetch(`${emuBase}/v1/containers/proj-e2e/credentials`));
 check("secret appears exactly once (list omits it)",
   JSON.stringify(listed.body).includes(CRED_ID) && !JSON.stringify(listed.body).includes(SECRET.split(".")[1]));
 check("wrong secret refused", (await exchange(`${SECRET}x`)).status === 401);
@@ -261,7 +261,7 @@ try {
 }
 
 const oldToken = tok1.body.accessToken;
-const rotated = await j(await sfetch(`${emuBase}/v1/projects/proj-e2e/streams/credentials/${CRED_ID}/rotate`, { method: "POST" }));
+const rotated = await j(await sfetch(`${emuBase}/v1/containers/proj-e2e/credentials/${CRED_ID}/rotate`, { method: "POST" }));
 check("rotation returns a new secret once", rotated.status === 200 && !!rotated.body.secret);
 const NEW_SECRET = rotated.body.secret;
 CURRENT_SECRET = NEW_SECRET;
@@ -345,7 +345,7 @@ const tokDel = await j(await exchange(credDel.body.secret));
 await sleep(1500);
 const mkDel = await streamCreateRaw(gwBase, "del/data", tokDel.body.accessToken);
 check("doomed project serves before deletion", mkDel === 200 || mkDel === 201, `status ${mkDel}`);
-await sfetch(`${emuBase}/admin/projects/proj-del/delete`, { method: "POST" });
+await sfetch(`${emuBase}/admin/containers/proj-del/delete`, { method: "POST" });
 check("deleted project cannot exchange", (await exchange(credDel.body.secret)).status === 403);
 await sleep(2000);
 const delRead = await readRecords(bBase, "del/data", tokDel.body.accessToken);
@@ -374,7 +374,7 @@ const fault = async (body) => {
   return r.body;
 };
 await fault({ kind: "partial-write", feed: "grants" });
-await sfetch(`${emuBase}/v1/projects/proj-b/streams/credentials/${credF.body.credential.id}/revoke`, { method: "POST" });
+await sfetch(`${emuBase}/v1/containers/proj-b/credentials/${credF.body.credential.id}/revoke`, { method: "POST" });
 await sleep(2500);
 check("torn feed file never becomes visible: revocation does NOT land, old snapshot serves",
   (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status === 200);
@@ -432,11 +432,11 @@ check("refused snapshot does not clobber good state: current-kid token still ser
 // The quota is a PER-INSTANCE backstop (CONTROL-PLANE-INTEGRATION §9):
 // each cell enforces the limit its own policy feed delivers, at the
 // same time, independently.
-await sfetch(`${emuBase}/admin/projects/proj-q`, {
+await sfetch(`${emuBase}/admin/containers/proj-q`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ quotas: { max_streams: 2 } }),
 });
-await sfetch(`${emuBase}/admin/projects/proj-b`, {
+await sfetch(`${emuBase}/admin/containers/proj-b`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ quotas: { max_streams: 1 } }),
 });

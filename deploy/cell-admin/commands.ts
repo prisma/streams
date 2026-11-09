@@ -70,7 +70,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
     throw new AdminError("give one of --key-file K or --public-key FILE (the public half only)", 2);
   }
   const key = f.has("public-key") ? readPublicKey(resolve(f.must("public-key"))) : loadSigningKey(f.must("key-file")).record;
-  const [workspace_cap, max_projects] = [f.count("workspace-cap", 1), f.count("max-projects", sizing.dedicated ? 1 : 1000)];
+  const [workspace_cap, max_projects] = [f.count("workspace-cap", 1000), f.count("max-projects", sizing.dedicated ? 1 : 1000)];
   if (sizing.dedicated && max_projects !== 1) {
     throw new AdminError(
       `--max-projects ${max_projects}: a dedicated cell (k = 1) holds one project; --max-projects must be 1`,

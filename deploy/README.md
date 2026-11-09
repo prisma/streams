@@ -28,8 +28,8 @@ Six more directories:
   secret for a cell token at `POST /v1/token/streams`; serves the beta's
   page at `GET /`; signs a browser in with Prisma at `/auth/login`,
   `/auth/callback` and `/auth/session`; serves the management API, a
-  signed-in workspace's projects under `/v1/workspaces/{w}/streams/projects`
-  and their credentials under `/v1/projects/{p}/streams/credentials`; runs
+  signed-in workspace's projects under `/v1/workspaces/{w}/containers`
+  and their credentials under `/v1/containers/{p}/credentials`; runs
   the audit, the pepper re-hash and the offboarding job; and answers
   `GET /healthz` and `GET /v1/admin/metrics` for the watch. `server.ts`
   lists the routes and WIRE-MATRIX section 5 states each; tests and

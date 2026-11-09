@@ -17,7 +17,7 @@ afterEach(() => {
   cleanup();
 });
 
-const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+const PROJECTS = "/v1/workspaces/ws_a/containers";
 
 /// A project the signed-in workspace ws_a created and then deleted, with
 /// streams at the fake cell, beside a neighbour sp_b with streams of its
@@ -30,7 +30,7 @@ async function deleted() {
   const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
   const a = m.signIn("ws_a");
   const made = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
-  const id: string = made.project.id;
+  const id: string = made.container.id;
   await customerSecret(cell, "sp_b");
   await m.cache.refresh();
   fake.publish(readBundle(cell.state));
@@ -100,7 +100,7 @@ describe("the offboarding job", () => {
       before: { feed_version: before.feed_version }, after: { feed_version: after.feed_version },
     });
     // Gone from the API; its id stays on the denylist; nothing is due.
-    expect((await (await m.get(PROJECTS, a)).json()).projects).toEqual([]);
+    expect((await (await m.get(PROJECTS, a)).json()).containers).toEqual([]);
     expect((await m.get(`${PROJECTS}/${id}`, a)).status).toBe(404);
     expect(denylistText(cell.state).split("\n")).toContain(id);
     const asked = fake.requests.length;

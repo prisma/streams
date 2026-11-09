@@ -43,7 +43,7 @@ export interface ProbeDeps {
 
 /// Why the cell cannot be asked: no token the probe could mint would get
 /// past the cell's checks until something else changes.
-export type Unprovable = "no_live_credential" | "project_suspended" | "project_deleting" | "credential_expired";
+export type Unprovable = "no_live_credential" | "container_suspended" | "container_deleting" | "credential_expired";
 
 /// Whether a project is ready, or why the cell cannot be asked.
 export type Readiness = { ready: true } | { ready: false; reason?: Unprovable };
@@ -79,8 +79,8 @@ function probeCredential(state: CellState, project: string, nowSecs: number): st
 
 /// Why a project in `p`'s phase and status cannot be ready, or undefined.
 function projectUnprovable(p: ProjectRecord): Unprovable | undefined {
-  if (p.phase !== "active") return "project_deleting";
-  return p.status === "active" ? undefined : "project_suspended";
+  if (p.phase !== "active") return "container_deleting";
+  return p.status === "active" ? undefined : "container_suspended";
 }
 
 export class Prober {
@@ -139,7 +139,7 @@ export class Prober {
     const key = `${id}@${c.grant_version}`;
     if (this.ready.has(key)) return { served: true };
     const now = this.deps.now();
-    if (state.projects[c.project_id].status !== "active") return { served: false, reason: "project_suspended" };
+    if (state.projects[c.project_id].status !== "active") return { served: false, reason: "container_suspended" };
     if (c.status === "active" && expired(c, Math.floor(now / 1000))) return { served: false, reason: "credential_expired" };
     const last = this.probedAt.get(id);
     if (last !== undefined && now - last < PROBE_EVERY_MS) return { served: false };

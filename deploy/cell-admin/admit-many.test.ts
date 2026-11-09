@@ -75,7 +75,7 @@ for (const kind of STORES) {
 
     test("holds each cap across the batch, and refuses per project without burning the refused id", async () => {
       useStore(kind);
-      const c = await initCell(["--max-projects", "3"]);
+      const c = await initCell(["--max-projects", "3", "--workspace-cap", "1"]);
       const r = await admitMany(await openedStore(c.state), [
         wanted("a", "w1"),
         wanted("b", "w1"), // the workspace's cap, 1, is held by a

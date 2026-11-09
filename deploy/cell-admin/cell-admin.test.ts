@@ -555,7 +555,7 @@ for (const kind of STORES) {
           .toBe("cell-admin admit: workspace streams-issuer-canary is the issuer's canary workspace");
         expect((await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w")).code).toBe(0);
         const r = await run("list", "--state", c.state);
-        expect(r.out).toContain("projects: 1 placed of 1, 0 offboarded; workspace cap 1");
+        expect(r.out).toContain("projects: 1 placed of 1, 0 offboarded; workspace cap 1000");
         expect(r.out).not.toContain("sp_canary");
         expect(r.out).not.toContain(Object.keys(readState(c.state).credentials)[0]);
       });
@@ -834,7 +834,7 @@ for (const kind of STORES) {
         const c = await initCell();
         await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
         const r = await run("list", "--state", c.state);
-        expect(r.out).toContain("projects: 1 placed of 1000, 0 offboarded; workspace cap 1");
+        expect(r.out).toContain("projects: 1 placed of 1000, 0 offboarded; workspace cap 1000");
         expect(r.out).toContain("proj_a workspace=w active policy=v1");
         const j = JSON.parse((await run("list", "--state", c.state, "--json")).out);
         expect(Object.keys(j.keys[0]).sort()).toEqual(["alg", "aud", "kid"]);

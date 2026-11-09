@@ -5,8 +5,8 @@ a dependency-light Node implementation of the platform side of the
 Streams contract — Management API, one-time credential secrets,
 Prisma-Auth token exchange (`POST /v1/token/streams`), RS256 signing
 with a full JWKS kid lifecycle, per-cell full-snapshot feeds with
-**atomic file projection**, project placement across cells, ownership
-transfer + deletion sagas, workload-JWT rotation, a verifying reverse
+**atomic file projection**, container placement across cells, the
+deletion saga, workload-JWT rotation, a verifying reverse
 proxy (the reference gateway), and a minimal console page.
 
 Both components are **independent producers**: they share only the

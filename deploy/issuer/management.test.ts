@@ -23,7 +23,7 @@ afterEach(cleanup);
 
 const answer = async (res: Response): Promise<[number, any]> => [res.status, await res.json()];
 const refusal = (code: string, message: string) => ({ error: { code, message } });
-const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+const PROJECTS = "/v1/workspaces/ws_a/containers";
 /// The refusal of what would give a workspace off the allow-list something
 /// new: a project, a credential or a secret (the owner's call 16).
 const OFF_LIST = (w: string) =>
@@ -43,12 +43,12 @@ describe("the management API's sessions", () => {
     await customerSecret(cell, "sp_b");
     await allow(cell, "ws_sp_a");
     const m = await managed(cell);
-    const res = await m.get("/v1/workspaces/ws_sp_a/streams/projects", m.signIn("ws_sp_a"));
+    const res = await m.get("/v1/workspaces/ws_sp_a/containers", m.signIn("ws_sp_a"));
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("x-request-id")).toMatch(/^[0-9a-f]{16}$/);
     const state = m.cache.state;
     expect(await answer(res)).toEqual([200, {
-      projects: [{
+      containers: [{
         id: "sp_a",
         workspaceId: "ws_sp_a",
         displayName: "sp_a",
@@ -84,14 +84,14 @@ describe("the management API's sessions", () => {
       otherKey,
     ];
     for (const cookie of cases) {
-      expect(await answer(await m.get("/v1/workspaces/ws_a/streams/projects", cookie))).toEqual([
+      expect(await answer(await m.get("/v1/workspaces/ws_a/containers", cookie))).toEqual([
         401, refusal("unauthorized", "sign in with Prisma to manage Streams projects"),
       ]);
     }
-    expect((await m.get("/v1/workspaces/ws_a/streams/projects", `a=b; ${good}; c=d`)).status).toBe(200);
+    expect((await m.get("/v1/workspaces/ws_a/containers", `a=b; ${good}; c=d`)).status).toBe(200);
     // A session lives 8 hours from its issue.
     const old = m.signIn("ws_a", { iat: Math.floor(m.clock.t / 1000) - SESSION_TTL_SECS + 1 });
-    expect((await m.get("/v1/workspaces/ws_a/streams/projects", old)).status).toBe(200);
+    expect((await m.get("/v1/workspaces/ws_a/containers", old)).status).toBe(200);
   });
 
   test("reads a session only from a cookie the issuer's key made, with every field in form", () => {
@@ -114,11 +114,11 @@ describe("the management API's sessions", () => {
     await allow(cell, "ws_a", "--max-projects", "3");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    expect(await answer(await m.get("/v1/workspaces/ws_b/streams/projects", a))).toEqual([
+    expect(await answer(await m.get("/v1/workspaces/ws_b/containers", a))).toEqual([
       403, refusal("forbidden", "this session is signed in to workspace ws_a, not ws_b: sign in to ws_b"),
     ]);
     const create = (cookie: string, w: string, name: string) =>
-      m.send("POST", `/v1/workspaces/${w}/streams/projects`, cookie, { displayName: name });
+      m.send("POST", `/v1/workspaces/${w}/containers`, cookie, { displayName: name });
     expect(await answer(await create(m.signIn("ws_b"), "ws_b", "one"))).toEqual([403, offList("ws_b")]);
     expect((await create(a, "ws_a", "one")).status).toBe(201);
     await admin(cell, "disallow", "--workspace", "ws_a");
@@ -137,8 +137,8 @@ describe("the management API's sessions", () => {
       const m = await managed(cell, envWith(cell, { STREAMS_CELL_ORIGIN: fake.url }));
       const a = m.signIn("ws_a");
       const made = await (await m.send("POST", PROJECTS, a, { displayName: "Orders" })).json();
-      const [id, first] = [made.project.id as string, made.credential.id as string];
-      const creds = `/v1/projects/${id}/streams/credentials`;
+      const [id, first] = [made.container.id as string, made.credential.id as string];
+      const creds = `/v1/containers/${id}/credentials`;
       const second = (await (await m.send("POST", creds, a, { displayName: "ci" })).json()).credential.id as string;
       fake.publish(readBundle(cell.state));
       await admin(cell, "disallow", "--workspace", "ws_a");
@@ -158,8 +158,8 @@ describe("the management API's sessions", () => {
       );
       // Everything a user sees, as before.
       const listed = await answer(await m.get(PROJECTS, a));
-      expect(listed).toEqual([200, { projects: [made.project] }]);
-      expect(await answer(await m.get(`${PROJECTS}/${id}`, a))).toEqual([200, { ...made.project, ready: true }]);
+      expect(listed).toEqual([200, { containers: [made.container] }]);
+      expect(await answer(await m.get(`${PROJECTS}/${id}`, a))).toEqual([200, { ...made.container, ready: true }]);
       const [status, { credentials }] = await answer(await m.get(creds, a));
       expect([status, credentials.map((c: any) => [c.id, c.status])]).toEqual([200, [[first, "active"], [second, "active"]]]);
       expect((await answer(await m.get(`${creds}/${second}`, a)))[1]).toMatchObject({ id: second, served: true });
@@ -167,7 +167,7 @@ describe("the management API's sessions", () => {
       const revoked = await answer(await m.send("POST", `${creds}/${second}/revoke`, a));
       expect([revoked[0], revoked[1].credential.status, revoked[1].credential.grantVersion]).toEqual([200, "revoked", 2]);
       expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
-        202, { project: { ...made.project, status: "deleting" } },
+        202, { container: { ...made.container, status: "deleting" } },
       ]);
       const after = cellState(cell);
       expect(after.projects[id]).toMatchObject({ phase: "offboarding", status: "active" });
@@ -194,7 +194,7 @@ describe("the management API's sessions", () => {
     expect([res.headers.get("retry-after"), ...(await answer(res))]).toEqual([
       "5", 503, refusal("issuer_unavailable", "the issuer cannot read the beta's allow-list; retry shortly"),
     ]);
-    expect(await answer(await m.get(PROJECTS, a))).toEqual([200, { projects: [] }]);
+    expect(await answer(await m.get(PROJECTS, a))).toEqual([200, { containers: [] }]);
   });
 
   test("takes 60 calls a minute from one session, then answers 429 rate_limited with Retry-After", async () => {
@@ -202,13 +202,13 @@ describe("the management API's sessions", () => {
     await allow(cell, "ws_a");
     const m = await managed(cell);
     const a = m.signIn("ws_a");
-    for (let i = 0; i < 60; i++) expect((await m.get("/v1/workspaces/ws_a/streams/projects", a)).status).toBe(200);
-    const res = await m.get("/v1/workspaces/ws_a/streams/projects", a);
+    for (let i = 0; i < 60; i++) expect((await m.get("/v1/workspaces/ws_a/containers", a)).status).toBe(200);
+    const res = await m.get("/v1/workspaces/ws_a/containers", a);
     expect([res.headers.get("retry-after"), ...(await answer(res))]).toEqual([
       "1", 429, refusal("rate_limited", "too many management calls in this session; retry after 1 s"),
     ]);
     // Another session of the same user has its own budget.
-    expect((await m.get("/v1/workspaces/ws_a/streams/projects", m.signIn("ws_a"))).status).toBe(200);
+    expect((await m.get("/v1/workspaces/ws_a/containers", m.signIn("ws_a"))).status).toBe(200);
     expect(m.issuer.limits.refused.management_session).toBe(1);
   });
 
@@ -218,23 +218,28 @@ describe("the management API's sessions", () => {
     const m = await managed(cell);
     const a = m.signIn("ws_a");
     m.clock.t += 301_000;
-    const res = await m.get("/v1/workspaces/ws_a/streams/projects", m.signIn("ws_a"));
+    const res = await m.get("/v1/workspaces/ws_a/containers", m.signIn("ws_a"));
     expect([res.headers.get("retry-after"), ...(await answer(res))]).toEqual([
       "5", 503, refusal("issuer_unavailable", "the issuer cannot see the cell's current state; retry shortly"),
     ]);
     await m.cache.refresh();
-    expect((await m.get("/v1/workspaces/ws_a/streams/projects", a)).status).toBe(200);
+    expect((await m.get("/v1/workspaces/ws_a/containers", a)).status).toBe(200);
   });
 
   test("answers another method 405 with Allow, and a path it does not serve 404", async () => {
     const cell = await issuerCell();
     await allow(cell, "ws_a");
     const m = await managed(cell);
-    const res = await m.call("PUT", "/v1/workspaces/ws_a/streams/projects", m.signIn("ws_a"));
+    const res = await m.call("PUT", "/v1/workspaces/ws_a/containers", m.signIn("ws_a"));
     expect([res.headers.get("allow"), ...(await answer(res))]).toEqual([
       "GET, POST", 405, refusal("method_not_allowed", "GET or POST only"),
     ]);
-    for (const path of ["/v1/workspaces/ws_a/streams", "/v1/workspaces/ws%2Fa/streams/projects", "/v1/workspaces//streams/projects"]) {
+    for (const path of ["/v1/workspaces/ws_a/streams", "/v1/workspaces/ws%2Fa/containers", "/v1/workspaces//containers"]) {
+      expect((await m.get(path, m.signIn("ws_a"))).status).toBe(404);
+    }
+    // The project-named routes are gone, with no alias (edge change #253).
+    for (const path of ["/v1/workspaces/ws_a/streams/projects", "/v1/workspaces/ws_a/streams/projects/sp_a",
+      "/v1/projects/sp_a/streams/credentials"]) {
       expect((await m.get(path, m.signIn("ws_a"))).status).toBe(404);
     }
   });

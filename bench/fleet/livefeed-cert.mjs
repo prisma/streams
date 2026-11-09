@@ -168,7 +168,7 @@ const debug = async (n) =>
   (await (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).json());
 
 // Mint a customer token.
-const cred = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials`, {
+const cred = await (await sfetch(`http://127.0.0.1:${EMU}/v1/containers/${CERT_PROJECT}/credentials`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ displayName: "cert" }),
 })).json();
@@ -669,14 +669,14 @@ let fullReplayRecords = 0;
   });
   await sleep(1500);
   const t0 = Date.now();
-  await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials/${cred.credential.id}/revoke`, { method: "POST" });
+  await sfetch(`http://127.0.0.1:${EMU}/v1/containers/${CERT_PROJECT}/credentials/${cred.credential.id}/revoke`, { method: "POST" });
   const ended = await sub;
   const cutMs = Date.now() - t0;
   leg("revocation mid-subscription: established 200, prompt resumable EOF",
     ended.status === 200 && ended.eof && cutMs < 15000 && !ended.text.includes('"sealed":true'),
     `status=${ended.status} eof=${ended.eof} cutMs=${cutMs}`);
   // Fresh credential for the rest of the battery.
-  const c2 = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${CERT_PROJECT}/streams/credentials`, {
+  const c2 = await (await sfetch(`http://127.0.0.1:${EMU}/v1/containers/${CERT_PROJECT}/credentials`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ displayName: "cert2" }),
   })).json();

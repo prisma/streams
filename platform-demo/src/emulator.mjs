@@ -278,11 +278,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     // Management: credentials
-    if (parts[0] === "v1" && parts[1] === "projects" && parts[3] === "streams" && parts[4] === "credentials") {
+    if (parts[0] === "v1" && parts[1] === "containers" && parts[3] === "credentials") {
       const pid = parts[2];
       const proj = projects.get(pid);
-      if (!proj || proj.status === "deleted") return json(res, 404, { error: "unknown project" });
-      if (req.method === "POST" && parts.length === 5) {
+      if (!proj || proj.status === "deleted") return json(res, 404, { error: "unknown container" });
+      if (req.method === "POST" && parts.length === 4) {
         const body = JSON.parse((await readBody(req)) || "{}");
         const id = `strcred_${String(++credSeq).padStart(3, "0")}`;
         const sec = newSecret(id);
@@ -301,23 +301,23 @@ const server = http.createServer(async (req, res) => {
         // The secret member appears EXACTLY once, here.
         return json(res, 201, { credential: publicCred(id, cred), secret: sec.secret });
       }
-      if (req.method === "GET" && parts.length === 5) {
+      if (req.method === "GET" && parts.length === 4) {
         return json(res, 200, {
           credentials: [...credentials.entries()]
             .filter(([, c]) => c.project_id === pid)
             .map(([id, c]) => publicCred(id, c)),
         });
       }
-      const cid = parts[5];
+      const cid = parts[4];
       const cred = credentials.get(cid);
       if (!cred || cred.project_id !== pid) return json(res, 404, { error: "unknown credential" });
-      if (req.method === "POST" && parts[6] === "rotate") {
+      if (req.method === "POST" && parts[5] === "rotate") {
         const sec = newSecret(cid);
         Object.assign(cred, { salt: sec.salt, hash: sec.hash, hint: sec.hint, grant_version: cred.grant_version + 1 });
         project();
         return json(res, 200, { credential: publicCred(cid, cred), secret: sec.secret });
       }
-      if (req.method === "POST" && parts[6] === "revoke") {
+      if (req.method === "POST" && parts[5] === "revoke") {
         cred.status = "revoked";
         cred.grant_version += 1;
         project();
@@ -365,10 +365,10 @@ const server = http.createServer(async (req, res) => {
       });
     }
     // Admin: sagas + status
-    if (req.method === "POST" && parts[0] === "admin" && parts[1] === "projects" && parts[2]) {
+    if (req.method === "POST" && parts[0] === "admin" && parts[1] === "containers" && parts[2]) {
       const pid = parts[2];
       const p = projects.get(pid);
-      if (!p) return json(res, 404, { error: "unknown project" });
+      if (!p) return json(res, 404, { error: "unknown container" });
       const body = JSON.parse((await readBody(req)) || "{}");
       // §11 deletion saga: authorization cutoff FIRST (revoke + publish
       // while `deleting`), then the project leaves the feed entirely —

@@ -19,9 +19,9 @@ async function withProject(...allowArgs: string[]) {
   await admin(cell, "allow", "--workspace", "ws_a", ...allowArgs);
   const m = await managed(cell);
   const a = m.signIn("ws_a");
-  const made = await (await m.send("POST", "/v1/workspaces/ws_a/streams/projects", a, { displayName: "Orders" })).json();
-  const id: string = made.project.id;
-  return { cell, m, a, id, first: made.credential, path: `/v1/projects/${id}/streams/credentials` };
+  const made = await (await m.send("POST", "/v1/workspaces/ws_a/containers", a, { displayName: "Orders" })).json();
+  const id: string = made.container.id;
+  return { cell, m, a, id, first: made.credential, path: `/v1/containers/${id}/credentials` };
 }
 
 const exchange = (m: Awaited<ReturnType<typeof managed>>, secret: string, body?: unknown) =>
@@ -183,7 +183,7 @@ describe("a project's credentials", () => {
     const before = cellState(cell).feed_version;
     const calls: [() => Promise<Response>, string][] = [
       [() => m.send("POST", path, a, {}), "credential.create"],
-      [() => m.send("POST", "/v1/workspaces/ws_a/streams/projects", a, { displayName: "Two" }), "project.create"],
+      [() => m.send("POST", "/v1/workspaces/ws_a/containers", a, { displayName: "Two" }), "project.create"],
     ];
     for (const [call, action] of calls) {
       const res = await call();
@@ -203,14 +203,14 @@ describe("a project's credentials", () => {
     await customerSecret(cell, "sp_other");
     await m.cache.refresh();
     for (const p of ["sp_other", "sp_canary_cell_sc1", `sp_${"0".repeat(32)}`]) {
-      for (const res of [await m.get(`/v1/projects/${p}/streams/credentials`, a), await m.send("POST", `/v1/projects/${p}/streams/credentials`, a, {})]) {
-        expect(await answer(res)).toEqual([404, refusal("not_found", `workspace ws_a has no Streams project ${p}`)]);
+      for (const res of [await m.get(`/v1/containers/${p}/credentials`, a), await m.send("POST", `/v1/containers/${p}/credentials`, a, {})]) {
+        expect(await answer(res)).toEqual([404, refusal("not_found", `workspace ws_a has no container ${p}`)]);
       }
     }
     await admin(cell, "offboard", "--project", id);
     await m.cache.refresh();
     expect(await answer(await m.send("POST", path, a, {}))).toEqual([
-      409, refusal("container_not_active", `project ${id} is being deleted`),
+      409, refusal("container_not_active", `container ${id} is being deleted`),
     ]);
     // The listing still answers: every credential revoked.
     const listed = (await (await m.get(path, a)).json()).credentials;
@@ -268,7 +268,7 @@ describe("rotating a credential", () => {
     const canary = Object.entries(cellState(cell).credentials).find(([, c]) => c.hidden)![0];
     for (const cid of [other.id, canary, `strcred_${"0".repeat(32)}`]) {
       expect(await answer(await m.send("POST", `${path}/${cid}/rotate`, a))).toEqual([
-        404, refusal("not_found", `project ${id} has no credential ${cid}`),
+        404, refusal("not_found", `container ${id} has no credential ${cid}`),
       ]);
     }
     expect(await answer(await m.send("POST", `${path}/${first.id}/rotate`, a, { scopes: [] }))).toEqual([
@@ -348,7 +348,7 @@ describe("revoking a credential", () => {
     const other = await customerSecret(cell, "sp_other");
     await m.cache.refresh();
     expect(await answer(await m.send("POST", `${path}/${other.id}/revoke`, a))).toEqual([
-      404, refusal("not_found", `project ${id} has no credential ${other.id}`),
+      404, refusal("not_found", `container ${id} has no credential ${other.id}`),
     ]);
     expect(await answer(await m.send("POST", `${path}/${first.id}/revoke`, a, { reason: "leak" }))).toEqual([
       400, refusal("invalid_request", 'unknown member "reason": the body takes nothing'),
@@ -405,7 +405,7 @@ describe("acknowledging a credential's last change", () => {
     }
   });
 
-  test("says credential_expired once an active credential has expired, and project_suspended while its project is, probing for neither", async () => {
+  test("says credential_expired once an active credential has expired, and container_suspended while its project is, probing for neither", async () => {
     const { cell, id, path } = await withProject();
     const fake = new FakeCell();
     try {
@@ -429,7 +429,7 @@ describe("acknowledging a credential's last change", () => {
       await n.cache.refresh();
       // The cell refuses a suspended project's every token before its
       // credential.
-      expect(await one(other)).toEqual([200, { ...(await listed(other)), served: false, reason: "project_suspended" }]);
+      expect(await one(other)).toEqual([200, { ...(await listed(other)), served: false, reason: "container_suspended" }]);
       expect(fake.requests).toEqual([]);
       // Revoked, an expired credential is asked again: the cell checks its
       // status before its expiry.
@@ -449,7 +449,7 @@ describe("acknowledging a credential's last change", () => {
     const other = await customerSecret(cell, "sp_other");
     await m.cache.refresh();
     expect(await answer(await m.get(`${path}/${other.id}`, a))).toEqual([
-      404, refusal("not_found", `project ${id} has no credential ${other.id}`),
+      404, refusal("not_found", `container ${id} has no credential ${other.id}`),
     ]);
   });
 });

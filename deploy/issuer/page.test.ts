@@ -48,7 +48,7 @@ describe("the issuer's page", () => {
     expect(html).not.toMatch(/<(link|iframe|object|embed|img|form|base|meta http-equiv)\b|\s(src|srcset|action|on[a-z]+)=/i);
     expect(scripts[0][1]).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|setTimeout\(\s*["'`]/);
     // Its calls are the issuer's own routes.
-    for (const route of ["/auth/session", "/auth/login", "/v1/workspaces/", "/streams/projects", "/v1/projects/", "/streams/credentials"]) {
+    for (const route of ["/auth/session", "/auth/login", "/v1/workspaces/", "/containers", "/v1/containers/", "/credentials"]) {
       expect(scripts[0][1]).toContain(`"${route}`);
     }
   });
@@ -109,7 +109,7 @@ describe("GET /auth/session", () => {
     m.clock.t += 5_001;
     const { allowListed, csrfToken: token } = await (await m.get("/auth/session", cookie)).json();
     expect(allowListed).toBe(true);
-    const created = await m.call("POST", "/v1/workspaces/ws_a/streams/projects", cookie, {
+    const created = await m.call("POST", "/v1/workspaces/ws_a/containers", cookie, {
       body: JSON.stringify({ displayName: "app" }),
       headers: { "content-type": "application/json", "x-csrf-token": token },
     });
@@ -137,7 +137,7 @@ describe("GET /auth/session", () => {
 });
 
 describe("the page's watches", () => {
-  const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
+  const PROJECTS = "/v1/workspaces/ws_a/containers";
   const fakes: FakeCell[] = [];
   afterEach(() => {
     for (const f of fakes.splice(0)) f.stop();
@@ -156,7 +156,7 @@ describe("the page's watches", () => {
     fake.now = () => m.clock.t;
     const cookie = m.signIn("ws_a");
     const made = await (await m.send("POST", PROJECTS, cookie, { displayName: "Orders" })).json();
-    const id: string = made.project.id;
+    const id: string = made.container.id;
     return { cell, fake, m, cookie, id, cid: made.credential.id as string, project: `${PROJECTS}/${id}` };
   }
 
@@ -232,7 +232,7 @@ describe("the page's watches", () => {
 
   test("stops once the issuer says why a project cannot be ready, and says it", async () => {
     const { m, cookie, id, cid, project } = await placed();
-    expect((await m.send("POST", `/v1/projects/${id}/streams/credentials/${cid}/revoke`, cookie)).status).toBe(200);
+    expect((await m.send("POST", `/v1/containers/${id}/credentials/${cid}/revoke`, cookie)).status).toBe(200);
     const page = await new FakePage(m, cookie).open();
     expect(readyLine(page).textContent).toBe("No live credential, so its cell cannot be asked whether it serves this project.");
     await page.advance(120_000);
@@ -248,7 +248,7 @@ describe("the page's watches", () => {
       (form.children[0] as FakeElement).value = name;
       form.dispatch("submit");
       await page.advance(0);
-      return (await (await m.get(`/v1/projects/${id}/streams/credentials`, cookie)).json()).credentials
+      return (await (await m.get(`/v1/containers/${id}/credentials`, cookie)).json()).credentials
         .find((c: { displayName: string }) => c.displayName === name).id as string;
     };
     const svc = await create("svc");
@@ -262,7 +262,7 @@ describe("the page's watches", () => {
     await page.advance(5_000);
     expect(statusCell(page, "other").textContent).toBe("active (project suspended)");
     await page.advance(120_000);
-    const path = (c: string) => `/v1/projects/${id}/streams/credentials/${c}`;
+    const path = (c: string) => `/v1/containers/${id}/credentials/${c}`;
     expect([page.statuses(path(svc)), page.statuses(path(other))]).toEqual([[200, 200], [200, 200]]);
   });
 });

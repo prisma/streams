@@ -14,7 +14,7 @@ here never show their secret — it is returned exactly once at creation.</p>
 <div id="creds">loading…</div>
 <script>
   const pid = new URLSearchParams(location.search).get("project") ?? "proj-e2e";
-  fetch(`/v1/projects/${pid}/streams/credentials`).then(r => r.json()).then(d => {
+  fetch(`/v1/containers/${pid}/credentials`).then(r => r.json()).then(d => {
     const rows = (d.credentials ?? []).map(c =>
       `<tr><td>${c.id}</td><td>${c.displayName}</td><td>${c.status}</td><td>v${c.grantVersion}</td><td>${c.valueHint}</td><td>${c.lastUsedAt ?? "—"}</td></tr>`).join("");
     document.getElementById("creds").innerHTML =

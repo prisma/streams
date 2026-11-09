@@ -445,8 +445,9 @@ In each of these changes, a request that used to succeed can now fail permanentl
   3. Part 3, in commits:
      - 3a-1, ff4b54bae: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
      - 3a-2a, 865907392: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
-     - 3a-2b, this commit: the env names and flags say container.
-     - Pending: 3a-3 (issuer and cell-admin), 3b (kind and single-name refusals), 3c (internal names, operator fields, docs).
+     - 3a-2b, eb1bd8862: the env names and flags say container.
+     - 3a-3, this commit: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
+     - Pending: 3b (kind and single-name refusals), 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
   - From part 2's commit on:
@@ -467,7 +468,12 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - From 3a-2b's commit on:
     - the server reads `CONTAINER_ID`, `CONTAINER_SHARE_K`, `CONTAINER_TRACKER_MAX`, `CONTAINER_MEMORY_PRESSURE_BYTES`, `CONTAINER_MEMORY_RELEASE_PCT`, `CONTAINER_STORED_BYTES_DEFAULT` and `SSE_FEED_CONTAINER_BYTES`, and their flags are `--container-id`, `--container-share-k`, `--container-tracker-max`, `--container-memory-pressure-bytes`, `--container-memory-release-pct` and `--container-stored-bytes-default`; the `PROJECT_*` names and `--project-*` flags are not read (a deployment that still sets `PROJECT_ID` boots on the `proj_local` placeholder, which `BILLING_MODE=required` and the enforce modes refuse);
     - wherever part 2's lines above say `PROJECT_ID`, the name is now `CONTAINER_ID`: the shipped profiles, cell-admin's `--cell-env` and its refusals, composer's entry, and the bench and effective-config scripts set the new names.
-  - Until 3a-3: the issuer's own routes are `/v1/projects/{project}/streams/credentials…` and its codes say project.
+  - From 3a-3's commit on:
+    - the issuer's routes are `GET|POST /v1/workspaces/{w}/containers`, `GET|DELETE /v1/workspaces/{w}/containers/{c}` and `/v1/containers/{c}/credentials…` (list, create, one, rotate, revoke); the `/v1/workspaces/{w}/streams/projects…` and `/v1/projects/{p}/streams/credentials…` paths answer 404;
+    - its answers carry `containers` and `container` where they carried `projects` and `project`; the codes are `409 container_limit` and the readiness and served reasons `container_suspended` and `container_deleting`, and its refusal messages say container;
+    - a cell made without `--workspace-cap` holds a workspace to 1,000 containers (it was 1), the control plane's single cap (CONTAINER-VALIDATION §5b item 2, the owner's decision of 2026-11-08); an allow-list entry's `--max-projects` still overrides it;
+    - the management contract (`contracts/streams-platform/v1/management.openapi.yaml`) lists those routes, the one-credential `GET`, the `Container`, `Readiness` and `Served` shapes and the exchange's `cellId`, and has no `/admin/projects/{id}/transfer` route; the emulator's deletion route is `/admin/containers/{id}/delete`.
+  - Until 3c: the issuer page's copy, cell-admin's flags and state fields (`--max-projects`, `--project`, `projects`, `project_id`), the audit records and the operator fields still say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.
 - **Endpoint:**

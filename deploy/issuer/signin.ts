@@ -120,7 +120,7 @@ export class SignIn {
       return refused("unavailable", `${off}, and ${why}`);
     }
     if (entry === undefined && workspaceProjects(this.deps.cache.state, workspaceId).length === 0) {
-      return refused("workspace_not_allowed", `${off} and holds no Streams project`);
+      return refused("workspace_not_allowed", `${off} and holds no container`);
     }
     const session = newSession({ user_id: userId, email, workspace_id: workspaceId }, this.deps.now());
     const mode = entry === undefined ? ", off the beta's allow-list (reduced mode)" : "";

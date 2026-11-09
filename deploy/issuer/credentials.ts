@@ -3,17 +3,17 @@
 // management.openapi.yaml), so the platform's Stage 1 can replace the
 // issuer without its users changing code:
 //
-//   GET  /v1/projects/{p}/streams/credentials   the project's customer
+//   GET  /v1/containers/{p}/credentials   the project's customer
 //        credentials (never the canary's or an operator's), revoked ones
 //        included, in the order they were made, in the contract's
 //        Credential shape
-//   POST /v1/projects/{p}/streams/credentials   create one
-//   GET  /v1/projects/{p}/streams/credentials/{c}
+//   POST /v1/containers/{p}/credentials   create one
+//   GET  /v1/containers/{p}/credentials/{c}
 //        one, and whether the cell serves its last change (probe.ts), or
 //        why that cannot be asked
-//   POST /v1/projects/{p}/streams/credentials/{c}/rotate
+//   POST /v1/containers/{p}/credentials/{c}/rotate
 //        a new secret, at grant_version + 1
-//   POST /v1/projects/{p}/streams/credentials/{c}/revoke
+//   POST /v1/containers/{p}/credentials/{c}/revoke
 //        revoked for good, at grant_version + 1
 //
 // A create and a rotation give the workspace something new, so
@@ -119,7 +119,7 @@ export function projectCredentials(state: CellState, project: string) {
 function rotateRefusal(state: CellState, project: string, id: string, nowSecs: number): Refusal | null {
   const c = state.credentials[id];
   if (!c || c.project_id !== project || c.role !== "customer" || c.omitted || c.hidden) {
-    return new Refusal(404, "not_found", `project ${project} has no credential ${id}`);
+    return new Refusal(404, "not_found", `container ${project} has no credential ${id}`);
   }
   if (c.status !== "active") return new Refusal(409, "credential_not_active", `credential ${id} is revoked`);
   if (c.expires_at !== null && c.expires_at <= nowSecs) {
@@ -134,7 +134,7 @@ function rotateRefusal(state: CellState, project: string, id: string, nowSecs: n
 function revokeRefusal(state: CellState, project: string, id: string): Refusal | null {
   const c = state.credentials[id];
   if (!c || c.project_id !== project || c.role !== "customer" || c.omitted || c.hidden) {
-    return new Refusal(404, "not_found", `project ${project} has no credential ${id}`);
+    return new Refusal(404, "not_found", `container ${project} has no credential ${id}`);
   }
   return c.status === "active" ? null : new Refusal(409, "credential_not_active", `credential ${id} is already revoked`);
 }
@@ -142,7 +142,7 @@ function revokeRefusal(state: CellState, project: string, id: string): Refusal |
 /// Why `project` takes no new credential on `state`, or null.
 function createRefusal(state: CellState, project: string): Refusal | null {
   if (state.projects[project]?.phase !== "active") {
-    return new Refusal(409, "container_not_active", `project ${project} is being deleted`);
+    return new Refusal(409, "container_not_active", `container ${project} is being deleted`);
   }
   const live = projectCredentials(state, project).filter(([, c]) => c.status === "active").length;
   if (live >= MAX_LIVE_CREDENTIALS) {
@@ -176,7 +176,7 @@ export class Credentials {
     const state = this.deps.cache.state;
     const cred = state.credentials[id];
     if (!cred || cred.project_id !== project || cred.role !== "customer" || cred.omitted || cred.hidden) {
-      return refused(this.deps, c, { status: 404, code: "not_found", message: `project ${project} has no credential ${id}` });
+      return refused(this.deps, c, { status: 404, code: "not_found", message: `container ${project} has no credential ${id}` });
     }
     return json(200, { ...credentialView(id, cred), ...(await this.prober.credentialServed(state, id)) });
   }

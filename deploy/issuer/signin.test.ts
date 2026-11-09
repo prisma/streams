@@ -116,8 +116,8 @@ describe("signing in with Prisma", () => {
     // The access token went no further than /v1/me.
     expect(cookiesOf(res).some((c) => c.includes("mock_at_"))).toBe(false);
     expect([idp.calls, idp.scopesAsked]).toEqual([{ authorize: 1, token: 1, me: 1 }, ["workspace:admin"]]);
-    const listed = await m.get("/v1/workspaces/ws_dev/streams/projects", cookie);
-    expect([listed.status, await listed.json()]).toEqual([200, { projects: [] }]);
+    const listed = await m.get("/v1/workspaces/ws_dev/containers", cookie);
+    expect([listed.status, await listed.json()]).toEqual([200, { containers: [] }]);
   });
 
   test("refuses a callback whose state is missing, forged, another sign-in's, older than 10 minutes or used, without calling the authorization server", async () => {
@@ -166,7 +166,7 @@ describe("signing in with Prisma", () => {
     const { idp, m } = await withIdp(cell);
     refusedWith(await signIn(m), "workspace_not_allowed");
     expect(m.logs.at(-1)).toBe(
-      "sign-in refused (workspace_not_allowed): workspace ws_dev is not on the beta's allow-list and holds no Streams project",
+      "sign-in refused (workspace_not_allowed): workspace ws_dev is not on the beta's allow-list and holds no container",
     );
     // The canary's project is never a user's.
     idp.principal = { ...idp.principal, workspace: { id: "streams-issuer-canary", name: "Canary" } };
@@ -190,8 +190,8 @@ describe("signing in with Prisma", () => {
     expect(m.logs.at(-1)).toBe("signed in user usr_dev to workspace ws_dev, off the beta's allow-list (reduced mode)");
     const cookie = cookiesOf(res)[0].split(";")[0];
     expect(await (await m.get("/auth/session", cookie)).json()).toMatchObject({ workspaceId: "ws_dev", allowListed: false });
-    const listed = await (await m.get("/v1/workspaces/ws_dev/streams/projects", cookie)).json();
-    expect(listed.projects.map((p: any) => [p.id, p.status])).toEqual([["sp_dev", "active"]]);
+    const listed = await (await m.get("/v1/workspaces/ws_dev/containers", cookie)).json();
+    expect(listed.containers.map((p: any) => [p.id, p.status])).toEqual([["sp_dev", "active"]]);
     // A project being deleted is still the workspace's to see.
     await admin(cell, "offboard", "--project", "sp_dev");
     await m.cache.refresh();

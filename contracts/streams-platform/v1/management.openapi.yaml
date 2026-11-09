@@ -16,9 +16,78 @@ info:
     /admin/faults or /admin/mint-workload is `x-test-only` (emulator
     with --enable-fault-api; never a production surface).
 paths:
-  /v1/projects/{projectId}/streams/credentials:
+  /v1/workspaces/{workspaceId}/containers:
     parameters:
-      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: workspaceId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: The signed-in workspace's containers, oldest first
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [containers]
+                properties:
+                  containers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Container" }
+    post:
+      summary: Create a container, placed on a cell with a first credential
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName]
+              properties:
+                displayName: { type: string }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [container, endpoint, credential, secret]
+                properties:
+                  container: { $ref: "#/components/schemas/Container" }
+                  endpoint: { type: string }
+                  credential: { $ref: "#/components/schemas/Credential" }
+                  secret:
+                    type: string
+                    description: One-time presentation; never retrievable again.
+        "403": { description: "workspace_not_allowed: the workspace is not on the beta's allow-list" }
+        "409": { description: "container_limit: the workspace holds its cap of containers (1,000 unless its allow-list entry says otherwise); beta_at_capacity" }
+  /v1/workspaces/{workspaceId}/containers/{containerId}:
+    parameters:
+      - { name: workspaceId, in: path, required: true, schema: { type: string } }
+      - { name: containerId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One container, and whether its cell serves it
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Container" }
+                  - { $ref: "#/components/schemas/Readiness" }
+        "404": { description: The workspace has no such container }
+    delete:
+      summary: Delete it (every credential revoked at once; status deleting until its data is erased)
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [container]
+                properties:
+                  container: { $ref: "#/components/schemas/Container" }
+        "409": { description: "container_not_active: already being deleted" }
+  /v1/containers/{containerId}/credentials:
+    parameters:
+      - { name: containerId, in: path, required: true, schema: { type: string } }
     post:
       summary: Create a Streams credential
       description: >
@@ -58,9 +127,24 @@ paths:
                   credentials:
                     type: array
                     items: { $ref: "#/components/schemas/Credential" }
-  /v1/projects/{projectId}/streams/credentials/{credentialId}/rotate:
+  /v1/containers/{containerId}/credentials/{credentialId}:
     parameters:
-      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: containerId, in: path, required: true, schema: { type: string } }
+      - { name: credentialId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: One credential, and whether its cell serves the credential's last change
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Credential" }
+                  - { $ref: "#/components/schemas/Served" }
+        "404": { description: The container has no such credential }
+  /v1/containers/{containerId}/credentials/{credentialId}/rotate:
+    parameters:
+      - { name: containerId, in: path, required: true, schema: { type: string } }
       - { name: credentialId, in: path, required: true, schema: { type: string } }
     post:
       summary: Rotate the secret (grant_version increments; old tokens die at the cell)
@@ -74,9 +158,9 @@ paths:
                 properties:
                   credential: { $ref: "#/components/schemas/Credential" }
                   secret: { type: string }
-  /v1/projects/{projectId}/streams/credentials/{credentialId}/revoke:
+  /v1/containers/{containerId}/credentials/{credentialId}/revoke:
     parameters:
-      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: containerId, in: path, required: true, schema: { type: string } }
       - { name: credentialId, in: path, required: true, schema: { type: string } }
     post:
       summary: Revoke (terminal; exchange refused, live tokens cut off after feed publication)
@@ -93,26 +177,27 @@ paths:
       summary: Prisma-Auth token exchange (§6)
       description: >
         Authorization: StreamsCredential <secret>. Refuses non-active
-        credentials (403) and any project not in status active — a
-        saga's first step (transfer_pending, deleting) already refuses
-        here. Claims per customer-token-claims.schema.json.
+        credentials (403) and any container not in status active (a
+        deletion's first step already refuses here). Claims per
+        customer-token-claims.schema.json.
       responses:
         "200":
           content:
             application/json:
               schema:
                 type: object
-                required: [accessToken, tokenType, expiresIn, containerId]
+                required: [accessToken, tokenType, expiresIn, containerId, cellId]
                 properties:
                   accessToken: { type: string }
                   tokenType: { type: string, const: Bearer }
                   expiresIn: { type: integer }
                   containerId: { type: string }
+                  cellId: { type: string, description: The cell that serves the container. }
                   endpoint:
                     type: [string, "null"]
                     description: Stable gateway endpoint; direct cell endpoints are not customer contract (§6.3).
         "401": { description: Missing/malformed header or bad secret }
-        "403": { description: Credential or project not active }
+        "403": { description: Credential or container not active }
   /internal/streams/cells/{cellId}/jwks:
     get:
       x-internal: true
@@ -133,17 +218,7 @@ paths:
       x-internal: true
       summary: Authoritative project→cell placement (gateway routing source)
       responses: { "200": { description: "cells[] + projects{id → {cell_id,status,workspace_id}}" } }
-  /admin/projects/{projectId}/transfer:
-    post:
-      x-internal: true
-      summary: "Ownership-transfer saga step 1 (§10): transfer_pending, token exchange stops"
-      responses: { "200": { description: status transfer_pending }, "409": { description: not active } }
-  /admin/projects/{projectId}/transfer/complete:
-    post:
-      x-internal: true
-      summary: "Saga completion: ownership_version++, workspace swap, revoke-all, publish, active"
-      responses: { "200": { description: new ownership_version + workspace } }
-  /admin/projects/{projectId}/delete:
+  /admin/containers/{containerId}/delete:
     post:
       x-internal: true
       summary: "Deletion saga (§11): authorization cutoff first, then omission from all feeds"
@@ -178,6 +253,35 @@ paths:
       responses: { "200": { description: fault applied }, "403": { description: fault API not enabled } }
 components:
   schemas:
+    Container:
+      type: object
+      required: [id, workspaceId, displayName, status, createdAt, cellId, endpoint, quotas]
+      properties:
+        id: { type: string }
+        workspaceId: { type: string, description: The owner link; never in a feed or a token. }
+        displayName: { type: string }
+        status: { type: string, enum: [active, suspended, deleting] }
+        createdAt: { type: string, format: date-time }
+        createdBy:
+          type: object
+          properties:
+            userId: { type: string }
+            email: { type: string }
+        cellId: { type: string }
+        endpoint: { type: string }
+        quotas: { type: object, additionalProperties: { type: integer } }
+    Readiness:
+      type: object
+      required: [ready]
+      properties:
+        ready: { type: boolean }
+        reason: { type: string, enum: [no_live_credential, container_suspended, container_deleting, credential_expired] }
+    Served:
+      type: object
+      required: [served]
+      properties:
+        served: { type: boolean }
+        reason: { type: string, enum: [no_live_credential, container_suspended, container_deleting, credential_expired] }
     Credential:
       type: object
       required: [id, containerId, displayName, scopes, grantVersion, status, valueHint, createdAt]

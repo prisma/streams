@@ -149,11 +149,11 @@ Notes:
   #185; `src/admission/fair_shed.rs`.
 - **Self-serve.** A workspace on the beta's allow-list creates at most 5
   projects a day. It holds as many active projects as its allow-list
-  entry allows, or else the cell's workspace cap (1 unless the operator
-  set another when the cell was made). A project holds at most 10 live credentials and creates or
+  entry allows, or else the cell's workspace cap (1,000, the control plane's cap,
+  unless the operator set another when the cell was made). A project holds at most 10 live credentials and creates or
   rotates at most 20 a day. Source: `deploy/issuer/projects.ts`
   (`FREE_TIER_REQUESTS_PER_SEC`), `deploy/issuer/limits.ts`,
-  `deploy/cell-admin/commands.ts` (`--workspace-cap`, default 1).
+  `deploy/cell-admin/commands.ts` (`--workspace-cap`, default 1,000).
 - **The stored-bytes figure lags.** It is the project's stored bytes
   after compression, as the usage rollup last counted them: about 10 s
   behind at the default cadence. A project can store past its limit by

@@ -9,7 +9,7 @@
 //   GET  /auth/callback      and finishes with a session (signin.ts)
 //   GET  /auth/session       who the page is signed in as (signin.ts)
 //   GET  /                   the page (page.ts)
-//   /v1/workspaces/{w}/streams/projects...
+//   /v1/workspaces/{w}/containers...
 //                            the management API, for a signed-in browser
 //                            (management.ts)
 // Beside the routes, it holds the jobs run.ts starts: the audit's tick,

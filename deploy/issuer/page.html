@@ -90,12 +90,12 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
   // Why the issuer cannot ask the cell (the management API's `reason`).
   const READY_REASONS = {
     no_live_credential: "No live credential, so its cell cannot be asked whether it serves this project.",
-    project_suspended: "Suspended by the Prisma Streams team.",
-    project_deleting: "Being deleted.",
+    container_suspended: "Suspended by the Prisma Streams team.",
+    container_deleting: "Being deleted.",
   };
   const SERVED_REASONS = {
     credential_expired: "expired",
-    project_suspended: "project suspended",
+    container_suspended: "project suspended",
   };
 
   const main = document.getElementById("main");
@@ -127,8 +127,8 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
   }
 
   const date = (iso) => (iso ? new Date(iso).toLocaleString() : "—");
-  const projectsPath = () => "/v1/workspaces/" + enc(session.workspaceId) + "/streams/projects";
-  const credentialsPath = (p) => "/v1/projects/" + enc(p.id) + "/streams/credentials";
+  const projectsPath = () => "/v1/workspaces/" + enc(session.workspaceId) + "/containers";
+  const credentialsPath = (p) => "/v1/containers/" + enc(p.id) + "/credentials";
 
   /// One call to the issuer: {status, data, code, message, retryAfter}
   /// (Retry-After in seconds, or null). A change sends JSON and the
@@ -271,7 +271,7 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
         if (r.status !== 201) return handleError(r);
         notice(null);
         await load();
-        showSecret(r.data.secret, r.data.project.displayName + "'s first credential",
+        showSecret(r.data.secret, r.data.container.displayName + "'s first credential",
           "The project is being placed on its cell; it answers within about a minute.");
       },
     }, input, button);
@@ -510,7 +510,7 @@ footer { padding-top: 8px; padding-bottom: 32px; font-size: 13px; }
   async function load() {
     const r = await api("GET", projectsPath());
     if (r.status !== 200) return r.status === 503 || r.status === 0 ? renderUnavailable(r) : handleError(r);
-    const projects = r.data.projects;
+    const projects = r.data.containers;
     if (!session.allowListed) {
       return projects.length === 0 ? renderNotAllowed() : main.replaceChildren(reducedCard(), ...projects.map(projectCard));
     }

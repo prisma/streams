@@ -108,7 +108,7 @@ function inactive(cred: CredentialRecord, id: string, nowSecs: number): string |
 /// Why `cred`'s project takes no token now, or null.
 function projectInactive(state: CellState, cred: CredentialRecord): string | null {
   const p = state.projects[cred.project_id];
-  if (!p || p.phase !== "active") return `project ${cred.project_id} is being deleted`;
+  if (!p || p.phase !== "active") return `container ${cred.project_id} is being deleted`;
   if (p.status !== "active") return `project ${cred.project_id} is suspended`;
   return null;
 }

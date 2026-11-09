@@ -25,17 +25,17 @@
 //      and delete a project, so a leaked secret is cut without the owner.
 // A refusal of a change from step 4 on is audited (calls.ts).
 //
-//   GET  /v1/workspaces/{w}/streams/projects       the workspace's projects
-//   POST /v1/workspaces/{w}/streams/projects       create one (projects.ts)
-//   GET  /v1/workspaces/{w}/streams/projects/{p}   one, and whether the
+//   GET  /v1/workspaces/{w}/containers       the workspace's projects
+//   POST /v1/workspaces/{w}/containers       create one (projects.ts)
+//   GET  /v1/workspaces/{w}/containers/{p}   one, and whether the
 //                                                  cell serves it (probe.ts)
-//   DELETE /v1/workspaces/{w}/streams/projects/{p} delete it
-//   GET  /v1/projects/{p}/streams/credentials      its credentials
-//   POST /v1/projects/{p}/streams/credentials      create one (credentials.ts)
-//   GET  /v1/projects/{p}/streams/credentials/{c}  one, and whether the
+//   DELETE /v1/workspaces/{w}/containers/{p} delete it
+//   GET  /v1/containers/{p}/credentials      its credentials
+//   POST /v1/containers/{p}/credentials      create one (credentials.ts)
+//   GET  /v1/containers/{p}/credentials/{c}  one, and whether the
 //                                                  cell serves its last change
-//   POST /v1/projects/{p}/streams/credentials/{c}/rotate   a new secret
-//   POST /v1/projects/{p}/streams/credentials/{c}/revoke   revoke it
+//   POST /v1/containers/{p}/credentials/{c}/rotate   a new secret
+//   POST /v1/containers/{p}/credentials/{c}/revoke   revoke it
 //
 // No answer carries a CORS header (respond.ts): the page that calls these
 // routes is the issuer's own. Every answer carries X-Request-Id.
@@ -88,7 +88,7 @@ export class Management {
     const credentials = new Credentials(cfg, deps);
     this.routes = [
       {
-        path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects$/,
+        path: /^\/v1\/workspaces\/([^/]+)\/containers$/,
         scope: "workspace",
         methods: {
           GET: keeps("project.list", (c) => projects.list(c)),
@@ -96,7 +96,7 @@ export class Management {
         },
       },
       {
-        path: /^\/v1\/workspaces\/([^/]+)\/streams\/projects\/([^/]+)$/,
+        path: /^\/v1\/workspaces\/([^/]+)\/containers\/([^/]+)$/,
         scope: "workspace",
         methods: {
           GET: keeps("project.get", (c) => projects.get(c)),
@@ -104,7 +104,7 @@ export class Management {
         },
       },
       {
-        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials$/,
+        path: /^\/v1\/containers\/([^/]+)\/credentials$/,
         scope: "project",
         methods: {
           GET: keeps("credential.list", (c) => credentials.list(c)),
@@ -112,17 +112,17 @@ export class Management {
         },
       },
       {
-        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)$/,
+        path: /^\/v1\/containers\/([^/]+)\/credentials\/([^/]+)$/,
         scope: "project",
         methods: { GET: keeps("credential.get", (c) => credentials.get(c)) },
       },
       {
-        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/rotate$/,
+        path: /^\/v1\/containers\/([^/]+)\/credentials\/([^/]+)\/rotate$/,
         scope: "project",
         methods: { POST: grows("credential.rotate", (c) => credentials.rotate(c)) },
       },
       {
-        path: /^\/v1\/projects\/([^/]+)\/streams\/credentials\/([^/]+)\/revoke$/,
+        path: /^\/v1\/containers\/([^/]+)\/credentials\/([^/]+)\/revoke$/,
         scope: "project",
         methods: { POST: keeps("credential.revoke", (c) => credentials.revoke(c)) },
       },
@@ -181,7 +181,7 @@ export class Management {
       return no(403, "forbidden", `this session is signed in to workspace ${workspace}, not ${ids[0]}: sign in to ${ids[0]}`);
     }
     if (route.scope === "project" && ownProject(this.deps.cache.state, workspace, ids[0]) === undefined) {
-      return no(404, "not_found", `workspace ${workspace} has no Streams project ${ids[0]}`);
+      return no(404, "not_found", `workspace ${workspace} has no container ${ids[0]}`);
     }
     if (!method.grows) return method.handle({ ...asker, req, ids });
     const entry = await this.deps.allowlist.entryOf(workspace);

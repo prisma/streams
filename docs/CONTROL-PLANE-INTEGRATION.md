@@ -19,7 +19,7 @@ Console / Management API clients
    - project ownership and placement
    - StreamsCredential CRUD
    - project status and quotas
-   - transfer and deletion sagas
+   - the deletion saga
             |
             +------------------------+
             |                        |
@@ -55,7 +55,6 @@ The Control Plane owns mutable commercial and authorization state. The Streams c
 | Project policy and quotas | Control Plane | Gateway and assigned cell |
 | Immutable stream identity and data | Streams cell | Streams API and billing rollup |
 | Usage and denial journals | Streams cell | Billing, security, support tooling |
-| Workspace transfer orchestration | Control Plane | Auth, feed projector, billing, cell |
 | Project deletion orchestration | Control Plane | Feed projector, cell, billing |
 
 ---
@@ -184,7 +183,7 @@ The following paths are proposed. They should be adapted to existing Prisma proj
 ### 5.1 Create a credential
 
 ```http
-POST /v1/projects/{project_id}/streams/credentials
+POST /v1/containers/{container_id}/credentials
 Content-Type: application/json
 ```
 
@@ -235,7 +234,7 @@ The `secret` member is returned exactly once and is never present in list or get
 ### 5.2 List credentials
 
 ```http
-GET /v1/projects/{project_id}/streams/credentials
+GET /v1/containers/{container_id}/credentials
 ```
 
 Return metadata only. Include status, grant, value hint, created/updated/last-used timestamps, and actor identity. Never return a recoverable secret or secret hash.
@@ -243,7 +242,7 @@ Return metadata only. Include status, grant, value hint, created/updated/last-us
 ### 5.3 Update a grant
 
 ```http
-PATCH /v1/projects/{project_id}/streams/credentials/{credential_id}
+PATCH /v1/containers/{container_id}/credentials/{credential_id}
 ```
 
 Any change to status, scopes, prefixes, or expiry increments `grant_version` transactionally with the change.
@@ -251,7 +250,7 @@ Any change to status, scopes, prefixes, or expiry increments `grant_version` tra
 ### 5.4 Rotate a secret
 
 ```http
-POST /v1/projects/{project_id}/streams/credentials/{credential_id}/rotate
+POST /v1/containers/{container_id}/credentials/{credential_id}/rotate
 ```
 
 Rotation:
@@ -265,8 +264,8 @@ Rotation:
 ### 5.5 Revoke or disable
 
 ```http
-POST /v1/projects/{project_id}/streams/credentials/{credential_id}/revoke
-POST /v1/projects/{project_id}/streams/credentials/{credential_id}/disable
+POST /v1/containers/{container_id}/credentials/{credential_id}/revoke
+POST /v1/containers/{container_id}/credentials/{credential_id}/disable
 ```
 
 Both increment `grant_version`. Revocation is terminal unless a later product decision explicitly permits reactivation at a strictly newer version.
@@ -687,7 +686,7 @@ The secret modal must clearly state that closing it permanently hides the value.
 - Do not offer an empty prefix set; it grants nothing and is rejected by the feed parser.
 - Require explicit confirmation for revocation and rotation.
 - Explain that rotation invalidates existing short-lived tokens after propagation.
-- During transfer or deletion, make credential creation unavailable and show the project state.
+- During deletion, make credential creation unavailable and show the project state.
 
 ### 12.4 Audit UX
 
@@ -699,7 +698,6 @@ credential rotated
 scopes/prefixes changed
 credential disabled/revoked
 project suspended
-workspace transfer started/completed
 project deletion started/completed
 ```
 
@@ -730,9 +728,9 @@ Link to data-plane denial and usage summaries only through authorized support or
 - Implement project quota affinity.
 - Run wrong-cell and owner-movement tests through a two-cell reference gateway.
 
-### Phase D — Transfer, deletion, and billing
+### Phase D — Deletion and billing
 
-- Implement transfer and deletion sagas.
+- Implement the deletion saga.
 - Add ownership-change events and exact byte-time split.
 - Run the exact release-binary end-to-end battery.
 
@@ -871,7 +869,7 @@ Add a `platform-e2e` CI job that:
 2. starts the platform emulator;
 3. creates a project and credential through the Management API;
 4. obtains a token through the exchange endpoint;
-5. creates, appends, reads, rotates, revokes, suspends, and transfers through the gateway;
+5. creates, appends, reads, rotates, revokes and suspends through the gateway;
 6. rotates workload identity with no static fallback;
 7. verifies billing and audit reconciliation;
 8. records the server binary digest and emulator contract version.

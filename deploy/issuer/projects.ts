@@ -3,7 +3,7 @@
 // cell serves it yet (probe.ts), self-serve creation (the unattended
 // admit → publish path), and deletion (offboarding's first phase).
 //
-// POST /v1/workspaces/{w}/streams/projects {"displayName"} checks, after
+// POST /v1/workspaces/{w}/containers {"displayName"} checks, after
 // management.ts's checks (the allow-list among them), in order, each
 // refusal audited:
 //   1. the body (400 invalid_request);
@@ -18,7 +18,7 @@
 //      cap, the allow-list entry's max_projects or the cell's
 //      workspace_cap (init's --workspace-cap), counting its active projects only
 //      (the owner's answer I9 (a), cell-admin's rule too; 409
-//      project_limit).
+//      container_limit).
 // Then: a fresh `sp_<32 hex>` id is burned on the denylist, and one
 // compare-and-swap from the issuer's copy places the project (the gate
 // and the placement checked again on the state it lands on) with its
@@ -85,9 +85,9 @@ function placementRefusal(e: unknown, w: string, cap: number): Refusal {
   if (!(e instanceof PlacementRefused)) throw e;
   switch (e.refusal) {
     case "workspace_full":
-      return new Refusal(409, "project_limit", `workspace ${w} already has ${cap} Streams project(s), its limit`, e.message);
+      return new Refusal(409, "container_limit", `workspace ${w} already has ${cap} container(s), its limit`, e.message);
     case "reserved_workspace":
-      return new Refusal(403, "workspace_not_allowed", `workspace ${w} cannot hold Streams projects`, e.message);
+      return new Refusal(403, "workspace_not_allowed", `workspace ${w} cannot hold containers`, e.message);
     case "cell_full":
       return new Refusal(409, "beta_at_capacity", AT_CAPACITY, e.message);
     default:
@@ -98,8 +98,8 @@ function placementRefusal(e: unknown, w: string, cap: number): Refusal {
 /// Why `w`'s project `id` cannot be deleted on `state`, or null.
 function deleteRefusal(state: CellState, w: string, id: string): Refusal | null {
   const p = ownProject(state, w, id);
-  if (p === undefined) return new Refusal(404, "not_found", `workspace ${w} has no Streams project ${id}`);
-  if (p.phase !== "active") return new Refusal(409, "container_not_active", `project ${id} is already being deleted`);
+  if (p === undefined) return new Refusal(404, "not_found", `workspace ${w} has no container ${id}`);
+  if (p.phase !== "active") return new Refusal(409, "container_not_active", `container ${id} is already being deleted`);
   // The owner looks before an abusive project's data goes: only
   // `cell-admin offboard` takes a suspended project (its canary witness).
   if (p.status !== "active") {
@@ -130,7 +130,7 @@ export class Projects {
   list(c: Call): Response {
     const state = this.deps.cache.state;
     const projects = workspaceProjects(state, c.session.workspace_id).map(([id, p]) => projectView(this.cfg, state, id, p));
-    return json(200, { projects });
+    return json(200, { containers: projects });
   }
 
   /// One project, with whether the cell serves it yet (`ready`, probe.ts),
@@ -140,7 +140,7 @@ export class Projects {
     const [w, id] = c.ids;
     const p = ownProject(state, w, id);
     if (p === undefined) {
-      return refused(this.deps, c, { status: 404, code: "not_found", message: `workspace ${w} has no Streams project ${id}` });
+      return refused(this.deps, c, { status: 404, code: "not_found", message: `workspace ${w} has no container ${id}` });
     }
     return json(200, { ...projectView(this.cfg, state, id, p), ...(await this.prober.projectReady(state, id)) });
   }
@@ -224,7 +224,7 @@ export class Projects {
       before: { feed_version: before },
       after: { feed_version: state.feed_version },
     });
-    return json(202, { project: projectView(this.cfg, state, id, state.projects[id]) });
+    return json(202, { container: projectView(this.cfg, state, id, state.projects[id]) });
   }
 
   /// Burn the id, then place the project in one compare-and-swap.
@@ -274,7 +274,7 @@ export class Projects {
       after: { feed_version: state.feed_version, project_policy_version: 1, grant_version: 1 },
     });
     return json(201, {
-      project: projectView(this.cfg, state, a.id, state.projects[a.id]),
+      container: projectView(this.cfg, state, a.id, state.projects[a.id]),
       endpoint: this.cfg.cellOrigin,
       credential: credentialView(cid, state.credentials[cid]),
       secret: presentedSecret(cid, secret),

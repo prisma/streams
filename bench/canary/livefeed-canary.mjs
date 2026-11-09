@@ -178,7 +178,7 @@ const debug = async (n) =>
 
 // Customer tokens for both projects.
 const mkCred = async (proj) => {
-  const c = await (await sfetch(`http://127.0.0.1:${EMU}/v1/projects/${proj}/streams/credentials`, {
+  const c = await (await sfetch(`http://127.0.0.1:${EMU}/v1/containers/${proj}/credentials`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({
       displayName: `canary-${proj}`,
