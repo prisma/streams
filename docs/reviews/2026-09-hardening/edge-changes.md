@@ -5455,6 +5455,61 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with amendments A1-A2 (Fable under the owner's delegation, 2026-11-10, `EDGE-249-251-RATIFICATION.md`), the open-path fence's departure (`503 shard_opening`, `Retry-After: 3`) included; this record states the shipped part.
 - **Check against commit:** written with the change.
 
+### #261 (this record's commit) — Each fleet instance runs the shard topology policy every 10 s and publishes its decision on its heartbeat; a split that waits for an instance asks the fleet for one, and the topology's lines, sustains and per-instance ceiling are configuration
+
+- **Program item:** S5, triggers and coupling (prisma/streams#149), SCALING-DESIGN rev 4 §4.3 with S5-PLAN-CHECK's fixes (Fable 5.1, 2026-11-09), Q4, and S4-DESIGN §10.1 rule 1 and rule 4. E6 of the scaling program.
+- **Surface:** operator only.
+- **Endpoint:**
+  - `GET /operator/data.json`: `fleet.heartbeats` (the published `fleet/<instance>.json` documents, relayed as stored) and `fleet.desired.reason`.
+  - The command line and environment: eleven new flags.
+  - The owners:
+    - `src/topology/policy.rs`, `src/topology/policy/reason.rs`, `src/topology/policy_loop.rs`;
+    - `src/fleet/heartbeat.rs`, `src/fleet/heartbeat/shard_load.rs`;
+    - `src/fleet/planning.rs` (`Loads::fold`, `Demand::plan`), `src/fleet/standing.rs`;
+    - `src/config/cli.rs`.
+- **Condition:** a fleet-mode cell, always. The policy acts only on a leaf this instance owns, at most one operation per cell.
+- **Before:**
+  - No topology policy ran. The heartbeat carried `split_demand` (#243) and no per-shard load.
+  - `desired.count` was clamped to the topology's shards.
+- **After:**
+  - **The loop.** Every fleet instance runs `topology-policy` (non-critical, every 10 s) on what its fleet tick already read: the heartbeats, `desired.json`'s `computed_at_ms` and the youngest override's time, all cached in `Standing`. It adds one GET of `topology/intent.json` per pass, and reads no other store object. It decides by SCALING-DESIGN rev 4 §4.3:
+    - a leaf at the split line (70 %) on any axis for the split sustain (600 s), or at the emergency line (90 %) for 45 s, splits; with half the leaves or more ready, every leaf splits, one operation each, deepest first;
+    - the fleet axis: once `split_demand > 0` has held on every fresh fold for 600 s, it marks the `split_demand` busiest leaves as over the line; it has no emergency form;
+    - two siblings below 25 % combined on every axis for 21,600 s, neither younger than 43,200 s, merge; the merge is held as `merge_pending_s6` until S6 supplies the merge entry;
+    - one operation per cell, 60 s apart;
+    - nothing starts while `desired.json` is younger than 60 s, an override is younger than `REBALANCE_MOVE_COOLDOWN_SECS`, or a topology intent is live (not terminal, or unreadable);
+    - stale cached beats (over 30 s) or congestion on the cell block merges and never splits;
+    - a leaf where one entity carries 50 % or more of the binding axis does not split (`hot_entity`), nor does a 24-bit leaf, nor one that would take the cell past 64 leaves (`topology_at_max`);
+    - a split needs room for both children beside the parent on this instance (`SHARDS_PER_INSTANCE_MAX`) and another accepting instance, below its RSS shed line, with room for one child; without them it asks for an instance.
+    - A split it decides goes through S4's split entry (`topology::ops`, the operator route's path, #249 and #250 for its answers). The entry answers once the split has started. Its refusals become holds: `topology_busy` → `intent_live`, `not_ring_owner` → `peer_acts`, `instance_full` → the ask for an instance; the rest → `steady`, logged.
+  - **The heartbeat** gains:
+    - `shard_loads`: for each open shard, `prefix`, `appends_per_s`, `append_bytes_per_s`, `committer_busy_pct` (the committer's encode and write time as a percent of the 15 s window), `resident_streams` and `handle_max_resident`;
+    - `split_refused`: `"instance_full"` while a split waits for an instance, and absent otherwise;
+    - `shards_resident`: the shards the ring gives this instance;
+    - `topology_decision`: the latest pass's decision, absent before the first:
+      - `split prefix=<prefix|root> kind=normal|emergency doubling=<bool> fleet_axis=<d>`;
+      - `merge parent=<prefix|root>`;
+      - `instance_full shards_per_instance=<n>/<max>`;
+      - `hold=<name>`, the name one of `steady`, `peer_acts`, `intent_live`, `cooldown`, `fleet_settling`, `override_recent`, `hot_entity`, `max_depth`, `topology_at_max`, `congested`, `beats_stale`, `merge_pending_s6`.
+    - Every new field is `#[serde(default)]`: an older build ignores them, and this build reads an older beat as idle with no decision.
+  - **The fleet's count.** A member whose split waits for an instance wants live + 1, and the shrink target keeps it. Rule 4's clamp `need ≤ shards` gives way by exactly one shard for this dimension, since the instance asked for is the home of the child the split adds; otherwise a one-shard cell on one instance never splits. `desired.reason` then ends ` shards_per_instance=<n>/<max> (<need>)`, after `rps=… live=…`.
+  - **The configuration.** Eleven flags: `SHARD_SPLIT_LINE_PCT` 70, `SHARD_SPLIT_SUSTAIN_SECS` 600, `SHARD_EMERGENCY_LINE_PCT` 90, `SHARD_EMERGENCY_SUSTAIN_SECS` 45, `SHARD_MERGE_LINE_PCT` 25, `SHARD_MERGE_SUSTAIN_SECS` 21600, `SHARD_SPLIT_REVERSAL_MIN_SECS` 43200, `SHARD_TOPOLOGY_COOLDOWN_SECS` 60, `SHARD_BEAT_STALE_SECS` 30, `SHARD_APPENDS_CEILING` 5000, `SHARDS_PER_INSTANCE_MAX` 7. All are provisional until stages 1 and 2 measure. The streams axis reads each shard's own `HANDLE_MAX_RESIDENT` (0 disables it); there is no streams ceiling flag.
+- **Retry semantics:** none. Operator-read fields. No client answer changes here; a split's own answers are S4's (#249, #250).
+- **Who is affected:** operators and the cell watch reading `/operator/data.json`; no cell-watch rule reads these fields. A parser of `desired.reason` that expects it to end `rps=… live=…` sees the ` shards_per_instance` segment after it while a split waits. Deployments that set none of the new flags get the defaults.
+- **Pinning tests:**
+  - `topology::policy::tests` and `topology::policy::merge_tests`: every rule's edges, the fleet axis, `beats_stale`, `topology_at_max` past 64 leaves.
+  - `topology::policy::reason::tests::a_decision_reads_as_its_segments`: every segment exactly.
+  - `topology::policy_loop::tests::only_a_preparing_or_unreadable_intent_is_live`.
+  - `fleet::heartbeat::shard_load::tests`: the rates over the window, and a full ring.
+  - `fleet::standing::tests`: the caches and the published pass.
+  - `fleet::repository::members::tests`: the tick's reads leave them.
+  - `fleet::planning::demand_tests::a_split_waiting_for_an_instance_wants_one_more_and_names_the_ceiling`: live + 1, the shrink, the reason, the one-shard allowance.
+  - `config::tests::cli_surface_is_pinned`, with the topology rows in `config/tests/topology_surface.rs`.
+  - `dst::dst_tests::topology_policy::{a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops, a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_beats, a_live_intent_holds_the_split_until_it_is_terminal, the_policys_split_through_s4_keeps_every_stream_whole}`. The first three use the split entry's double. The last runs S4's split through the production entry.
+- **Risk reason:** medium. The fields are additive, but the policy now reshapes the topology on its own through S4's split. It is guarded by the 600 s sustain, one operation per cell, the 60 s cooldown, rule 1's waits, the live intent, and the 12 h anti-flap on merges; merges are held until S6. The count's one-shard allowance adds at most one instance past the shards while a split waits.
+- **Status:** awaits ratification. Fable is asked to rule on two elaborations: the clamp's one-shard allowance for a waiting split, and a split at `FLEET_MAX` with no destination (today it asks, and nothing answers).
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low
