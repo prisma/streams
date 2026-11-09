@@ -1600,6 +1600,9 @@ async fn product_entry_axum(
     let resp =
         product_entry_axum_inner(state.clone(), name.clone(), method.clone(), headers, req).await;
     crate::audit::observe_denial(&state, &name, &method, &resp);
+    state
+        .admission
+        .note_fleet_response(resp.status().is_success());
     resp
 }
 
@@ -1693,12 +1696,7 @@ async fn stream_entry(
         body,
     )
     .await;
-    // Only successful work counts toward the fleet load vector — otherwise
-    // routing noise (409 replays, 404s) masquerades as demand and drives
-    // the desired count up on garbage.
-    if resp.status().is_success() {
-        st.admission.note_fleet_op();
-    }
+    st.admission.note_fleet_response(resp.status().is_success());
     resp
 }
 

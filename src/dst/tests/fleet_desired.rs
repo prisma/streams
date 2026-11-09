@@ -1,5 +1,6 @@
 //! The count the fleet publishes from the cores its members report in use.
-use super::super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig, http_rig_build};
+use super::super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::super::fixture_runtime::RigRuntime;
 use super::super::fixture_storage::mem;
 use super::{desired_doc, peer_heartbeat};
@@ -361,4 +362,49 @@ async fn a_one_shard_cell_publishes_its_demand_as_split_demand() {
     );
     let split = beat["split_demand"].as_u64().unwrap_or(0);
     assert!(split >= 4, "five wanted, one shard: {beat}");
+}
+
+/// A successful request on the product surface counts toward the fleet's
+/// load as one on the raw surface does, and a refused one on neither
+/// (FLEET-HYSTERESIS-REVIEW.md §1.4). The heartbeat's `rps` is the rate of
+/// this count, and the store-latency and hot-CPU dimensions count only a
+/// member at 5 rps or more: the ramp touched the product surface alone, so
+/// every beat said 0 and both dimensions were blind for the whole run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_product_surface_request_counts_toward_the_fleets_load() {
+    let (state, addr) = http_rig(mem()).await;
+    let before = state.admission.fleet_ops();
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/load",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for n in 0..3 {
+        let body = format!("{{\"n\":{n}}}");
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/load/records",
+            &key,
+            body.as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "append {n}: {st}");
+    }
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/no-such-stream", &key, b"").await;
+    assert_eq!(st, 404, "a refused request");
+    let raw = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/load-raw", &raw, b"").await;
+    assert!(st == 200 || st == 201, "raw create: {st}");
+    assert_eq!(
+        state.admission.fleet_ops() - before,
+        5,
+        "four product requests and one raw one succeeded; the 404 does not count"
+    );
+    engine_shutdown(&state).await;
 }

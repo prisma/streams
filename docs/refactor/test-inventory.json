@@ -1932,6 +1932,17 @@
     ]
   },
   {
+    "name": "a_product_surface_request_counts_toward_the_fleets_load",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ebc7cdb1f30d74e7d98c65fc8a95d6fcb07b6dbd25d9ac0d01d8b42c4aa16fcf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_not",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

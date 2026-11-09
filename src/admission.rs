@@ -659,9 +659,15 @@ impl AdmissionController {
         self.inner.shed_wedge.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// One successful /v1/stream/* request toward the fleet load vector.
-    pub(crate) fn note_fleet_op(&self) {
-        self.inner.fleet_ops.fetch_add(1, Ordering::Relaxed);
+    /// One answered data-plane request, on the raw `/v1/stream/*` or the
+    /// product `/v1/streams/*` surface, toward the fleet load vector. Only
+    /// successful work counts: routing noise (409 replays, 404s) would
+    /// otherwise masquerade as demand and drive the desired count up on
+    /// garbage.
+    pub(crate) fn note_fleet_response(&self, success: bool) {
+        if success {
+            self.inner.fleet_ops.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn fleet_ops(&self) -> u64 {
@@ -945,7 +951,8 @@ mod tests {
             record_ceiling_bytes: 4_096,
         });
         assert_eq!(c.project_memory_release_pct(), 100, "clamped");
-        c.note_fleet_op();
+        c.note_fleet_response(true);
+        c.note_fleet_response(false);
         c.note_wedge_shed();
         c.set_project_memory_pressure_bytes(13);
         let s = c.snapshot();
