@@ -43,6 +43,8 @@ mod purge_gate;
 mod purge_lifecycle;
 #[path = "tests/split_barrier.rs"]
 mod split_barrier;
+#[path = "tests/split_k.rs"]
+mod split_k;
 
 #[path = "tests/billing_walk_custody.rs"]
 mod billing_walk_custody;

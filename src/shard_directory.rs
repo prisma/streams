@@ -339,8 +339,11 @@ impl ShardDirectory {
             });
             gone
         };
+        // A parent its split holds parked is retired by the split, after its release re-routes the
+        // operations it holds.
+        let unparked = |engine: &Arc<ShardEngine>, _| !engine.gc_state().gate.parked();
         for prefix in gone {
-            self.retire(&prefix, RetirementReason::Split, |_, _| true);
+            self.retire(&prefix, RetirementReason::Split, unparked);
         }
         true
     }

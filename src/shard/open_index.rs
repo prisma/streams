@@ -249,6 +249,13 @@ impl super::ShardEngine {
 /// at a cold store's 25-40 ms each would take minutes one by one.
 const TAIL_GETS: usize = 64;
 
+/// The identity row of a log of this binary's layout at `home` (a split's child is seeded with its
+/// own, S4 step 11).
+#[cfg(test)]
+pub(crate) fn identity_row(home: u32) -> (Vec<u8>, Vec<u8>) {
+    (identity_key(), identity_value(home).to_vec())
+}
+
 /// The identity row's value for a log of this binary's layout at `home`.
 fn identity_value(home: u32) -> [u8; 8] {
     let mut value = [0u8; 8];

@@ -763,6 +763,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_k",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split end to end on a serving rig (S4-DESIGN section 6, K-SPLIT-DECISION-2026-11-09 section 5): two streams sealed into one segment object, the leaf split in two, each child serving its stream back byte-exact and the children's refcounts summing to the parent's; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_k.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_barrier",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split's barrier on a serving engine (S4-DESIGN section 5.2): it parks the committer after its own group, a resume serves the held appends in order, and a barrier dropped unreleased closes the engine; compiler and the full DST suite exercise the module.",

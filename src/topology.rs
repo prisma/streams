@@ -13,3 +13,6 @@ pub(crate) mod sentinel;
 // The topology's CAS writes build for their tests until the split publishes (S4 step 11).
 #[cfg(test)]
 pub(crate) mod store;
+// The split builds for its tests until its route calls it (S4 step 13).
+#[cfg(test)]
+pub(crate) mod split;

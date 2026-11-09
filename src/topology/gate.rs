@@ -47,6 +47,7 @@ pub(crate) struct MaintenanceGate {
     lock: RwLock<()>,
     collection_off: AtomicBool,
     splitting: AtomicBool,
+    parked: AtomicBool,
     retired: Mutex<Option<Reroute>>,
     marking: AtomicBool,
     touched: Mutex<HashSet<[u8; 16]>>,
@@ -101,6 +102,19 @@ impl MaintenanceGate {
     pub(crate) fn take_touched(&self) -> HashSet<[u8; 16]> {
         self.marking.store(false, Ordering::Release);
         std::mem::take(&mut *self.touched.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Whether a split's barrier holds the committer (from the park until a resume): such an
+    /// engine is retired by its split after the release, never by an install of the topology that
+    /// retires its prefix (`ShardDirectory::install`).
+    pub(crate) fn parked(&self) -> bool {
+        self.parked.load(Ordering::Acquire)
+    }
+
+    /// Tests until the split's barrier sets it (S4 step 11).
+    #[cfg(test)]
+    pub(crate) fn set_parked(&self, on: bool) {
+        self.parked.store(on, Ordering::Release);
     }
 
     /// The retired parent's reroute, once its split published (read only while `splitting`).

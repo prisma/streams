@@ -66,7 +66,9 @@ impl Barrier {
             return;
         };
         // Cleared first: a park past its hold sees the release after it set the flag.
-        self.engine.gc_state().gate.set_splitting(false);
+        let gate = &self.engine.gc_state().gate;
+        gate.set_splitting(false);
+        gate.set_parked(false);
         // A committer past its hold, or one that exited (its engine closed), receives none.
         drop(release.send(Release::Resume));
     }
@@ -141,7 +143,9 @@ async fn park(engine: &ShardEngine, req: BarrierReq) {
         parked,
         mut release,
     } = req;
+    engine.gc_state().gate.set_parked(true);
     if engine.is_closed() || parked.send(()).is_err() {
+        engine.gc_state().gate.set_parked(false);
         // Closed (the split sees `Closed`), or the split gave up before the park: nothing held.
         return;
     }

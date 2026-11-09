@@ -2272,7 +2272,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a520e40bda1f1a85bea0829323ebff58b764a124882e973c35314257f9c0100a",
+    "function_sha256": "45ad2e8393e0c52586521d189c321106ddd6ea6defb9b459788fac4fa5b4fa46",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/idle_release.rs",
@@ -3075,6 +3075,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_serves_each_stream_from_its_child_and_the_counts_sum",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0eaa9eecb8a9ed57983e614be8fa06a8670a79552e1572cab98052d3df835265",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },
   {
@@ -4192,7 +4203,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6f262fc6fdfd4d0ae4d71f8dc462d797ee3e052b680acca064e395b08f3a6a11",
+    "function_sha256": "eedd47581019ef90115914b015556d10ae9b788da7d84d323b1f433d36a8090e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/idle_release.rs",
