@@ -27,6 +27,7 @@ Contents:
 - [13. Configuration: fewer settings, and defaults that are what production runs](#13-configuration-fewer-settings-and-defaults-that-are-what-production-runs)
 - [14. K2 parity: storage layout 5, fewer uploads, shared cells](#14-k2-parity-storage-layout-5-fewer-uploads-shared-cells)
 - [15. Follow-ups from edge change #248's 2d (2026-11-05)](#15-follow-ups-from-edge-change-248s-2d-2026-11-05)
+- [18. Follow-ups from S5, the topology policy (2026-11-10)](#18-follow-ups-from-s5-the-topology-policy-2026-11-10)
 
 ---
 
@@ -2790,6 +2791,31 @@ wait's tails. Three readers still answer the old way:
   itself is a fork patch, after #149: `Path::parse` (falling back to `Path::from` when it fails) at
   the four sites, a new `streams-*` pin tag measured in Streams first (the fork rule), and an
   upstream slatedb/slatedb issue. Filing that issue is public: it needs the owner's OK in chat.
+
+## 18. Follow-ups from S5, the topology policy (2026-11-10)
+
+S5 (edge change #261, ratified with amendments by Fable 5.1 on 2026-11-10,
+EDGE-261-RATIFICATION.md) left these:
+
+- **Q5's 30 s shard-log poll is blocked by flush liveness.** The shard logs'
+  manifest poll (`MANIFEST_POLL_MS`, read only by
+  `config::validation::shard_settings`) is also how the memtable flusher
+  learns compaction freed L0 slots: 60 s polls produced 14 s flush stalls, and
+  5 s was refused (RUNBOOK.md's `MANIFEST_POLL_MS` row, docs/TIGRIS-404-COST.md
+  "Manifest 2000 ms"). Q5's condition holds for fencing:
+  `config::shard_poll_tests::a_fenced_shard_logs_next_write_fails_at_once_under_a_30_s_poll`
+  pins it. The default stays 2,000 (the lead's decision, 2026-11-10; Q5's own
+  "no change" clause). Options:
+  - preferred: a fork patch letting the in-process compactor wake the writer,
+    so the poll no longer carries flush liveness;
+  - a measured loaded-shard A/B at 2 s vs 30 s: flush stalls and append p99
+    under L0 pressure, in a `meas-` leg.
+- **The predicted-exhaustion emergency** (rev 4 §4.3's second emergency
+  clause) waits for stage 2's evidence; the policy has the 90 % / 45 s line
+  only.
+- **An `actor_full` name for a split whose actor is full while a peer has
+  room** (EDGE-261-RATIFICATION §2): today it asks for an instance, bounded by
+  rule 4's + 1; S6's placement work can name it and move a shard instead.
 
 ## 20. Follow-ups from edge change #260 (2026-11-09)
 
