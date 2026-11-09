@@ -835,3 +835,31 @@ async fn an_internal_resolution_that_joins_the_sweeps_open_leaves_custody_to_the
     );
     engine.begin_close();
 }
+
+/// A home's objects live under its prefix's shard root (S3a §3.1): its number written in the
+/// topology's width of bits, or the root shard's when the topology has none. Kills
+/// `object_root -> String::new()` and `"xyzzy".into()`.
+#[test]
+fn a_homes_object_root_is_its_prefix_in_bits() {
+    let homes = [(0, 0), (0, 1), (1, 1), (3, 2), (1, 3)];
+    let roots = homes.map(|(home, width)| crate::sharddir::object_root(home, width));
+    let expected = [
+        "shards/root",
+        "shards/0",
+        "shards/1",
+        "shards/11",
+        "shards/001",
+    ];
+    assert_eq!(roots, expected);
+}
+
+/// A shard-DB path reads back as the prefix `shard_db_path` made it from; an explicit root (a
+/// test rig's) is its own prefix.
+#[test]
+fn a_shard_db_path_reads_back_as_its_prefix() {
+    for prefix in ["", "0", "011"] {
+        let path = crate::sharddir::shard_db_path(prefix);
+        assert_eq!(crate::sharddir::prefix_of_db_path(&path), prefix, "{path}");
+    }
+    assert_eq!(crate::sharddir::prefix_of_db_path("rigs/a"), "rigs/a");
+}
