@@ -139,13 +139,131 @@ pub(crate) struct Published {
     pub pause: Duration,
 }
 
-/// The operation's parts every publishing step reads.
+/// The operation's parts every step reads.
 struct Op<'a> {
     dir: &'a ShardDirectory,
     store: &'a dyn ObjectStore,
     parent: &'a Arc<ShardEngine>,
     children: &'a [Child],
     op_id: &'a str,
+    /// The topology version the split started from.
+    version: u64,
+}
+
+/// The actor's hold on its intent while the split runs (S4-DESIGN §4.2, §4.3): the intent as it last
+/// wrote it, its lease on this process's monotonic clock, and whether a claimant took it.
+struct Actor<'a> {
+    store: &'a dyn ObjectStore,
+    clock: &'a dyn crate::runtime::Clock,
+    held: std::sync::Mutex<intent::Held>,
+    lease: std::sync::Mutex<intent::Lease>,
+    lost: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> Actor<'a> {
+    fn new(
+        store: &'a dyn ObjectStore,
+        clock: &'a dyn crate::runtime::Clock,
+        held: intent::Held,
+    ) -> Self {
+        Self {
+            store,
+            clock,
+            held: std::sync::Mutex::new(held),
+            lease: std::sync::Mutex::new(intent::Lease::renewed_at(clock.monotonic())),
+            lost: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The intent as the actor last wrote it.
+    fn held(&self) -> intent::Held {
+        self.held
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_else(|p| p.into_inner().clone())
+    }
+
+    /// Whether the actor still owns its intent (`intent::Lease::owned`): no claimant took it and its
+    /// own clock has not passed the lease since its last renewal. Else why not, before `step`.
+    fn owned(&self, step: &str) -> Result<(), String> {
+        let lost = self.lost.load(std::sync::atomic::Ordering::Acquire);
+        let lapsed = self
+            .lease
+            .lock()
+            .is_ok_and(|lease| !lease.owned(self.clock.monotonic()));
+        if lost || lapsed {
+            return Err(format!("the lease was lost before {step}"));
+        }
+        Ok(())
+    }
+
+    /// Renew the lease every third of it, for as long as the split runs (S4-DESIGN §4.2).
+    async fn renew(&self) -> std::convert::Infallible {
+        loop {
+            self.clock.sleep(intent::LEASE / 3).await;
+            self.renew_once().await;
+        }
+    }
+
+    /// One renewal: `lease_until_ms` CASed forward. A store failure is retried at the next one; a CAS
+    /// lost to a write of our own (its reply lost) is adopted; one lost to a claimant ends ownership.
+    async fn renew_once(&self) {
+        let held = self.held();
+        let mut next = held.intent.clone();
+        let lease_ms = i64::try_from(intent::LEASE.as_millis()).unwrap_or(i64::MAX);
+        next.lease_until_ms = self.clock.now().ms().saturating_add(lease_ms);
+        let renewed_at = self.clock.monotonic();
+        match intent::replace(self.store, &held, next).await {
+            Ok(renewed) => {
+                self.keep(renewed);
+                if let Ok(mut lease) = self.lease.lock() {
+                    *lease = intent::Lease::renewed_at(renewed_at);
+                }
+            }
+            Err(intent::IntentError::Lost) => {
+                if !self.adopt(&held).await {
+                    self.lost.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// After a lost CAS over `held`: adopt the stored intent if it is still ours (a write of ours
+    /// whose reply was lost), live, at our epoch and owner. Whether it was.
+    async fn adopt(&self, held: &intent::Held) -> bool {
+        let Ok(Some(seen)) = intent::read(self.store).await else {
+            return false;
+        };
+        let ours = seen.intent.lease_epoch == held.intent.lease_epoch
+            && seen.intent.lease_owner == held.intent.lease_owner
+            && seen.intent.op_id == held.intent.op_id
+            && !seen.intent.is_terminal();
+        if ours {
+            self.keep(seen);
+        }
+        ours
+    }
+
+    fn keep(&self, held: intent::Held) {
+        if let Ok(mut kept) = self.held.lock() {
+            *kept = held;
+        }
+    }
+
+    /// End the intent in `state` with `result`, once the renewals stopped: a CAS, re-read and
+    /// retried over a write of our own; a claimant's intent is left as it is.
+    async fn end(&self, state: intent::State, result: &str) {
+        for _ in 0..3 {
+            let held = self.held();
+            match intent::replace(self.store, &held, recover::terminal(&held, state, result)).await
+            {
+                Ok(_) => return,
+                Err(intent::IntentError::Lost) if !self.adopt(&held).await => return,
+                Err(_) => {}
+            }
+        }
+    }
 }
 
 /// One child: its prefix, home and range.
@@ -156,7 +274,8 @@ struct Child {
 }
 
 /// Split `parent`'s shard into its two halves (S4-DESIGN §6.2), as operation `op_id` of
-/// `owner`. Before `'T'` any failure rolls back; from `'T'` the split only rolls forward.
+/// `owner`. Before `'T'` any failure, and a lost lease, rolls back; from `'T'` the split only rolls
+/// forward. The actor renews its intent while the steps run, and ends it once they are done.
 pub(crate) async fn split(
     dir: &ShardDirectory,
     parent: &Arc<ShardEngine>,
@@ -167,8 +286,39 @@ pub(crate) async fn split(
     let store = parent.data_store().clone();
     let home = refuse(dir, parent).await?;
     let (version, children, held) = begin(&*store, parent, home, op_id, owner).await?;
+    let actor = Actor::new(&*store, clock, held);
+    let op = Op {
+        dir,
+        store: &*store,
+        parent,
+        children: &children,
+        op_id,
+        version,
+    };
+    let steps = std::pin::pin!(run(&op, &actor));
+    let renewals = std::pin::pin!(actor.renew());
+    let ran = match futures_util::future::select(steps, renewals).await {
+        futures_util::future::Either::Left((ran, _)) => ran,
+        futures_util::future::Either::Right((never, _)) => match never {},
+    };
+    match &ran {
+        Ok(_) => {
+            actor.end(intent::State::Reclaimed, "published").await;
+            recover::drop_checkpoint(parent, op_id).await;
+        }
+        Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
+        Err(_) => {}
+    }
+    ran
+}
+
+/// The split's steps from Preparing to its publish (S4-DESIGN §6.2), the actor's ownership checked
+/// at each step before `'T'` and around the clones; a failure before `'T'` is rolled back here.
+async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
+    let parent = op.parent;
     let gate = &parent.gc_state().gate;
-    let prepared = prepare(&*store, parent, &children).await;
+    let prepared = prepare(op.store, parent, op.children).await;
+    let prepared = prepared.and_then(|put| actor.owned("the pause").map(|()| put));
     let hold = match prepared {
         Ok(_) => gate.exclusive(QUIESCE).await,
         Err(_) => None,
@@ -185,61 +335,62 @@ pub(crate) async fn split(
     }
     let paused_at = std::time::Instant::now();
     let copied = match (&prepared, &barrier) {
-        (Ok(put), Some(_)) => copy(&*store, parent, &children, put, op_id).await,
+        (Ok(put), Some(_)) => copy(op, actor, put).await,
         (Err(e), _) => Err(e.clone()),
         (_, None) => Err("the quiesce did not complete within its deadline".to_string()),
     };
-    if let Err(why) = copied {
-        if let Some(barrier) = barrier {
-            barrier.resume();
+    let retired = match copied {
+        Ok(()) => write_retired(op, actor).await,
+        Err(e) => Err(e),
+    };
+    let barrier = match (retired, barrier) {
+        (Ok(()), Some(barrier)) => barrier,
+        (retired, barrier) => {
+            if let Some(barrier) = barrier {
+                barrier.resume();
+            }
+            drop(hold);
+            let why = retired
+                .err()
+                .unwrap_or_else(|| "the barrier was lost".to_string());
+            return Err(roll_back(op.dir, parent, &actor.held(), why).await);
         }
-        drop(hold);
-        return Err(roll_back(dir, parent, &held, why).await);
-    }
+    };
+    let released = std::sync::OnceLock::new();
+    let retire = |reroute| {
+        released.get_or_init(|| paused_at.elapsed());
+        barrier.retire(reroute);
+    };
+    let published = publish(op, actor.clock.monotonic(), retire)
+        .await
+        .map(|mut published| {
+            published.pause = released.get().copied().unwrap_or_default();
+            published
+        });
+    drop(hold);
+    published.map_err(Refused::RolledBack)
+}
+
+/// The parent's `'T'` (S4-DESIGN §6.2 step 3.1), written and flushed while the actor still owns its
+/// intent: from it the split only rolls forward.
+async fn write_retired(op: &Op<'_>, actor: &Actor<'_>) -> Result<(), String> {
+    actor.owned("'T'")?;
     let retired = fence::Retired {
-        version: version + 1,
-        op_id: op_id.to_string(),
-        children: children
+        version: op.version + 1,
+        op_id: op.op_id.to_string(),
+        children: op
+            .children
             .iter()
             .map(|c| (c.prefix.clone(), c.home))
             .collect(),
     };
     let row = serde_json::to_vec(&retired).unwrap_or_default();
-    let written = parent.db.put(fence::retired_key(), row).await;
-    let flushed = match written {
-        Ok(_) => parent.db.flush().await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = flushed {
-        let barrier = barrier.expect("held");
-        barrier.resume();
-        drop(hold);
-        return Err(roll_back(dir, parent, &held, format!("'T': {e}")).await);
-    }
-    let released = std::sync::OnceLock::new();
-    let retire = |reroute| {
-        released.get_or_init(|| paused_at.elapsed());
-        if let Some(barrier) = barrier {
-            barrier.retire(reroute);
-        }
-    };
-    let now = clock.monotonic();
-    let op = Op {
-        dir,
-        store: &*store,
-        parent,
-        children: &children,
-        op_id,
-    };
-    let published = publish(&op, now, retire).await.map(|mut published| {
-        published.pause = released.get().copied().unwrap_or_default();
-        published
-    });
-    drop(hold);
-    let ended = recover::terminal(&held, intent::State::Reclaimed, "published");
-    drop(intent::replace(&*store, &held, ended).await);
-    recover::drop_checkpoint(parent, op_id).await;
-    published.map_err(Refused::RolledBack)
+    op.parent
+        .db
+        .put(fence::retired_key(), row)
+        .await
+        .map_err(|e| format!("'T': {e}"))?;
+    op.parent.db.flush().await.map_err(|e| format!("'T': {e}"))
 }
 
 /// The refusals (S4-DESIGN §6.2 step 0.1): the parent's home, or why it cannot split now.
@@ -345,13 +496,8 @@ async fn prepare(
 /// Quiesced (S4-DESIGN §6.2 steps 1.3 to 2.5): the WAL flushed and a checkpoint of everything, the
 /// plan made again from the quiesced sentinel and its sums checked, then each child cloned from the
 /// checkpoint into its range and seeded.
-async fn copy(
-    store: &dyn ObjectStore,
-    parent: &Arc<ShardEngine>,
-    children: &[Child],
-    prepared: &[Lists],
-    op_id: &str,
-) -> Result<(), String> {
+async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), String> {
+    let (store, parent, children, op_id) = (op.store, op.parent, op.children, op.op_id);
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
     let options = CheckpointOptions {
         lifetime: Some(CHECKPOINT_LIFETIME),
@@ -379,6 +525,9 @@ async fn copy(
         )
         .await?;
     }
+    // A clone CASes its final checkpoint onto the parent's manifest, which no writer epoch fences
+    // (S4-REVIEW-rev2 N1): ownership is checked right before and right after them.
+    actor.owned("the clones")?;
     let clones = children.iter().zip(&plan).map(|(child, (routed, counts))| {
         let seed = seed_rows(routed, counts, child.home);
         clone_child(parent, &checkpoint, child, seed)
@@ -386,7 +535,7 @@ async fn copy(
     for cloned in futures_util::future::join_all(clones).await {
         cloned?;
     }
-    Ok(())
+    actor.owned("'T', after the clones")
 }
 
 /// Each child's routed rows and counts from the parent's sentinel `rows`.
@@ -508,6 +657,7 @@ async fn publish(
         parent,
         children,
         op_id,
+        ..
     } = *op;
     let failed = |e: store::WriteError| format!("{e:?}");
     let (topology, etag) = store::read(store).await.map_err(failed)?;
@@ -558,7 +708,8 @@ async fn publish(
 }
 
 /// Roll back before `'T'` (S4-DESIGN §6.4's first rows): collection resumes and the touched mark is
-/// dropped, then the claimant's rollback runs on the split's own intent (`recover::roll_back`).
+/// dropped, then the claimant's deletions run on the split's own intent (`recover::clear`); the
+/// actor ends the intent once its renewals stop.
 async fn roll_back(
     dir: &ShardDirectory,
     parent: &ShardEngine,
@@ -574,7 +725,7 @@ async fn roll_back(
         .get(&parent.prefix)
         .map(|home| recover::lineage_of(&shards, *home))
         .unwrap_or_default();
-    drop(recover::roll_back(parent, &roots, held, &why).await);
+    recover::clear(parent, &roots, &held.intent).await;
     Refused::RolledBack(why)
 }
 

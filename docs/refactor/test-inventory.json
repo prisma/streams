@@ -3111,6 +3111,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_renews_its_intent_while_it_runs",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e98e159d10aa59cd4cc7bb1c7a09ba91622c47e030a0e9ca7f9f944e984e88f7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_serves_each_stream_from_its_child_and_the_counts_sum",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3141,6 +3152,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_lease_a_claimant_took_rolls_back_before_t",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "02855edea10d45df79861740869aa9cfa14effad97fd7ed1873565b186c033a6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },
   {

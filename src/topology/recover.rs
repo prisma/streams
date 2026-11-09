@@ -89,17 +89,23 @@ pub(crate) async fn roll_back(
     held: &Held,
     why: &str,
 ) -> Result<Held, IntentError> {
+    clear(parent, roots, &held.intent).await;
+    let ended = terminal(held, State::RolledBack, why);
+    intent::replace(&**parent.data_store(), held, ended).await
+}
+
+/// The deletions of a rollback of the split `intent` names (see the module), before its terminal
+/// CAS: each child path's takeover GC, the pause's checkpoint, then the lists under `roots`.
+pub(crate) async fn clear(parent: &ShardEngine, roots: &[u32], intent: &Intent) {
     let store = parent.data_store();
-    let children = children_of(&held.intent);
+    let children = children_of(intent);
     for (prefix, home) in &children {
         delete_child(store, &born_home_path(prefix, *home)).await;
     }
-    drop_checkpoint(parent, &held.intent.op_id).await;
+    drop_checkpoint(parent, &intent.op_id).await;
     for (_, home) in &children {
         delete_lists(&**store, parent, *home, roots).await;
     }
-    let ended = terminal(held, State::RolledBack, why);
-    intent::replace(&**store, held, ended).await
 }
 
 /// Roll forward from `retired`, the parent's `'T'` (see the module); `claimed` is the intent this

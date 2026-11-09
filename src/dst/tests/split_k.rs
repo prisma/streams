@@ -6,7 +6,7 @@
 //! for the object sum to the parent's.
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{engine_shutdown, http_rig_at};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use crate::spill::object::ObjectId;
@@ -75,7 +75,15 @@ async fn cell() -> Cell {
 
 /// `cell`, over `store`.
 async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
-    let (state, addr) = http_rig(store.clone()).await;
+    cell_at(store, super::fixture_runtime::RigRuntime::first()).await
+}
+
+/// `cell_over`, on `runtime` (whose manual clock the test may drive).
+async fn cell_at(
+    store: Arc<dyn object_store::ObjectStore>,
+    runtime: super::fixture_runtime::RigRuntime,
+) -> Cell {
+    let (state, addr) = http_rig_at(store.clone(), runtime).await;
     // The cell's stored topology, as boot leaves it: the rig's own.
     let topology = crate::topology::model::Topology {
         version: 1,
@@ -459,4 +467,129 @@ async fn the_pause_on_a_store_ten_ms_away_stays_within_the_hold() {
 #[ignore = "a timing measurement, run under the machine's lock"]
 async fn the_pause_on_a_store_twenty_five_ms_away_stays_within_the_hold() {
     pause_at(25).await;
+}
+
+/// The split of `cell`'s parent as `op_id`, paused at its park while `at_park` runs.
+async fn split_paused_while<F: std::future::Future<Output = ()>>(
+    cell: &Cell,
+    op_id: &str,
+    at_park: F,
+) -> Result<crate::topology::split::Published, crate::topology::split::Refused> {
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    cell.parent.gc_state().gate.pause_at_park(point);
+    let clock = cell.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&cell.state.shards, &cell.parent, op_id, "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split paused at its park");
+        at_park.await;
+        assert!(go_tx.send(()).is_ok(), "the split waits for go");
+    };
+    let (split, ()) = tokio::join!(split, control);
+    split
+}
+
+/// The intent once its ETag moved from `etag`, within 5 s.
+async fn renewal_of(
+    store: &dyn object_store::ObjectStore,
+    etag: &str,
+) -> crate::topology::intent::Held {
+    let t0 = std::time::Instant::now();
+    loop {
+        let now = crate::topology::intent::read(store).await.unwrap().unwrap();
+        if now.etag != etag {
+            return now;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "renewed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// **A split renews its intent while it runs** (S4-DESIGN §4.2). Paused at its park, the split's
+/// clock advances past a renewal period (3.3 s): its intent is renewed (a new ETag, at the same
+/// epoch and owner), and released, the split publishes and ends its intent `Reclaimed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_renews_its_intent_while_it_runs() {
+    use crate::topology::intent;
+    let store = mem();
+    let runtime = super::fixture_runtime::RigRuntime::first();
+    let clock = runtime.clock.clone();
+    let cell = cell_at(store.clone(), runtime).await;
+    let at_park = async {
+        let before = intent::read(&*store).await.unwrap().unwrap();
+        clock.advance(std::time::Duration::from_secs(4));
+        let now = renewal_of(&*store, &before.etag).await;
+        assert_eq!(now.intent.lease_epoch, before.intent.lease_epoch);
+        assert_eq!(now.intent.lease_owner, before.intent.lease_owner);
+        assert!(now.intent.lease_until_ms > before.intent.lease_until_ms);
+    };
+    split_paused_while(&cell, "op-renew", at_park)
+        .await
+        .expect("the split publishes");
+    let ended = intent::read(&*store).await.unwrap().unwrap().intent;
+    assert_eq!(ended.state, intent::State::Reclaimed);
+    engine_shutdown(&cell.state).await;
+}
+
+/// **A split whose lease a claimant took rolls back before `'T'`** (S4-DESIGN §4.3). Paused at its
+/// park, its intent is claimed (`lease_epoch` 2, another owner) and its clock passes the lease
+/// (11 s): released, the split refuses `RolledBack` naming the lost lease, its parent holds no
+/// `'T'` and still serves both streams, neither child path holds a file, and the intent stays the
+/// claimant's (the actor's terminal write loses).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_whose_lease_a_claimant_took_rolls_back_before_t() {
+    use crate::topology::intent;
+    let store = mem();
+    let runtime = super::fixture_runtime::RigRuntime::first();
+    let clock = runtime.clock.clone();
+    let cell = cell_at(store.clone(), runtime).await;
+    let want = (
+        records(cell.addr, &cell.low).await,
+        records(cell.addr, &cell.high).await,
+    );
+    let home = cell.state.shards.prefixes().shards.next_home;
+    let at_park = async {
+        let held = intent::read(&*store).await.unwrap().unwrap();
+        let mut claimed = held.intent.clone();
+        claimed.lease_owner = "opener:claimant".to_string();
+        claimed.lease_epoch += 1;
+        intent::replace(&*store, &held, claimed).await.unwrap();
+        clock.advance(std::time::Duration::from_secs(12));
+    };
+    let refused = split_paused_while(&cell, "op-lost", at_park)
+        .await
+        .err()
+        .expect("the split rolls back");
+    assert!(
+        matches!(&refused, crate::topology::split::Refused::RolledBack(why) if why.contains("lease")),
+        "{refused}"
+    );
+    let retired = cell
+        .parent
+        .db
+        .get(crate::topology::fence::retired_key())
+        .await
+        .unwrap();
+    assert!(retired.is_none(), "no 'T'");
+    for (prefix, home) in [("000", home), ("001", home + 1)] {
+        let path = crate::topology::model::born_home_path(prefix, home);
+        let files = object_paths(&*store, &path).await;
+        assert!(files.is_empty(), "{path} holds {files:?}");
+    }
+    let left = intent::read(&*store).await.unwrap().unwrap().intent;
+    assert_eq!(
+        (left.state, left.lease_epoch),
+        (intent::State::Preparing, 2)
+    );
+    assert!(!cell.parent.is_closed(), "the parent serves on");
+    assert_eq!(
+        (
+            records(cell.addr, &cell.low).await,
+            records(cell.addr, &cell.high).await
+        ),
+        want
+    );
+    engine_shutdown(&cell.state).await;
 }

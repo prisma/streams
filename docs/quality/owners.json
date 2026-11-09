@@ -658,6 +658,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::split",
+      "path": "src/topology/split.rs",
+      "reason": "The split's steps and the actor's lease renewals are pinned on the stack and raced, so the renewals run for exactly as long as the steps and stop before the intent's terminal write; the compiler checks the pin's expansion.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::split_paused_while",
+      "path": "src/dst/tests/split_k.rs",
+      "reason": "The split and the control that acts at its park (a clock step, a claimant's write) run concurrently in one test task, so the control acts while the split waits in its pause; the compiler checks the join's expansion and both futures borrow the test's cell.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::a_purge_request_mid_pass_abandons_the_copy",
       "path": "src/shard/seal/gc/clean/tests.rs",
