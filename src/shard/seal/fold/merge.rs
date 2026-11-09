@@ -87,6 +87,9 @@ impl ShardEngine {
 
     /// One merge if one is due: `None` when none is, else its outcome.
     pub(crate) async fn merge_once(self: &Arc<Self>) -> Option<Result<Option<Pointer>, FoldError>> {
+        if self.gc_state().gate.collection_off() {
+            return None;
+        }
         let fs = self.fold_state();
         let _one = fs.serial.lock().await;
         let inputs = merge_inputs(&fs.set(), &fs.settings())?;

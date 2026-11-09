@@ -457,6 +457,10 @@ async fn merges_make_hourly_and_daily_objects_and_retire_their_inputs() {
     }
     let folded: u64 = pointers(&rig).await.values().map(|p| p.entries).sum();
     assert_eq!(pointers(&rig).await.len(), 4);
+    let gate = &rig.engine.gc_state().gate;
+    gate.set_collection_off(true);
+    assert!(rig.engine.merge_once().await.is_none(), "collection off");
+    gate.set_collection_off(false);
     let mut merges = 0;
     while let Some(r) = rig.engine.merge_once().await {
         r.expect("merge");

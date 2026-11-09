@@ -2,6 +2,7 @@
 //! changes it.
 // Until its first caller (the open-path fence, S4 step 9) the intent's store protocol builds
 // only for its tests.
+pub(crate) mod gate;
 #[cfg(test)]
 pub(crate) mod intent;
 pub(crate) mod model;

@@ -575,6 +575,7 @@ impl ShardEngine {
     /// pending to flush it), then durable. Any error leaves its outcome
     /// unknown, so the engine closes.
     pub(crate) async fn write_index_batch(&self, batch: WriteBatch) -> Result<(), FoldError> {
+        let _shared = self.gc_state().gate.shared().await;
         #[cfg(test)]
         self.fold_state().before_batch().await?;
         let result = async {

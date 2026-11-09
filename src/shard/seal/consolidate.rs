@@ -196,6 +196,9 @@ impl ShardEngine {
     /// every superseded chunk's object (`seal::gc`), so no two jobs may
     /// supersede one chunk.
     pub(crate) async fn consolidate_one(&self, job: Job) -> Result<bool, String> {
+        if self.gc_state().gate.collection_off() {
+            return Ok(false);
+        }
         let _refs = self.gc_state().refs.lock().await;
         if !self.still_picked(&job).await? {
             return Ok(false);

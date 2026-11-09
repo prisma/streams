@@ -51,6 +51,9 @@ impl ShardEngine {
     pub(crate) async fn sweep_orphans(&self) -> Result<SweepReport, GcError> {
         let mut report = SweepReport::default();
         let gc = self.gc_state();
+        if gc.gate.collection_off() {
+            return Ok(report);
+        }
         let wrap = {
             let mut last = super::lock(&gc.last_wrap);
             let due = last.is_none_or(|t| t.elapsed() >= gc.settings().wrap_every);

@@ -38,6 +38,8 @@ use crate::spill::object::ObjectId;
 
 pub(crate) mod clean;
 #[cfg(test)]
+mod gate_tests;
+#[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;
 mod sweep;
@@ -139,6 +141,8 @@ pub(crate) struct GcState {
     /// Every read-modify-write of `'R'` and `'H'` rows, from its reads until
     /// its batch is durable.
     pub(crate) refs: tokio::sync::Mutex<()>,
+    /// The split's quiesce: every index batch outside the committer holds it shared.
+    pub(crate) gate: crate::topology::gate::MaintenanceGate,
     /// The pin clock: a read takes it as its start, a zeroing advances it.
     clock: AtomicU64,
     /// Running sealed reads by start, with how many started then.
@@ -644,7 +648,7 @@ impl ShardEngine {
     pub(crate) async fn gc_pass(&self) {
         let gc = self.gc_state();
         let heads = gc.heads_signal.load(Ordering::SeqCst);
-        if heads > 0 {
+        if heads > 0 && !gc.gate.collection_off() {
             match self.purge_due().await {
                 Ok(0) => lower(&gc.heads_signal, heads),
                 Ok(_) => {}

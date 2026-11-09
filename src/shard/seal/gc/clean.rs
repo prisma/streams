@@ -212,7 +212,7 @@ impl ShardEngine {
     /// One cleaning pass (see the module).
     pub(crate) async fn clean_pass(&self) -> Result<CleanReport, GcError> {
         let gc = self.gc_state();
-        if gc.clean.len() == 0 || self.layout.l0.at_yield_mark() {
+        if gc.clean.len() == 0 || gc.gate.collection_off() || self.layout.l0.at_yield_mark() {
             return Ok(CleanReport::default());
         }
         let (copied, bytes) = self.gather().await?;

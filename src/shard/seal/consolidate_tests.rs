@@ -44,6 +44,38 @@ async fn wait_done(engine: &Arc<ShardEngine>, n: u64) {
     }
 }
 
+/// A consolidation stands down while collection is off: the walk's job is
+/// skipped and no object is written; with it on, the next walk's job runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_consolidation_stands_down_while_collection_is_off() {
+    let rig = rig_with("consolidate-off", manual(), 0, Duration::from_millis(2)).await;
+    let hash = [0x3B; 16];
+    let oracle = Mutex::new(Oracle::new());
+    let mut rng = StdRng::seed_from_u64(0xD1);
+    for _ in 0..12 {
+        let records = vec![random_bytes(&mut rng, 500)];
+        append_recorded(&rig.engine, &oracle, hash, records).await;
+        rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    }
+    let oracle = oracle.into_inner().unwrap();
+    let c = &rig.engine.layout.seal.fold.consolidator;
+    let gate = &rig.engine.gc_state().gate;
+    gate.set_collection_off(true);
+    read_back(&rig.engine, hash, &oracle[&hash], Deliver::Durable)
+        .await
+        .unwrap();
+    wait_done(&rig.engine, 1).await;
+    assert_eq!((get(&c.done), get(&c.skipped)), (0, 1), "skipped");
+    assert_eq!(get(&c.chunks_in), 0, "nothing consolidated");
+    gate.set_collection_off(false);
+    read_back(&rig.engine, hash, &oracle[&hash], Deliver::Durable)
+        .await
+        .unwrap();
+    wait_done(&rig.engine, 2).await;
+    assert_eq!((get(&c.done), get(&c.chunks_in)), (1, 12));
+    rig.engine.begin_close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_cold_walk_consolidates_small_chunks_and_counts_the_orphans() {
     let rig = rig_with("consolidate", manual(), 0, Duration::from_millis(2)).await;

@@ -204,6 +204,31 @@ fn ledger(oracle: &Mutex<Oracle>) -> std::collections::BTreeMap<u64, Bytes> {
         .unwrap_or_default()
 }
 
+/// The cleaner stands down while collection is off: a pass then copies and
+/// releases nothing, and every candidate stays; with it on, the next pass
+/// releases them all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_pass_stands_down_while_collection_is_off() {
+    let oracle = Mutex::new(Oracle::new());
+    let (rig, old) = pinned("clean-off", 2, &oracle).await;
+    let gate = &rig.engine.gc_state().gate;
+    gate.set_collection_off(true);
+    assert_eq!(
+        rig.engine.clean_pass().await.unwrap(),
+        CleanReport::default()
+    );
+    assert_eq!(
+        rig.engine.gc_state().clean.len(),
+        2,
+        "both still candidates"
+    );
+    let objects: BTreeSet<ObjectId> = stored(&rig, "hseg").await.into_keys().collect();
+    assert_eq!(objects, old);
+    gate.set_collection_off(false);
+    assert_eq!(rig.engine.clean_pass().await.unwrap().released, 2);
+    rig.engine.begin_close();
+}
+
 /// A pass copies the ledger's chunks into one chunk of one object; the old
 /// objects are released and deleted; the ledger reads back exactly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
