@@ -27,7 +27,7 @@ fn split_set(set: &ShardSet, prefix: &str) -> ShardSet {
     next.leaves.remove(prefix);
     let children = [format!("{prefix}0"), format!("{prefix}1")];
     for (home, child) in (set.next_home..).zip(&children) {
-        let path = format!("shards/{child}~{home}");
+        let path = crate::topology::model::born_home_path(child, home);
         let parents = vec![parent];
         let born_version = version;
         next.homes.insert(
