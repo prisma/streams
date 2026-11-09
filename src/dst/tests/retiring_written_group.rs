@@ -193,9 +193,9 @@ async fn strand(
         .expect("the shard is resident");
     // The shard's next WAL PUT parks; the history partition is outside the
     // hold, and the successor opens only after it is released. The Db lives
-    // where the rig's opener puts it, `{prefix}/shard`, object-store
-    // normalised (the root prefix "" is `shard`).
-    let shard_db = object_store::path::Path::from(format!("{prefix}/shard"));
+    // where the rig's opener puts it, the topology's path for the shard
+    // (`shards/<prefix>`, `shards/root` for the root prefix "").
+    let shard_db = object_store::path::Path::from(crate::sharddir::shard_db_path(&prefix));
     let engaged = store.hold_class_under(StoreOp::Put, ObjClass::Wal, &format!("{shard_db}/"), 1);
     let retire = async {
         until("the group is written and its WAL PUT is parked", || {

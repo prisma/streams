@@ -257,9 +257,9 @@ pub(super) fn rig_opener(
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
     notifier: crate::shard_directory::ShardCloseNotifier,
-) -> crate::sharddir::OpenFn {
+) -> crate::sharddir::OpenAt {
     Box::new(
-        move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
+        move |prefix: String, path: String, incarnation: crate::sharddir::EngineIncarnation| {
             let notifier = notifier.clone();
             let store = store.clone();
             let shard_cfg = shard_cfg.clone();
@@ -268,7 +268,7 @@ pub(super) fn rig_opener(
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
             > = Box::pin(async move {
-                let db = crate::keyspace::db_builder(format!("{prefix}/shard"), store.clone())
+                let db = crate::keyspace::db_builder(path, store.clone())
                     .with_settings(slatedb::config::Settings {
                         flush_interval: Some(std::time::Duration::from_millis(5)),
                         manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -462,7 +462,7 @@ pub(super) async fn http_rig_build(
             crate::tenant::CellId::new("cell_test").unwrap(),
             "test".to_string(),
         ),
-        shards: crate::shard_directory::ShardDirectory::new(
+        shards: crate::shard_directory::ShardDirectory::new_at(
             prefixes,
             ownership.clone(),
             crate::shard_directory::OpenTiming {

@@ -78,7 +78,7 @@ async fn rig(label: &str) -> (Rig, String) {
     fault.hold_class_under(
         StoreOp::Put,
         ObjClass::Other,
-        "00/shard/compactions",
+        "shards/00/compactions",
         1 << 20,
     );
     let rig = Rig {

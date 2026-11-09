@@ -162,7 +162,11 @@ async fn an_idle_release_flushes_what_the_shard_memtables_hold() {
         trace
             .events()
             .iter()
-            .filter(|e| e.op == StoreOp::Put && e.path.contains("shard/compacted/"))
+            .filter(|e| {
+                e.op == StoreOp::Put
+                    && e.path.starts_with("shards/")
+                    && e.path.contains("/compacted/")
+            })
             .count()
     };
     let before = flushed_tables();
@@ -204,12 +208,12 @@ async fn a_read_during_the_release_flush_drops_that_release() {
     let probe = b"S\xffq0-idle-flush-read-probe".as_slice();
     engine.db.put(probe, b"held").await.unwrap();
     // The release seal's forced flush parks on its L0 table PUT (the Db lives
-    // at `{prefix}/shard`; segment objects go under `hseg/`).
+    // at its topology path, `shards/<prefix>`; segment objects go under `hseg/`).
     let held = state.shards.held_prefixes();
     assert_eq!(held.len(), 1, "one shard serves the stream: {held:?}");
     let tables = format!(
         "{}/compacted/",
-        object_store::path::Path::from(format!("{}/shard", held[0]))
+        object_store::path::Path::from(crate::sharddir::shard_db_path(&held[0]))
     );
     let parked = store.hold_class_under(StoreOp::Put, ObjClass::Sst, &tables, 1);
 

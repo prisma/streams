@@ -137,13 +137,13 @@ async fn handle_of(
 /// Parks the next WAL PUT of the stream's shard DB, and only that one: the
 /// new owner's open writes a WAL object too, and the shard's history
 /// partition keeps writing its own WAL. The rig opener keeps a shard's DB at
-/// `{prefix}/shard` (`fixture_http::rig_opener`).
+/// its topology path, `shards/<prefix>` (`fixture_http::rig_opener`).
 async fn hold_shard_wal(
     store: &Arc<FaultStore>,
     state: &Arc<crate::http::AppState>,
 ) -> Arc<std::sync::atomic::AtomicU64> {
     let (engine, _) = handle_of(state).await;
-    let wal = format!("{}/shard/wal/", engine.prefix);
+    let wal = format!("{}/wal/", crate::sharddir::shard_db_path(&engine.prefix));
     store.hold_class_under(StoreOp::Put, ObjClass::Wal, &wal, 1)
 }
 
