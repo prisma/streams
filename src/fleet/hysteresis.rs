@@ -307,6 +307,7 @@ mod tests {
             rss_shed_mb: 0,
             cache_capacity: crate::registry::cache::REGISTRY_CACHE_MAX as u64,
             tracker_capacity: crate::quota::MAX_TRACKED_PROJECTS as u64,
+            shards_per_instance_max: cli.shards_per_instance_max,
         }
     }
 

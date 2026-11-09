@@ -56,6 +56,9 @@ pub(crate) struct Standing {
     /// What the tick's latest reads of desired.json and the overrides found, for the
     /// topology policy's wait on the fleet (S4 §10.1 rule 1).
     docs: Mutex<FleetDocs>,
+    /// The topology policy's latest pass: why its split waits (`None`: none waits), and the
+    /// shards the ring gives this instance (S5, Q4).
+    topology: Mutex<(Option<&'static str>, u32)>,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -95,6 +98,7 @@ impl Default for Standing {
             topology_sources: Mutex::new(Vec::new()),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
+            topology: Mutex::new((None, 0)),
         }
     }
 }
@@ -201,6 +205,24 @@ impl Standing {
             youngest_override_ms: docs.youngest_override_ms,
             age_ms: (older > 0).then(|| self.elapsed_ms().saturating_sub(older)),
         }
+    }
+
+    /// The topology policy's pass found its split waiting for `split_refused` (or none) with
+    /// `shards_resident` shards on this instance.
+    pub(crate) fn set_topology(&self, split_refused: Option<&'static str>, shards_resident: u32) {
+        if let Ok(mut topology) = self.topology.lock() {
+            *topology = (split_refused, shards_resident);
+        }
+    }
+
+    /// Why the topology policy's split waits, for the next beat.
+    pub(crate) fn split_refused(&self) -> Option<&'static str> {
+        self.topology.lock().map_or(None, |topology| topology.0)
+    }
+
+    /// The shards the topology policy counts on this instance, for the next beat.
+    pub(crate) fn shards_resident(&self) -> u32 {
+        self.topology.lock().map_or(0, |topology| topology.1)
     }
 
     /// The next beat's sequence number. A beat takes it before it reads
@@ -333,6 +355,26 @@ mod tests {
         assert!((4_000..4_500).contains(&times.age_ms.unwrap()), "{times:?}");
         standing.note_desired(None);
         assert_eq!(standing.doc_times().desired_computed_ms, None);
+    }
+
+    /// The next beat publishes the topology policy's latest pass.
+    #[test]
+    fn the_next_beat_reads_the_topology_policys_latest_pass() {
+        let standing = Standing::default();
+        assert_eq!(
+            (standing.split_refused(), standing.shards_resident()),
+            (None, 0)
+        );
+        standing.set_topology(Some("instance_full"), 7);
+        assert_eq!(
+            (standing.split_refused(), standing.shards_resident()),
+            (Some("instance_full"), 7)
+        );
+        standing.set_topology(None, 3);
+        assert_eq!(
+            (standing.split_refused(), standing.shards_resident()),
+            (None, 3)
+        );
     }
 
     #[test]

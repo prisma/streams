@@ -196,6 +196,9 @@ pub(super) struct Loads {
     pub(super) shards: u64,
     /// A member reports a live topology intent: no shrink (S4-DESIGN §10.1).
     pub(super) topology_busy: bool,
+    /// The most ring-resident shards of a member whose split waits for an instance (its
+    /// topology policy's `instance_full`, S5 and Q4); `None` while no split waits.
+    pub(super) instance_full: Option<u32>,
 }
 
 impl Loads {
@@ -214,6 +217,9 @@ impl Loads {
         self.cached_streams = self.cached_streams.saturating_add(beat.cached_streams);
         self.tracked_projects = self.tracked_projects.saturating_add(beat.tracked_projects);
         self.topology_busy |= beat.topology_intent.is_some();
+        if beat.split_refused.as_deref() == Some(crate::topology::policy_loop::INSTANCE_FULL) {
+            self.instance_full = self.instance_full.max(Some(beat.shards_resident));
+        }
         if beat.rps >= 5.0 {
             let store = beat.store_read_p50_ms as f64;
             self.max_loaded_p50 = self.max_loaded_p50.max(beat.ack_p50_ms).max(store);
@@ -261,6 +267,8 @@ pub(super) struct Thresholds {
     /// `REGISTRY_CACHE_MAX` and `MAX_TRACKED_PROJECTS`.
     pub(super) cache_capacity: u64,
     pub(super) tracker_capacity: u64,
+    /// `SHARDS_PER_INSTANCE_MAX` (Q4), for the reason a waiting split publishes.
+    pub(super) shards_per_instance_max: u32,
 }
 
 /// A pass's plan: the count to grow to, the conservative count to shrink
@@ -340,18 +348,27 @@ impl Demand {
         };
         let need_slots = slots(at.target_util);
         let need_occupancy = occupancy(loads, at, at.target_util);
+        let need_instance = if loads.instance_full.is_some() {
+            live_plus_one
+        } else {
+            0
+        };
         let wanted = need_util
             .max(need_slots)
             .max(need_latency)
             .max(need_hot)
             .max(need_edge)
-            .max(need_occupancy);
+            .max(need_occupancy)
+            .max(need_instance);
         let shards = if loads.shards == 0 {
             u64::MAX
         } else {
             loads.shards
         };
-        let need = wanted.min(shards).clamp(1, at.max);
+        // A split that waits for an instance wants the home of the child it adds: past the
+        // clamp by that one shard (S4 §10.1 rule 4 otherwise stands).
+        let waiting = need_instance.min(shards.saturating_add(1));
+        let need = wanted.min(shards).max(waiting).clamp(1, at.max);
         let shrink = if edge_hot || loads.topology_busy {
             at.max // sentinel: never below the current count, so no shrink
         } else {
@@ -361,11 +378,12 @@ impl Demand {
                 .max(need_hot)
                 .max(occupancy(loads, at, at.scale_in_util))
                 .min(shards)
+                .max(waiting)
                 .clamp(1, at.max)
         };
         let split_demand = wanted.min(at.max).saturating_sub(shards);
         let l = loads;
-        let reason = format!(
+        let mut reason = format!(
             "cores_used={:.2} util->{need_util} inflight={:.0} slots->{need_slots} hot_cpu={:.0}% refusal_beats={} rss_max={:.0}MB ({need_hot}) ack_p50={:.0}ms ({need_latency}) edge_p50={:.0}ms ({need_edge}) cached={} projects={} ({need_occupancy}) shards={} split->{split_demand} rps={:.0} live={}",
             l.cores_used,
             l.inflight,
@@ -380,6 +398,12 @@ impl Demand {
             l.rps,
             l.live,
         );
+        if let Some(resident) = l.instance_full {
+            let max = at.shards_per_instance_max;
+            reason.push_str(&format!(
+                " shards_per_instance={resident}/{max} ({need_instance})"
+            ));
+        }
         Need {
             need,
             shrink,
@@ -647,6 +671,7 @@ mod demand_tests {
             rss_shed_mb: 500,
             cache_capacity: 65_536,
             tracker_capacity: 32_768,
+            shards_per_instance_max: 7,
         }
     }
 
@@ -678,6 +703,69 @@ mod demand_tests {
         let mut demand = Demand::default();
         let first = n(&demand.plan(loads, &at, start));
         (first, n(&demand.plan(loads, &at, start + at.cpu_sustain)))
+    }
+
+    /// A member whose topology policy's split waits for an instance asks for one more at
+    /// once, and the shrink keeps it; the reason names its shards against the ceiling
+    /// (S5, Q4). A beat that says so folds its resident shards, the most of any member.
+    #[test]
+    fn a_split_waiting_for_an_instance_wants_one_more_and_names_the_ceiling() {
+        let waiting = Loads {
+            instance_full: Some(7),
+            ..quiet(64)
+        };
+        let plan = Demand::default().plan(&waiting, &thresholds(), Instant::now());
+        assert_eq!(n(&plan), (5, 5, 0));
+        assert!(
+            plan.reason.ends_with(" shards_per_instance=7/7 (5)"),
+            "{}",
+            plan.reason
+        );
+        let plan = Demand::default().plan(&quiet(64), &thresholds(), Instant::now());
+        assert_eq!(n(&plan), (2, 3, 0));
+        assert!(
+            !plan.reason.contains("shards_per_instance"),
+            "{}",
+            plan.reason
+        );
+        // One shard on one instance: the instance the split waits for is the child's home, past
+        // the clamp by the one shard the split adds and no further.
+        let one = Loads {
+            instance_full: Some(1),
+            shards: 1,
+            live: 1,
+            ..Loads::default()
+        };
+        assert_eq!(
+            n(&Demand::default().plan(&one, &thresholds(), Instant::now())),
+            (2, 2, 1)
+        );
+        let two = Loads {
+            instance_full: Some(2),
+            shards: 2,
+            live: 1,
+            ..Loads::default()
+        };
+        assert_eq!(
+            n(&Demand::default().plan(&two, &thresholds(), Instant::now())),
+            (2, 2, 0)
+        );
+        let beat = |extra: &str| -> crate::fleet::Heartbeat {
+            let document = format!(
+                r#"{{"instance":"streams-1","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":false{extra}}}"#
+            );
+            serde_json::from_str(&document).unwrap()
+        };
+        let mut loads = Loads::default();
+        loads.fold(&beat(r#","shards_resident":3"#));
+        assert_eq!(loads.instance_full, None);
+        loads.fold(&beat(
+            r#","split_refused":"instance_full","shards_resident":6"#,
+        ));
+        loads.fold(&beat(
+            r#","split_refused":"instance_full","shards_resident":4"#,
+        ));
+        assert_eq!(loads.instance_full, Some(6));
     }
 
     /// A member refusing work on three beats in a row, or one whose RSS is

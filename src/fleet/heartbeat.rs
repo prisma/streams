@@ -126,6 +126,13 @@ pub(crate) struct Heartbeat {
     /// shards cover the fleet.
     #[serde(default)]
     pub split_demand: u64,
+    /// Why the topology policy's split waits (`instance_full`: no room for both children
+    /// beside the parent, or no other instance with room for one); absent while none waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_refused: Option<String>,
+    /// The shards the ring gives this instance, as its topology policy counts them.
+    #[serde(default)]
+    pub shards_resident: u32,
     pub owned_shards: Vec<String>,
     /// The publisher is handing its ownership off in a planned drain: every
     /// ring drops it while it keeps beating (`fleet::drain`).
@@ -393,6 +400,8 @@ impl Sampler {
             store_read_p50_ms,
             store_read_p99_ms,
             split_demand: state.fleet.standing().split_demand(),
+            split_refused: state.fleet.standing().split_refused().map(str::to_owned),
+            shards_resident: state.fleet.standing().shards_resident(),
             owned_shards: engines.into_iter().map(|(prefix, _)| prefix).collect(),
             draining: state.fleet.standing().draining(),
             absorb_lag_max_secs: state.shards.stall_max_secs(),

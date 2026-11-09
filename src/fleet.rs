@@ -332,6 +332,8 @@ struct FleetCfg {
     /// This instance's RSS shed line (`ADMIT_RSS_SHED_MB`; 0 = none): a
     /// member at 80 % of it counts as hot (item 6).
     rss_shed_mb: u64,
+    /// `SHARDS_PER_INSTANCE_MAX` (Q4): the ceiling a waiting split's reason names.
+    shards_per_instance_max: u32,
 }
 
 impl FleetCfg {
@@ -350,6 +352,7 @@ impl FleetCfg {
             rss_shed_mb: self.rss_shed_mb,
             cache_capacity: crate::registry::cache::REGISTRY_CACHE_MAX as u64,
             tracker_capacity: crate::quota::MAX_TRACKED_PROJECTS as u64,
+            shards_per_instance_max: self.shards_per_instance_max,
         }
     }
 }
@@ -399,6 +402,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
             latency_sustain: Duration::from_secs(cli.scale_lat_sustain_secs),
             max: cli.fleet_max,
             rss_shed_mb: state.admission.rss_shed_mb(),
+            shards_per_instance_max: cli.shards_per_instance_max,
         }
     };
     state.fleet.standing().mark_progress();

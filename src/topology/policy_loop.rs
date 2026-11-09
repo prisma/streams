@@ -15,6 +15,9 @@ use crate::ownership::OwnershipService;
 use crate::shard_directory::ShardDirectory;
 use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 
+/// The heartbeat's `split_refused` while a split waits for an instance (Q4).
+pub(crate) const INSTANCE_FULL: &str = "instance_full";
+
 /// The policy's cadence.
 pub(crate) const PERIOD: Duration = Duration::from_secs(10);
 
@@ -75,10 +78,22 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
     }
 }
 
-/// One pass: the view, the decision, and the split it starts. A refused split is a hold.
+/// One pass: the view, the decision, and the split it starts. A refused split is a hold, or an
+/// ask for an instance.
+/// The beat publishes what the pass left: a split waiting for an instance, and the shards the
+/// ring gives this one.
 pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> Decision {
     let view = view(cell, seen);
-    let decision = policy.decide(&view, &cell.limits);
+    let decision = act(cell, &view, policy.decide(&view, &cell.limits)).await;
+    let waiting = matches!(decision, Decision::AskInstance { .. }).then_some(INSTANCE_FULL);
+    cell.fleet
+        .standing()
+        .set_topology(waiting, resident(&view, &cell.me));
+    decision
+}
+
+/// `decision`, after the split entry's answer to the split it names.
+async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
     let Decision::Split { prefix, .. } = &decision else {
         return decision;
     };
@@ -87,8 +102,8 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
         Err(refused) => {
             tracing::info!(?refused, prefix, "topology split refused");
             match refused.0 {
-                "instance_full" => Decision::AskInstance {
-                    resident: resident(&view, &cell.me),
+                INSTANCE_FULL => Decision::AskInstance {
+                    resident: resident(view, &cell.me),
                     max: cell.limits.shards_per_instance_max,
                 },
                 "topology_busy" => Decision::Hold(super::policy::Hold::IntentLive),

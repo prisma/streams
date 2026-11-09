@@ -93,49 +93,14 @@ fn leaves(state: &crate::http::AppState) -> Vec<String> {
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
 async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops() {
-    let fleet = mem();
-    let seed = r#"{"count":1,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
-    fleet
-        .put(&Path::from("fleet/desired.json"), PutPayload::from(seed))
-        .await
-        .unwrap();
+    let fleet = seeded().await;
     destination(&fleet).await;
-    let rig = http_rig_build(
-        mem(),
-        RigRuntime::first(),
-        HttpRigOptions {
-            fleet_store: Some(fleet),
-            instance: Some("streams-1".into()),
-            cli: |cli| {
-                // One instance in the ring: the cell's leaves are all this one's.
-                cli.fleet_max = 1;
-                cli.shard_split_sustain_secs = 1;
-                cli.shard_topology_cooldown_secs = 1;
-                // 7 appends a second is the line: 20 a second is over it on one leaf and on
-                // two, and under it on each of four.
-                cli.shard_appends_ceiling = 10;
-            },
-            prefixes: vec![String::new()],
-            ..Default::default()
-        },
-    )
+    let (rig, asked) = policy_rig(fleet, |cli| {
+        // One instance in the ring: the cell's leaves are all this one's.
+        cli.fleet_max = 1;
+        lines(cli);
+    })
     .await;
-    assert!(crate::fleet::start_configured(
-        rig.state.clone(),
-        &rig.tasks
-    ));
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let cell = Cell {
-        me: "streams-1".into(),
-        fleet: rig.state.fleet.clone(),
-        shards: rig.state.shards.clone(),
-        ownership: rig.state.ownership.clone(),
-        limits: crate::topology::policy_loop::limits(&rig.state.config),
-        appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
-        rss_shed_mb: 0,
-        split: split_double(&rig.state, asked.clone()),
-    };
-    crate::topology::policy_loop::start(cell, Duration::from_millis(200), &rig.tasks);
 
     let stop = Arc::new(AtomicBool::new(false));
     let generator = tokio::spawn(load(rig.addr, 20, stop.clone()));
@@ -160,15 +125,136 @@ async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops()
     engine_shutdown(&rig.state).await;
 }
 
+/// The policy's lines for a rig: a second's sustain and cooldown, and 7 appends a second as the
+/// split line, so 20 a second is over it on one leaf and on two, and under it on each of four.
+fn lines(cli: &mut crate::config::CliArgs) {
+    cli.shard_split_sustain_secs = 1;
+    cli.shard_topology_cooldown_secs = 1;
+    cli.shard_appends_ceiling = 10;
+}
+
+/// A one-shard cell run by `streams-1` with its fleet on `fleet`, and the policy's loop on it
+/// every 200 ms through the split entry's double, whose asked splits it returns.
+async fn policy_rig(
+    fleet: Arc<dyn ObjectStore>,
+    cli: fn(&mut crate::config::CliArgs),
+) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(fleet),
+            instance: Some("streams-1".into()),
+            cli,
+            prefixes: vec![String::new()],
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let cell = Cell {
+        me: "streams-1".into(),
+        fleet: rig.state.fleet.clone(),
+        shards: rig.state.shards.clone(),
+        ownership: rig.state.ownership.clone(),
+        limits: crate::topology::policy_loop::limits(&rig.state.config),
+        appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
+        rss_shed_mb: 0,
+        split: split_double(&rig.state, asked.clone()),
+    };
+    crate::topology::policy_loop::start(cell, Duration::from_millis(200), &rig.tasks);
+    (rig, asked)
+}
+
+/// A fleet store seeded with a desired count of one.
+async fn seeded() -> Arc<dyn ObjectStore> {
+    let fleet = mem();
+    let seed = r#"{"count":1,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
+    fleet
+        .put(&Path::from("fleet/desired.json"), PutPayload::from(seed))
+        .await
+        .unwrap();
+    fleet
+}
+
+/// The fleet document `name` on `fleet`, `Null` while absent.
+async fn document(fleet: &Arc<dyn ObjectStore>, name: &str) -> serde_json::Value {
+    match fleet.get(&Path::from(format!("fleet/{name}.json"))).await {
+        Ok(got) => serde_json::from_slice(&got.bytes().await.unwrap()).unwrap(),
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
+/// A split with no other instance to take a child asks the fleet for one: this instance's beat
+/// says `split_refused: "instance_full"`, the desired count grows past the one shard with the
+/// ceiling in its reason, and nothing splits. Once the instance asked for beats, the split goes,
+/// and it is the only one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
+)]
+async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_beats() {
+    let fleet = seeded().await;
+    let (rig, asked) = policy_rig(fleet.clone(), lines).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let generator = tokio::spawn(load(rig.addr, 20, stop.clone()));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut desired = document(&fleet, "desired").await;
+    while desired["count"].as_u64() < Some(2) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        desired = document(&fleet, "desired").await;
+    }
+    let reason = desired["reason"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        reason.ends_with(" shards_per_instance=1/7 (2)"),
+        "{desired}"
+    );
+    assert_eq!(
+        document(&fleet, "streams-1").await["split_refused"],
+        "instance_full"
+    );
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(leaves(&rig.state), [""]);
+
+    // The instance the count asked for: `streams-2`, which the tick reads as soon as the count
+    // names it. The ring keeps the one leaf on `streams-1` (rendezvous over "" picks it).
+    peer(&fleet, "streams-2").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while leaves(&rig.state).len() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    generator.await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(*asked.lock().unwrap(), [""]);
+    assert_eq!(leaves(&rig.state), ["0", "1"]);
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
 /// Another instance's live beat, outside the ring (no ordinal the count names), holding no
 /// shard: the destination a split's reservation needs.
 async fn destination(fleet: &Arc<dyn ObjectStore>) {
+    peer(fleet, "streams-9").await;
+}
+
+/// `instance`'s live beat, holding no shard.
+async fn peer(fleet: &Arc<dyn ObjectStore>, instance: &str) {
     let ts_ms = crate::shard::now_ms() + 600_000;
     let beat = format!(
-        r#"{{"instance":"streams-9","ts_ms":{ts_ms},"rps":0.0,"owned_shards":[],"draining":false,"url":"https://streams-9.invalid"}}"#
+        r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"owned_shards":[],"draining":false,"url":"https://{instance}.invalid"}}"#
     );
     fleet
-        .put(&Path::from("fleet/streams-9.json"), PutPayload::from(beat))
+        .put(
+            &Path::from(format!("fleet/{instance}.json")),
+            PutPayload::from(beat),
+        )
         .await
         .unwrap();
 }
