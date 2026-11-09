@@ -2,16 +2,17 @@
 //! changes it.
 pub(crate) mod fence;
 pub(crate) mod gate;
-// The intent's read is production (the open-path fence, and S6's lineage sweeper, read the live
-// intent); its writes and lease build only for their tests until their first caller (S4 step 11).
+// The intent's read, its CAS and the lapse are production (the open-path fence's claimant, and
+// S6's lineage sweeper, read the live intent); its create and the actor's lease build only for
+// their tests until the split's route calls them (S4 step 13).
 pub(crate) mod intent;
 pub(crate) mod model;
+pub(crate) mod recover;
 pub(crate) mod revalidate;
 // The split's sentinel helper builds for its tests until the split calls it (S4 step 11).
 #[cfg(test)]
 pub(crate) mod sentinel;
-// The topology's CAS writes build for their tests until the split publishes (S4 step 11).
-#[cfg(test)]
+// The topology's CAS writes: the claimant's roll forward publishes through them.
 pub(crate) mod store;
 // The split builds for its tests until its route calls it (S4 step 13).
 #[cfg(test)]

@@ -12,9 +12,8 @@ pub(crate) mod crc32c;
 pub(crate) mod directory;
 pub(crate) mod estimate;
 pub(crate) mod gc;
-// S4's split writes the reference lists (S4 step 11) and S6's collector the release logs; until
-// the first of them, only its tests.
-#[cfg(test)]
+// The lineage objects' paths are production (the split's claimant deletes an abandoned split's
+// lists); the codec and the release logs build for their tests until S6's collector writes them.
 pub(crate) mod lineage;
 pub(crate) mod metrics;
 pub(crate) mod object;

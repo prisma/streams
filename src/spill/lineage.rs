@@ -20,15 +20,21 @@
 //! `kind:u8 epoch:u64 BE seq:u64 BE` (17 B) in strictly ascending order, then
 //! `crc32c:u32 BE` of everything before it. An entry's home is the root's.
 
+#[cfg(test)]
 use crate::spill::crc32c::crc32c;
+#[cfg(test)]
 use crate::spill::gc::ObjectKind;
 
+#[cfg(test)]
 const VERSION: u8 = 1;
+#[cfg(test)]
 const ENTRY: usize = 17;
 
 /// One of an ancestor's objects: its kind, epoch and seq.
+#[cfg(test)]
 pub(crate) type Entry = (ObjectKind, u64, u64);
 
+#[cfg(test)]
 /// `entries`' body, in order and without duplicates.
 pub(crate) fn encode(entries: &[Entry]) -> Vec<u8> {
     let mut sorted = entries.to_vec();
@@ -48,6 +54,7 @@ pub(crate) fn encode(entries: &[Entry]) -> Vec<u8> {
     body
 }
 
+#[cfg(test)]
 /// A body's entries; `None` for a body that is not one `encode` wrote.
 pub(crate) fn decode(body: &[u8]) -> Option<Vec<Entry>> {
     let (head, crc) = body.split_last_chunk::<4>()?;
@@ -78,6 +85,7 @@ pub(crate) fn decode(body: &[u8]) -> Option<Vec<Entry>> {
     Some(out)
 }
 
+#[cfg(test)]
 /// The release log `<seq>` of opening `epoch` of `holder` under `root`.
 pub(crate) fn release_log_path(root: &str, holder: u32, epoch: u64, seq: u64) -> String {
     format!("{root}/lineage/rel/{holder}/{epoch:020}-{seq:020}")
@@ -95,6 +103,7 @@ pub(crate) fn supplementary_list_path(root: &str, holder: u32) -> String {
     format!("{root}/lineage/refs/{holder}-d")
 }
 
+#[cfg(test)]
 /// `holder`'s released-all marker under `root`.
 pub(crate) fn released_all_path(root: &str, holder: u32) -> String {
     format!("{root}/lineage/rel/{holder}/all")

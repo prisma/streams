@@ -1297,6 +1297,28 @@
     ]
   },
   {
+    "name": "a_lapsed_intent_is_rolled_back_by_the_parents_opener_which_then_serves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c8a8b4c8a2473066ab9dfe5475bc776d4eec3e12db2a72216f2758971c976942",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_lapsed_intent_whose_parent_holds_t_is_rolled_forward_and_the_parent_never_serves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "95d80eb4097d4d7f6a6ba8b16c07aab3c9de2fb4fe8df5b0e0371db3c7e79388",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_large_record_absorbs_after_restart_under_default_policy",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4348,7 +4370,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "96e244904d3a22a39091f92e6077c18f0a54b14d26d4a6fdd90ebf29216f2899",
+    "function_sha256": "2c9543914ebc7b440043298278a78aebcf2e358439d55592cc487a1a76a5cb43",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/open_fence.rs",

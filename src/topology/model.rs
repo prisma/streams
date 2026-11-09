@@ -207,12 +207,11 @@ impl TryFrom<Unchecked> for Topology {
 }
 
 /// Where an operation-born home's shard log lives: `shards/<prefix>~<home>` (S4-DESIGN §3.1).
-#[cfg(test)]
 pub(crate) fn born_home_path(prefix: &str, home: u32) -> String {
     format!("shards/{prefix}~{home}")
 }
 
-/// Tests until the split calls them (S4 step 11): the topology's two writes of a split.
+/// Tests until the split's route calls it (S4 step 13): the home reservation of a split.
 #[cfg(test)]
 impl Topology {
     /// Two fresh homes for a split's children: `next_home` and the one after, with `next_home`
@@ -223,7 +222,9 @@ impl Topology {
         next.shards.next_home = first.saturating_add(2);
         (next, [first, first.saturating_add(1)])
     }
+}
 
+impl Topology {
     /// The topology once `op_id` split leaf `prefix` into its halves at `children` (S4-DESIGN §6.2
     /// step 4.1): the next version; the halves are leaves at their homes, born at it, whose parent
     /// is the prefix's home, retired at it; and `last_op` names the operation. Refused for a

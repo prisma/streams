@@ -635,6 +635,30 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::renew_until",
+      "path": "src/dst/tests/open_fence.rs",
+      "reason": "The live actor's renewal loop waits on its stop signal or its next 2 s renewal, whichever comes first, so the test ends the renewals at an exact point before it rolls the intent back; the compiler checks the select's expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::an_open_a_live_intent_names_holds_until_the_intent_ends",
+      "path": "src/dst/tests/open_fence.rs",
+      "reason": "The actor's renewals and the held requests run concurrently in one test task, so the intent stays live (never lapsed) while the requests meet the held open; the compiler checks the join's expansion and both futures borrow the test's store.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::the_pause_puts_no_list_when_nothing_adds_a_holding",
+      "path": "src/dst/tests/split_k.rs",
+      "reason": "The split and the control that records the lists at its park run concurrently in one test task, so the lists are read while the split waits in its pause; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::a_purge_request_mid_pass_abandons_the_copy",
       "path": "src/shard/seal/gc/clean/tests.rs",
       "reason": "The cleaner's pass and the purge request that overtakes its copy run concurrently in one test task, so the request lands while the pass waits after its PUT; the compiler checks the join's expansion and both futures borrow the test's rig.",

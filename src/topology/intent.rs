@@ -15,25 +15,20 @@
 //!   ETag unchanged across at least [`LEASE`] + [`SKEW`] of the claimant's observations. No
 //!   `lease_until_ms` is ever compared with a local wall clock.
 
-#[cfg(test)]
 use std::time::Duration;
 
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt};
-#[cfg(test)]
 use object_store::{PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
 use crate::runtime::MonotonicNow;
 
 /// Where the cell's one intent lives.
 const INTENT_PATH: &str = "topology/intent.json";
 /// The lease an actor holds the intent under.
-#[cfg(test)]
 pub(crate) const LEASE: Duration = Duration::from_secs(10);
 /// The clock skew a lapse allows for, on top of the lease.
-#[cfg(test)]
 pub(crate) const SKEW: Duration = Duration::from_secs(1);
 
 /// The intent's state: `Preparing` while its operation runs, then one of the two terminals.
@@ -95,7 +90,6 @@ pub(crate) enum IntentError {
     #[cfg(test)]
     Busy(Box<Intent>),
     /// The ETag moved under the write: another writer (a claimant) won.
-    #[cfg(test)]
     Lost,
     /// The store failed; the write may be retried.
     Store(object_store::Error),
@@ -110,7 +104,6 @@ impl std::fmt::Display for IntentError {
                 "a live {} intent {} holds the cell",
                 live.kind, live.op_id
             ),
-            #[cfg(test)]
             Self::Lost => f.write_str("the intent changed under the write"),
             Self::Store(e) => write!(f, "intent store: {e}"),
         }
@@ -121,7 +114,6 @@ fn path() -> ObjPath {
     ObjPath::from(INTENT_PATH)
 }
 
-#[cfg(test)]
 fn encode(intent: &Intent) -> Result<PutPayload, IntentError> {
     serde_json::to_vec(intent)
         .map(PutPayload::from)
@@ -133,7 +125,6 @@ fn encode(intent: &Intent) -> Result<PutPayload, IntentError> {
         })
 }
 
-#[cfg(test)]
 /// A write's ETag, or a store error: a write that stores none cannot be CASed over again.
 fn etag_of(result: object_store::PutResult) -> Result<String, IntentError> {
     result.e_tag.filter(|e| !e.is_empty()).ok_or_else(|| {
@@ -163,7 +154,6 @@ pub(crate) async fn read(store: &dyn ObjectStore) -> Result<Option<Held>, Intent
     Ok(Some(Held { intent, etag }))
 }
 
-#[cfg(test)]
 /// CAS `intent` over the object at `etag`. A missing ETag never becomes an unconditional PUT.
 async fn cas(store: &dyn ObjectStore, etag: &str, intent: &Intent) -> Result<String, IntentError> {
     if etag.is_empty() {
@@ -209,7 +199,6 @@ pub(crate) async fn create(store: &dyn ObjectStore, intent: &Intent) -> Result<H
     })
 }
 
-#[cfg(test)]
 /// Write `next` over `held` (a renewal, a claim or a terminal transition): the new ETag, or
 /// `Lost` when the intent changed since `held` was read.
 pub(crate) async fn replace(
@@ -245,7 +234,6 @@ impl Lease {
     }
 }
 
-#[cfg(test)]
 /// A claimant's view of whether an intent lapsed: the ETag it saw and when it first saw it,
 /// on its own monotonic clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +242,6 @@ pub(crate) struct Lapse {
     since: MonotonicNow,
 }
 
-#[cfg(test)]
 impl Lapse {
     /// The first observation of the intent at `etag`, at `now`.
     pub(crate) fn first(etag: &str, now: MonotonicNow) -> Self {
@@ -276,7 +263,6 @@ impl Lapse {
     }
 }
 
-#[cfg(test)]
 fn elapsed(from: MonotonicNow, to: MonotonicNow) -> Duration {
     Duration::from_millis(u64::try_from(to.millis() - from.millis()).unwrap_or(0))
 }

@@ -19,7 +19,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::config::{CheckpointOptions, CheckpointScope};
 
 use super::sentinel::{Counts, Row};
-use super::{fence, intent, sentinel, store};
+use super::{fence, intent, recover, sentinel, store};
 use crate::keyspace::range::Range;
 use crate::keyspace::{SENTINEL, tag};
 use crate::shard::ShardEngine;
@@ -194,7 +194,7 @@ pub(crate) async fn split(
             barrier.resume();
         }
         drop(hold);
-        return Err(roll_back(&*store, parent, &children, &held, why).await);
+        return Err(roll_back(dir, parent, &held, why).await);
     }
     let retired = fence::Retired {
         version: version + 1,
@@ -214,7 +214,7 @@ pub(crate) async fn split(
         let barrier = barrier.expect("held");
         barrier.resume();
         drop(hold);
-        return Err(roll_back(&*store, parent, &children, &held, format!("'T': {e}")).await);
+        return Err(roll_back(dir, parent, &held, format!("'T': {e}")).await);
     }
     let released = std::sync::OnceLock::new();
     let retire = |reroute| {
@@ -236,9 +236,9 @@ pub(crate) async fn split(
         published
     });
     drop(hold);
-    let ended = held_terminal(&held, intent::State::Reclaimed, "published");
+    let ended = recover::terminal(&held, intent::State::Reclaimed, "published");
     drop(intent::replace(&*store, &held, ended).await);
-    drop_checkpoint(parent, op_id).await;
+    recover::drop_checkpoint(parent, op_id).await;
     published.map_err(Refused::RolledBack)
 }
 
@@ -558,109 +558,24 @@ async fn publish(
 }
 
 /// Roll back before `'T'` (S4-DESIGN §6.4's first rows): collection resumes and the touched mark is
-/// dropped; the children's paths get the takeover GC, then the pause's checkpoint and the lists are
-/// deleted, and the intent ends `RolledBack` last, so a rollback cut short is a claimant's to redo. A
-/// stale clone that lands after it is S6's never-leaf sweeper's.
+/// dropped, then the claimant's rollback runs on the split's own intent (`recover::roll_back`).
 async fn roll_back(
-    store: &dyn ObjectStore,
+    dir: &ShardDirectory,
     parent: &ShardEngine,
-    children: &[Child],
     held: &intent::Held,
     why: String,
 ) -> Refused {
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(false);
     drop(gate.take_touched());
-    for child in children {
-        let path = super::model::born_home_path(&child.prefix, child.home);
-        delete_child(parent.data_store(), &path).await;
-    }
-    drop_checkpoint(parent, &held.intent.op_id).await;
-    if let Ok(rows) = sentinel_rows(parent).await {
-        for child in children {
-            let Ok(counts) = sentinel::child_counts(&rows, &[], child.range) else {
-                continue;
-            };
-            let Ok(lists) = sentinel::child_lists(&rows, &counts) else {
-                continue;
-            };
-            delete_lists(store, parent, child, lists.keys()).await;
-        }
-    }
-    let ended = held_terminal(held, intent::State::RolledBack, &why);
-    drop(intent::replace(store, held, ended).await);
-    Refused::RolledBack(why)
-}
-
-/// The takeover GC of a child's `path` (S4-DESIGN §6.4): its clone's final checkpoints stripped
-/// from its sources, then its files (SlateDB's `delete_db`). A path whose manifest does not decode,
-/// or that holds files but no manifest, has the files it listed deleted one by one; one that holds
-/// none is left untouched.
-async fn delete_child(store: &Arc<dyn ObjectStore>, path: &str) {
-    use futures_util::TryStreamExt;
-    let prefix = object_store::path::Path::from(path);
-    let listed: Vec<_> = store
-        .list(Some(&prefix))
-        .try_collect()
-        .await
+    let shards = dir.prefixes().shards.clone();
+    let roots = shards
+        .leaves
+        .get(&parent.prefix)
+        .map(|home| recover::lineage_of(&shards, *home))
         .unwrap_or_default();
-    if listed.is_empty() {
-        return;
-    }
-    let admin = slatedb::admin::AdminBuilder::new(path, store.clone()).build();
-    if admin.delete_db(true).await.is_ok() {
-        return;
-    }
-    for meta in listed {
-        drop(store.delete(&meta.location).await);
-    }
-}
-
-/// Delete `child`'s reference and supplementary lists under each of the `ancestors`' roots.
-async fn delete_lists(
-    store: &dyn ObjectStore,
-    parent: &ShardEngine,
-    child: &Child,
-    ancestors: impl Iterator<Item = &u32>,
-) {
-    for ancestor in ancestors {
-        let root = parent.object_root(*ancestor);
-        for path in [
-            lineage::reference_list_path(&root, child.home),
-            lineage::supplementary_list_path(&root, child.home),
-        ] {
-            drop(store.delete(&object_store::path::Path::from(path)).await);
-        }
-    }
-}
-
-/// Delete the pause's checkpoint of operation `op_id` from the parent, if it was taken: the children
-/// were cloned from it (or never will be). A failed delete is left to the checkpoint's lifetime.
-async fn drop_checkpoint(parent: &ShardEngine, op_id: &str) {
-    let path = parent.log_path();
-    let admin =
-        slatedb::admin::AdminBuilder::new(path.as_str(), parent.data_store().clone()).build();
-    let name = format!("topo-{op_id}");
-    let Ok(taken) = admin.list_checkpoints(Some(&name)).await else {
-        return;
-    };
-    for checkpoint in taken
-        .into_iter()
-        .filter(|c| c.name.as_deref() == Some(&*name))
-    {
-        drop(admin.delete_checkpoint(checkpoint.id).await);
-    }
-}
-
-/// `held`'s intent, ended in `state` with `result`.
-fn held_terminal(held: &intent::Held, state: intent::State, result: &str) -> intent::Intent {
-    let mut ended = held.intent.clone();
-    ended.state = state;
-    ended.outcome = Some(intent::Outcome {
-        result: result.to_string(),
-        reason: result.to_string(),
-    });
-    ended
+    drop(recover::roll_back(parent, &roots, held, &why).await);
+    Refused::RolledBack(why)
 }
 
 #[cfg(test)]
