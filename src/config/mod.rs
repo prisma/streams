@@ -28,6 +28,8 @@ pub(crate) mod model;
 pub(crate) mod notice;
 pub(crate) mod profile;
 pub(crate) mod project_tracker;
+#[cfg(test)]
+mod shard_poll_tests;
 pub(crate) mod shards_per_instance;
 pub(crate) mod summary;
 pub(crate) mod validation;
