@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "6743e6a7d01bd3a75749cac35dbbed14efa7d23e3bf47bc49b1ef3c548cc143a",
+      "log_sha256": "ed5c2d1f5e092e04539b2f070cc9c040f9257d9fea91c430359a9d395993b049",
       "role": "baseline",
-      "seconds": 94.3,
+      "seconds": 66.5,
       "verdict": "pass"
     },
     {
@@ -17,27 +17,27 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e5ca5f7e9d497840ed8e78a6252cf4b73bff9b0e0c42b68fa4de97720e768ffd",
+      "log_sha256": "fc31f8ae8a9b009f1703dd4e50943be88fa63c053af349adf2991377e04fcbfa",
       "role": "baseline",
-      "seconds": 38.2,
+      "seconds": 112.3,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/one-byte",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ca4a50de033bf173675911eacd2677580dda4202eb2d4aa278f5ead89d5f672f",
+      "log_sha256": "fa20079d628a97a392c4285ede61198639bbe8fcc1dc06f3e37b84b0c11b22d9",
       "role": "baseline",
-      "seconds": 38.2,
+      "seconds": 99.2,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/capped",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "022acb7b5168a71f1a192144f0dd1654138fd337ed7bc46cf68f0149b95f4e20",
+      "log_sha256": "5727d944d316120526a4f01d872e30074ed5cef1f848c5f677b36ce7e69218b4",
       "role": "baseline",
-      "seconds": 126.0,
+      "seconds": 144.2,
       "verdict": "pass"
     },
     {
@@ -48,15 +48,15 @@
       "failed_checks": [
         "\"a bloom admits every key it holds\""
       ],
-      "log_sha256": "7b324a15cb084d8cdd3956cdfe07efc89672fd2ab531b1e383cf61130cd20880",
+      "log_sha256": "a63f9dd0b29918c0c3ee678a165ad57ef6b0a7889dfb5ddc5db3427c8d64a353",
       "mutated": {
         "src/spill/directory/row.rs": {
-          "baseline": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
-          "control": "5604387d4480b330e10e547271fd491cfedcb9cefec98acd60f03e1991105743"
+          "baseline": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
+          "control": "294745b9478223d7ac6043961833114d58bee5fd41314f8f7316204742248666"
         }
       },
       "role": "negative-control",
-      "seconds": 94.3,
+      "seconds": 103.5,
       "verdict": "fail"
     },
     {
@@ -67,15 +67,15 @@
       "failed_checks": [
         "\"every probe lies inside the bloom\""
       ],
-      "log_sha256": "d2e6372a23e714420e5927df85d270a2e6f97de829f34ff4a6f7e31219449f03",
+      "log_sha256": "93fe44d132733858e0feb3f91c389481281c1c72dbbec3873bdd126a540d3cbe",
       "mutated": {
         "src/spill/directory/row.rs": {
-          "baseline": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
-          "control": "12b553a1f10b1ddc034e4c21ce7f28a113cc9f8afc4e4ea3fa9c54df9ceb19c0"
+          "baseline": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
+          "control": "f839869e4729ae7d2bab2850a0b125cc917356d7f431f83291fc2a9a71bd8952"
         }
       },
       "role": "negative-control",
-      "seconds": 43.5,
+      "seconds": 128.6,
       "verdict": "fail"
     }
   ],
@@ -92,9 +92,9 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/spill/directory.rs": "1f33579437095d30ea56000c00c0d09cf555922ea9fa9cfe96fe5c64a68471f8",
+      "src/spill/directory.rs": "293a27f9c4eb95c4c6d70c53e550b4e837ce49751d0faa2da75b225c88cec830",
       "src/spill/directory/proofs.rs": "5971e838fecf0c2e5f67d927afef46e7925275fe78e2204dd1ff84ec427b6443",
-      "src/spill/directory/row.rs": "2afc798be7e7e2aa0306eb6ce5685e06b0b0d5bbd746c9865c819a77ccd7c77c",
+      "src/spill/directory/row.rs": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
       "verification/kani/controls/KANI-099-probe-past-the-bloom.patch": "72043ba7061860699dbf614d259f52a10cf7fcd83c1af0a194c5a22d064d58e4",
       "verification/kani/controls/KANI-099-set-the-wrong-bit.patch": "b356b1bc746d84166758a26178f814794ce8d597d0e0fb9e61275b41f979a93f"
     },
@@ -154,10 +154,10 @@
       }
     }
   },
-  "inputs_sha256": "2bb0d54cef738699a796bd0cb9f0d50d80398a7f468ab985eafcbc55bc5a2433",
+  "inputs_sha256": "fedf21ae2313f6584a3ac0d8c79c15c15a133ee00f61eaba28dbaa5df7ae7eac",
   "run_on": {
     "dirty_tree": false,
-    "revision": "6e4534dbaf9f86138c7092263cba2bf3dbcc763b"
+    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
   },
   "schema": 2,
   "tools": {

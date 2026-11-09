@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "85a727990926a2ba4e17a13b5a2e3b71ceba260322da68fc580fdbcd34c4af66",
+      "log_sha256": "2c98cade5463377f6282e3981d952ce622fcb98740e65648d238231478a87a6e",
       "role": "baseline",
-      "seconds": 181.5,
+      "seconds": 126.6,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a plain seal never joins a claim that owes a final record\""
       ],
-      "log_sha256": "5ecdd3e6102b8fe2e7e708c4eba49caffd348c0061ba65bdcde3aff2f7e77711",
+      "log_sha256": "d5013ba00020e7e789019547962f4b4a5ef6ae9b107b8d3379a67d5a94328374",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 120.2,
+      "seconds": 108.1,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it\""
       ],
-      "log_sha256": "3ce045903aad1156aa12df8d4e89a644f68124448671d2d49a8c6b56e39a9e5b",
+      "log_sha256": "bc478ca070a9fc4cacf2a6aab0f9590a8e778ef410867ec8be31ae9e0e293b6f",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 193.3,
+      "seconds": 80.3,
       "verdict": "fail"
     },
     {
@@ -57,7 +57,7 @@
       "failed_checks": [
         "a declined step carries no installation"
       ],
-      "log_sha256": "f85c93d685d9fe2111d942a69a5cb92fd0dcd27dcaedd5fbf60472ee0354518d",
+      "log_sha256": "6bb938b6890eadd70e17067fe87b8bc5175e90b8ce391652718abd73e3e6262c",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
@@ -65,7 +65,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 193.4,
+      "seconds": 90.5,
       "verdict": "fail"
     }
   ],
@@ -83,7 +83,7 @@
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/lifecycle/claims.rs": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-      "src/application/lifecycle/claims/proofs.rs": "2de246594a201c843a214a210c6a44dcb1597563dc90b961c4d5cda2b1e466a9",
+      "src/application/lifecycle/claims/proofs.rs": "2362d88931c57984d911ad4b15ce53b18324adca0d9d08cfaa691d4d53b7a7c9",
       "verification/kani/controls/KANI-040-install-without-a-claim.patch": "10f0886c2f9583be570a8ed9c0bd2f6a9b7c418a6844a38f9d6f1eaf9a1f5b18",
       "verification/kani/controls/KANI-040-plain-seal-joins-owed-final.patch": "698984591d099647a684c74217847c969ebebf30b912129085deaa3cbea095ca",
       "verification/kani/controls/KANI-040-renew-the-wrong-operation.patch": "104a6500498cc4f7792e3ccb04eb1c610a9b9c9e90ad5deaa6df6ddc0b4978c4"
@@ -144,10 +144,10 @@
       }
     }
   },
-  "inputs_sha256": "202e40ee50a3bdb150c49bf36c088849d061adf84eda53af709600f403052b19",
+  "inputs_sha256": "95fc53040ad49315d7dcd73c8b0203e29381e464328ff398a8bf309d22671291",
   "run_on": {
     "dirty_tree": false,
-    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
+    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
   },
   "schema": 2,
   "tools": {

@@ -875,11 +875,16 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   shard's `seal.index_faults` above 0, or the indexes are suspect, call
   `POST /operator/shards/{prefix}/repair-indexes` (`root` for the root
   shard) on the instance that owns it, with the deployment bearer. It
-  retires that shard's engine (the shard answers as in any retirement for
-  the 3 s holdoff), and the next open pays one full tail scan before it
-  serves; a `warn` line names the counts it fixed. 404
-  `shard_not_open_here` means another instance owns it. A load fault or a
-  stale index row also repairs at the shard's next open without the call.
+  retires that shard's engine, and the next open pays one full scan of the
+  shard log before it serves (its cost scales with the log's size; not yet
+  measured). Requests meanwhile answer 503 `shard_closing`, then
+  `shard_moving` through the 3 s holdoff, then `shard_opening` with
+  `Retry-After` if the open outlasts `shard.open_wait_ms` (10 s), until the
+  open completes; a `warn` line names the counts it fixed. 404
+  `shard_not_open_here` means no engine for the shard is open here now:
+  another instance owns it, or it is retired or not yet touched (a second
+  call right after a 202 answers 404). A load fault or a stale index row
+  also repairs at the shard's next open without the call.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
