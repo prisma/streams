@@ -1,6 +1,6 @@
 //! The split (S4-DESIGN §6): one shard log becomes two, each a projected clone of the parent's
-//! checkpoint seeded with the sentinel rows its range needs (`topology::sentinel`), published by a
-//! CAS of the topology.
+//! checkpoint seeded at its initialization with the sentinel rows its range needs
+//! (`topology::sentinel`; C4), published by a CAS of the topology.
 //!
 //! The pieces the steps share:
 //! - [`key_bounds`]: a child's range of keys in the log, which its clone projects.
@@ -433,8 +433,10 @@ async fn put_lists(
     Ok(())
 }
 
-/// The fallback arm (S4-DESIGN §6.2 step 2.5): `child`'s log cloned from the parent's checkpoint into
-/// its range, then opened, seeded (its `'Y'` last) and flushed, and closed.
+/// C4 (S4-DESIGN §6.2 step 2.4, the fork's `CloneBuilder::with_initial_rows`): `child`'s log is
+/// cloned from the parent's checkpoint into its range and holds its seed (its `'Y'` included) as its
+/// own L0 table from the moment it is initialized, so the child needs no open to be complete: a
+/// clone that fails before it is initialized has no `'Y'` and cannot be opened.
 async fn clone_child(
     parent: &ShardEngine,
     checkpoint: &slatedb::CheckpointCreateResult,
@@ -444,29 +446,17 @@ async fn clone_child(
     let path = super::model::born_home_path(&child.prefix, child.home);
     let source = slatedb::CloneSourceSpec::with_checkpoint(parent.log_path(), checkpoint.id)
         .with_projection_range(key_bounds(&child.prefix));
+    let rows = seed
+        .into_iter()
+        .map(|(key, value)| (Bytes::from(key), Bytes::from(value)))
+        .collect();
     slatedb::admin::AdminBuilder::new(path.as_str(), parent.data_store().clone())
         .build()
         .create_clone_builder_from_source(source)
+        .with_initial_rows(rows)
         .build()
         .await
-        .map_err(|e| format!("clone {path}: {e}"))?;
-    let db = crate::keyspace::db_builder(path.as_str(), parent.data_store().clone())
-        .build()
-        .await
-        .map_err(|e| format!("open {path}: {e}"))?;
-    let (identity, _) = crate::shard::open_index::identity_row(child.home);
-    let (last, first): (Vec<Row>, Vec<Row>) = seed.into_iter().partition(|(k, _)| *k == identity);
-    for batch in [first, last] {
-        let mut write = slatedb::WriteBatch::new();
-        for (key, value) in batch {
-            write.put(key, value);
-        }
-        db.write(write)
-            .await
-            .map_err(|e| format!("seed {path}: {e}"))?;
-        db.flush().await.map_err(|e| format!("seed {path}: {e}"))?;
-    }
-    db.close().await.map_err(|e| format!("close {path}: {e}"))
+        .map_err(|e| format!("clone {path}: {e}"))
 }
 
 /// Published (S4-DESIGN §6.2 step 4): the topology CAS and its install, then at once the barrier
