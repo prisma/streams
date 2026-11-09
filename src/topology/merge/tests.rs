@@ -31,7 +31,7 @@ fn a_merge_replaces_two_halves_by_their_parent_at_a_fresh_home() {
     let born = &merged.shards.homes[&4];
     assert_eq!(
         (born.prefix.as_str(), born.path.as_str()),
-        ("0", "shards/0~4")
+        ("0", "shards/0-4")
     );
     assert_eq!((born.parents.clone(), born.born_version), (vec![0, 1], 2));
     assert_eq!(merged.shards.homes[&0].retired_version, Some(2));
