@@ -47,7 +47,11 @@ impl Now {
 /// and when a planned count is published.
 #[derive(Debug)]
 pub(super) struct Gate {
+    /// `SCALE_IN_SECS`: how long the shrink target must stay below the
+    /// published count on this instance, and how old the published count
+    /// must be, before a shrink (H3, H5).
     scale_in: Duration,
+    scale_in_ms: i64,
     /// How long after a published change the in-flight is not read (H6):
     /// the ring is moving shards, and their refused writes are not load.
     settle_ms: i64,
@@ -66,6 +70,7 @@ impl Gate {
     pub(super) fn new(scale_in: Duration, settle_secs: u64) -> Self {
         Self {
             scale_in,
+            scale_in_ms: i64::try_from(scale_in.as_millis()).unwrap_or(i64::MAX),
             settle_ms: i64::try_from(settle_secs.saturating_mul(1_000)).unwrap_or(i64::MAX),
             below_since: None,
             window_from_ms: None,
@@ -114,8 +119,12 @@ impl Gate {
     /// The count this tick publishes, if any, from the plan's grow and
     /// shrink targets (`planning::Need`) and the published document: the
     /// first count at once; a grow once the document is `GROW_FLOOR_MS` old;
-    /// a shrink to the conservative target once it has stayed below the
-    /// published count for `SCALE_IN_SECS` on this instance's clock.
+    /// one instance fewer once the conservative target has stayed below the
+    /// published count for `SCALE_IN_SECS` on this instance's clock and the
+    /// document is that old too (H3-H5): one step a window, each window
+    /// started at the publication every instance reads, behind the drain of
+    /// the member the step before removed. `FLEET_MIN` holds, since the
+    /// caller floors the target at it and the target is below the count.
     pub(super) fn decide(
         &mut self,
         plan: (u64, u64),
@@ -131,7 +140,9 @@ impl Gate {
             (now.ms.saturating_sub(cur.computed_at_ms) >= GROW_FLOOR_MS).then_some(need)
         } else if shrink < cur.count {
             let since = *self.below_since.get_or_insert(now.at);
-            (now.at.duration_since(since) >= self.scale_in).then_some(shrink)
+            let held = now.at.duration_since(since) >= self.scale_in;
+            let aged = now.ms.saturating_sub(cur.computed_at_ms) >= self.scale_in_ms;
+            (held && aged).then_some(cur.count - 1)
         } else {
             self.below_since = None;
             None
@@ -243,6 +254,42 @@ mod tests {
         assert_eq!(gate.decide((5, 4), Some(&cur), at(base, 30)), Some(5));
     }
 
+    /// A shrink is one step, published once the target has stayed below the
+    /// count for exactly `SCALE_IN_SECS` and the document is exactly that
+    /// old (H3, H5), never while the target is at the count, and never over
+    /// a younger document however long the target has stayed below.
+    #[test]
+    fn a_shrink_waits_for_both_its_floors_and_a_target_below_the_count() {
+        let base = Instant::now();
+        let cur = four();
+        let mut gate = Gate::new(Duration::from_secs(300), 60);
+        let at_count = (0..=600).step_by(2);
+        assert!(
+            at_count
+                .into_iter()
+                .all(|t| gate.decide((4, 4), Some(&cur), at(base, t)).is_none())
+        );
+        let mut gate = Gate::new(Duration::from_secs(300), 60);
+        assert_eq!(gate.decide((1, 1), Some(&cur), at(base, 0)), None);
+        assert_eq!(gate.decide((1, 1), Some(&cur), at(base, 298)), None);
+        assert_eq!(gate.decide((1, 1), Some(&cur), at(base, 300)), Some(3));
+        // Another instance publishes the same count at 100 s: this one's
+        // target has stayed below since 0 s, and waits for the document.
+        let mut gate = Gate::new(Duration::from_secs(300), 60);
+        let republished = Desired {
+            epoch: 3,
+            computed_at_ms: EPOCH_MS + 100_000,
+            ..four()
+        };
+        assert_eq!(gate.decide((1, 1), Some(&cur), at(base, 0)), None);
+        assert_eq!(gate.decide((1, 1), Some(&republished), at(base, 300)), None);
+        assert_eq!(gate.decide((1, 1), Some(&republished), at(base, 398)), None);
+        assert_eq!(
+            gate.decide((1, 1), Some(&republished), at(base, 400)),
+            Some(3)
+        );
+    }
+
     /// The production thresholds, as `fleet::start_configured` derives
     /// them from the command line's defaults, at `FLEET_MAX` 8.
     fn thresholds() -> Thresholds {
@@ -311,17 +358,28 @@ mod tests {
         out
     }
 
-    /// The trace's spikes grow the fleet no more: the one-tick spike at
-    /// 90 s and the ten-tick one at 302-320 s are shorter than the 30 s
-    /// window, and the in-flight is not read for 60 s after each change.
-    /// The sustained 300 in flight grows it to 3 once its window fills
-    /// (182 s). Shrinks still jump to the conservative target a minute
-    /// after the window goes blind on a change.
+    /// The trace's spikes grow the fleet no more, and it sheds one instance
+    /// per window: the one-tick spike at 90 s and the ten-tick one at
+    /// 302-320 s are shorter than the 30 s window, and the in-flight is not
+    /// read for 60 s after each change. The sustained 300 in flight grows
+    /// it to 3 once its window fills (182 s), the heavier 650 to 7 (430 s);
+    /// the long quiet takes one instance off when the conservative target
+    /// has stayed below the count for `SCALE_IN_SECS` and the count is that
+    /// old (732 s), and one more a window later (1,034 s).
     #[test]
-    fn only_in_flight_that_lasts_grows_the_fleet() {
+    fn the_fleet_grows_on_lasting_load_and_sheds_one_instance_per_window() {
+        let published = replay();
         assert_eq!(
-            replay(),
-            vec![(0, 1), (182, 3), (244, 1), (334, 3), (396, 2), (542, 1)]
+            published,
+            vec![(0, 1), (182, 3), (430, 7), (732, 6), (1_034, 5)]
         );
+        for pair in published.windows(2) {
+            let ((t0, c0), (t1, c1)) = (pair[0], pair[1]);
+            assert!(t1 - t0 >= 30, "{t0} s and {t1} s");
+            if c1 < c0 {
+                assert_eq!(c1, c0 - 1, "a shrink is one step");
+                assert!(t1 - t0 >= 300, "no shrink within 300 s of a change");
+            }
+        }
     }
 }

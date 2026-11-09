@@ -187,7 +187,7 @@ SCALE_CPU_SUSTAIN_SECS=20
 SCALE_LATENCY_MS=250
 SCALE_EDGE_SLOTS=140                # recalibrate post-Conduit-fix toward ~250
 SCALE_EDGE_LATENCY_MS=1000
-SCALE_IN_SECS=60
+SCALE_IN_SECS=300
 
 # --- NOT set in staging
 # KEEP_AWAKE      : leave unset so idle instances sleep and stop billing

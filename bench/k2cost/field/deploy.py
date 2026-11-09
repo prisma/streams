@@ -116,7 +116,10 @@ SCALE = {
     "REBALANCE_MOVE_COOLDOWN_SECS": "60", "REBALANCE_RETURN_SECS": "300",
     "SCALE_OUT_CPU_PCT": "75", "SCALE_IN_CPU_PCT": "50", "SCALE_CPU_SUSTAIN_SECS": "20",
     "SCALE_LATENCY_MS": "250", "SCALE_EDGE_SLOTS": "140", "SCALE_EDGE_LATENCY_MS": "1000",
-    "SCALE_IN_SECS": "60",
+    # 300 since the fleet hysteresis (edge change #260): the binary's default
+    # moved with it. The months priced at 60 are not re-run for this; the
+    # count's posture is the default one again.
+    "SCALE_IN_SECS": "300",
 }
 # P-100 is the binary's default gap, the one write tier since 2026-10-07. P-exp
 # pins the 10 ms gap the cells recorded as P-exp ran (the default until then).

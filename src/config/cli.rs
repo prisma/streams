@@ -457,9 +457,12 @@ pub struct CliArgs {
     #[arg(long, env = "SHARED_CACHE_BYTES", default_value_t = 128 * 1024 * 1024)]
     pub(crate) shared_cache_bytes: u64,
 
-    /// Hysteresis: scale-in only after need has been below the current
-    /// desired count for this long (pilot-scaled from the spec's 10 min).
-    #[arg(long, env = "SCALE_IN_SECS", default_value_t = 60)]
+    /// Hysteresis: scale-in by one instance only after the conservative
+    /// target has stayed below the published count for this long on this
+    /// instance, and the published count is at least this old (fleet
+    /// hysteresis H3-H5; Compute's guidance is five minutes below half
+    /// the target).
+    #[arg(long, env = "SCALE_IN_SECS", default_value_t = 300)]
     pub(crate) scale_in_secs: u64,
 
     /// Second scaling dimension (COMPUTE-SPEC §4.2): if any loaded live
@@ -558,7 +561,7 @@ impl CliArgs {
             project_tracker_max: 32_768,
             scale_edge_slots: 140,
             shared_cache_bytes: 128 * 1024 * 1024,
-            scale_in_secs: 60,
+            scale_in_secs: 300,
             scale_latency_ms: 250,
             scale_lat_sustain_secs: 20,
             fleet_max: 4,

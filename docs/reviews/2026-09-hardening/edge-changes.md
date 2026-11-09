@@ -5142,6 +5142,31 @@ One record has verified=false: its commit did not match the recorded text.
   - Unchanged and green (dev profile): `application::`, `product::`, `http::`, `shard::seal::`, `dst_tests::read*`, `live_wait`, `append_application` (#136's closed-under-append pair), `fence_yield` (#179) and `livefeed` (#16): 486 passed, 1 ignored.
 - **Risk reason:** low. A 500 on a retryable condition becomes the 503 that its neighbours in time already give: the gate (`shard_closing`, #137, #179) and an append in the same window (`shard_moving`, #136). No new status, code or header on either surface, and no data path changes. Formal: digest-only re-records of TLA-016 and TLA-018.
 - **Status:** ratified before landing by Fable 5.1 under the owner's delegation (EDGE-255-RATIFICATION.md), with amendments 1-3. The owner may still overrule the raw code (amendment 1) and the consumer scope.
+
+### #260 (this record's commit) — The fleet count grows on in-flight requests only once they have lasted 30 s and shrinks one instance per five minutes, so a spike or a shard move no longer flaps the instance count
+
+- **Program item:** fleet count hysteresis, prisma/streams#149 (the lead, 2026-11-09; FLEET-HYSTERESIS.md rev 1, ruled in Fable 5.1's FLEET-HYSTERESIS-REVIEW.md, option B, H1 + H3-H6).
+- **Surface:** operator only. No client request or response changes; how many instances serve a cell over time does.
+- **Endpoint:** `GET /operator/data.json` (`fleet.heartbeats[].rps`, `ops` `fleet_ops_total`, `fleet.desired.count`, `fleet.desired.reason`); the `SCALE_IN_SECS` default; the published `fleet/desired.json`.
+- **Condition:** a fleet-mode cell (`fleet` coordination enabled); always.
+- **Before:**
+  - `rps` and `fleet_ops_total` counted successful answers from the raw `/v1/stream/{name}` entry only, so a cell serving the product surface reported `rps=0`, and the planner's `rps >= 5` gates kept a loaded member's ack and store-read p50 and its CPU out of the plan.
+  - The edge-slot dimension read one tick's in-flight sum: a one-tick spike, or a moved shard's refused writes, grew the fleet on that tick. Any instance published a grow at once on its own view; a shrink jumped to the conservative target once it had stayed below the count for `SCALE_IN_SECS` (default 60) on that instance's clock. Package 2's ramp on 48597a882 published thirteen counts in under four minutes from four instances, three within five seconds, every one driven by that dimension.
+- **After:**
+  - `rps` and `fleet_ops_total` count successful answers from both data-plane surfaces (C0).
+  - The in-flight the planner reads, and the reason's `inflight=` segment, is the least the members reported over the trailing 30 s; it is 0 until a full window holds and for the move cooldown (`REBALANCE_MOVE_COOLDOWN_SECS`, default 60) after the published document's `computed_at_ms`, so the first slot-driven grow after a change is at least 90 s after it. Utilization, occupancy and the latency and hot-CPU dimensions read as before (C2).
+  - A grow, on any dimension, publishes only over a document at least 30 s old: one grow per window however many instances read the demand. The bootstrap publication is at once (C2).
+  - A shrink is one instance (`count - 1`), published once the conservative target has stayed below the count for `SCALE_IN_SECS` on the publishing instance and the document is at least `SCALE_IN_SECS` old; `SCALE_IN_SECS` defaults to 300 (was 60). A fleet at eight instances whose load falls to one instance's sheds the seven over about 35 minutes, each step behind the previous step's drain (C3).
+- **Retry semantics:** none (operator-read fields and the cell's capacity over time). A burst shorter than 30 s is served by the instances already up, under their unchanged admission limits.
+- **Who is affected:** operators and the cell watch reading `/operator/data.json`; any deployment that relied on the 60 s shrink default (it may set `SCALE_IN_SECS`); the K2 field rig, pinned to 300 with this change. A parser of `desired.reason` keeps its segments; `inflight=` reads lower on spiky load.
+- **Pinning tests:**
+  - `dst::dst_tests::fleet_controller::desired::a_product_surface_request_counts_toward_the_fleets_load` (C0);
+  - `fleet::hysteresis::tests::the_fleet_grows_on_lasting_load_and_sheds_one_instance_per_window` (the review's §7 trace through every rule);
+  - `dst::dst_tests::fleet_controller::desired::the_planner_reads_no_in_flight_shorter_than_the_window` (H1, the reason's `inflight=0`);
+  - `dst::dst_tests::fleet_controller::desired::the_fleet_shrinks_to_the_cores_in_use_over_the_scale_in_ceiling` (one step down);
+  - `config::tests` (the `SCALE_IN_SECS` default 300).
+- **Risk reason:** medium. No wire change, but the cell's capacity reacts more slowly by design: a ramp on the slot dimension is followed 30 s later than before (90 s after a change), any grow waits for a 30 s old count, and a load drop is shed over minutes instead of one minute.
+- **Status:** awaits ratification.
 - **Check against commit:** written with the change.
 
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping

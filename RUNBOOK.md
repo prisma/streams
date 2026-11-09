@@ -236,14 +236,16 @@ standalone.
 | `SCALE_IN_CPU_PCT` | 50 | shrink only if post-shrink utilization would stay below this (the 75/50 gap prevents flapping) |
 | `SCALE_CPU_SUSTAIN_SECS` | 20 | hot-instance breach must persist this long (shard handoffs spike CPU briefly) |
 | `SCALE_LATENCY_MS` / `SCALE_LAT_SUSTAIN_SECS` | 250 / 20 | ack-latency dimension: while the highest ack p50 among the instances that serve at least 5 requests per second stays above the threshold for the sustain time, this dimension asks for one instance more than are live. It catches congestion that shows as neither CPU nor in-flight requests (object-store slowness, for example) |
-| `SCALE_EDGE_SLOTS` | 140 | per-instance ingress-concurrency capacity through the platform front door (two-layer model, [PLATFORM-EDGE-REPORT.md](./PLATFORM-EDGE-REPORT.md)). Post-Conduit-fix guidance: recalibrate toward ~250 |
+| `SCALE_EDGE_SLOTS` | 140 | per-instance ingress-concurrency capacity through the platform front door (two-layer model, [PLATFORM-EDGE-REPORT.md](./PLATFORM-EDGE-REPORT.md)). Post-Conduit-fix guidance: recalibrate toward ~250. The in-flight this dimension reads is the least the members reported over the last 30 s, and none for the move cooldown (`REBALANCE_MOVE_COOLDOWN_SECS`) after a published change: a spike shorter than that, or a shard move's refusals, grow nothing |
 | `SCALE_EDGE_LATENCY_MS` | 1000 | router-observed *client* latency breach: adds an instance AND blocks scale-in (server-side metrics cannot see client pain) |
-| `SCALE_IN_SECS` | 60 | hysteresis before any shrink |
+| `SCALE_IN_SECS` | 300 | a shrink is one instance, published once the conservative target has stayed below the count for this long and the count is at least this old: one step per five minutes, behind the previous step's drain |
 
 Desired count = **max over all dimensions** (utilization, in-flight/slots,
 hot instance, ack latency, router-observed edge latency), clamped to
 `FLEET_MAX`. Every dimension exists because a specific incident demanded it;
-the reason string is logged on every change. The model is generalized in
+the reason string is logged on every change. A grow publishes only over a
+count at least 30 s old, so instances reading the same demand publish it
+once (FLEET-HYSTERESIS.md). The model is generalized in
 [AUTOSCALING-DESIGN.md](./AUTOSCALING-DESIGN.md).
 
 The fleet tick reads its members by name, with conditional GETs (an

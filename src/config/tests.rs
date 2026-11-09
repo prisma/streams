@@ -686,7 +686,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("project-tracker-max", "PROJECT_TRACKER_MAX", "32768"),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
-    ("scale-in-secs", "SCALE_IN_SECS", "60"),
+    ("scale-in-secs", "SCALE_IN_SECS", "300"),
     ("scale-latency-ms", "SCALE_LATENCY_MS", "250"),
     ("scale-lat-sustain-secs", "SCALE_LAT_SUSTAIN_SECS", "20"),
     ("fleet-max", "FLEET_MAX", "4"),

@@ -119,9 +119,10 @@ async fn the_fleet_grows_to_the_cores_in_use_over_the_scale_out_target() {
 }
 
 /// Shrinking is planned on the scale-in ceiling (50 %), which is below the
-/// target so the fleet does not flap: three cores in use and more keep six
-/// instances and more. A controller that multiplied would keep two, and one
-/// that took the remainder would shrink to one.
+/// target so the fleet does not flap, and a shrink is one instance at a
+/// time (FLEET-HYSTERESIS-REVIEW.md §3, H3): three cores in use and more
+/// plan six instances and more, far below the seed of 512, and the first
+/// tick publishes 511, not the planned target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_fleet_shrinks_to_the_cores_in_use_over_the_scale_in_ceiling() {
     let desired = first_publication(512, |cli| {
@@ -130,16 +131,15 @@ async fn the_fleet_shrinks_to_the_cores_in_use_over_the_scale_in_ceiling() {
     })
     .await;
     assert_eq!(
-        desired.epoch, 2,
-        "with no sustain window the first tick publishes the shrink: {desired:?}"
+        (desired.epoch, desired.count),
+        (2, 511),
+        "with no sustain window the first tick publishes one step down: {desired:?}"
     );
+    let cores = cores_in_use(&desired.reason);
+    assert!(cores >= 3.0, "both peers' cores are counted: {desired:?}");
     assert!(
-        cores_in_use(&desired.reason) >= 3.0,
-        "both peers' cores are counted: {desired:?}"
-    );
-    assert!(
-        is_cores_over(&desired, 0.5),
-        "the count is the cores in use over 0.5, rounded up: {desired:?}"
+        (cores / 0.5).ceil() < 511.0,
+        "the planned target is far below the step: {desired:?}"
     );
 }
 
