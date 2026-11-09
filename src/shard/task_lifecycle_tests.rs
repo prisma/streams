@@ -443,3 +443,39 @@ async fn pending_work_counts_an_open_still_running() {
     assert!(engines.is_empty());
     assert_eq!(opens, 1, "the open still running is owed");
 }
+
+/// Each retirement reason names itself on the `shard retired` log line, the one place an operator
+/// reads why a prefix went cold (edge #245 added `index repair`).
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_retired_shards_log_line_names_its_reason() {
+    use crate::shard_directory::RetirementReason::{
+        FleetEviction, IndexRepair, OwnershipMoved, Shutdown, SweepEviction,
+    };
+    let reasons = [
+        OwnershipMoved,
+        FleetEviction,
+        SweepEviction,
+        Shutdown,
+        IndexRepair,
+    ];
+    let log = crate::sse::test_log::ErrorLog::capture_field("reason");
+    for (seed, reason) in (0u64..).zip(reasons) {
+        let (engine, _store) = fixture_named(&format!("retire-label-{seed}"), seed).await;
+        let directory = serving(&engine);
+        let open = directory.open_or_wait(&engine.prefix, Duration::from_secs(1));
+        assert!(matches!(open.await, crate::sharddir::OpenOutcome::Ready(_)));
+        let retired = directory.retire(&engine.prefix, reason, |_, _| true);
+        assert!(matches!(
+            retired,
+            crate::shard_directory::RetireOutcome::Retired(_)
+        ));
+    }
+    let labels = [
+        "ownership moved",
+        "fleet eviction",
+        "sweep eviction",
+        "shutdown",
+        "index repair",
+    ];
+    assert_eq!(log.causes(), labels.map(|l| format!("{l:?}")));
+}

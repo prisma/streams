@@ -1,6 +1,6 @@
-//! The `error` field of every tracing event on this thread, for tests of
-//! diagnostics that have no other observer: a retried source read's cause
-//! reaches operators only through its log.
+//! The `error` field (or another named field) of every tracing event on this
+//! thread, for tests of diagnostics that have no other observer: a retried
+//! source read's cause reaches operators only through its log.
 #![cfg(test)]
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::layer::{Context, SubscriberExt};
@@ -14,6 +14,11 @@ pub(crate) struct ErrorLog {
 
 impl ErrorLog {
     pub(crate) fn capture() -> Self {
+        Self::capture_field("error")
+    }
+
+    /// Captures the field `name` of every event, as `capture` does `error`.
+    pub(crate) fn capture_field(name: &'static str) -> Self {
         // tracing caches a callsite's interest when the callsite is first hit.
         // While one dispatcher is registered it asks only the hitting thread's
         // default, so another test's thread, with no subscriber, that first
@@ -23,7 +28,7 @@ impl ErrorLog {
         // as the capture, makes tracing ask every live dispatcher instead.
         let peer = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::new());
         let causes = Arc::new(Mutex::new(Vec::new()));
-        let layer = ErrorFields(Arc::clone(&causes));
+        let layer = ErrorFields(Arc::clone(&causes), name);
         let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
         Self {
             causes,
@@ -37,19 +42,19 @@ impl ErrorLog {
     }
 }
 
-struct ErrorFields(Arc<Mutex<Vec<String>>>);
+struct ErrorFields(Arc<Mutex<Vec<String>>>, &'static str);
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorFields {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-        event.record(&mut ErrorField(&self.0));
+        event.record(&mut ErrorField(&self.0, self.1));
     }
 }
 
-struct ErrorField<'a>(&'a Mutex<Vec<String>>);
+struct ErrorField<'a>(&'a Mutex<Vec<String>>, &'static str);
 
 impl tracing::field::Visit for ErrorField<'_> {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "error" {
+        if field.name() == self.1 {
             self.0.lock().unwrap().push(format!("{value:?}"));
         }
     }
