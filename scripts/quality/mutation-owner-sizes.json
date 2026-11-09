@@ -252,7 +252,7 @@
     "tasks_signal": 2,
     "telemetry_batch": 26,
     "topology": 80,
-    "topology_gate": 6,
+    "topology_gate": 11,
     "topology_intent": 0,
     "topology_mod": 0,
     "topology_model": 18,

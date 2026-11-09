@@ -51,20 +51,28 @@ impl ShardEngine {
     /// Ask for the purge of a dead incarnation's segment `hash`, closed at
     /// `close_ms`: it runs once `purge_delay` passed that instant.
     /// Idempotent: a row already there is kept (an earlier instant stays; a
-    /// purged stream stays purged).
+    /// purged stream stays purged). `Busy` at once while a split holds the
+    /// gate (`topology::gate`): before `refs`, whose holder may be waiting
+    /// at the gate, and again for the batch.
     pub(crate) async fn request_purge(&self, hash: [u8; 16], close_ms: u64) -> Result<(), GcError> {
         let gc = self.gc_state();
+        if gc.gate.try_shared().is_none() {
+            return Err(GcError::Busy);
+        }
         let not_before_ms = close_ms.saturating_add(super::duration_ms(gc.settings().purge_delay));
         let _refs = gc.refs.lock().await;
         if self.head_row(&hash).await?.is_some() {
             return Ok(());
         }
+        let Some(shared) = gc.gate.try_shared() else {
+            return Err(GcError::Busy);
+        };
         let mut batch = WriteBatch::new();
         batch.put(
             gc::head_key(&hash),
             gc::encode_head(&Head::requested(not_before_ms)),
         );
-        self.write_index_batch(batch)
+        self.write_index_batch_held(batch, &shared)
             .await
             .map_err(|e| GcError::Store(e.to_string()))?;
         gc.signal_heads();

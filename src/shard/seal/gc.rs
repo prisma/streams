@@ -404,6 +404,8 @@ pub(crate) enum GcError {
     /// A decrement no `'R'` row can take: the batch is not written.
     Inexact(String),
     Index(String),
+    /// A split holds the engine's maintenance gate: nothing was written; ask again later.
+    Busy,
 }
 
 impl std::fmt::Display for GcError {
@@ -412,6 +414,7 @@ impl std::fmt::Display for GcError {
             Self::Store(e) => write!(f, "store: {e}"),
             Self::Inexact(e) => write!(f, "inexact refcount: {e}"),
             Self::Index(e) => write!(f, "index: {e}"),
+            Self::Busy => f.write_str("busy: a split holds the engine"),
         }
     }
 }

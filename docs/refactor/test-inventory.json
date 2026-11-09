@@ -554,6 +554,17 @@
     "scenarios": []
   },
   {
+    "name": "a_delete_during_a_split_leaves_its_purge_to_the_walk",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2cbc9494ff95f0c33e8bf6390a18ef204e809d2b4e2e4dfc95585eff802d35c4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_gate.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_deleted_queue_is_fenced_then_gone_without_rows",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2326,6 +2337,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_recreation_during_a_split_keeps_its_closure_debt_until_its_purge_is_asked",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "64b12aebf3005eddedafc084b6638a1617b5f94f9f1687f97217cf52820ff599",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/purge_gate.rs",
     "scenarios": []
   },
   {

@@ -35,6 +35,8 @@ mod latch_calibration;
 
 #[path = "tests/l0_watermark.rs"]
 mod l0_watermark;
+#[path = "tests/purge_gate.rs"]
+mod purge_gate;
 #[path = "tests/purge_lifecycle.rs"]
 mod purge_lifecycle;
 

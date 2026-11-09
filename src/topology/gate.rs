@@ -5,7 +5,9 @@
 //! - **The writers:** fold, run-index merge, consolidation, the cleaner's copy, the collector's
 //!   `'G'` deletes, purge reclaim and its row deletes, the orphan sweep's cursor, and
 //!   `request_purge`. Each writes through `ShardEngine::write_index_batch`, which takes the gate
-//!   shared for exactly that one batch.
+//!   shared for exactly that one batch. `request_purge` alone never waits for it: it tries the
+//!   gate before `refs` and again for its batch, and answers `Busy` while a split holds it (its
+//!   callers fall back to the tombstone walk's next pass, S6-DESIGN §7.1).
 //! - **The lock order:** a writer that holds `refs` (`'R'`/`'H'`'s read-modify-write lock)
 //!   takes the gate inside it, batch by batch; every other writer takes the gate alone. No
 //!   writer takes it twice. A second shared acquire behind a queued exclusive one would never
@@ -33,6 +35,11 @@ impl MaintenanceGate {
     /// One writer's hold: shared, around one batch.
     pub(crate) async fn shared(&self) -> RwLockReadGuard<'_, ()> {
         self.lock.read().await
+    }
+
+    /// The shared hold if it is free now: `None` while a split holds the gate or waits for it.
+    pub(crate) fn try_shared(&self) -> Option<RwLockReadGuard<'_, ()>> {
+        self.lock.try_read().ok()
     }
 
     /// Whether the collection passes stand down (a split prepares).

@@ -206,9 +206,11 @@ fn a_gc_error_names_its_kind() {
         GcError::Store("s".into()),
         GcError::Inexact("i".into()),
         GcError::Index("x".into()),
+        GcError::Busy,
     ]
     .map(|e| e.to_string());
-    assert_eq!(shown, ["store: s", "inexact refcount: i", "index: x"]);
+    let busy = "busy: a split holds the engine";
+    assert_eq!(shown, ["store: s", "inexact refcount: i", "index: x", busy]);
 }
 
 /// The recount counts a request and a purge that owes, not a reclaimed

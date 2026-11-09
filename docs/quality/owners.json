@@ -747,6 +747,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::purge_gate",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A purge request while a split holds the engine's maintenance gate (S4-DESIGN section 5.1): the client DELETE, the tombstone walk and the closure-debt pass each fall back on Busy without waiting out the pause, and ask again once the gate is free; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/purge_gate.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::purge_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "Physical reclamation of dead incarnations end to end (layout 6A package 6): the production sweep asks the owning shard to purge a hard-deleted or replaced incarnation, never one merely expired, and the shard reclaims its chunks and objects; compiler and the full DST suite exercise the module.",

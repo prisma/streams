@@ -575,7 +575,16 @@ impl ShardEngine {
     /// pending to flush it), then durable. Any error leaves its outcome
     /// unknown, so the engine closes.
     pub(crate) async fn write_index_batch(&self, batch: WriteBatch) -> Result<(), FoldError> {
-        let _shared = self.gc_state().gate.shared().await;
+        let shared = self.gc_state().gate.shared().await;
+        self.write_index_batch_held(batch, &shared).await
+    }
+
+    /// `write_index_batch` for a writer that already holds the gate shared.
+    pub(crate) async fn write_index_batch_held(
+        &self,
+        batch: WriteBatch,
+        _shared: &tokio::sync::RwLockReadGuard<'_, ()>,
+    ) -> Result<(), FoldError> {
         #[cfg(test)]
         self.fold_state().before_batch().await?;
         let result = async {

@@ -1,7 +1,8 @@
 #![cfg(test)]
 //! The maintenance gate on one engine (S4-DESIGN §5.1, §5.3): an index batch outside the
-//! committer waits while a split holds the gate exclusive, and lands once it is released; while
-//! collection is off, the orphan sweep and the purge pass stand down, and resume after.
+//! committer waits while a split holds the gate exclusive, and lands once it is released; a purge
+//! request answers `Busy` at once instead; while collection is off, the orphan sweep and the
+//! purge pass stand down, and resume after.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use slatedb::WriteBatch;
 
 use super::super::gc_tests::{gc_rig, rounds, stored};
 use super::super::tests::Oracle;
+use super::GcError;
 use crate::spill::gc::{HeadState, ObjectKind};
 use crate::spill::object::ObjectId;
 
@@ -43,6 +45,29 @@ async fn an_index_batch_waits_while_the_gate_is_held_exclusive() {
         rig.engine.db.get(b"\xffgate-probe").await.unwrap(),
         Some(Bytes::from_static(b"v"))
     );
+    rig.engine.begin_close();
+}
+
+/// **A purge request is `Busy` at once while a split holds the gate.** With the gate held
+/// exclusive and `refs` held (as by a writer waiting at the gate), `request_purge` answers
+/// `Busy` within 1 s, waiting for neither, and writes no head row; once both are released, the
+/// same request lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_purge_request_is_busy_at_once_while_a_split_holds_the_gate() {
+    let rig = gc_rig("gate-purge-busy").await;
+    let dead = [0x3C; 16];
+    let gc = rig.engine.gc_state();
+    let refs = gc.refs.lock().await;
+    let hold = gc.gate.exclusive(BOUND).await.expect("the gate is free");
+    let asked = tokio::time::timeout(Duration::from_secs(1), rig.engine.request_purge(dead, 0))
+        .await
+        .expect("the request waits for nothing");
+    assert!(matches!(asked, Err(GcError::Busy)), "{asked:?}");
+    assert_eq!(rig.engine.head_row(&dead).await.unwrap(), None);
+    drop((hold, refs));
+    rig.engine.request_purge(dead, 0).await.unwrap();
+    let head = rig.engine.head_row(&dead).await.unwrap().expect("a head");
+    assert_eq!(head.state, HeadState::Requested);
     rig.engine.begin_close();
 }
 
