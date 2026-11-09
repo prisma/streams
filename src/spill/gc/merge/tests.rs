@@ -148,3 +148,31 @@ fn an_unknown_row_refuses_the_rebuild() {
         Err(MergeRefusal::Unknown(unknown))
     );
 }
+
+/// Counts whose sum would overflow refuse the merge rather than wrap (a wrapped count is a row
+/// that releases its object too early).
+#[test]
+fn counts_that_would_overflow_refuse_the_merge() {
+    let key = gc::refcount_key(id(0, 7));
+    let big = |bytes, chunks| {
+        gc::encode_refcount(&Refcount {
+            live_bytes: bytes,
+            live_chunks: chunks,
+            created_ms: 1,
+            object_len: u64::MAX,
+        })
+    };
+    let (x, y) = (
+        rows(&[(key.clone(), big(u64::MAX, 1))]),
+        rows(&[(key.clone(), big(1, 1))]),
+    );
+    assert_eq!(
+        merged_sentinel(&x, &y),
+        Err(MergeRefusal::Count(key.clone()))
+    );
+    let (x, y) = (
+        rows(&[(key.clone(), big(1, u64::MAX))]),
+        rows(&[(key.clone(), big(1, 1))]),
+    );
+    assert_eq!(merged_sentinel(&x, &y), Err(MergeRefusal::Count(key)));
+}

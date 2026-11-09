@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::keyspace::SENTINEL;
 use crate::keyspace::merge_rules::{MergeRule, merge_rule};
-use crate::spill::gc::{Refcount, decode_refcount, encode_refcount};
+use crate::spill::gc::{decode_refcount, encode_refcount};
 use crate::spill::runindex::{decode_orphans, encode_orphans};
 
 /// A source's sentinel rows, key to value.
@@ -68,13 +68,7 @@ fn summed(
                 .transpose()
         };
         let sum = match (decode(x)?, decode(y)?) {
-            (Some(p), Some(q)) if p.object_len != q.object_len => return Err(refusal()),
-            (Some(p), Some(q)) => Refcount {
-                live_bytes: p.live_bytes + q.live_bytes,
-                live_chunks: p.live_chunks + q.live_chunks,
-                created_ms: p.created_ms.min(q.created_ms),
-                object_len: p.object_len,
-            },
+            (Some(p), Some(q)) => crate::spill::gc::merged_refcount(p, q).ok_or_else(refusal)?,
             (Some(p), None) | (None, Some(p)) => p,
             (None, None) => return Ok(None),
         };

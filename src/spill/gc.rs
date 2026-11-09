@@ -29,6 +29,8 @@
 // S6's merge is its caller (S6-DESIGN §7.3); until its route, only its tests.
 #[cfg(test)]
 pub(crate) mod merge;
+#[cfg(kani)]
+mod proofs;
 // S4's split is its caller (S6's merge sums the same type) (S3a §2.8).
 pub(crate) mod recompute;
 
@@ -54,6 +56,24 @@ pub(crate) struct Refcount {
 
 pub(crate) fn refcount_key(id: ObjectId) -> Vec<u8> {
     sentinel_key(REFCOUNT_TAG, id)
+}
+
+/// One object's `'R'` rows of a merge's two sources as the merged leaf's (S6-DESIGN §7.3, L2):
+/// the chunks and bytes summed, the earlier creation, the one length. `None` when the two name
+/// the object with different lengths, or a sum would overflow (a wrapped count would release the
+/// object early). KANI-108 proves it over every input. Built for its tests and its proof until
+/// the merge (test-built) calls it in production.
+#[cfg(any(test, kani))]
+pub(crate) fn merged_refcount(a: Refcount, b: Refcount) -> Option<Refcount> {
+    if a.object_len != b.object_len {
+        return None;
+    }
+    Some(Refcount {
+        live_bytes: a.live_bytes.checked_add(b.live_bytes)?,
+        live_chunks: a.live_chunks.checked_add(b.live_chunks)?,
+        created_ms: a.created_ms.min(b.created_ms),
+        object_len: a.object_len,
+    })
 }
 
 pub(crate) fn encode_refcount(r: &Refcount) -> Vec<u8> {
