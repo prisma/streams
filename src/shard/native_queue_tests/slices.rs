@@ -1,19 +1,19 @@
 //! The shard's categorised queue-state bound (S3b-DESIGN §8.2-§8.4; edge
-//! change #246): the committer keeps the shard's and each project's bytes
+//! change #246): the committer keeps the shard's and each container's bytes
 //! per category from the queues' exact gauges and puts them as `'N'` rows
-//! in the batch that moves them; at a category's line a project over its
+//! in the batch that moves them; at a category's line a container over its
 //! share, and within it a queue over its share, leases nothing new
 //! (active, failed; the reply says `limited`) or has its scheduled or
 //! fresh-keyed sends refused (delayed, dedup). Nothing else is refused.
 #![cfg(test)]
-use super::{HASH, PROJECT, claim, clocked, msg, op, send_op, settle, state};
+use super::{CONTAINER, HASH, claim, clocked, msg, op, send_op, settle, state};
 use crate::native_queue::{NqOp, NqOut, NqRefusal, QueueConfig, SendMessage, SettleKind, keys};
 use crate::shard::ShardEngine;
 use crate::shard::layout::queue_gauges::{self, QueueGauges};
 
-/// A second queue, of another project.
+/// A second queue, of another container.
 const OTHER: [u8; 16] = [4; 16];
-const OTHER_PROJECT: [u8; 16] = [6; 16];
+const OTHER_CONTAINER: [u8; 16] = [6; 16];
 /// A bound whose slices are 300, 200, 200, 200 and 100 bytes.
 const SMALL_BOUND: u64 = 1_000;
 
@@ -37,11 +37,11 @@ async fn op_on(e: &ShardEngine, hash: [u8; 16], op: NqOp) -> Result<NqOut, NqRef
         .expect("the committer never answered")
 }
 
-/// Queue `OTHER` of `OTHER_PROJECT` beside the test's own.
+/// Queue `OTHER` of `OTHER_CONTAINER` beside the test's own.
 async fn other_queue(e: &ShardEngine) {
     let create = NqOp::Create {
         cfg: QueueConfig::default(),
-        project: OTHER_PROJECT,
+        container: OTHER_CONTAINER,
     };
     let out = op_on(e, OTHER, create).await.unwrap();
     assert!(matches!(out, NqOut::Config { created: true, .. }));
@@ -165,9 +165,9 @@ async fn a_claim_over_its_projects_share_at_the_active_line_leases_nothing_and_s
         "448 of a 300 share"
     );
     assert_eq!(state(&db).await, before, "the limited claim stored nothing");
-    // The other project holds nothing active: its claim is served.
+    // The other container holds nothing active: its claim is served.
     assert_eq!(claim_on(&e, OTHER, 1).await, (vec![0], false));
-    // Now 672 at the line between two projects with active state, a share
+    // Now 672 at the line between two containers with active state, a share
     // of 150 each: the other at 224 is over it too, and so is this one.
     assert_eq!(claim_on(&e, OTHER, 1).await, (vec![], true));
     assert_eq!(claim_on(&e, HASH, 1).await, (vec![], true));
@@ -274,11 +274,11 @@ async fn a_fresh_keyed_send_over_its_share_at_the_dedup_line_is_refused_and_a_du
         vec![(0, true), (2, false)],
         "a duplicate and a send without a key are served"
     );
-    // The other project holds no dedup state: its fresh key is served.
+    // The other container holds no dedup state: its fresh key is served.
     let other = op_on(&e, OTHER, send_op(vec![keyed("x", 9)])).await;
     assert!(matches!(other, Ok(NqOut::Sent(_))));
     assert_eq!(e.layout.queue_gauges.shard()[3], 504);
-    // Two projects with dedup state: shares of 100; this one at 336 is
+    // Two containers with dedup state: shares of 100; this one at 336 is
     // over, the other at 168 too, both refused now.
     assert_eq!(
         op_on(&e, OTHER, send_op(vec![keyed("y", 8)]))
@@ -287,7 +287,7 @@ async fn a_fresh_keyed_send_over_its_share_at_the_dedup_line_is_refused_and_a_du
         NqRefusal::ShardQueueStateFull
     );
     let s = state(&db).await;
-    assert_eq!((s.project, s.dedup_entries), (PROJECT, 2));
+    assert_eq!((s.container, s.dedup_entries), (CONTAINER, 2));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -320,7 +320,7 @@ async fn a_group_whose_batch_was_not_written_leaves_the_sums_as_the_rows_hold_th
         "the send's group settled as written"
     );
     // As a group that staged a move and was rejected: nothing written.
-    gauges.apply("test", PROJECT, ([0; 5], [0, 0, 0, 1_000, 0]));
+    gauges.apply("test", CONTAINER, ([0; 5], [0, 0, 0, 1_000, 0]));
     assert_eq!(gauges.shard()[3], 1_336);
     op(&e, NqOp::Get).await.unwrap();
     assert_eq!(

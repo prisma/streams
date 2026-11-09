@@ -261,8 +261,8 @@ pub(crate) struct SettleItem {
 pub(crate) enum NqOp {
     Create {
         cfg: QueueConfig,
-        /// The queue's project (`keys::project_key`).
-        project: [u8; 16],
+        /// The queue's container (`keys::container_key`).
+        container: [u8; 16],
     },
     Get,
     Update {
@@ -404,7 +404,7 @@ pub(crate) enum NqRefusal {
     /// The queue holds `maxScheduledMessages` scheduled messages.
     ScheduledFull,
     /// The shard's delayed or dedup slice is at its line and the queue's
-    /// project over its share (edge change #246).
+    /// container over its share (edge change #246).
     ShardQueueStateFull,
     DeliverAtBeyondRetention,
     Reclaimed,
@@ -432,7 +432,7 @@ pub(crate) enum NqOut {
     Claimed {
         deliveries: Vec<DeliveryView>,
         paused: bool,
-        /// The queue's project is over its share at the shard's active or
+        /// The queue's container is over its share at the shard's active or
         /// failed line (edge change #246): nothing new is leased.
         limited: bool,
     },

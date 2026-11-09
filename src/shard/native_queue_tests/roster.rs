@@ -48,7 +48,7 @@ async fn the_sweeper_reaches_every_rostered_queue_past_its_first_page() {
             hash,
             NqOp::Create {
                 cfg,
-                project: super::PROJECT,
+                container: super::CONTAINER,
             },
         )
     });
@@ -126,7 +126,7 @@ async fn the_sweeper_sweeps_a_ticks_due_queues_together() {
             due(n),
             NqOp::Create {
                 cfg,
-                project: super::PROJECT,
+                container: super::CONTAINER,
             },
         )
     });

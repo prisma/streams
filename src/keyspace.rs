@@ -113,7 +113,7 @@ pub(crate) mod tag {
     pub(crate) const REPAIR: u8 = b'X';
     /// An ancestor object whose last reference here is gone, until its release is logged (S6).
     pub(crate) const RELEASE: u8 = b'E';
-    /// The queue-state gauges: the shard's and each project's bytes per category, and their
+    /// The queue-state gauges: the shard's and each container's bytes per category, and their
     /// generation (`shard::layout::queue_gauges`).
     pub(crate) const QUEUE_GAUGE: u8 = b'N';
 }

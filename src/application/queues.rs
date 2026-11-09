@@ -322,8 +322,8 @@ impl QueueService {
             }
         }
         let t = self.target(sref).await?;
-        let project = crate::native_queue::keys::project_key(t.desc.project_id.as_str());
-        match self.op(&t, NqOp::Create { cfg, project }).await? {
+        let container = crate::native_queue::keys::container_key(t.desc.project_id.as_str());
+        match self.op(&t, NqOp::Create { cfg, container }).await? {
             NqOut::Config { cfg, created } => Ok((created, cfg)),
             other => Err(unexpected(&other).into()),
         }

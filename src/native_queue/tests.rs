@@ -165,7 +165,7 @@ fn populated_state() -> StateRow {
     s.scheduled = 1_000_013;
     s.inline_bytes = 1_000_017;
     s.range_bytes = 1_000_018;
-    s.project = *b"project-sixteen!";
+    s.container = *b"project-sixteen!";
     s.counters = rows::Counters {
         sent: 2_000_001,
         delivered: 2_000_002,
@@ -213,14 +213,14 @@ fn the_state_row_is_a_fixed_binary_layout_that_round_trips_exactly() {
         raw.len(),
         552,
         "4 version + 112 cfg + 40 clock/cursor/frontier/lane expiry + 1 flags + 80 counts \
-         + 16 project + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name \
+         + 16 container + 104 counters + 24 debt + (4 + 40) url + (4 + 31) name \
          + 4 wakeup version + 24 notify + 8 jitter + 48 floors + 8 roster = 552"
     );
     assert_eq!(raw[..4], [4, 0, 0, 0], "the layout's version leads the row");
     assert_eq!(
         raw[237..253],
         *b"project-sixteen!",
-        "the project after the flags and the ten counts"
+        "the container after the flags and the ten counts"
     );
     assert_eq!(
         raw[156], 0b1_1001,

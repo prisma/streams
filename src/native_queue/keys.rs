@@ -75,11 +75,11 @@ pub(crate) fn by_time(hash: &[u8; 16], fam: u8, at: i64, offset: u64) -> Vec<u8>
     k
 }
 
-/// A project's 16-byte key in the shard's queue gauges (S3b-DESIGN §8.3):
+/// A container's 16-byte key in the shard's queue gauges (S3b-DESIGN §8.3):
 /// the first half of the SHA-256 of its id.
-pub(crate) fn project_key(project_id: &str) -> [u8; 16] {
+pub(crate) fn container_key(container_id: &str) -> [u8; 16] {
     use sha2::Digest;
-    let digest = sha2::Sha256::digest(project_id.as_bytes());
+    let digest = sha2::Sha256::digest(container_id.as_bytes());
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest[..16]);
     out

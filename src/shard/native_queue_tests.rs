@@ -22,8 +22,8 @@ mod touched;
 mod unlease;
 
 const HASH: [u8; 16] = [9; 16];
-/// The project the tests' queues belong to, as the shard's gauges key it.
-const PROJECT: [u8; 16] = [5; 16];
+/// The container the tests' queues belong to, as the shard's gauges key it.
+const CONTAINER: [u8; 16] = [5; 16];
 /// How long a test waits for a committer reply: one that never comes fails
 /// the test instead of hanging it.
 const REPLY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
@@ -114,7 +114,7 @@ async fn create(e: &ShardEngine, cfg: QueueConfig) {
         e,
         NqOp::Create {
             cfg,
-            project: PROJECT,
+            container: CONTAINER,
         },
     )
     .await

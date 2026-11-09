@@ -66,7 +66,7 @@ impl CommitTransaction<'_> {
         }
         let rows = self.engine.layout.queue_gauges.apply(
             &self.engine.prefix,
-            st.state.project,
+            st.state.container,
             (st.gauged, after),
         );
         if rows.is_empty() {
@@ -93,6 +93,6 @@ impl CommitTransaction<'_> {
         self.engine
             .layout
             .queue_gauges
-            .limited(st.state.project, cat, bytes)
+            .limited(st.state.container, cat, bytes)
     }
 }

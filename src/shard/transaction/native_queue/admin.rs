@@ -32,7 +32,7 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         create: (QueueConfig, [u8; 16]),
     ) -> NqResult {
-        let (cfg, project) = create;
+        let (cfg, container) = create;
         cfg.validate().map_err(NqRefusal::InvalidConfig)?;
         if st.exists {
             if st.state.deleting {
@@ -51,7 +51,7 @@ impl CommitTransaction<'_> {
             cfg: cfg.clone(),
             jitter: keys::jitter_seed(&hash),
             frontier: local.fields.next,
-            project,
+            container,
             ..StateRow::default()
         };
         st.exists = true;

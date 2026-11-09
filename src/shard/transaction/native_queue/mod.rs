@@ -74,8 +74,8 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         op: NqOp,
     ) -> NqResult {
-        if let NqOp::Create { cfg, project } = op {
-            return self.nq_create(local, hash, st, (cfg, project));
+        if let NqOp::Create { cfg, container } = op {
+            return self.nq_create(local, hash, st, (cfg, container));
         }
         if !st.exists {
             return Err(NqRefusal::NotFound);

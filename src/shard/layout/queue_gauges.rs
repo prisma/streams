@@ -12,20 +12,20 @@
 //! | dedup | dedup entries and their expiry entries | 20% |
 //! | cleanup | range rows | 10% |
 //!
-//! At a category's line the refusal is per project first, then per queue:
-//! a project at or over its share of the slice (the slice ÷ the projects
+//! At a category's line the refusal is per container first, then per queue:
+//! a container at or over its share of the slice (the slice ÷ the containers
 //! with state in it), and within it a queue at or over its share of the
-//! project's bytes, has its claims lease nothing new (active, failed) or
+//! container's bytes, has its claims lease nothing new (active, failed) or
 //! its scheduled sends (delayed) or sends with fresh dedup keys (dedup)
 //! refused. Cleanup refuses nothing: what creates it is never refused.
 //!
 //! A queue's bytes per category follow from its state row's exact gauges
 //! with one fixed weight per message (each row's key, value and a 32-byte
 //! entry overhead, rounded up), and its range rows' stored bytes. The
-//! committer, the only writer, keeps the shard's and every project's sums
+//! committer, the only writer, keeps the shard's and every container's sums
 //! and puts them as `'N'` rows in the batch that changes them: `'N' ‖
 //! 16+category` holds the shard's bytes, `'N' ‖ 21` the rows' generation,
-//! `'N' ‖ 32+category ‖ project` a project's bytes and its queues with
+//! `'N' ‖ 32+category ‖ container` a container's bytes and its queues with
 //! state. They are read once, by the engine's first queue operation.
 //!
 //! A group's moves are staged apart from the written sums and put in its
@@ -65,11 +65,11 @@ const TAG: u8 = crate::keyspace::tag::QUEUE_GAUGE;
 const SHARD_ID: u8 = 16;
 /// After the shard's five categories.
 const GENERATION_ID: u8 = 21;
-const PROJECT_ID: u8 = 32;
-/// After the projects' five categories.
-const PROJECT_STOP: u8 = 37;
+const CONTAINER_ID: u8 = 32;
+/// After the containers' five categories.
+const CONTAINER_STOP: u8 = 37;
 /// The end of the ids gauges own.
-const PROJECT_END: u8 = PROJECT_ID + 16;
+const CONTAINER_END: u8 = CONTAINER_ID + 16;
 
 /// A queue's bytes per category, from its gauges.
 pub(crate) fn categories(s: &crate::native_queue::rows::StateRow) -> [u64; CATEGORIES] {
@@ -85,7 +85,7 @@ pub(crate) fn categories(s: &crate::native_queue::rows::StateRow) -> [u64; CATEG
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ProjectTotals {
+struct ContainerTotals {
     bytes: [u64; CATEGORIES],
     /// Its queues with state in each category.
     queues: [u64; CATEGORIES],
@@ -96,19 +96,19 @@ struct ProjectTotals {
 struct Totals {
     generation: u64,
     shard: [u64; CATEGORIES],
-    /// The projects with state in each category.
+    /// The containers with state in each category.
     with_state: [u64; CATEGORIES],
-    projects: BTreeMap<[u8; 16], ProjectTotals>,
+    containers: BTreeMap<[u8; 16], ContainerTotals>,
 }
 
 /// One group's moves over the written sums: the shard's sums and every
-/// project it touched, whole.
+/// container it touched, whole.
 #[derive(Debug)]
 struct Staged {
     generation: u64,
     shard: [u64; CATEGORIES],
     with_state: [u64; CATEGORIES],
-    projects: BTreeMap<[u8; 16], ProjectTotals>,
+    containers: BTreeMap<[u8; 16], ContainerTotals>,
 }
 
 #[derive(Debug, Default)]
@@ -156,23 +156,23 @@ impl QueueGauges {
             let (Some(&id), Some((first, second))) = (k.get(prefix), read_u64s(v)) else {
                 continue;
             };
-            let project = k
+            let container = k
                 .get(prefix + 1..)
                 .and_then(|p| <[u8; 16]>::try_from(p).ok());
-            match (id, project) {
+            match (id, container) {
                 (GENERATION_ID, None) if k.len() == prefix + 1 => t.generation = first,
                 (SHARD_ID..GENERATION_ID, None) if k.len() == prefix + 1 => {
                     t.shard[usize::from(id - SHARD_ID)] = first;
                 }
-                (PROJECT_ID..PROJECT_STOP, Some(project)) => {
-                    let p = t.projects.entry(project).or_default();
-                    p.bytes[usize::from(id - PROJECT_ID)] = first;
-                    p.queues[usize::from(id - PROJECT_ID)] = second;
+                (CONTAINER_ID..CONTAINER_STOP, Some(container)) => {
+                    let p = t.containers.entry(container).or_default();
+                    p.bytes[usize::from(id - CONTAINER_ID)] = first;
+                    p.queues[usize::from(id - CONTAINER_ID)] = second;
                 }
                 _ => {}
             }
         }
-        for p in t.projects.values() {
+        for p in t.containers.values() {
             for cat in 0..CATEGORIES {
                 t.with_state[cat] += u64::from(p.bytes[cat] > 0);
             }
@@ -220,16 +220,16 @@ impl QueueGauges {
         w.generation = staged.generation;
         w.shard = staged.shard;
         w.with_state = staged.with_state;
-        for (project, p) in staged.projects {
-            if p == ProjectTotals::default() {
-                w.projects.remove(&project);
+        for (container, p) in staged.containers {
+            if p == ContainerTotals::default() {
+                w.containers.remove(&container);
             } else {
-                w.projects.insert(project, p);
+                w.containers.insert(container, p);
             }
         }
     }
 
-    /// A queue of `project` went from `before` to `after` bytes per
+    /// A queue of `container` went from `before` to `after` bytes per
     /// category (`moved`): the group's staged sums move, and the `'N'` rows
     /// that changed are returned to be put in its batch, with the
     /// generation. The cleanup slice refuses nothing (S3b-REVIEW D3): past
@@ -237,7 +237,7 @@ impl QueueGauges {
     pub(crate) fn apply(
         &self,
         shard: &str,
-        project: [u8; 16],
+        container: [u8; 16],
         moved: ([u64; CATEGORIES], [u64; CATEGORIES]),
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
         let (before, after) = moved;
@@ -248,13 +248,16 @@ impl QueueGauges {
             generation: written.generation.wrapping_add(1),
             shard: written.shard,
             with_state: written.with_state,
-            projects: BTreeMap::new(),
+            containers: BTreeMap::new(),
         });
         let cleanup = s.shard[CLEANUP];
-        let p = s
-            .projects
-            .entry(project)
-            .or_insert_with(|| written.projects.get(&project).cloned().unwrap_or_default());
+        let p = s.containers.entry(container).or_insert_with(|| {
+            written
+                .containers
+                .get(&container)
+                .cloned()
+                .unwrap_or_default()
+        });
         let mut out = Vec::new();
         for cat in (0..CATEGORIES).filter(|&cat| before[cat] != after[cat]) {
             let had = p.bytes[cat] > 0;
@@ -271,7 +274,7 @@ impl QueueGauges {
             out.push((shard_key(cat), s.shard[cat].to_le_bytes().to_vec()));
             let mut v = p.bytes[cat].to_le_bytes().to_vec();
             v.extend_from_slice(&p.queues[cat].to_le_bytes());
-            out.push((project_key(cat, &project), v));
+            out.push((container_key(cat, &container), v));
         }
         if !out.is_empty() {
             out.push((generation_key(), s.generation.to_le_bytes().to_vec()));
@@ -287,12 +290,12 @@ impl QueueGauges {
         out
     }
 
-    /// Whether a queue of `project` holding `queue` bytes of `cat` is
-    /// refused at the category's line: the shard at its slice, the project
+    /// Whether a queue of `container` holding `queue` bytes of `cat` is
+    /// refused at the category's line: the shard at its slice, the container
     /// at or over its share of it, the queue at or over its share of the
-    /// project's bytes (so the project's largest queue always is). The
+    /// container's bytes (so the container's largest queue always is). The
     /// group's staged sums count.
-    pub(crate) fn limited(&self, project: [u8; 16], cat: usize, queue: u64) -> bool {
+    pub(crate) fn limited(&self, container: [u8; 16], cat: usize, queue: u64) -> bool {
         if cat == CLEANUP || queue == 0 {
             return false;
         }
@@ -306,11 +309,11 @@ impl QueueGauges {
             Some(s) => (
                 s.shard,
                 s.with_state,
-                s.projects
-                    .get(&project)
-                    .or_else(|| w.projects.get(&project)),
+                s.containers
+                    .get(&container)
+                    .or_else(|| w.containers.get(&container)),
             ),
-            None => (w.shard, w.with_state, w.projects.get(&project)),
+            None => (w.shard, w.with_state, w.containers.get(&container)),
         };
         let Some(p) = p.filter(|_| shard[cat] >= slice) else {
             return false;
@@ -346,7 +349,7 @@ fn prefix() -> Vec<u8> {
 pub(crate) fn key_range() -> (Vec<u8>, Vec<u8>) {
     let (mut from, mut to) = (prefix(), prefix());
     from.push(SHARD_ID);
-    to.push(PROJECT_END);
+    to.push(CONTAINER_END);
     (from, to)
 }
 
@@ -368,10 +371,10 @@ fn shard_key(cat: usize) -> Vec<u8> {
     k
 }
 
-fn project_key(cat: usize, project: &[u8; 16]) -> Vec<u8> {
+fn container_key(cat: usize, container: &[u8; 16]) -> Vec<u8> {
     let mut k = prefix();
-    k.push(PROJECT_ID + u8::try_from(cat).unwrap_or(0));
-    k.extend_from_slice(project);
+    k.push(CONTAINER_ID + u8::try_from(cat).unwrap_or(0));
+    k.extend_from_slice(container);
     k
 }
 
@@ -380,7 +383,7 @@ fn crosses(line: u64, before: u64, after: u64) -> bool {
     before < line && after >= line
 }
 
-/// A gauge row's value: its bytes, and for a project its queues.
+/// A gauge row's value: its bytes, and for a container its queues.
 fn read_u64s(v: &[u8]) -> Option<(u64, u64)> {
     let first = u64::from_le_bytes(v.get(..8)?.try_into().ok()?);
     let second = match v.get(8..16) {
@@ -396,7 +399,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_project_over_its_share_at_the_line_is_refused_and_another_is_not() {
+    fn a_container_over_its_share_at_the_line_is_refused_and_another_is_not() {
         let g = QueueGauges::default();
         g.set_bound_for_tests(1_000);
         // The active slice is 300 bytes.
@@ -423,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn within_a_project_only_a_queue_at_or_over_its_share_is_refused() {
+    fn within_a_container_only_a_queue_at_or_over_its_share_is_refused() {
         let g = QueueGauges::default();
         g.set_bound_for_tests(1_000);
         let a = [1; 16];
@@ -431,7 +434,7 @@ mod tests {
         g.apply("s", a, ([0; 5], [0, 0, 50, 0, 0]));
         assert!(
             g.limited(a, DELAYED, 150),
-            "150 of the project's 200, two queues"
+            "150 of the container's 200, two queues"
         );
         assert!(!g.limited(a, DELAYED, 50), "the small queue is not");
         assert!(!g.limited(a, CLEANUP, 150), "cleanup refuses nothing");
@@ -463,14 +466,14 @@ mod tests {
     }
 
     #[test]
-    fn the_projects_with_state_follow_projects_entering_and_leaving_a_category() {
+    fn the_containers_with_state_follow_containers_entering_and_leaving_a_category() {
         let g = QueueGauges::default();
         g.load(&[]);
         g.set_bound_for_tests(1_000);
         let (p1, p2, p3) = ([1; 16], [2; 16], [3; 16]);
         g.apply("s", p1, ([0; 5], [0, 0, 0, 150, 0]));
         g.apply("s", p2, ([0; 5], [0, 0, 0, 70, 0]));
-        // 220 at a 200 line between two projects: shares of 100.
+        // 220 at a 200 line between two containers: shares of 100.
         assert!(g.limited(p1, DEDUP, 150) && !g.limited(p2, DEDUP, 70));
         g.apply("s", p1, ([0, 0, 0, 150, 0], [0; 5]));
         g.apply("s", p3, ([0; 5], [0, 0, 0, 150, 0]));
@@ -481,7 +484,7 @@ mod tests {
             assert!(g.limited(p3, DEDUP, 150), "settled {settled}");
             assert!(
                 !g.limited(p2, DEDUP, 70),
-                "still two projects: settled {settled}"
+                "still two containers: settled {settled}"
             );
             assert!(!g.limited(p1, DEDUP, 1), "it left: settled {settled}");
         }
@@ -495,8 +498,8 @@ mod tests {
     }
 
     /// Every gauge row's key, byte for byte (layout 8): `FF×16 ‖ 'N' ‖ id`, a
-    /// project's followed by its key; ids 16-20 the shard's five categories,
-    /// 21 the generation, 32-36 a project's.
+    /// container's followed by its key; ids 16-20 the shard's five categories,
+    /// 21 the generation, 32-36 a container's.
     #[test]
     fn every_gauge_key_is_pinned() {
         let ff = "ff".repeat(16);
@@ -506,8 +509,8 @@ mod tests {
             (hex(shard_key(0)), format!("{ff}4e10")),
             (hex(shard_key(4)), format!("{ff}4e14")),
             (hex(generation_key()), format!("{ff}4e15")),
-            (hex(project_key(0, &[0x33; 16])), format!("{ff}4e20{key}")),
-            (hex(project_key(4, &[0x33; 16])), format!("{ff}4e24{key}")),
+            (hex(container_key(0, &[0x33; 16])), format!("{ff}4e20{key}")),
+            (hex(container_key(4, &[0x33; 16])), format!("{ff}4e24{key}")),
             (hex(key_range().0), format!("{ff}4e10")),
             (hex(key_range().1), format!("{ff}4e30")),
         ];

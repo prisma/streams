@@ -20,9 +20,15 @@ async fn the_mark_records_each_queue_a_group_wrote_while_it_was_set() {
     assert_eq!(claim(&e, 1).await.len(), 1);
     let other = [7; 16];
     let cfg = QueueConfig::default();
-    e.submit_native_queue(other, NqOp::Create { cfg, project: super::PROJECT })
-        .await
-        .unwrap();
+    e.submit_native_queue(
+        other,
+        NqOp::Create {
+            cfg,
+            container: super::CONTAINER,
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(gate.take_touched(), HashSet::from([HASH, other]));
     op(&e, send_op(vec![msg("b")])).await.unwrap();
     assert!(gate.take_touched().is_empty(), "nothing after the release");

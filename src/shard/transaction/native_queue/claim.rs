@@ -166,7 +166,7 @@ impl CommitTransaction<'_> {
                 limited: false,
             });
         }
-        // Over its project's share at the shard's active or failed line
+        // Over its container's share at the shard's active or failed line
         // (S3b-DESIGN §8.2-§8.3): nothing new, and the reply says why.
         if self.nq_limited(st, queue_gauges::ACTIVE) || self.nq_limited(st, queue_gauges::FAILED) {
             return Ok(NqOut::Claimed {

@@ -138,8 +138,8 @@ pub(crate) struct StateRow {
     /// Stored bytes of the queue's range rows (keys, values, entry
     /// overhead).
     pub range_bytes: u64,
-    /// The queue's project, as the shard's gauges key it.
-    pub project: [u8; 16],
+    /// The queue's container, as the shard's gauges key it.
+    pub container: [u8; 16],
     pub counters: Counters,
     /// Deletion debt (§8.2 stage 2): bytes deleted and not yet collected.
     pub debt_bytes: u64,
@@ -276,7 +276,7 @@ impl StateRow {
             .map(u64::to_le_bytes)
             .as_flattened(),
         );
-        v.extend_from_slice(&self.project);
+        v.extend_from_slice(&self.container);
         self.counters.put(&mut v);
         v.extend_from_slice(
             [
@@ -350,10 +350,10 @@ impl StateRow {
         let scheduled = r.u64()?;
         let inline_bytes = r.u64()?;
         let range_bytes = r.u64()?;
-        let project: [u8; 16] = r
+        let container: [u8; 16] = r
             .bytes(16)?
             .try_into()
-            .map_err(|_| "queue state row: project")?;
+            .map_err(|_| "queue state row: container")?;
         let counters = Counters::read(&mut r)?;
         let debt_bytes = r.u64()?;
         let debt_oldest_at = r.i64()?;
@@ -396,7 +396,7 @@ impl StateRow {
             scheduled,
             inline_bytes,
             range_bytes,
-            project,
+            container,
             counters,
             debt_bytes,
             debt_oldest_at,

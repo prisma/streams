@@ -57,7 +57,7 @@ impl CommitTransaction<'_> {
         if scheduled > 0 && st.state.scheduled + scheduled > cfg.max_scheduled_messages {
             return Err(NqRefusal::ScheduledFull);
         }
-        // Over its project's share at the shard's delayed or dedup line
+        // Over its container's share at the shard's delayed or dedup line
         // (S3b-DESIGN §8.2-§8.3): a batch that would add to that category
         // is refused whole; an immediate send without a fresh key never.
         if (scheduled > 0 && self.nq_limited(st, queue_gauges::DELAYED))
