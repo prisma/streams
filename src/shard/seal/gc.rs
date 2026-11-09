@@ -37,11 +37,11 @@ use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount, Release}
 use crate::spill::object::ObjectId;
 
 pub(crate) mod clean;
+#[cfg(test)]
+mod gate_tests;
 mod lineage;
 #[cfg(test)]
 mod lineage_tests;
-#[cfg(test)]
-mod gate_tests;
 #[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;

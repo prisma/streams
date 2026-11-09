@@ -250,3 +250,23 @@ async fn a_release_waits_for_its_readers_and_its_grace() {
     assert_eq!(logged(&rig, 8, 1).await, None);
     rig.engine.begin_close();
 }
+
+/// While a topology operation holds collection off, no release is logged and
+/// no row goes; once it is back on, the next pass logs them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn no_release_is_logged_while_collection_is_off() {
+    let rig = gc_rig("release-off").await;
+    let ids = held(&rig, &[7], 1).await;
+    zero(&rig, &ids).await;
+    rig.engine.gc_state().gate.set_collection_off(true);
+    assert_eq!(rig.engine.log_releases().await.unwrap(), (0, 1));
+    assert_eq!(logged(&rig, 7, 0).await, None);
+    assert_eq!(releases(&rig).await.len(), 1);
+    rig.engine.gc_state().gate.set_collection_off(false);
+    assert_eq!(rig.engine.log_releases().await.unwrap(), (1, 0));
+    assert_eq!(
+        logged(&rig, 7, 0).await,
+        Some(vec![(ObjectKind::Segment, 4, 1)])
+    );
+    rig.engine.begin_close();
+}

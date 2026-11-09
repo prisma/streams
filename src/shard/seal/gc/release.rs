@@ -32,6 +32,11 @@ impl ShardEngine {
     pub(crate) async fn log_releases(&self) -> Result<(u64, u64), GcError> {
         let rows = self.release_rows().await?;
         let total = rows.len() as u64;
+        // A topology operation's snapshot is being taken (S4 §5.1): nothing is logged
+        // until it is over, and the rows stay for the next pass.
+        if self.gc_state().gate.collection_off() {
+            return Ok((0, total));
+        }
         let due = self.due_releases(rows);
         let mut logged = 0;
         for (home, objects) in &due {

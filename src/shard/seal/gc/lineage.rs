@@ -44,6 +44,11 @@ impl ShardEngine {
         root: &str,
         holders: &[u32],
     ) -> Result<LineageSweep, GcError> {
+        // A topology operation holds collection off on this engine (S4 §5.1): no
+        // delete until it is over.
+        if self.gc_state().gate.collection_off() {
+            return Ok(LineageSweep::default());
+        }
         let mut held = BTreeSet::new();
         for holder in holders {
             let Some(own) = self.held_by(root, *holder).await? else {

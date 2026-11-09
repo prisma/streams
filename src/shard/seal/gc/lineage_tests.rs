@@ -100,6 +100,30 @@ async fn a_sweep_deletes_exactly_what_no_holder_still_holds() {
     rig.engine.begin_close();
 }
 
+/// While a topology operation holds collection off, the sweep deletes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_sweep_deletes_nothing_while_collection_is_off() {
+    let rig = gc_rig("lineage-off").await;
+    let all: [Entry; 1] = [(Segment, 1, 1)];
+    objects(&rig, &all).await;
+    put(
+        &rig,
+        lineage::reference_list_path(ROOT, 5),
+        lineage::encode(&[]),
+    )
+    .await;
+    rig.engine.gc_state().gate.set_collection_off(true);
+    let report = rig.engine.sweep_lineage(ROOT, &[5]).await.unwrap();
+    assert_eq!(report, LineageSweep::default());
+    assert_eq!(left(&rig).await, all.map(path_of).into());
+    rig.engine.gc_state().gate.set_collection_off(false);
+    assert_eq!(
+        rig.engine.sweep_lineage(ROOT, &[5]).await.unwrap().deleted,
+        1
+    );
+    rig.engine.begin_close();
+}
+
 /// A log that does not decode, or a holder without a reference list, stops
 /// the sweep before any DELETE: it never decides on evidence it cannot read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
