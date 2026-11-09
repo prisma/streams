@@ -46,6 +46,8 @@ mod quota_bucket;
 #[path = "../../../src/product_cursor.rs"]
 mod product_cursor;
 
+#[cfg(test)]
+mod layout8_queue;
 #[allow(
     dead_code,
     unreachable_pub,
