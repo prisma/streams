@@ -161,6 +161,7 @@ async fn policy_rig(
         fleet: rig.state.fleet.clone(),
         shards: rig.state.shards.clone(),
         ownership: rig.state.ownership.clone(),
+        store: rig.state.data_store.clone(),
         limits: crate::topology::policy_loop::limits(&rig.state.config),
         appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
         rss_shed_mb: 0,
@@ -276,4 +277,69 @@ async fn peer(fleet: &Arc<dyn ObjectStore>, instance: &str) {
         )
         .await
         .unwrap();
+}
+
+/// `state`'s topology intent, written where the cell keeps it.
+async fn write_intent(store: &Arc<dyn ObjectStore>, state: crate::topology::intent::State) {
+    use crate::topology::intent::{Intent, Outcome, State};
+    let outcome = (state != State::Preparing).then(|| Outcome {
+        result: "rolled_back".into(),
+        reason: "test".into(),
+    });
+    let intent = Intent {
+        kind: "split".into(),
+        op_id: "op-elsewhere".into(),
+        sources: vec![("1".into(), 9)],
+        children: vec![10, 11],
+        version_seen: 1,
+        state,
+        lease_owner: "streams-2".into(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome,
+    };
+    let body = serde_json::to_vec(&intent).unwrap();
+    let path = Path::from("topology/intent.json");
+    store.put(&path, PutPayload::from(body)).await.unwrap();
+}
+
+/// A live topology intent holds every operation (S4 §10.1): a leaf over the line does not split
+/// while another operation's intent is Preparing, and the beat says why; once the intent is
+/// terminal, the split goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
+)]
+async fn a_live_intent_holds_the_split_until_it_is_terminal() {
+    use crate::topology::intent::State;
+    let fleet = seeded().await;
+    destination(&fleet).await;
+    let (rig, asked) = policy_rig(fleet.clone(), |cli| {
+        cli.fleet_max = 1;
+        lines(cli);
+    })
+    .await;
+    write_intent(&rig.state.data_store, State::Preparing).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let generator = tokio::spawn(load(rig.addr, 20, stop.clone()));
+    let beat = beat_until(&fleet, |beat| {
+        beat["topology_decision"] == "hold=intent_live"
+    })
+    .await;
+    assert_eq!(beat["topology_decision"], "hold=intent_live", "{beat}");
+    assert!(asked.lock().unwrap().is_empty());
+
+    write_intent(&rig.state.data_store, State::RolledBack).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while asked.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    generator.await.unwrap();
+    assert_eq!(asked.lock().unwrap().first().map(String::as_str), Some(""));
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
 }

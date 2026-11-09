@@ -42,6 +42,8 @@ pub(crate) struct Cell {
     pub fleet: FleetRepository,
     pub shards: ShardDirectory,
     pub ownership: OwnershipService,
+    /// The store `topology/intent.json` is read from (the registry's namespace).
+    pub store: Arc<dyn object_store::ObjectStore>,
     pub limits: Limits,
     /// The appends axis' safe capacity, per shard.
     pub appends_ceiling: u64,
@@ -83,7 +85,8 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
 /// The beat publishes what the pass left: a split waiting for an instance, and the shards the
 /// ring gives this one.
 pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> Decision {
-    let view = view(cell, seen);
+    let live = intent_live(&*cell.store).await;
+    let view = view(cell, seen, live);
     let decision = act(cell, &view, policy.decide(&view, &cell.limits)).await;
     let waiting = matches!(decision, Decision::AskInstance { .. }).then_some(INSTANCE_FULL);
     let standing = cell.fleet.standing();
@@ -128,6 +131,18 @@ fn resident(view: &View, me: &str) -> u32 {
         .map_or(0, |instance| instance.resident_shards)
 }
 
+/// Whether a topology operation is under way: the cell's intent is not terminal, or it cannot
+/// be read (fail closed, S4 §4.4).
+async fn intent_live(store: &dyn object_store::ObjectStore) -> bool {
+    match super::intent::read(store).await {
+        Ok(held) => held.is_some_and(|held| !held.intent.is_terminal()),
+        Err(error) => {
+            tracing::warn!(%error, "topology intent unreadable; every operation holds");
+            true
+        }
+    }
+}
+
 /// What this loop has seen of the topology, on the wall clock: when each leaf a split or merge
 /// made first appeared, and when the version changed (the last operation's end). A cell's first
 /// leaves were born with it, and the version it started with ended no operation it knows of, so
@@ -165,7 +180,7 @@ impl Seen {
 }
 
 /// The cell as this pass sees it.
-fn view(cell: &Cell, seen: &mut Seen) -> View {
+fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
     let now_ms = crate::shard::now_ms();
     let standing = cell.fleet.standing();
     let stale_ms = u64::try_from(cell.limits.beat_stale_ms).unwrap_or(0);
@@ -210,7 +225,7 @@ fn view(cell: &Cell, seen: &mut Seen) -> View {
         instances,
         split_demand: standing.split_demand(),
         beats_fresh,
-        intent_live: false,
+        intent_live,
         last_op_end_ms: seen.changed_ms,
         desired_computed_ms: unseen(docs.desired_computed_ms),
         youngest_override_ms: unseen(docs.youngest_override_ms),
@@ -282,5 +297,55 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
         beat_stale_ms: ms(cli.shard_beat_stale_secs),
         override_cooldown_ms: ms(config.fleet.rebalance_move_cooldown_secs),
         shards_per_instance_max: cli.shards_per_instance_max,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::intent_live;
+    use crate::topology::intent::{Intent, Outcome, State};
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
+
+    fn intent(state: State) -> Intent {
+        let outcome = (state != State::Preparing).then(|| Outcome {
+            result: "published".into(),
+            reason: String::new(),
+        });
+        Intent {
+            kind: "split".into(),
+            op_id: "op-1".into(),
+            sources: vec![(String::new(), 0)],
+            children: vec![1, 2],
+            version_seen: 1,
+            state,
+            lease_owner: "streams-1".into(),
+            lease_epoch: 1,
+            lease_until_ms: 0,
+            started_ms: 0,
+            outcome,
+        }
+    }
+
+    /// A Preparing intent holds every operation, a terminal one none, and an intent that does
+    /// not decode holds them all (fail closed); a cell that never wrote one holds none.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn only_a_preparing_or_unreadable_intent_is_live() {
+        let store = InMemory::new();
+        assert!(!intent_live(&store).await, "no intent");
+        let path = Path::from("topology/intent.json");
+        for (state, live) in [
+            (State::Preparing, true),
+            (State::Reclaimed, false),
+            (State::RolledBack, false),
+        ] {
+            let body = serde_json::to_vec(&intent(state)).unwrap();
+            store.put(&path, PutPayload::from(body)).await.unwrap();
+            assert_eq!(intent_live(&store).await, live, "{state:?}");
+        }
+        store
+            .put(&path, PutPayload::from_static(b"{not json"))
+            .await
+            .unwrap();
+        assert!(intent_live(&store).await, "a corrupt intent fails closed");
     }
 }

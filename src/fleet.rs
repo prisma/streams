@@ -416,6 +416,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
         fleet: state.fleet.clone(),
         shards: state.shards.clone(),
         ownership: state.ownership.clone(),
+        store: state.data_store.clone(),
         limits: crate::topology::policy_loop::limits(&state.config),
         appends_ceiling: state.config.cli.shard_appends_ceiling,
         rss_shed_mb: cfg.rss_shed_mb,
