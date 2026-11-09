@@ -149,11 +149,13 @@ async fn a_barrier_dropped_unreleased_closes_its_engine() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_release() {
     let (state, addr, engine) = serving().await;
+    // Taken before the barrier is sent: the hold starts after it, so the wait it bounds is never
+    // shorter (the moment the test sees "parked" may be later than the hold's start).
+    let sent_at = Instant::now();
     let barrier = tokio::time::timeout(BOUND, engine.barrier())
         .await
         .expect("parked")
         .expect("the barrier parks");
-    let parked_at = Instant::now();
     let splitting = (
         503,
         Some("1".to_string()),
@@ -161,7 +163,7 @@ async fn past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_rel
     );
     let held = tokio::time::timeout(BOUND, append_answer(addr, 2)).await;
     assert_eq!(held.expect("answered after the hold"), splitting);
-    let waited = parked_at.elapsed();
+    let waited = sent_at.elapsed();
     assert!(
         waited >= Duration::from_secs(2),
         "held for the hold: {waited:?}"

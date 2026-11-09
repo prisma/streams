@@ -7501,7 +7501,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d7cd092618cedd0c5f8697087e8b3f59eaae8952a20db05bf8152057e2b872f9",
+    "function_sha256": "5010021c8c52c36862e649fe067ce572c0a8f04e0c824e722f1bd76d388e023f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_barrier.rs",
