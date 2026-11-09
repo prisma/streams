@@ -20,6 +20,7 @@ pub(super) fn limits() -> Limits {
         beat_stale_ms: 30_000,
         override_cooldown_ms: 60_000,
         shards_per_instance_max: 7,
+        fleet_max: 4,
     }
 }
 
@@ -58,6 +59,7 @@ pub(super) fn cell(leaves: Vec<Leaf>) -> View {
         leaves,
         instances: vec![instance("a", 3), instance("b", 3)],
         split_demand: 0,
+        live: 2,
         beats_fresh: true,
         intent_live: false,
         last_op_end_ms: None,
@@ -601,6 +603,68 @@ fn a_split_needs_another_instance_with_room_for_one_child() {
     assert_eq!(reserve(|v| v.instances[1].resident_shards = 7), ask);
     assert_eq!(reserve(|v| v.instances[1].accepting = false), ask);
     assert_eq!(reserve(|v| v.instances.truncate(1)), ask);
+}
+
+/// EDGE-261-RATIFICATION §3: at `FLEET_MAX` no instance can join, so a split with room for both
+/// children on the actor goes ahead without a destination; one below the maximum still asks.
+#[test]
+fn at_the_fleet_maximum_a_split_with_room_goes_ahead_without_a_destination() {
+    let alone = |live| {
+        move |v: &mut View| {
+            v.instances.truncate(1);
+            v.live = live;
+        }
+    };
+    assert_eq!(reserve(alone(4)), split("1", SplitKind::Normal));
+    assert_eq!(
+        reserve(alone(3)),
+        Decision::AskInstance {
+            resident: 3,
+            max: 7
+        }
+    );
+}
+
+/// At `FLEET_MAX` an actor without room for both children holds `topology_at_max`: the cell is at
+/// its capacity, and it never asks for an instance that cannot come.
+#[test]
+fn at_the_fleet_maximum_a_split_without_room_holds_at_the_topologys_maximum() {
+    let full = |live| {
+        move |v: &mut View| {
+            v.instances[0].resident_shards = 6;
+            v.live = live;
+        }
+    };
+    assert_eq!(reserve(full(4)), Decision::Hold(Hold::TopologyAtMax));
+    assert_eq!(
+        reserve(full(3)),
+        Decision::AskInstance {
+            resident: 6,
+            max: 7
+        }
+    );
+}
+
+/// A doubling passes over a leaf whose owner is full at `FLEET_MAX`, whose split would hold
+/// forever, and goes on to the next; below the maximum it waits for that owner's split.
+#[test]
+fn a_doubling_passes_over_a_leaf_whose_owner_is_full_at_the_fleet_maximum() {
+    for (live, decision) in [(4, doubling("001")), (3, Decision::Hold(Hold::PeerActs))] {
+        let mut view = cell(vec![
+            leaf("000", "b", 0),
+            leaf("001", "a", 0),
+            leaf("01", "a", 70),
+            leaf("1", "a", 70),
+        ]);
+        view.instances[1].resident_shards = 6;
+        view.live = live;
+        let mut policy = Policy::default();
+        assert_eq!(
+            tick(&mut policy, &mut view, T0),
+            Decision::Hold(Hold::Steady)
+        );
+        assert_eq!(tick(&mut policy, &mut view, READY), decision, "{live} live");
+    }
 }
 
 #[test]

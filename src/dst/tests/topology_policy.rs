@@ -86,7 +86,8 @@ fn leaves(state: &crate::http::AppState) -> Vec<String> {
 
 /// A one-shard cell whose appends run past the split line doubles to two shards and, both still
 /// over it, to four, one split at a time and deepest first; at four the load is under the line
-/// on every leaf and nothing more splits. The operations are exactly the three it takes.
+/// on every leaf and nothing more splits. The operations are exactly the three it takes, all on
+/// the one instance a fleet of at most one has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
@@ -94,11 +95,12 @@ fn leaves(state: &crate::http::AppState) -> Vec<String> {
 )]
 async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops() {
     let fleet = seeded().await;
-    destination(&fleet).await;
     let (rig, asked) = policy_rig(
         fleet,
         |cli| {
-            // One instance in the ring: the cell's leaves are all this one's.
+            // One instance, and the fleet at its maximum of one: no instance can join, so each
+            // split goes ahead on this one, both children beside the parent, with no destination
+            // (EDGE-261-RATIFICATION §3).
             cli.fleet_max = 1;
             lines(cli);
         },

@@ -62,6 +62,9 @@ pub(crate) struct View {
     /// The fleet's demand for instances past the shards (`planning::Need::split_demand`) on
     /// the latest fold: the fleet axis.
     pub split_demand: u64,
+    /// The live instances: beating, not draining, not withdrawn. At `Limits::fleet_max` no
+    /// instance can join, so a split never asks for one.
+    pub live: u32,
     /// The fleet tick's cached beats are no older than the stale age. Stale, they are stale
     /// beats from every owner: merges are blocked, splits are not.
     pub beats_fresh: bool,
@@ -91,6 +94,8 @@ pub(crate) struct Limits {
     pub beat_stale_ms: i64,
     pub override_cooldown_ms: i64,
     pub shards_per_instance_max: u32,
+    /// `FLEET_MAX`: the most instances the fleet grows to.
+    pub fleet_max: u32,
 }
 
 /// The deepest prefix there is: a 24-bit leaf never splits.
@@ -257,6 +262,11 @@ impl Policy {
         view: &'a View,
         at: &Limits,
     ) -> Option<Result<Candidate<'a>, Hold>> {
+        if let Some(doubling) = &mut self.doubling {
+            doubling
+                .remaining
+                .retain(|prefix| !held_at_max(view, at, prefix));
+        }
         if let Some(doubling) = &self.doubling
             && let Some(next) = doubling.remaining.first()
         {
@@ -302,7 +312,8 @@ impl Policy {
                 doubling: true,
                 fleet_axis: d,
             };
-            let remaining = deepest_first(&view.leaves);
+            let mut remaining = deepest_first(&view.leaves);
+            remaining.retain(|prefix| !held_at_max(view, at, prefix));
             let leaf = view
                 .leaves
                 .iter()
@@ -385,8 +396,10 @@ fn gate(view: &View, at: &Limits, actor: &Leaf) -> Option<Hold> {
 
 /// Reserve, then split: what holds a split this instance would start. It needs the leaf
 /// count's headroom, room for two children beside the parent here, and another instance with
-/// room for one; short of room it asks for an instance. The transition's memory is S4's split
-/// entry's own check, whose `instance_full` the loop answers the same way.
+/// room for one; short of room it asks for an instance. At `FLEET_MAX` it never asks: with room
+/// here it splits without a destination, and without it holds at the topology's maximum. The
+/// transition's memory is S4's split entry's own check, whose `instance_full` the loop answers the
+/// same way.
 fn reserve(view: &View, at: &Limits) -> Option<Decision> {
     if view.leaves.len() >= MAX_LEAVES {
         return Some(Decision::Hold(Hold::TopologyAtMax));
@@ -397,11 +410,43 @@ fn reserve(view: &View, at: &Limits) -> Option<Decision> {
         .iter()
         .find(|instance| instance.id == view.me);
     let resident = me.map_or(0, |instance| instance.resident_shards);
-    let here = me.is_some() && u64::from(resident) + 2 <= u64::from(max);
+    let here = me.is_some() && room(resident, max);
     let there = view.instances.iter().any(|instance| {
         instance.id != view.me && instance.accepting && instance.resident_shards < max
     });
-    (!(here && there)).then_some(Decision::AskInstance { resident, max })
+    match (here, there, at_fleet_max(view, at)) {
+        (true, true, _) | (true, false, true) => None,
+        (false, _, true) => Some(Decision::Hold(Hold::TopologyAtMax)),
+        _ => Some(Decision::AskInstance { resident, max }),
+    }
+}
+
+/// Whether an instance holding `resident` shards has room for a split's two children beside the
+/// parent under the ceiling `max`.
+fn room(resident: u32, max: u32) -> bool {
+    u64::from(resident) + 2 <= u64::from(max)
+}
+
+/// Whether the fleet is at `FLEET_MAX`: no instance can join, so a split never asks for one; it
+/// goes ahead on its actor with room, or holds at the topology's maximum (EDGE-261-RATIFICATION §3).
+fn at_fleet_max(view: &View, at: &Limits) -> bool {
+    view.live >= at.fleet_max
+}
+
+/// Whether `prefix`'s split would hold `topology_at_max` for good: the fleet at its maximum and
+/// the leaf's owner without room. A doubling passes over such a leaf.
+fn held_at_max(view: &View, at: &Limits, prefix: &str) -> bool {
+    let owner = view
+        .leaves
+        .iter()
+        .find(|leaf| leaf.prefix == prefix)
+        .map(|leaf| &leaf.owner);
+    let resident = view
+        .instances
+        .iter()
+        .find(|instance| Some(&instance.id) == owner)
+        .map_or(0, |instance| instance.resident_shards);
+    at_fleet_max(view, at) && !room(resident, at.shards_per_instance_max)
 }
 
 /// Whether `leaf`'s load comes from a beat no older than the stale age.

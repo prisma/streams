@@ -253,6 +253,7 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
         me: cell.me.clone(),
         instances,
         split_demand: standing.split_demand(),
+        live: live(cell, &beats, now_ms),
         beats_fresh,
         intent_live,
         last_op_end_ms: seen.changed_ms,
@@ -263,6 +264,17 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
             .any(|beat| beat.refusals > 0 && now_ms - beat.ts_ms <= cell.limits.beat_stale_ms),
         leaves,
     }
+}
+
+/// The live instances in `beats`: fresh, not draining, not withdrawn (the members the fleet's
+/// planner folds).
+fn live(cell: &Cell, beats: &[Heartbeat], now_ms: i64) -> u32 {
+    let live = beats.iter().filter(|beat| {
+        now_ms - beat.ts_ms <= cell.limits.beat_stale_ms
+            && !beat.draining
+            && beat.withdrawn.is_none()
+    });
+    u32::try_from(live.count()).unwrap_or(u32::MAX)
 }
 
 /// `prefix`'s load as its owner's beat reports it, by axis against its safe capacity.
@@ -326,6 +338,7 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
         beat_stale_ms: ms(cli.shard_beat_stale_secs),
         override_cooldown_ms: ms(config.fleet.rebalance_move_cooldown_secs),
         shards_per_instance_max: cli.shards_per_instance_max,
+        fleet_max: u32::try_from(cli.fleet_max).unwrap_or(u32::MAX),
     }
 }
 
