@@ -189,7 +189,9 @@ OWNERS = (
     owner('shard_seal_fold_merge', 'src/shard/seal/fold/merge.rs', 'shard::seal::fold::merge_tests:: shard::seal::fold_tests::merges shard::seal::fold_tests::tiling shard::seal::gc_tests:: shard::seal::gc:: dst_tests::reads_merged::'),
     owner('shard_seal_runs', 'src/shard/seal/runs.rs', 'shard::seal::runs::runs_tests:: shard::seal::fold_tests:: shard::seal::consolidate_tests::'),
     owner('shard_seal_consolidate', 'src/shard/seal/consolidate.rs', 'shard::seal::consolidate_tests:: shard::seal::consolidate:: shard::seal::gc_tests::'),
-    owner('shard_seal_gc', 'src/shard/seal/gc.rs', 'shard::seal::gc_tests:: shard::seal::gc:: shard::seal::fold_tests::merges dst_tests::purge_lifecycle::'),
+    owner('shard_seal_gc', 'src/shard/seal/gc.rs',
+          'shard::seal::gc_tests:: shard::seal::gc:: shard::seal::fold_tests::merges dst_tests::purge_lifecycle:: '
+          'shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home'),
     owner('shard_seal_gc_purge', 'src/shard/seal/gc/purge.rs', 'shard::seal::gc_tests:: shard::seal::gc:: dst_tests::purge_lifecycle::'),
     owner('shard_seal_gc_sweep', 'src/shard/seal/gc/sweep.rs', 'shard::seal::gc_tests:: shard::seal::gc::'),
     owner('shard_seal_gc_clean', 'src/shard/seal/gc/clean.rs', 'shard::seal::gc::clean:: shard::seal::gc_tests:: dst_tests::reads_merged::'),
