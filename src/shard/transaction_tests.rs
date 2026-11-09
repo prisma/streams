@@ -214,6 +214,8 @@ impl Fixture {
                 ..Default::default()
             };
             expected.insert(tail_key(&hash), encode_tail(&tail));
+            // The stream now holds an unsealed page: its unsealed-index row (S3a §4.1).
+            expected.insert(crate::shard::open_index::unsealed_key(&hash), Vec::new());
             expected.insert(seq_key(&hash, &KEY), b"alpha".to_vec());
             let mut producer = Vec::new();
             for value in [1u64, 0, 0] {

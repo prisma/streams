@@ -173,6 +173,10 @@ impl CommitTransaction<'_> {
                 if !queue {
                     self.batch.delete(crate::shard::tail_key(&hash));
                     self.batch.delete(crate::spill::pending::pending_key(&hash));
+                    self.batch
+                        .delete(crate::shard::open_index::unsealed_key(&hash));
+                    self.batch
+                        .delete(crate::shard::open_index::dirty_key(&hash));
                     self.maintenance_retired = self.maintenance_retired.saturating_add(unsealed);
                 }
                 self.batch.put(

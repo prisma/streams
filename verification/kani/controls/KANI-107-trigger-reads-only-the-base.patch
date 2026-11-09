@@ -1,0 +1,12 @@
+diff --git a/src/shard/open_index.rs b/src/shard/open_index.rs
+--- a/src/shard/open_index.rs
++++ b/src/shard/open_index.rs
+@@ -56,7 +56,7 @@ pub(crate) enum IndexOp {
+ /// staged tail (`(absorbed, next)` each), never of in-memory state: a put when the stream gains
+ /// unsealed pages, a delete when it loses its last.
+ pub(crate) fn unsealed_op(base: (u64, u64), staged: (u64, u64)) -> Option<IndexOp> {
+-    match (base.0 < base.1, staged.0 < staged.1) {
++    match (base.0 < base.1, base.0 < base.1) {
+         (false, true) => Some(IndexOp::Put),
+         (true, false) => Some(IndexOp::Delete),
+         _ => None,

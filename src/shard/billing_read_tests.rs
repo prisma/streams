@@ -835,3 +835,37 @@ async fn refused_once(retained: bool) {
 }
 
 mod f3_tests;
+
+/// The usage-dirty index follows billed groups and acknowledgements (S3a §4.1): the start's
+/// acknowledgement through version 8 deleted the seeded row, a close puts it at version 9, an
+/// acknowledgement through 8 leaves it, and one through 9 deletes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_usage_dirty_row_follows_billed_groups_and_acknowledgements() {
+    let rig = CloseRig::start("dirty-row", Some(&open_row())).await;
+    let key = crate::shard::open_index::dirty_key(&SEGMENT);
+    let row = |rig: &CloseRig| {
+        let (db, key) = (rig.db.clone(), key.clone());
+        async move { db.get(&key).await.unwrap().map(|v| v.to_vec()) }
+    };
+    let ack = |through| CommitOp::UsageAck {
+        hash: SEGMENT,
+        scope: UsageAckScope::ThroughVersion(through),
+        month_final_keys: vec![],
+    };
+    assert_eq!(row(&rig).await, None, "the start acknowledged version 8");
+    rig.commit(vec![close(0)]).await;
+    assert_eq!(
+        row(&rig).await,
+        Some(9u64.to_be_bytes().to_vec()),
+        "the close took version 9"
+    );
+    rig.commit(vec![ack(8)]).await;
+    assert_eq!(
+        row(&rig).await,
+        Some(9u64.to_be_bytes().to_vec()),
+        "8 does not cover 9"
+    );
+    rig.commit(vec![ack(9)]).await;
+    assert_eq!(row(&rig).await, None);
+    rig.stop().await;
+}

@@ -14,6 +14,15 @@ impl CommitTransaction<'_> {
         if decide_billing_ack(cur, scope) == BillingAckDecision::ClearDirty {
             self.engine.layout.clear_usage(hash, cur);
         }
+        // The usage-dirty row goes when the ledger covers the version (S3a §4.1); a billed op this
+        // group stages after the ack puts it again later in the batch, so that put wins.
+        if let UsageAckScope::ThroughVersion(through) = scope
+            && crate::shard::open_index::dirty_cleared(through, cur)
+        {
+            self.batch
+                .delete(crate::shard::open_index::dirty_key(&hash));
+            self.extra_writes = true;
+        }
         for k in &month_final_keys {
             self.batch.delete(k);
             self.extra_writes = true;

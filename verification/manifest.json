@@ -1452,6 +1452,75 @@
       ]
     },
     {
+      "id": "KANI-107",
+      "kind": "kani",
+      "title": "Layout 8 open indexes: the 'W' and 'M' triggers keep their invariants",
+      "status": "pass-with-recorded-scope",
+      "owner": "Layout 8 open indexes (shard::open_index::unsealed_op, shard::open_index::dirty_cleared)",
+      "source_paths": [
+        "src/shard/open_index.rs"
+      ],
+      "verification_paths": [
+        "src/shard/open_index/proofs.rs"
+      ],
+      "requirements": [
+        "D4",
+        "D5"
+      ],
+      "models": [
+        "TLA-016"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "unsealed_op over every base and staged tail (absorbed, next) of any u64s, from invariant W on the base tail; dirty_cleared over any acknowledgement through and any durable usage version (or none). Where the committer stages the rows (shard::transaction::finalize::stage_index_rows, CommitTransaction::usage_ack, stage_purge), that every writer of a tail is in the committer's one batch, and the open's reads of the indexes are outside the proof; shard::open_index::tests, shard::seal::lifecycle_tests::the_unsealed_index_follows_appends_and_seals, shard::billing_read_tests::the_usage_dirty_row_follows_billed_groups_and_acknowledgements and dst_tests::billing_restart pin them",
+      "regressions": [
+        "shard::open_index::tests::the_index_triggers_follow_base_and_staged_tails",
+        "shard::seal::lifecycle_tests::the_unsealed_index_follows_appends_and_seals",
+        "shard::billing_read_tests::the_usage_dirty_row_follows_billed_groups_and_acknowledgements",
+        "dst::dst_tests::billing_restart::a_restart_re_emits_only_the_unacknowledged_and_the_rollup_bills_it_once"
+      ],
+      "checks": [
+        {
+          "id": "KANI-107/unsealed",
+          "role": "baseline",
+          "harness": "shard::open_index::proofs::kani_107_the_unsealed_row_follows_the_staged_tail",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-107/dirty",
+          "role": "baseline",
+          "harness": "shard::open_index::proofs::kani_107_the_dirty_row_clears_only_through_the_durable_version",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-107/nc-trigger-reads-only-the-base",
+          "role": "negative-control",
+          "harness": "shard::open_index::proofs::kani_107_the_unsealed_row_follows_the_staged_tail",
+          "patch": "verification/kani/controls/KANI-107-trigger-reads-only-the-base.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the unsealed row follows the staged tail"
+          }
+        },
+        {
+          "id": "KANI-107/nc-clear-one-version-early",
+          "role": "negative-control",
+          "harness": "shard::open_index::proofs::kani_107_the_dirty_row_clears_only_through_the_durable_version",
+          "patch": "verification/kani/controls/KANI-107-clear-one-version-early.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a cleared dirty row was acknowledged through the durable version"
+          }
+        }
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

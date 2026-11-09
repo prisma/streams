@@ -748,6 +748,7 @@ async fn scans_at_the_top_of_the_offset_space_are_exact() {
         .unwrap();
     let mut batch = slatedb::WriteBatch::new();
     batch.put(super::tail_key(&HASH), super::encode_tail(&tail));
+    super::test_support::seed_indexes(&mut batch, &HASH, &tail);
     batch.put(pending_key(&HASH), concat_pages(&pages));
     db.write(batch).await.unwrap();
     db.close().await.unwrap();

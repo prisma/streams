@@ -147,3 +147,17 @@ async fn an_engine_names_its_objects_with_its_logs_home() {
     assert_eq!(engine.object_root(3), "shards/11");
     engine.begin_close();
 }
+
+/// The index triggers (S3a §4.1, KANI-107): `'W'` from the base and staged tails alone, over the
+/// four combinations; `'M'` cleared only by an acknowledgement covering the durable version.
+#[test]
+fn the_index_triggers_follow_base_and_staged_tails() {
+    use super::IndexOp::{Delete, Put};
+    use super::{dirty_cleared, unsealed_op};
+    assert_eq!(unsealed_op((3, 3), (3, 4)), Some(Put), "gains a page");
+    assert_eq!(unsealed_op((3, 4), (4, 4)), Some(Delete), "loses its last");
+    assert_eq!(unsealed_op((3, 4), (3, 5)), None, "stays unsealed");
+    assert_eq!(unsealed_op((3, 3), (5, 5)), None, "stays sealed");
+    assert!(!dirty_cleared(7, Some(8)));
+    assert!(dirty_cleared(8, Some(8)) && dirty_cleared(9, Some(8)) && dirty_cleared(0, None));
+}

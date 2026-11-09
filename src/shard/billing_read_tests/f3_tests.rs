@@ -81,8 +81,8 @@ async fn f3_billing_counters_ride_the_tail_and_the_static_row_is_written_once_a_
     assert_eq!(stored_in(&reopened.db).await, (Some(json(&rolled)), None));
     assert_eq!(
         usage_dirty_version(&reopened.engine, SEGMENT).await,
-        Some(41),
-        "a fresh engine marks every billed segment"
+        None,
+        "the ledger acknowledged version 41, so its usage-dirty row is gone and the open marks nothing"
     );
     let rebuilt = reopened
         .engine

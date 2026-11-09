@@ -2526,11 +2526,11 @@
     "scenarios": []
   },
   {
-    "name": "a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once",
+    "name": "a_restart_re_emits_only_the_unacknowledged_and_the_rollup_bills_it_once",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "30a5d40b6a4b5bb1cbf01c8018b2d8314bdab0f6b0b34164ba2f9ab4e835f452",
+    "function_sha256": "6386bf6f0b0ac6024ea7af3042130fe3b57146aaac76beae748cd97a1e79ae03",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_restart.rs",

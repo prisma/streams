@@ -1,7 +1,8 @@
 //! Layout 6 (DESIGN-6A f3): a billed segment's usage reaches the ledger
-//! from its tail's counters and the engine's in-memory dirty set, which a
-//! fresh process rebuilds from the tails. The rebuild re-emits every billed
-//! segment once; the rollup's version rule makes the re-emission a no-op,
+//! from its tail's counters and the engine's in-memory dirty set. Layout 8
+//! (S3a §4.1): a fresh process rebuilds the set from the usage-dirty index,
+//! so it re-emits only the segments whose usage the ledger had not
+//! acknowledged; the rollup's version rule makes any re-emission a no-op,
 //! so the totals stay exact across a restart and the writes after it.
 #![cfg(test)]
 use super::fixture_http::{engine_shutdown, http_rig_at, install_rollup};
@@ -46,11 +47,13 @@ async fn append(addr: std::net::SocketAddr, name: &str) {
     assert_eq!(st, 200);
 }
 
-/// Two billed streams, drained and rolled up; a restart over the same store
-/// re-emits both (the drain emits again with no new write) and every total
-/// is unchanged; one more write after the restart adds exactly its bytes.
+/// Two billed streams, drained and rolled up, then one more write to `rs-b`
+/// the ledger never sees before the process stops; a restart over the same
+/// store re-emits `rs-b` alone, `rs-a`'s totals are unchanged and `rs-b`'s
+/// gain exactly that write; one more write after the restart adds exactly
+/// its bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once() {
+async fn a_restart_re_emits_only_the_unacknowledged_and_the_rollup_bills_it_once() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let store = mem();
     let (state, addr) = http_rig_at(store.clone(), RigRuntime::first()).await;
@@ -71,6 +74,7 @@ async fn a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once() 
     let before = [usage(addr, "rs-a").await, usage(addr, "rs-b").await];
     assert_eq!(before[0]["ingestPayloadBytes"], 2 * RECORD.len() as u64);
     assert_eq!(before[1]["ingestRecords"], 1);
+    append(addr, "rs-b").await;
     engine_shutdown(&state).await;
 
     let (state, addr) = http_rig_at(store.clone(), RigRuntime::incarnation(1)).await;
@@ -78,22 +82,28 @@ async fn a_restart_re_emits_every_billed_segment_and_the_rollup_bills_it_once() 
         .await
         .unwrap();
     install_rollup(&state, rollup).await;
-    // A read opens the shard; the first drain after it re-marks both.
+    // A read opens the shard; the open marks only the usage-dirty index's
+    // member, rs-b.
     for name in ["rs-a", "rs-b"] {
         let path = format!("/v1/streams/{name}/records");
         let (st, _, _) = preq(addr, "GET", &path, &KEY, b"").await;
         assert_eq!(st, 200);
     }
-    assert!(
-        settle(&state).await >= 2,
-        "the fresh process re-emits every billed segment"
+    let sref = state.deployment.raw_adapter_sref("rs-b");
+    let desc = super::billing_closure_debts::stored(&state, &sref).await;
+    let engine = super::billing_closure_debts::engine_of(&state, &desc, 0).await;
+    assert_eq!(
+        engine.usage_dirty_scan().await.unwrap(),
+        [(desc.storage_hash(), 2)],
+        "the fresh process marks only the unacknowledged segment, at its durable version"
     );
+    settle(&state).await;
     let rolled = [usage(addr, "rs-a").await, usage(addr, "rs-b").await];
-    for (b, r) in before.iter().zip(&rolled) {
-        for f in ["ingestPayloadBytes", "ingestRecords", "ownedStoredBytesNow"] {
-            assert_eq!(r[f], b[f], "{f} after the re-emission");
-        }
+    for f in ["ingestPayloadBytes", "ingestRecords", "ownedStoredBytesNow"] {
+        assert_eq!(rolled[0][f], before[0][f], "rs-a's {f} after the restart");
     }
+    assert_eq!(rolled[1]["ingestRecords"], 2);
+    assert_eq!(rolled[1]["ingestPayloadBytes"], 2 * RECORD.len() as u64);
     append(addr, "rs-a").await;
     settle(&state).await;
     let last = usage(addr, "rs-a").await;

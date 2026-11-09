@@ -229,13 +229,26 @@ pub(crate) fn seed_billing(
         crate::billing::billing_meta_key(hash),
         crate::billing::stored_meta::encode_static(meta),
     );
-    batch.put(
-        tail_key(hash),
-        encode_tail(&TailFields {
-            usage,
-            ..fields.clone()
-        }),
-    );
+    let tail = TailFields {
+        usage,
+        ..fields.clone()
+    };
+    batch.put(tail_key(hash), encode_tail(&tail));
+    seed_indexes(batch, hash, &tail);
+}
+
+/// Test-only: the open-index rows a committed group leaves for `tail` (S3a §4.1): `'W'` while it
+/// holds unsealed pages, `'M'` at its usage version (unacknowledged).
+pub(crate) fn seed_indexes(batch: &mut WriteBatch, hash: &[u8; 16], tail: &TailFields) {
+    if tail.absorbed < tail.next {
+        batch.put(super::open_index::unsealed_key(hash), []);
+    }
+    if let Some(usage) = &tail.usage {
+        batch.put(
+            super::open_index::dirty_key(hash),
+            usage.usage_version.to_be_bytes(),
+        );
+    }
 }
 
 /// Test-only: the version the engine's usage dirty set holds for `hash`.

@@ -1,0 +1,12 @@
+diff --git a/src/shard/open_index.rs b/src/shard/open_index.rs
+--- a/src/shard/open_index.rs
++++ b/src/shard/open_index.rs
+@@ -66,7 +66,7 @@ pub(crate) fn unsealed_op(base: (u64, u64), staged: (u64, u64)) -> Option<IndexO
+ /// Whether the ledger's acknowledgement through `through` clears the usage-dirty row of a stream
+ /// whose durable usage version is `durable`: only when it covers that version.
+ pub(crate) fn dirty_cleared(through: u64, durable: Option<u64>) -> bool {
+-    durable.is_none_or(|version| version <= through)
++    durable.is_none_or(|version| version <= through.saturating_add(1))
+ }
+ 
+ /// The members of the index `tag`, with their values.

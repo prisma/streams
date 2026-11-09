@@ -62,16 +62,15 @@ async fn planted_engine(
     );
     let pending = concat_pages(pages);
     let mut batch = WriteBatch::new();
-    batch.put(
-        tail_key(&[8; 16]),
-        encode_tail(&TailFields {
-            next,
-            absorbed,
-            route: [4; 16],
-            unabsorbed_bytes: pending.len() as u64,
-            ..Default::default()
-        }),
-    );
+    let tail = TailFields {
+        next,
+        absorbed,
+        route: [4; 16],
+        unabsorbed_bytes: pending.len() as u64,
+        ..Default::default()
+    };
+    batch.put(tail_key(&[8; 16]), encode_tail(&tail));
+    crate::shard::test_support::seed_indexes(&mut batch, &[8; 16], &tail);
     if !pending.is_empty() {
         batch.put(pending_key(&[8; 16]), pending);
     }

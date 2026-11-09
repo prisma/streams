@@ -101,6 +101,10 @@ pub(crate) mod tag {
     pub(crate) const USAGE_DEBT: u8 = b'U';
     /// The shard log's identity: its layout and its home (`shard::check_identity`).
     pub(crate) const IDENTITY: u8 = b'Y';
+    /// The unsealed index: a stream whose durable tail holds unsealed pages (S3a §4.1).
+    pub(crate) const UNSEALED: u8 = b'W';
+    /// The usage-dirty index: a stream whose usage the ledger has not acknowledged (S3a §4.1).
+    pub(crate) const USAGE_DIRTY: u8 = b'M';
 }
 
 /// The home of the shard at `prefix` (S3a-DESIGN §3.1): a static topology's shards are its

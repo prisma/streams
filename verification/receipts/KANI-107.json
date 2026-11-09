@@ -1,0 +1,143 @@
+{
+  "checks": [
+    {
+      "check": "KANI-107/unsealed",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "b63dcab5c20a23f50fe7fce0e93ac246baf5cbb413f3e3b1a324eb5fb54c8f4c",
+      "role": "baseline",
+      "seconds": 45.5,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-107/dirty",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "a161923849f29179018a68b96674a80b5907f678053eb90e4a347e6965486ede",
+      "role": "baseline",
+      "seconds": 43.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-107/nc-trigger-reads-only-the-base",
+      "expected": "fail:the unsealed row follows the staged tail",
+      "failed_checks": [
+        "\"the unsealed row follows the staged tail\""
+      ],
+      "log_sha256": "37bcdd7154c751eb368a62cbdfad91cb77d4c6026605ab1c2ecf38c970d64046",
+      "mutated": {
+        "src/shard/open_index.rs": {
+          "baseline": "2ce26cc747bcd952f22c82346d6b894e21816500f3a821cd61777a1c37208e6f",
+          "control": "62e2611c1d2b89e995c0f601cb0ca11c60095176446f26c7223b9949529100d2"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 43.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-107/nc-clear-one-version-early",
+      "expected": "fail:a cleared dirty row was acknowledged through the durable version",
+      "failed_checks": [
+        "\"a cleared dirty row was acknowledged through the durable version\""
+      ],
+      "log_sha256": "3af0bc8ec81270525f5326ce3919108407b6cce8fbd42064e540e8f21ed87a57",
+      "mutated": {
+        "src/shard/open_index.rs": {
+          "baseline": "2ce26cc747bcd952f22c82346d6b894e21816500f3a821cd61777a1c37208e6f",
+          "control": "905ec83b96a6d75c6eec324f28b9b3f7d01a1afc8e97cd47a9e5aecadb14a1fe"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 40.4,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-107",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/shard/open_index.rs": "2ce26cc747bcd952f22c82346d6b894e21816500f3a821cd61777a1c37208e6f",
+      "src/shard/open_index/proofs.rs": "06b48f265c78a3d2768738b9b8aa178bf58e6de823d0c3ac38382675834d1f62",
+      "verification/kani/controls/KANI-107-clear-one-version-early.patch": "b52c2dc7227829c6ba49fcd2e962cf7c33ca275ffe46107b4546aa76ddcdfb03",
+      "verification/kani/controls/KANI-107-trigger-reads-only-the-base.patch": "43ca0acc24d0a6408d37a6ca6b32f4b799d758e3ca5dabed3bbeaab8971b4047"
+    },
+    "manifest_entry": "b6ed5a46c7b392dfc782c357a70a98d308874baabc70adc42b9eb4b6d0efef3a",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "fd20db13a223fe73cf229b3a5065bcbf502035f8c53f823b7b370da79a17352a",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "4c53648f2d35060c24a2ee96d17d58d6bd3da202"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

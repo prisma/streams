@@ -243,6 +243,52 @@ async fn the_open_loads_only_streams_holding_unsealed_pages() {
     rig.engine.begin_close();
 }
 
+/// The unsealed index follows the committer (S3a §4.1): every stream an append leaves with
+/// unsealed pages has its `'W'` row, a seal that takes its pages deletes it, and the reopened
+/// engine's ledger is exactly the unsealed bytes of the one stream the index still names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_unsealed_index_follows_appends_and_seals() {
+    let mut rig = rig("open-index-w", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x1DE0);
+    let streams = hashes(&mut rng, 3);
+    for hash in &streams {
+        append(&rig.engine, *hash, vec![random_bytes(&mut rng, 500)]).await;
+    }
+    settle(&rig.engine).await;
+    let members = |rig: &Rig| {
+        let db = rig.engine.db.clone();
+        async move {
+            let mut m = crate::shard::open_index::unsealed_members(&db)
+                .await
+                .unwrap();
+            m.sort_unstable();
+            m
+        }
+    };
+    let mut all = streams.clone();
+    all.sort_unstable();
+    assert_eq!(members(&rig).await, all, "every appended stream");
+    rig.engine.seal_once(Trigger::Requested).await.unwrap();
+    settle(&rig.engine).await;
+    assert_eq!(
+        members(&rig).await,
+        Vec::<[u8; 16]>::new(),
+        "the seal took every page"
+    );
+    append(&rig.engine, streams[0], vec![random_bytes(&mut rng, 500)]).await;
+    settle(&rig.engine).await;
+    assert_eq!(members(&rig).await, vec![streams[0]]);
+    let unsealed = rig.engine.stream_handle(streams[0]).await.unwrap();
+    let bytes = unsealed.state.lock().unwrap().durable.unabsorbed_bytes;
+    rig = reopen(rig).await;
+    assert_eq!(
+        rig.engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        bytes
+    );
+    assert_eq!(members(&rig).await, vec![streams[0]]);
+    rig.engine.begin_close();
+}
+
 /// **A handle load racing a seal reads one state.** A load parked after it
 /// read a stream's tail while a seal takes the stream's only page: the load
 /// still sees a tail and a pending row of one moment, before the seal or

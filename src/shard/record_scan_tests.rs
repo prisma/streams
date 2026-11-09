@@ -54,14 +54,13 @@ async fn scan_fixture(
     );
     let pending = concat_pages(pages);
     let mut batch = WriteBatch::new();
-    batch.put(
-        tail_key(&STREAM),
-        encode_tail(&TailFields {
-            next,
-            unabsorbed_bytes: pending.len() as u64,
-            ..Default::default()
-        }),
-    );
+    let tail = TailFields {
+        next,
+        unabsorbed_bytes: pending.len() as u64,
+        ..Default::default()
+    };
+    batch.put(tail_key(&STREAM), encode_tail(&tail));
+    crate::shard::test_support::seed_indexes(&mut batch, &STREAM, &tail);
     batch.put(pending_key(&STREAM), pending);
     batch.put(
         producer_key(&STREAM, &[9; 16], "unchanged"),

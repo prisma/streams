@@ -1,13 +1,12 @@
-//! The sealer's open (layout 6): the in-memory directory from the `'K'`
-//! rows, then one scan of the stream segment's tails that loads every
-//! stream holding unsealed pages (its pending row tiled against its tail)
-//! and marks every billed stream in the usage dirty set (f3: the drain
-//! re-emits each once; the rollup deduplicates by version). A stream whose
-//! tail or pending row does not decode fails alone, as it did before the
-//! seal: it is counted and logged, and its own reads and appends meet the
-//! corruption when they load it; every other stream is served.
+//! The sealer's open (layout 6; its reads layout 8's indexes, S3a §4.1): the in-memory directory
+//! from the `'K'` rows, every stream the unsealed index `'W'` names held through its handle (its
+//! pending row tiled against its tail), and every stream the usage-dirty index `'M'` names marked
+//! in the usage dirty set at its version (the drain re-emits each once; the rollup deduplicates by
+//! version). No read scans the shard's tails. A stream whose tail or pending row does not decode
+//! fails alone: it is counted and logged, and its own reads and appends meet the corruption when
+//! they load it; every other stream is served.
 
-use crate::shard::{ShardEngine, stored_tail};
+use crate::shard::ShardEngine;
 use crate::spill::directory::{self, Directory};
 
 /// A load failure that is the store's, not the stream's: the store closed
@@ -79,32 +78,14 @@ impl ShardEngine {
         Ok(dir)
     }
 
-    /// One scan of the stream segment's tails: the streams holding unsealed
-    /// pages, with every billed stream marked in the usage dirty set on the
-    /// way. An undecodable tail is counted and skipped; a store error fails
-    /// the scan (and the open retries).
+    /// The streams the unsealed index names (S3a §4.1), and every stream the usage-dirty index
+    /// names marked dirty at its version, so the drain re-emits only those. A store error fails the
+    /// open (and it retries).
     async fn scan_tails(&self) -> anyhow::Result<Vec<[u8; 16]>> {
-        let mut unsealed = Vec::new();
-        let mut rows = self.db.scan(..).await?;
-        while let Some(row) = rows.next().await? {
-            let Some(hash) = crate::keyspace::tail_hash(&row.key) else {
-                continue;
-            };
-            let tail = match stored_tail(&row.value) {
-                Ok(tail) => tail,
-                Err(e) => {
-                    self.note_corrupt_stream(&hash, &e.to_string());
-                    continue;
-                }
-            };
-            if tail.absorbed < tail.next {
-                unsealed.push(hash);
-            }
-            if let Some(usage) = tail.usage {
-                self.layout.mark_usage(hash, usage.usage_version);
-            }
+        for (hash, version) in crate::shard::open_index::dirty_members(&self.db).await? {
+            self.layout.mark_usage(hash, version);
         }
-        Ok(unsealed)
+        Ok(crate::shard::open_index::unsealed_members(&self.db).await?)
     }
 
     /// A stream the open could not load: counted, logged, skipped.

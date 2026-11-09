@@ -92,7 +92,8 @@ fn maintenance_refusals_keep_their_words() {
 }
 
 /// Layout 6: the ledger lives in memory only, and the open rebuilds it by
-/// summing the stored stream tails' unsealed bytes. Tails holding 300 and
+/// summing the unsealed bytes of the tails the unsealed index `'W'` names (layout 8: the index,
+/// not a scan of every tail, S3a §4.1). Tails holding 300 and
 /// 400 unsealed bytes rebuild to 700 with both clocks started; a log with
 /// no tail rebuilds to a zero ledger with no clock; a tail that does not
 /// decode, or whose boundary is past its next offset, is left out (its
@@ -118,6 +119,9 @@ async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     let mut wb = WriteBatch::new();
     wb.put(tail_key(&[1; 16]), unsealed(300));
     wb.put(tail_key(&[2; 16]), unsealed(400));
+    for hash in [[1; 16], [2; 16]] {
+        wb.put(crate::shard::open_index::unsealed_key(&hash), []);
+    }
     let sealed = TailFields {
         next: 10,
         absorbed: 10,
@@ -166,6 +170,9 @@ async fn load_or_rebuild_covers_present_missing_and_corrupt() {
     wb.put(tail_key(&[4; 16]), b"broken tail");
     wb.put(tail_key(&[5; 16]), encode_tail(&ahead));
     wb.put(queue_tail_key(&[6; 16]), unsealed(50));
+    for hash in [[1; 16], [4; 16], [5; 16]] {
+        wb.put(crate::shard::open_index::unsealed_key(&hash), []);
+    }
     db.write(wb).await.unwrap();
     let got = load_or_rebuild_maintenance(&db).await.unwrap();
     assert_eq!(got.unabsorbed_frame_bytes, 300);
