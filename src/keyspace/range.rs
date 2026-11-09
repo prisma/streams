@@ -47,8 +47,9 @@ impl Range {
         })
     }
 
-    /// Kani: the range of any `len`-bit prefix `bits` (KANI-106), without `parse`'s string.
-    #[cfg(kani)]
+    /// Kani: the range of any `len`-bit prefix `bits` (KANI-106), without `parse`'s string; the
+    /// unit tests pin it to `parse`, so the proof's ranges are the ones the registry reads.
+    #[cfg(any(kani, test))]
     pub(crate) fn from_bits(bits: u128, len: u32) -> Self {
         Self { bits, len }
     }

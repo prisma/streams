@@ -123,3 +123,22 @@ fn the_registrys_match_is_its_string_match_for_every_prefix() {
     }
     assert_eq!(Range::parse(""), Some(Range::ALL), "the root is every hash");
 }
+
+/// The proof's constructor (KANI-106 builds its ranges with `from_bits`) is the range `parse` reads
+/// from the same prefix, for the root, short prefixes and the longest route prefix.
+#[test]
+fn a_range_from_bits_is_the_range_its_prefix_parses_to() {
+    let longest = "1".repeat(super::super::ROUTE_PREFIX_BITS);
+    for prefix in ["", "1", "0", "0110", &longest] {
+        let len = u32::try_from(prefix.len()).unwrap();
+        let bits = match len {
+            0 => 0,
+            _ => u128::from_str_radix(prefix, 2).unwrap() << (128 - len),
+        };
+        assert_eq!(
+            Some(Range::from_bits(bits, len)),
+            Range::parse(prefix),
+            "{prefix:?}"
+        );
+    }
+}
