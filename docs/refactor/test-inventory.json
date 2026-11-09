@@ -1507,7 +1507,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "22c5d3eb782a7b4a4a36a1b23ce4b30a54c43b5da5e434ed491ca2c515eb3c39",
+    "function_sha256": "f4525a1670b00dc9a3cbb2108d8430eeb1dc7803f03c25c396280fa2348626b4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_topology.rs",
@@ -3130,6 +3130,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_source_is_never_the_lag_rebalancers_shard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e8661d8525ff426c57c895cad9f51ae8321cc035cd4cb8f4cdb478d0b75c74de",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
     "scenarios": []
   },
   {

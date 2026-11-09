@@ -31,6 +31,8 @@ use crate::runtime::MonotonicNow;
 use crate::shard::now_ms;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
+/// The name a member's reserved shard counts under in a plan: never a prefix, never moved.
+const RESERVED: &str = "reserved:";
 /// Consecutive passes that must each find the same instance past the share
 /// before it moves: one pass can read a ring that is still settling.
 const SETTLED_PASSES: u32 = 2;
@@ -256,6 +258,11 @@ struct FleetRead {
     active: Vec<String>,
     // mt-lint: allow(name-keyed-map): fleet instance -> its fresh lag
     lags: HashMap<String, u64>,
+    /// Each member's shards held in reserve for its own live split, and the prefixes the live
+    /// topology intent names as its sources (S4-DESIGN §4.4).
+    // mt-lint: allow(name-keyed-map): fleet instance -> its reserved shards
+    reserved: HashMap<String, u32>,
+    sources: Vec<String>,
     overrides: Overrides,
     version: Option<UpdateVersion>,
 }
@@ -272,6 +279,11 @@ impl FleetRead {
             .inspect_err(|error| tracing::debug!(%error, "count balance: heartbeats unreadable"))
             .ok()?;
         let (candidacies, lags) = fold(heartbeats, now_ms());
+        let reserved = candidacies
+            .iter()
+            .filter(|(_, candidacy)| candidacy.reserved_shards() > 0)
+            .map(|(member, candidacy)| (member.clone(), candidacy.reserved_shards()))
+            .collect();
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
         let active = planning::active_members(count, me, &candidacies);
@@ -279,20 +291,31 @@ impl FleetRead {
         Some(Self {
             active,
             lags,
+            reserved,
+            sources: state.fleet.standing().topology_sources(),
             overrides,
             version,
         })
     }
 
-    /// The move `me` would make over `prefixes` (see [`pick`]).
+    /// The move `me` would make over `prefixes` (see [`pick`]). A member's reserved shards count as
+    /// shards it holds, and neither they nor a source of the live topology intent ever move
+    /// (S4-DESIGN §4.4).
     fn plan(
         &self,
         prefixes: &[String],
         me: &str,
         lag_threshold_secs: u64,
     ) -> Option<(String, String)> {
+        let mut owners = document_owners(prefixes, &self.active, &self.overrides);
+        let held = owners.len();
+        for (member, reserved) in &self.reserved {
+            let phantoms =
+                (0..*reserved).map(|n| (format!("{RESERVED}{member}/{n}"), member.clone()));
+            owners.extend(phantoms);
+        }
         pick(
-            &document_owners(prefixes, &self.active, &self.overrides),
+            &owners,
             &self.active,
             me,
             |member| {
@@ -303,10 +326,14 @@ impl FleetRead {
             // An override to a non-member is void (every reader ignores it),
             // so its shard moves as one with none.
             |prefix| {
-                self.overrides
+                let real = owners[..held].iter().any(|(p, _)| p == prefix);
+                let source = self.sources.iter().any(|p| p == prefix);
+                let unowned = self
+                    .overrides
                     .entries
                     .get(prefix)
-                    .is_none_or(|entry| !self.active.contains(&entry.to))
+                    .is_none_or(|entry| !self.active.contains(&entry.to));
+                real && !source && unowned
             },
         )
     }
@@ -637,6 +664,8 @@ mod tests {
         let read = FleetRead {
             active: members(2),
             lags: [("streams-2".to_owned(), 0)].into_iter().collect(),
+            reserved: std::collections::HashMap::new(),
+            sources: Vec::new(),
             overrides: Overrides {
                 entries: [
                     ("00", "streams-9"),
@@ -656,6 +685,47 @@ mod tests {
             read.plan(&prefixes, "streams-1", 60),
             Some(("00".to_owned(), "streams-2".to_owned()))
         );
+    }
+
+    /// **A member's split reservation counts as shards it holds, and a split's source never moves**
+    /// (S4-DESIGN §4.4). Two members hold two shards each by the ring, a balanced ring. Once
+    /// `streams-2` reserves two for its split of its first shard, it holds four of the share's three:
+    /// it sheds one, but not the source and never a reserved one, so its other shard goes to
+    /// `streams-1`; `streams-1`, within the share, moves nothing.
+    #[test]
+    fn a_split_reservation_counts_as_held_and_its_source_never_moves() {
+        let active = members(2);
+        let mut by: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+        for n in 0..64u32 {
+            let prefix = format!("{n:08b}");
+            let home = crate::ownership::ring_pick(&prefix, &active);
+            if by[home].len() < 2 {
+                by[home].push(prefix);
+            }
+        }
+        let [ones, twos] = by;
+        let source = twos[0].clone();
+        let read = |reserved: u32| FleetRead {
+            active: active.clone(),
+            lags: [("streams-1".to_owned(), 0), ("streams-2".to_owned(), 0)]
+                .into_iter()
+                .collect(),
+            reserved: [("streams-2".to_owned(), reserved)]
+                .into_iter()
+                .filter(|(_, r)| *r > 0)
+                .collect(),
+            sources: vec![source.clone()],
+            overrides: Overrides::default(),
+            version: None,
+        };
+        let mut prefixes: Vec<String> = ones.iter().chain(&twos).cloned().collect();
+        prefixes.sort();
+        assert_eq!(read(0).plan(&prefixes, "streams-2", 60), None, "balanced");
+        assert_eq!(
+            read(2).plan(&prefixes, "streams-2", 60),
+            Some((twos[1].clone(), "streams-1".to_owned()))
+        );
+        assert_eq!(read(2).plan(&prefixes, "streams-1", 60), None);
     }
 
     #[test]

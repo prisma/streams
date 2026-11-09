@@ -212,17 +212,43 @@ pub(crate) async fn replace(
 #[derive(Debug, Default)]
 pub(crate) struct Watch {
     etag: Option<String>,
-    live: Option<String>,
+    live: Option<Live>,
 }
 
-/// What a watch reports when the intent cannot be read: live, so the fleet does not shrink.
+/// A live intent as the fleet reads it: its operation, its kind, its actor (the lease owner) and
+/// the prefixes it names as its sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Live {
+    pub op_id: String,
+    pub kind: String,
+    pub owner: String,
+    pub sources: Vec<String>,
+}
+
+/// The `op_id` a watch reports when the intent cannot be read: live, so the fleet does not shrink
+/// (no actor and no sources are known).
 pub(crate) const UNREADABLE: &str = "unreadable";
 
+impl Live {
+    fn of(intent: Intent) -> Self {
+        Self {
+            op_id: intent.op_id,
+            kind: intent.kind,
+            owner: intent.lease_owner,
+            sources: intent
+                .sources
+                .into_iter()
+                .map(|(prefix, _)| prefix)
+                .collect(),
+        }
+    }
+}
+
 impl Watch {
-    /// The live intent's `op_id`, if the cell has one: none for an absent or terminal intent. A
-    /// read that fails, or an intent that does not decode, reports [`UNREADABLE`] (fail closed) and
-    /// is read again next time.
-    pub(crate) async fn live(&mut self, store: &dyn ObjectStore) -> Option<String> {
+    /// The live intent, if the cell has one: none for an absent or terminal intent. A read that
+    /// fails, or an intent that does not decode, reports one whose `op_id` is [`UNREADABLE`] (fail
+    /// closed) and is read again next time.
+    pub(crate) async fn live(&mut self, store: &dyn ObjectStore) -> Option<Live> {
         let opts = object_store::GetOptions {
             if_none_match: self.etag.clone(),
             ..Default::default()
@@ -235,7 +261,7 @@ impl Watch {
                 let etag = got.meta.e_tag.clone();
                 match got.bytes().await {
                     Ok(raw) => serde_json::from_slice::<Intent>(&raw)
-                        .map(|intent| (etag, (!intent.is_terminal()).then_some(intent.op_id)))
+                        .map(|intent| (etag, (!intent.is_terminal()).then(|| Live::of(intent))))
                         .map_err(|e| e.to_string()),
                     Err(e) => Err(e.to_string()),
                 }
@@ -243,7 +269,13 @@ impl Watch {
         };
         (self.etag, self.live) = read.unwrap_or_else(|error| {
             tracing::warn!(%error, "the topology intent could not be read; the fleet holds its size");
-            (None, Some(UNREADABLE.to_string()))
+            let unknown = Live {
+                op_id: UNREADABLE.to_string(),
+                kind: String::new(),
+                owner: String::new(),
+                sources: Vec::new(),
+            };
+            (None, Some(unknown))
         });
         self.live.clone()
     }

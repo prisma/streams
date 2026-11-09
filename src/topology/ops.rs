@@ -198,7 +198,7 @@ impl Parts {
 }
 
 /// The first route hash of `prefix`'s range: its bits, then zeros.
-fn route_of(prefix: &str) -> [u8; 16] {
+pub(crate) fn route_of(prefix: &str) -> [u8; 16] {
     let bits = u128::from_str_radix(prefix, 2).unwrap_or(0);
     let width = u32::try_from(prefix.len()).unwrap_or(128);
     bits.checked_shl(128 - width.min(128))

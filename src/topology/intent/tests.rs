@@ -125,7 +125,7 @@ fn the_lease_and_the_lapse_are_measured_on_the_observers_monotonic_clock() {
 }
 
 /// **The fleet's watch reports the live intent's operation, and none once it ends.** No intent:
-/// none. A live split: its `op_id`, again while the object is unchanged. Ended `Reclaimed`: none.
+/// none. A live split: its `op_id`, kind, actor and sources, again while the object is unchanged. Ended `Reclaimed`: none.
 /// An object that does not decode: `unreadable` (the fleet then holds its size), and a live intent
 /// written over it is read again.
 #[tokio::test(crate = "crate::test_rt")]
@@ -134,9 +134,15 @@ async fn the_watch_reports_the_live_intents_operation_and_none_once_it_ends() {
     let mut watch = Watch::default();
     assert_eq!(watch.live(&*store).await, None, "no intent");
     let held = super::create(&*store, &split("op-w")).await.unwrap();
-    assert_eq!(watch.live(&*store).await.as_deref(), Some("op-w"));
+    let live = watch.live(&*store).await.unwrap();
+    let named = (live.op_id.as_str(), live.kind.as_str(), live.owner.as_str());
     assert_eq!(
-        watch.live(&*store).await.as_deref(),
+        (named, live.sources),
+        (("op-w", "split", "inst-a"), vec!["1".to_string()])
+    );
+    let op = |live: Option<super::Live>| live.map(|live| live.op_id);
+    assert_eq!(
+        op(watch.live(&*store).await).as_deref(),
         Some("op-w"),
         "unchanged"
     );
@@ -145,8 +151,8 @@ async fn the_watch_reports_the_live_intents_operation_and_none_once_it_ends() {
     assert_eq!(watch.live(&*store).await, None, "ended");
     let path = object_store::path::Path::from(super::INTENT_PATH);
     store.put(&path, b"{".to_vec().into()).await.unwrap();
-    assert_eq!(watch.live(&*store).await.as_deref(), Some(UNREADABLE));
+    assert_eq!(op(watch.live(&*store).await).as_deref(), Some(UNREADABLE));
     let raw = serde_json::to_vec(&split("op-x")).unwrap();
     store.put(&path, raw.into()).await.unwrap();
-    assert_eq!(watch.live(&*store).await.as_deref(), Some("op-x"));
+    assert_eq!(op(watch.live(&*store).await).as_deref(), Some("op-x"));
 }

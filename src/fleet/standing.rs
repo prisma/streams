@@ -47,6 +47,9 @@ pub(crate) struct Standing {
     /// How far the tick's last desired count ran past the topology's
     /// shards (`planning::Demand`): the split demand its beat publishes.
     split_demand: AtomicU64,
+    /// The prefixes the cell's live topology intent names as its sources, as this runtime's last
+    /// beat read them: a rebalancer never moves one (S4-DESIGN §4.4).
+    topology_sources: Mutex<Vec<String>>,
 }
 
 impl Default for Standing {
@@ -62,6 +65,7 @@ impl Default for Standing {
             viewed: Mutex::new(Viewed::new()),
             drained: Mutex::new(None),
             split_demand: AtomicU64::new(0),
+            topology_sources: Mutex::new(Vec::new()),
         }
     }
 }
@@ -107,6 +111,21 @@ impl Standing {
     /// topology's shards.
     pub(crate) fn set_split_demand(&self, demand: u64) {
         self.split_demand.store(demand, Ordering::Relaxed);
+    }
+
+    /// The beat read the live topology intent's sources.
+    pub(crate) fn set_topology_sources(&self, sources: Vec<String>) {
+        if let Ok(mut kept) = self.topology_sources.lock() {
+            *kept = sources;
+        }
+    }
+
+    /// The prefixes the live topology intent names as its sources, as the last beat read them.
+    pub(crate) fn topology_sources(&self) -> Vec<String> {
+        self.topology_sources
+            .lock()
+            .map(|sources| sources.clone())
+            .unwrap_or_default()
     }
 
     /// The split demand the next beat publishes.

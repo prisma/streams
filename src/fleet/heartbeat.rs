@@ -182,6 +182,12 @@ pub(crate) struct Heartbeat {
     /// (S4-DESIGN §10.1). Absent with none, and from an earlier version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology_intent: Option<String>,
+    /// The shards this instance holds in reserve for its own live split
+    /// (S4-DESIGN §4.4, §10): two, its children, from the intent's creation
+    /// until it is terminal; the rebalancers count them as held. Zero
+    /// otherwise, and from an earlier version.
+    #[serde(default)]
+    pub reserved_shards: u32,
 }
 
 /// Start this runtime's heartbeat beside its fleet tick. It joins the fleet
@@ -225,10 +231,14 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             _ = beats.tick() => {}
             () = state.fleet.standing().beat_requested() => {}
         }
-        let topology_intent = tokio::select! {
+        let live = tokio::select! {
             _ = cancel.cancelled() => break,
             live = intent.live(&*state.data_store) => live,
         };
+        let sources = live.as_ref().map(|l| l.sources.clone()).unwrap_or_default();
+        state.fleet.standing().set_topology_sources(sources);
+        let reserved_shards = reserved_by(live.as_ref(), &instance);
+        let topology_intent = live.map(|l| l.op_id);
         sampler.observe(
             Instant::now(),
             state.admission.fleet_ops(),
@@ -237,6 +247,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
         );
         let heartbeat = Heartbeat {
             topology_intent,
+            reserved_shards,
             ..sampler.heartbeat(&state, &instance)
         };
         let published = tokio::select! {
@@ -260,6 +271,14 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
         Err(_) => tracing::warn!("last heartbeat put timed out"),
     }
     TaskResult::Done
+}
+
+/// The shards `instance` holds in reserve for `live` (S4-DESIGN §4.4, §10): a split's two
+/// children while the instance is its actor, none for a merge (it lowers the count) or another
+/// instance's operation.
+fn reserved_by(live: Option<&crate::topology::intent::Live>, instance: &str) -> u32 {
+    let ours = live.is_some_and(|live| live.kind == "split" && live.owner == instance);
+    if ours { 2 } else { 0 }
 }
 
 /// The smoothed request and CPU rates, the last beat's read-memory
@@ -378,6 +397,7 @@ impl Sampler {
             seq,
             viewed: left_out(state),
             topology_intent: None,
+            reserved_shards: 0,
         }
     }
 }
@@ -409,11 +429,14 @@ impl AppState {
     /// This runtime's own maintenance pressure as its rebalancer judges it
     /// at the tick: the most wedged shard it serves (prefix, ms) and its
     /// effective lag in seconds.
-    pub(super) fn fleet_pressure(&self) -> (String, i64, u64) {
+    pub(crate) fn fleet_pressure(&self) -> (String, i64, u64) {
+        // A source of the live topology intent is never a lag move's shard (S4-DESIGN §4.4).
+        let sources = self.fleet.standing().topology_sources();
         let (wedge_prefix, wedge_max_ms) = worst_wedge(
             self.shards
                 .engines_by_prefix()
                 .into_iter()
+                .filter(|(prefix, _)| !sources.contains(prefix))
                 .map(|(prefix, engine)| (prefix, engine.wedge_ms())),
         );
         let lag = effective_lag_secs(self.shards.stall_max_secs(), wedge_max_ms);

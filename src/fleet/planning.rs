@@ -40,6 +40,8 @@ pub(super) struct Candidacy {
     withdrawn: bool,
     /// Whether it is handing its ownership off in a planned drain.
     draining: bool,
+    /// The shards it holds in reserve for its own live split (S4-DESIGN §4.4).
+    reserved_shards: u32,
 }
 
 impl super::Heartbeat {
@@ -52,11 +54,17 @@ impl super::Heartbeat {
             progress_age_ms: self.progress_age_ms.unwrap_or(0),
             withdrawn: self.withdrawn.is_some(),
             draining: self.draining,
+            reserved_shards: self.reserved_shards,
         }
     }
 }
 
 impl Candidacy {
+    /// The shards it holds in reserve for its own live split, which the rebalancers count as held.
+    pub(super) fn reserved_shards(&self) -> u32 {
+        self.reserved_shards
+    }
+
     /// Whether a peer with this candidacy is a ring member: one that can
     /// take ownership over.
     pub(super) fn takes_ownership(&self) -> bool {
