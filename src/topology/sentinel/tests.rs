@@ -1,7 +1,7 @@
 #![cfg(test)]
 //! The helper's routing (S4-DESIGN §7, S3a §2.8): every tag's rule, on rows of each kind.
 
-use super::{PlanError, Row, child_counts, route};
+use super::{PlanError, Row, check_sums, child_counts, route};
 use crate::keyspace::range::Range;
 use crate::keyspace::{SENTINEL, tag};
 use crate::spill::directory::split::decode_row_in_range;
@@ -177,4 +177,56 @@ fn an_undecodable_count_row_is_refused() {
         child_counts(&rows, &[], Range::ALL),
         Err(PlanError::Corrupt(key))
     );
+}
+
+/// **The children's counts must sum to the source's.** The split of the two-stream row, whose `'O'`
+/// row only the lower child (its first entry's) takes, checks out;
+/// a child that lost a chunk of `OBJECT`, or one that counts an object the source does not, or an
+/// `'O'` row a child dropped, is a mismatch naming that object.
+#[test]
+fn the_childrens_counts_must_sum_to_the_sources() {
+    let (low, high) = ([0x10; 16], [0x90; 16]);
+    let inputs = [chunk(low), chunk(high)];
+    let object = encode(&inputs).unwrap();
+    let summaries: Vec<_> = inputs.iter().map(|c| KeySummary::of(c).unwrap()).collect();
+    let k = encode_row(&[
+        (&object.chunks[0], &summaries[0]),
+        (&object.chunks[1], &summaries[1]),
+    ]);
+    let lens = [object.chunks[0].entry.len, object.chunks[1].entry.len].map(u64::from);
+    let parent = Refcount {
+        live_bytes: lens[0] + lens[1],
+        live_chunks: 2,
+        created_ms: 7,
+        object_len: 900,
+    };
+    let orphans = Orphans {
+        chunks: 3,
+        bytes: 30,
+    };
+    let rows = [
+        (directory_key(OBJECT), k),
+        (gc::refcount_key(OBJECT), gc::encode_refcount(&parent)),
+        (
+            runindex::orphan_key(OBJECT),
+            runindex::encode_orphans(orphans),
+        ),
+    ];
+    let children = [Range::of("0"), Range::of("1")].map(|r| child_counts(&rows, &[], r).unwrap());
+    assert_eq!(check_sums(&rows, &children), Ok(()));
+    let mut short = children.clone();
+    short[1].refcounts.clear();
+    assert_eq!(check_sums(&rows, &short), Err(PlanError::Mismatch(OBJECT)));
+    let mut extra = children.clone();
+    extra[0].refcounts.push((OTHER, parent));
+    assert_eq!(check_sums(&rows, &extra), Err(PlanError::Mismatch(OTHER)));
+    let taken = (children[0].orphans.len(), children[1].orphans.len());
+    assert_eq!(
+        taken,
+        (1, 0),
+        "only the first entry's child takes the 'O' row"
+    );
+    let mut lost = children;
+    lost.iter_mut().for_each(|c| c.orphans.clear());
+    assert_eq!(check_sums(&rows, &lost), Err(PlanError::Mismatch(OBJECT)));
 }

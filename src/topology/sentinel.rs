@@ -36,6 +36,9 @@ pub(crate) enum PlanError {
     Unrouted(Vec<u8>),
     /// A `'K'`, `'R'` or `'O'` row that does not decode.
     Corrupt(Vec<u8>),
+    /// The children's counts of an object do not sum to the source's (S4-DESIGN §6.2 step 2.2):
+    /// the split rolls back.
+    Mismatch(ObjectId),
 }
 
 impl std::fmt::Display for PlanError {
@@ -46,6 +49,10 @@ impl std::fmt::Display for PlanError {
             Self::Retired => f.write_str("the source holds 'T': a retired parent"),
             Self::Unrouted(key) => write!(f, "no child holds {}", crate::crypto::hex(key)),
             Self::Corrupt(key) => write!(f, "undecodable row {}", crate::crypto::hex(key)),
+            Self::Mismatch(id) => write!(
+                f,
+                "the children's counts of {id:?} do not sum to the source's"
+            ),
         }
     }
 }
@@ -149,6 +156,43 @@ pub(crate) fn child_counts(
     };
     let orphans = orphans.into_iter().filter(|(id, _)| takes(id)).collect();
     Ok(Counts { refcounts, orphans })
+}
+
+/// Whether the children's counts sum to the source's, per object (S4-DESIGN §6.2 step 2.2): every
+/// stored `'R'` row's chunks and bytes, and every `'O'` row's, equal the children's sums, and the
+/// children count no object the source does not. Else the first object that differs.
+pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanError> {
+    let source = child_counts(rows, &[], Range::ALL)?;
+    let mut stored: BTreeMap<ObjectId, (u64, u64, u64, u64)> = BTreeMap::new();
+    for (key, value) in rows {
+        let corrupt = || PlanError::Corrupt(key.clone());
+        if key.get(SENTINEL.len()) == Some(&tag::REFCOUNT) {
+            let id = directory::parse_object_key(tag::REFCOUNT, key).ok_or_else(corrupt)?;
+            let r = gc::decode_refcount(value).ok_or_else(corrupt)?;
+            stored.entry(id).or_default().0 += r.live_chunks;
+            stored.entry(id).or_default().1 += r.live_bytes;
+        }
+    }
+    for (id, o) in source.orphans {
+        let at = stored.entry(id).or_default();
+        (at.2, at.3) = (o.chunks, o.bytes);
+    }
+    let mut summed: BTreeMap<ObjectId, (u64, u64, u64, u64)> = BTreeMap::new();
+    for child in children {
+        for (id, r) in &child.refcounts {
+            let at = summed.entry(*id).or_default();
+            (at.0, at.1) = (at.0 + r.live_chunks, at.1 + r.live_bytes);
+        }
+        for (id, o) in &child.orphans {
+            let at = summed.entry(*id).or_default();
+            (at.2, at.3) = (at.2 + o.chunks, at.3 + o.bytes);
+        }
+    }
+    let ids = stored.keys().chain(summed.keys());
+    match ids.copied().find(|id| stored.get(id) != summed.get(id)) {
+        Some(id) => Err(PlanError::Mismatch(id)),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
