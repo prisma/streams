@@ -259,6 +259,7 @@
     "topology_revalidate": 4,
     "touch": 72,
     "transaction_append": 56,
+    "transaction_barrier": 0,
     "transaction_billing": 2,
     "transaction_finalize": 42,
     "transaction_group": 8,

@@ -1552,7 +1552,7 @@ impl ShardEngine {
                     }
                 }
             }
-            self.commit_group(ops).await;
+            self.commit_and_park(ops).await;
         }
     }
 

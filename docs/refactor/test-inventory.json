@@ -11,6 +11,28 @@
     "scenarios": []
   },
   {
+    "name": "a_barrier_dropped_unreleased_closes_its_engine",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "91cc7a62ad00d89e8fb13a9494b6c7beca9de1957b3058f9dec90cecc3e0cb11",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_barrier.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_barrier_parks_after_its_group_and_a_resume_serves_the_held_appends_in_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8c66c8e9f25c62de118e9866279213169fe074fac616ec120c3c1c6d43f2e134",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_barrier.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_beats_refusals_add_the_trackers_to_admissions",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

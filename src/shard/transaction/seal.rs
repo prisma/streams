@@ -40,6 +40,9 @@ impl CommitTransaction<'_> {
         let seal = match commit {
             SealCommit::Seal(seal) => seal,
             SealCommit::Purge(step) => return self.stage_purge(step).await,
+            // A second barrier in one group, dropped: its split sees `Closed`.
+            #[cfg(test)]
+            SealCommit::Barrier(_) => return,
         };
         let SealBatch {
             dir_key,

@@ -9,6 +9,8 @@
 //! a rejected group drops its streams' cached seal fences for a row re-read.
 use super::*;
 mod append;
+#[cfg(test)]
+pub(in crate::shard) mod barrier;
 mod billing;
 mod finalize;
 mod hot;
@@ -198,5 +200,16 @@ impl<'a> CommitTransaction<'a> {
         }
         drop(fences);
         self.effects.reject(AppendErr::Internal(message.to_owned()));
+    }
+}
+
+impl ShardEngine {
+    /// One commit group, then, if the group carried a split's barrier, the park
+    /// (`barrier`; tests until the split sends one, S4 step 11).
+    pub(in crate::shard) async fn commit_and_park(&self, ops: Vec<CommitOp>) {
+        #[cfg(test)]
+        return barrier::commit_and_park(self, ops).await;
+        #[cfg(not(test))]
+        self.commit_group(ops).await;
     }
 }

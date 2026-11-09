@@ -755,6 +755,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_barrier",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split's barrier on a serving engine (S4-DESIGN section 5.2): it parks the committer after its own group, a resume serves the held appends in order, and a barrier dropped unreleased closes the engine; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_barrier.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::purge_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "Physical reclamation of dead incarnations end to end (layout 6A package 6): the production sweep asks the owning shard to purge a hard-deleted or replaced incarnation, never one merely expired, and the shard reclaims its chunks and objects; compiler and the full DST suite exercise the module.",
