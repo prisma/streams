@@ -1580,11 +1580,44 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_of_a_retired_half_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "cae92c1db02a508586063c9f9a7f05d9b77994e91b1fbf1e286c1275b2004bc4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_of_halves_another_instance_holds_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ffab7b9b4f02c6751f98354997ae8e008f4f56b205bb36c92e8c5da9177ffe99",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_of_two_children_serves_both_streams_with_the_parents_counts",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "94898a5c99e1a92fa5cead86d43f1b7e1637f41f0e487a47b8b6b3bd67a1bb26",
+    "function_sha256": "3d7d165f4aa6a57e321f95213943a9b1699258139078398cfd7b5e572ef8458c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_that_would_fill_its_instance_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f8da5fb3fadd3261316dec395a7e0bb9b4e72cb841aff6fa21dc74dd89ec0b32",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1599,6 +1632,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_waits_for_the_fleet_to_settle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4733c77caef8c97e6ececcbcc6dcc925ccec17967e72576a34f12c2f342cade6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
     "scenarios": []
   },
   {
@@ -10285,6 +10329,28 @@
     "scenarios": []
   },
   {
+    "name": "the_merge_route_starts_a_merge_that_runs_on_to_its_publish",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2cac56390b794f890974f6f89c9edb0850ffa8632c74bb1207771abff02eb70c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_merge_routes_refusals",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8269e556f64ebdf683c91bf2dba7533adaca7e9f659d68657a7d05e62b63a7e8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_operator_route_repairs_a_shards_indexes_at_its_next_open",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -10487,7 +10553,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "86635937a04ff80c3fea3d5bc7ed0333f44cba3260902d8c3341588999f56c72",
+    "function_sha256": "ec4098a35e586363e080344023a5eeb3630aebaa1544c287ce5cc055fe9bbfb2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",

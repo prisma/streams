@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! The merged leaf's sentinel rows (S6-DESIGN rev 6 §7.3, L2 at a merge): from the two sources'
 //! sentinel rows, by `keyspace::merge_rules`. A unioned key both sources hold must have equal
 //! values, and lands once. The per-object counts (`'R'`, `'O'`) sum, and a zero sum is absent.

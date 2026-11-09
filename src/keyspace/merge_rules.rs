@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! What a merge does with each of its two sources' sentinel rows (S6-DESIGN rev 6 §7.3, S3a §2.8's
 //! merge column): one rule per tag, the table as code beside `split_rules`, so a new tag cannot
 //! exist without one (`tests::every_sentinel_tag_has_a_merge_rule`). The merged leaf's rows are

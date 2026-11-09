@@ -26,8 +26,7 @@
 //!   object_len:varint zero_ms:varint due_ms:varint`. Never garbage: only the
 //!   ancestor's lineage sweeper deletes it (L1).
 
-// S6's merge is its caller (S6-DESIGN §7.3); until its route, only its tests.
-#[cfg(test)]
+// S6's merge is its caller (S6-DESIGN §7.3).
 pub(crate) mod merge;
 #[cfg(kani)]
 mod proofs;
@@ -61,9 +60,7 @@ pub(crate) fn refcount_key(id: ObjectId) -> Vec<u8> {
 /// One object's `'R'` rows of a merge's two sources as the merged leaf's (S6-DESIGN §7.3, L2):
 /// the chunks and bytes summed, the earlier creation, the one length. `None` when the two name
 /// the object with different lengths, or a sum would overflow (a wrapped count would release the
-/// object early). KANI-108 proves it over every input. Built for its tests and its proof until
-/// the merge (test-built) calls it in production.
-#[cfg(any(test, kani))]
+/// object early). KANI-108 proves it over every input.
 pub(crate) fn merged_refcount(a: Refcount, b: Refcount) -> Option<Refcount> {
     if a.object_len != b.object_len {
         return None;

@@ -36,13 +36,23 @@ const OPEN_WAIT: Duration = Duration::from_secs(5);
 /// The pause's checkpoint lifetime (it expires if the merge dies).
 const CHECKPOINT_LIFETIME: Duration = Duration::from_secs(3600);
 
-/// Why a merge did not happen.
+/// Why a merge did not happen (the route's refusal codes, edge change #251).
 #[derive(Debug)]
 pub(crate) enum Refused {
-    /// A live intent holds the cell.
-    Busy,
-    /// The two are not sibling leaves of the installed topology, or one holds `'T'`.
+    /// `unknown_prefix`: the prefix's two halves are not both leaves.
+    UnknownPrefix,
+    /// `topology_busy`: a live intent holds the cell, an override names a half, or the fleet has
+    /// not settled.
+    Busy(&'static str),
+    /// `instance_full`: the merge would leave this instance holding `resident` shards (both halves
+    /// and `M` until the publish), past its ceiling `max`.
+    InstanceFull { resident: usize, max: u32 },
+    /// `not_ring_owner`: another instance holds a half.
+    NotOwner(String),
+    /// `not_mergeable`: the two are not sibling leaves, or one holds `'T'`.
     NotMergeable(String),
+    /// `topology_unavailable`: no topology loop here, or the fleet or the store could not be read.
+    Unavailable(String),
     /// The merge started and rolled back before `'T'`.
     RolledBack(String),
 }
@@ -50,8 +60,17 @@ pub(crate) enum Refused {
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Busy => f.write_str("topology_busy: a live intent holds the cell"),
+            Self::UnknownPrefix => f.write_str("unknown_prefix"),
+            Self::Busy(reason) => write!(f, "topology_busy: {reason}"),
+            Self::InstanceFull { resident, max } => {
+                write!(
+                    f,
+                    "instance_full: {resident} resident shards during the merge, past {max}"
+                )
+            }
+            Self::NotOwner(owner) => write!(f, "not_ring_owner: {owner}"),
             Self::NotMergeable(why) => write!(f, "not_mergeable: {why}"),
+            Self::Unavailable(why) => write!(f, "topology_unavailable: {why}"),
             Self::RolledBack(why) => write!(f, "rolled back: {why}"),
         }
     }
@@ -79,7 +98,8 @@ struct Op<'a> {
 }
 
 /// Merge the sibling leaves `sources` (`…0`, then `…1`) into their parent prefix (S6 §7.2), as
-/// operation `op_id` of `owner`.
+/// operation `op_id` of `owner`: `start`, then `Started::finish`.
+#[cfg(test)]
 pub(crate) async fn merge(
     dir: &ShardDirectory,
     sources: [&Arc<ShardEngine>; 2],
@@ -87,16 +107,101 @@ pub(crate) async fn merge(
     owner: &str,
     clock: &dyn crate::runtime::Clock,
 ) -> Result<Published, Refused> {
+    start(dir, sources, op_id, owner).await?.finish(clock).await
+}
+
+/// A started merge: its sources, `M`, and the intent it holds. `finish` runs the rest.
+pub(crate) struct Started {
+    dir: ShardDirectory,
+    pair: Pair,
+    op_id: String,
+    version: u64,
+    held: intent::Held,
+}
+
+/// Start the merge of `sources` (S6 §7.2 step 0): the refusals, `M`'s home reserved and the intent
+/// written, answered at once; the rest runs in `Started::finish`.
+pub(crate) async fn start(
+    dir: &ShardDirectory,
+    sources: [&Arc<ShardEngine>; 2],
+    op_id: &str,
+    owner: &str,
+) -> Result<Started, Refused> {
     let [left, right] = sources;
     let store = left.data_store().clone();
     let (prefix, homes) = refuse(dir, left, right).await?;
     let (version, home, held) = begin(&*store, &prefix, homes, op_id, owner).await?;
-    let pair = Pair {
-        sources: [(left.clone(), homes[0]), (right.clone(), homes[1])],
-        prefix,
-        home,
-    };
-    let prepared = prepare(dir, &*store, &pair).await;
+    Ok(Started {
+        dir: dir.clone(),
+        pair: Pair {
+            sources: [(left.clone(), homes[0]), (right.clone(), homes[1])],
+            prefix,
+            home,
+        },
+        op_id: op_id.to_string(),
+        version,
+        held,
+    })
+}
+
+impl Started {
+    /// The operation's id.
+    pub(crate) fn op_id(&self) -> &str {
+        &self.op_id
+    }
+
+    /// The topology version the merge started from.
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The rest of the merge (S6 §7.2 from Preparing), under the actor's lease: renewed while the
+    /// steps run, ended only after they return, so a renewal never beats the terminal CAS. Before
+    /// `'T'` any failure, and a lost lease, rolls back; from `'T'` the merge only rolls forward.
+    pub(crate) async fn finish(
+        self,
+        clock: &dyn crate::runtime::Clock,
+    ) -> Result<Published, Refused> {
+        let store = self.pair.sources[0].0.data_store().clone();
+        let actor = super::actor::Actor::new(&*store, clock, self.held);
+        let op = Op {
+            dir: &self.dir,
+            store: &*store,
+            pair: &self.pair,
+            op_id: &self.op_id,
+        };
+        let steps = std::pin::pin!(run(&op, &actor, self.version));
+        let renewals = std::pin::pin!(actor.renew());
+        let ran = match futures_util::future::select(steps, renewals).await {
+            futures_util::future::Either::Left((ran, _)) => ran,
+            futures_util::future::Either::Right((never, _)) => match never {},
+        };
+        match &ran {
+            Ok(_) => actor.end(intent::State::Reclaimed, "published").await,
+            Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
+            Err(_) => {}
+        }
+        ran
+    }
+}
+
+/// The merge's steps from Preparing to its publish, the actor's ownership checked before `'T'` and
+/// around the clone; a failure before `'T'` is rolled back here (its terminal CAS is the
+/// `finish`'s).
+async fn run(
+    op: &Op<'_>,
+    actor: &super::actor::Actor<'_>,
+    version: u64,
+) -> Result<Published, Refused> {
+    let Op {
+        dir,
+        store,
+        pair,
+        op_id,
+    } = *op;
+    let [(left, _), (right, _)] = &pair.sources;
+    let prepared = prepare(dir, store, pair).await;
+    let prepared = prepared.and_then(|()| actor.owned("the pause"));
     let holds = match &prepared {
         Ok(()) => {
             let first = left.gc_state().gate.exclusive(QUIESCE).await;
@@ -120,25 +225,23 @@ pub(crate) async fn merge(
         None => None,
     };
     let copied = match (&prepared, &barriers) {
-        (Ok(()), Some(_)) => copy(dir, &*store, &pair, op_id).await,
+        (Ok(()), Some(_)) => copy(dir, store, pair, op_id).await,
         (Err(e), _) => Err(e.clone()),
         (_, None) => Err("the quiesce did not complete within its deadline".to_string()),
     };
-    if let Err(why) = copied {
+    let copied = copied.and_then(|()| actor.owned("'T'"));
+    let retired = match copied {
+        Ok(()) => retire_sources(pair, version, op_id).await,
+        Err(e) => Err(e),
+    };
+    if let Err(why) = retired {
         if let Some((a, b)) = barriers {
             a.resume();
             b.resume();
         }
         drop(holds);
-        return Err(roll_back(dir, &*store, &pair, &held, why).await);
-    }
-    if let Err(why) = retire_sources(&pair, version, op_id).await {
-        if let Some((a, b)) = barriers {
-            a.resume();
-            b.resume();
-        }
-        drop(holds);
-        return Err(roll_back(dir, &*store, &pair, &held, why).await);
+        undo(dir, store, pair).await;
+        return Err(Refused::RolledBack(why));
     }
     let retire = |reroute: super::gate::Reroute| {
         if let Some((a, b)) = barriers {
@@ -146,16 +249,8 @@ pub(crate) async fn merge(
             b.retire(reroute);
         }
     };
-    let op = Op {
-        dir,
-        store: &*store,
-        pair: &pair,
-        op_id,
-    };
-    let published = publish(&op, clock.monotonic(), retire).await;
+    let published = publish(op, actor.clock().monotonic(), retire).await;
     drop(holds);
-    let ended = terminal(&held, intent::State::Reclaimed, "published");
-    drop(intent::replace(&*store, &held, ended).await);
     published.map_err(Refused::RolledBack)
 }
 
@@ -186,7 +281,7 @@ async fn refuse(
         }
     }
     match intent::read(&**left.data_store()).await {
-        Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy),
+        Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy("intent")),
         Ok(_) => Ok((prefix, homes)),
         Err(e) => Err(Refused::RolledBack(e.to_string())),
     }
@@ -226,7 +321,7 @@ async fn begin(
     let held = intent::create(store, &preparing)
         .await
         .map_err(|e| match e {
-            intent::IntentError::Busy(_) => Refused::Busy,
+            intent::IntentError::Busy(_) => Refused::Busy("intent"),
             other => Refused::RolledBack(other.to_string()),
         })?;
     Ok((topology.version, home, held))
@@ -494,54 +589,39 @@ async fn open_merged(
     }
 }
 
-/// Roll back before `'T'`: collection resumes on both sources, their touched marks are dropped,
-/// `M`'s lists are deleted and the intent ends `RolledBack`. `M`'s path, if a clone began, is left
-/// for the never-leaf sweeper.
-async fn roll_back(
-    dir: &ShardDirectory,
-    store: &dyn ObjectStore,
-    pair: &Pair,
-    held: &intent::Held,
-    why: String,
-) -> Refused {
+/// Undo a merge before `'T'`: collection resumes on both sources, their touched marks are dropped
+/// and `M`'s lists are deleted. `M`'s path, if a clone began, is left for the never-leaf sweeper,
+/// and the intent's `RolledBack` is the actor's (`Started::finish`).
+async fn undo(dir: &ShardDirectory, store: &dyn ObjectStore, pair: &Pair) {
     for (source, _) in &pair.sources {
         let gate = &source.gc_state().gate;
         gate.set_collection_off(false);
         drop(gate.take_touched());
     }
-    if let Ok(merged) = merged_rows(pair).await {
-        let lists = counts_of(&merged)
-            .ok()
-            .and_then(|counts| sentinel::child_lists(&merged, &counts).ok())
-            .unwrap_or_default();
-        let snapshot = dir.prefixes();
-        let roots: BTreeMap<u32, String> = snapshot
-            .shards
-            .homes
-            .iter()
-            .map(|(h, home)| (*h, home.path.clone()))
-            .collect();
-        for ancestor in lists.keys() {
-            if let Some(root) = roots.get(ancestor) {
-                let path = lineage::reference_list_path(root, pair.home);
+    let Ok(merged) = merged_rows(pair).await else {
+        return;
+    };
+    let lists = counts_of(&merged)
+        .ok()
+        .and_then(|counts| sentinel::child_lists(&merged, &counts).ok())
+        .unwrap_or_default();
+    let snapshot = dir.prefixes();
+    let roots: BTreeMap<u32, String> = snapshot
+        .shards
+        .homes
+        .iter()
+        .map(|(h, home)| (*h, home.path.clone()))
+        .collect();
+    for ancestor in lists.keys() {
+        if let Some(root) = roots.get(ancestor) {
+            for path in [
+                lineage::reference_list_path(root, pair.home),
+                lineage::supplementary_list_path(root, pair.home),
+            ] {
                 drop(store.delete(&object_store::path::Path::from(path)).await);
             }
         }
     }
-    let ended = terminal(held, intent::State::RolledBack, &why);
-    drop(intent::replace(store, held, ended).await);
-    Refused::RolledBack(why)
-}
-
-/// `held`'s intent, ended in `state` with `result`.
-fn terminal(held: &intent::Held, state: intent::State, result: &str) -> intent::Intent {
-    let mut ended = held.intent.clone();
-    ended.state = state;
-    ended.outcome = Some(intent::Outcome {
-        result: result.to_string(),
-        reason: result.to_string(),
-    });
-    ended
 }
 
 #[cfg(test)]

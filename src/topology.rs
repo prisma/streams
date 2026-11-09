@@ -19,8 +19,7 @@ pub(crate) mod revalidate;
 pub(crate) mod sentinel;
 // The topology's CAS writes: the claimant's roll forward publishes through them.
 pub(crate) mod store;
-// The merge builds for its tests until its route calls it (S6 step 6).
-#[cfg(test)]
+// The merge: its route starts it through `ops` (S6 step 6).
 pub(crate) mod merge;
 pub(crate) mod view;
 // The split: its route and the scaler start it through `ops`.

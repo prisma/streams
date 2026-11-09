@@ -27,10 +27,16 @@ pub(crate) struct Accepted {
     pub version: u64,
 }
 
-/// One split request and where its answer goes.
-struct Request {
-    prefix: String,
-    reply: oneshot::Sender<Result<Accepted, Refused>>,
+/// One request and where its answer goes: a split of a leaf, or a merge of a prefix's halves.
+enum Request {
+    Split {
+        prefix: String,
+        reply: oneshot::Sender<Result<Accepted, Refused>>,
+    },
+    Merge {
+        prefix: String,
+        reply: oneshot::Sender<Result<Accepted, super::merge::Refused>>,
+    },
 }
 
 /// The way to this instance's topology loop, once it started (`start`).
@@ -45,7 +51,21 @@ impl Handle {
         let sender = self.0.get().ok_or_else(stopped)?;
         let (reply, answer) = oneshot::channel();
         sender
-            .send(Request { prefix, reply })
+            .send(Request::Split { prefix, reply })
+            .await
+            .map_err(|_| stopped())?;
+        answer.await.map_err(|_| stopped())?
+    }
+
+    /// Ask the loop to merge `prefix`'s halves: `Accepted` once the merge started (it then runs on),
+    /// else why not. `Unavailable` when no loop runs here, or it stopped.
+    pub(crate) async fn merge(&self, prefix: String) -> Result<Accepted, super::merge::Refused> {
+        use super::merge::Refused as M;
+        let stopped = || M::Unavailable("the topology loop is not running".to_string());
+        let sender = self.0.get().ok_or_else(stopped)?;
+        let (reply, answer) = oneshot::channel();
+        sender
+            .send(Request::Merge { prefix, reply })
             .await
             .map_err(|_| stopped())?;
         answer.await.map_err(|_| stopped())?
@@ -94,8 +114,14 @@ async fn run(
             _ = cancel.cancelled() => return TaskResult::Done,
             request = requests.recv() => request,
         };
-        let Some(Request { prefix, reply }) = request else {
-            return TaskResult::Done;
+        let (prefix, reply) = match request {
+            None => return TaskResult::Done,
+            Some(Request::Split { prefix, reply }) => (prefix, reply),
+            Some(Request::Merge { prefix, reply }) => {
+                // The asker may have gone away: the merge runs on regardless.
+                drop(reply.send(parts.start_merge(&prefix, &tasks).await));
+                continue;
+            }
         };
         let answer = match parts.start(&prefix).await {
             Ok(started) => {
@@ -207,5 +233,7 @@ pub(crate) fn route_of(prefix: &str) -> [u8; 16] {
         .to_be_bytes()
 }
 
+// The merge's requests (S6 §7): its refusals, its start and its supervised finish.
+mod merge;
 #[cfg(test)]
 mod tests;

@@ -606,7 +606,7 @@ fn start_ops(cell: &Cell, shards_max: u32) -> crate::tasks::TaskSupervisor {
 }
 
 /// `start_ops`, on `state`'s rig; the fleet's move cooldown is 600 s.
-fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::TaskSupervisor {
+pub(super) fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::TaskSupervisor {
     let tasks = crate::tasks::TaskSupervisor::new();
     let parts = crate::topology::ops::Parts {
         dir: state.shards.clone(),
@@ -702,8 +702,7 @@ async fn the_split_route_starts_a_split_that_runs_on_to_its_publish() {
 /// **The split route's refusals** (S4-DESIGN §11, edge #251). Before its loop runs: 503
 /// `topology_unavailable`. Then: a body that is not `{"prefix"}`, 400 `bad_request`; no leaf, 404
 /// `unknown_prefix`; an override on the leaf, 409 `topology_busy {reason: "override"}`; a live
-/// intent, 409 `topology_busy {reason: "intent"}`. The merge route answers 501 `not_implemented`.
-/// Nothing was split: the stored topology stays at version 1.
+/// intent, 409 `topology_busy {reason: "intent"}`. Nothing was split: the stored topology stays at version 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_split_routes_refusals() {
     let cell = cell().await;
@@ -758,15 +757,6 @@ async fn the_split_routes_refusals() {
         (code(&refused), refused.1["reason"].clone()),
         ((409, "topology_busy".into()), "intent".into())
     );
-    let (status, _, _) = hreq(
-        cell.addr,
-        "POST",
-        "/operator/topology/merge",
-        &[JSON],
-        b"{}",
-    )
-    .await;
-    assert_eq!(status, 501);
     let (stored, _) = crate::topology::store::read(&*cell.state.data_store)
         .await
         .unwrap();
@@ -876,7 +866,7 @@ async fn a_split_waits_for_the_fleet_to_settle() {
 }
 
 /// `GET /operator/topology.json`'s body.
-async fn topology_view(addr: Addr) -> serde_json::Value {
+pub(super) async fn topology_view(addr: Addr) -> serde_json::Value {
     let (status, _, body) = hreq(addr, "GET", "/operator/topology.json", &[], b"").await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).unwrap()

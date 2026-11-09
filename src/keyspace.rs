@@ -20,8 +20,7 @@ use std::sync::Arc;
 #[cfg(kani)]
 mod proofs;
 pub(crate) mod range;
-// S6's merge is its caller (S6-DESIGN §7.3); until its route, only its tests.
-#[cfg(test)]
+// S6's merge is its caller (S6-DESIGN §7.3).
 pub(crate) mod merge_rules;
 // S4's split and S6's merge are its callers (S3a §2.8).
 pub(crate) mod split_rules;

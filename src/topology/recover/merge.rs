@@ -24,9 +24,7 @@ use crate::shard::ShardEngine;
 const PUBLISH_TRIES: usize = 3;
 
 impl Topology {
-    /// One fresh home for a merged leaf: `next_home`, with `next_home` past it (the merge actor's,
-    /// test-built until its route).
-    #[cfg(test)]
+    /// One fresh home for a merged leaf: `next_home`, with `next_home` past it.
     pub(crate) fn reserve_home(&self) -> (Self, u32) {
         let mut next = self.clone();
         let home = self.shards.next_home;
