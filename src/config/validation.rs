@@ -676,6 +676,10 @@ impl crate::config::ServerConfig {
             ));
         f.errors
             .extend(super::project_tracker::validate_project_tracker(&self.cli));
+        f.errors
+            .extend(super::shards_per_instance::validate_shards_per_instance(
+                &self.cli,
+            ));
         self.validate_billing_prerequisites(&mut f);
         let (auth_mode, catalog_cursor_key) = self.validate_auth_and_keys(&mut f);
         let configured_capacity = self.validate_posture(&mut f);

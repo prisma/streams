@@ -491,6 +491,11 @@ pub struct CliArgs {
     /// Maximum fleet size (pilot: the four deployed services).
     #[arg(long, env = "FLEET_MAX", default_value_t = 4)]
     pub(crate) fleet_max: u64,
+
+    /// The most shards one instance holds (Q4, provisional): a split needs room for both
+    /// children beside the parent, and another instance with room for one.
+    #[arg(long, env = "SHARDS_PER_INSTANCE_MAX", default_value_t = 7)]
+    pub(crate) shards_per_instance_max: u32,
 }
 
 #[cfg(test)]
@@ -575,6 +580,7 @@ impl CliArgs {
             scale_latency_ms: 250,
             scale_lat_sustain_secs: 20,
             fleet_max: 4,
+            shards_per_instance_max: 7,
         }
     }
 }

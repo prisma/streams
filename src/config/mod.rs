@@ -28,6 +28,7 @@ pub(crate) mod model;
 pub(crate) mod notice;
 pub(crate) mod profile;
 pub(crate) mod project_tracker;
+pub(crate) mod shards_per_instance;
 pub(crate) mod summary;
 pub(crate) mod validation;
 

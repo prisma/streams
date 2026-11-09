@@ -689,6 +689,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("scale-latency-ms", "SCALE_LATENCY_MS", "250"),
     ("scale-lat-sustain-secs", "SCALE_LAT_SUSTAIN_SECS", "20"),
     ("fleet-max", "FLEET_MAX", "4"),
+    ("shards-per-instance-max", "SHARDS_PER_INSTANCE_MAX", "7"),
 ];
 
 /// The complete CLI surface, pinned: every long flag, its env name and
