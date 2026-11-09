@@ -489,8 +489,10 @@ impl ShardEngine {
                 scan.more = true;
                 break;
             }
-            let decoded = directory::parse_directory_key(&kv.key)
-                .and_then(|id| Some((id, directory::decode_row(id, &kv.value)?)));
+            let decoded = directory::parse_directory_key(&kv.key).and_then(|id| {
+                let entries = directory::split::decode_row_in_range(id, &kv.value, self.range())?;
+                Some((id, entries))
+            });
             match decoded {
                 Some(row) => scan.rows.push(row),
                 None => self.note_corrupt_index_row("directory", &kv.key),

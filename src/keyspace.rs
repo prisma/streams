@@ -20,6 +20,9 @@ use std::sync::Arc;
 #[cfg(kani)]
 mod proofs;
 pub(crate) mod range;
+// S4's split and S6's merge are its callers; until S4 lands, only its tests (S3a §2.8).
+#[cfg(test)]
+pub(crate) mod split_rules;
 
 /// The stream-state family byte, after the stream's hash.
 pub(crate) const STREAM: u8 = b'S';
@@ -187,9 +190,9 @@ mod tests {
         super::tag::CURSOR,
         super::tag::ROSTER,
         super::tag::USAGE_DEBT,
-        b'Y', // the log's layout and home (4a commit 4)
-        b'W', // unsealed streams (4a commit 7)
-        b'M', // usage awaiting the ledger (4a commit 7)
+        super::tag::IDENTITY,
+        super::tag::UNSEALED,
+        super::tag::USAGE_DIRTY,
         b'D', // queue debt index (reserved for #150)
         b'Z', // queue trim hints (S3b)
         b'N', // queue-state gauges (S3b)
@@ -239,6 +242,61 @@ mod tests {
         }
         let deeper = "0".repeat(super::ROUTE_PREFIX_BITS + 1);
         assert_eq!(super::range::Range::parse(&deeper), None);
+    }
+
+    /// Every sentinel tag has a split rule (S3a §2.8): a tag without one fails here, before a split
+    /// or a merge could meet it.
+    #[test]
+    fn every_sentinel_tag_has_a_split_rule() {
+        use super::split_rules::split_rule;
+        for t in SENTINEL_TAGS {
+            assert!(split_rule(t).is_some(), "tag {}", t as char);
+        }
+        assert_eq!(
+            split_rule(super::FINALS),
+            None,
+            "'V' lives in its stream's range"
+        );
+        use super::split_rules::SplitRule::CopyToBoth;
+        assert_eq!(
+            [super::tag::DIRECTORY, super::tag::POINTER].map(split_rule),
+            [Some(CopyToBoth); 2],
+            "'K' and 'I' are copied to both children and filtered where they are read"
+        );
+    }
+
+    /// A routed sentinel key names the entity hash its rule routes by: the sixteen bytes after the
+    /// tag, or (the roster's, the trim hints') its last sixteen.
+    #[test]
+    fn a_routed_sentinel_key_names_its_hash() {
+        use super::split_rules::routed_hash;
+        let hash = [0x5a; 16];
+        let lead = |t: u8| [&super::SENTINEL[..], &[t], &hash].concat();
+        for t in [
+            super::tag::HEAD,
+            super::tag::USAGE_DEBT,
+            super::tag::UNSEALED,
+            super::tag::USAGE_DIRTY,
+        ] {
+            assert_eq!(
+                routed_hash(&lead(t)).map(|h| h.bytes()),
+                Some(hash),
+                "tag {}",
+                t as char
+            );
+        }
+        let roster = crate::native_queue::keys::roster(1_700_000_000_000, &hash);
+        assert_eq!(routed_hash(&roster).map(|h| h.bytes()), Some(hash));
+        assert_eq!(
+            routed_hash(&lead(super::tag::GARBAGE)),
+            None,
+            "'G' is dropped, not routed"
+        );
+        assert_eq!(
+            routed_hash(&lead(super::tag::UNSEALED)[..20]),
+            None,
+            "too short"
+        );
     }
 
     #[test]

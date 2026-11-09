@@ -396,3 +396,32 @@ fn single_chunk_streams_are_charged_what_they_allocate() {
         d.bytes()
     );
 }
+
+/// A row a split copied keeps each kept chunk's offset (K-SPLIT-DECISION-2026-11-09): of a row of
+/// two chunks, the second stream's entry read into its own range alone starts where the first
+/// chunk ends, not at 0 as a row re-encoded without the first would say.
+#[test]
+fn a_row_decoded_into_a_range_keeps_each_kept_chunks_offset() {
+    use crate::keyspace::range::Range;
+    use crate::spill::directory::split::decode_row_in_range;
+    let (low, high) = ([0x10; 16], [0x90; 16]);
+    let inputs = [chunk(low, 0, &["x".into()]), chunk(high, 0, &["y".into()])];
+    let object = encode(&inputs).unwrap();
+    let summaries: Vec<_> = inputs.iter().map(|c| KeySummary::of(c).unwrap()).collect();
+    let row = encode_row(&[
+        (&object.chunks[0], &summaries[0]),
+        (&object.chunks[1], &summaries[1]),
+    ]);
+    let kept = decode_row_in_range(OBJECT, &row, Range::of("1")).unwrap();
+    let first_len = u64::from(object.chunks[0].entry.len);
+    let got: Vec<_> = kept
+        .iter()
+        .map(|(h, e)| (*h, e.chunk_off, e.chunk_len))
+        .collect();
+    assert_eq!(got, [(high, first_len, object.chunks[1].entry.len)]);
+    assert_eq!(
+        decode_row_in_range(OBJECT, &row, Range::ALL).unwrap().len(),
+        2
+    );
+    assert!(decode_row_in_range(OBJECT, &row[..row.len() - 1], Range::ALL).is_none());
+}

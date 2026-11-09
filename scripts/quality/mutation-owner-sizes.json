@@ -208,6 +208,7 @@
     "spill_crc32c": 101,
     "spill_directory": 70,
     "spill_directory_row": 57,
+    "spill_directory_split": 4,
     "spill_estimate": 46,
     "spill_gc": 79,
     "spill_metrics": 34,

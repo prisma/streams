@@ -175,6 +175,7 @@ OWNERS = (
     owner('spill_directory_row', 'src/spill/directory/row.rs', 'spill::directory_tests:: shard::seal::'),
     owner('spill_crc32c', 'src/spill/crc32c.rs', 'spill::crc32c_tests:: spill::object_tests::'),
     owner('spill_directory', 'src/spill/directory.rs', 'spill::directory_tests:: shard::seal::read_tests::'),
+    owner('spill_directory_split', 'src/spill/directory/split.rs', 'spill::directory_tests:: shard::seal::range_tests::'),
     owner('spill_estimate', 'src/spill/estimate.rs', 'spill::estimate_tests::'),
     owner('spill_metrics', 'src/spill/metrics.rs', 'spill::estimate_tests:: spill::attribution_tests:: shard::seal::tests::flushdrop shard::seal::trigger_tests::'),
     owner('spill_mod', 'src/spill/mod.rs', 'spill::'),

@@ -58,15 +58,17 @@ impl ShardEngine {
     }
 
     /// The directory from the `'K'` rows the fold has not folded yet (at
-    /// most one fold period's). A row that does not decode is counted and
-    /// skipped: the fold leaves it in place, and every other row is served.
-    async fn rebuild_directory(&self) -> anyhow::Result<Directory> {
+    /// most one fold period's), each row's entries in this shard's range (a
+    /// row a split copied names its sibling's chunks too). A row that does not
+    /// decode is counted and skipped: the fold leaves it in place, and every
+    /// other row is served.
+    pub(super) async fn rebuild_directory(&self) -> anyhow::Result<Directory> {
         let prefix = directory::directory_prefix();
         let mut rows = self.db.scan_prefix(&prefix[..], ..).await?;
         let mut dir = Directory::default();
         while let Some(kv) = rows.next().await? {
             let decoded = directory::parse_directory_key(&kv.key)
-                .and_then(|id| directory::decode_row(id, &kv.value));
+                .and_then(|id| directory::split::decode_row_in_range(id, &kv.value, self.range()));
             let Some(entries) = decoded else {
                 self.note_corrupt_index_row("directory", &kv.key);
                 continue;

@@ -20,6 +20,7 @@ use super::object::{ChunkInput, ObjectId};
 #[cfg(kani)]
 mod proofs;
 mod row;
+pub(crate) mod split;
 
 use row::{BLOOM_BITS_PER_KEY, halves, holds_bits, set_bits};
 pub(crate) use row::{
