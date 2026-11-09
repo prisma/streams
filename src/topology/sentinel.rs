@@ -10,9 +10,15 @@
 //! - **Refused:** a source holding `'T'` (a retired parent is never a source), a sentinel tag with
 //!   no rule, a key that is no sentinel row, or a routed hash no child holds.
 
-use crate::keyspace::SENTINEL;
+use std::collections::BTreeMap;
+
 use crate::keyspace::range::Range;
 use crate::keyspace::split_rules::{SplitRule, routed_hash, split_rule};
+use crate::keyspace::{EntityHash, SENTINEL, tag};
+use crate::spill::directory::{self, DirEntry};
+use crate::spill::gc::{self, Refcount};
+use crate::spill::object::ObjectId;
+use crate::spill::runindex::{self, Orphans};
 
 /// One stored row: its key and its value.
 pub(crate) type Row = (Vec<u8>, Vec<u8>);
@@ -28,6 +34,8 @@ pub(crate) enum PlanError {
     Retired,
     /// A routed row whose hash no child's range holds, or whose key is too short to name one.
     Unrouted(Vec<u8>),
+    /// A `'K'`, `'R'` or `'O'` row that does not decode.
+    Corrupt(Vec<u8>),
 }
 
 impl std::fmt::Display for PlanError {
@@ -37,6 +45,7 @@ impl std::fmt::Display for PlanError {
             Self::UnknownTag(tag) => write!(f, "sentinel tag {tag:#04x} has no split rule"),
             Self::Retired => f.write_str("the source holds 'T': a retired parent"),
             Self::Unrouted(key) => write!(f, "no child holds {}", crate::crypto::hex(key)),
+            Self::Corrupt(key) => write!(f, "undecodable row {}", crate::crypto::hex(key)),
         }
     }
 }
@@ -72,6 +81,74 @@ pub(crate) fn route(rows: &[Row], children: &[Range]) -> Result<Vec<Vec<Row>>, P
         }
     }
     Ok(out)
+}
+
+/// A child's recomputed counts (S3a-DESIGN §2.8): its `'R'` rows, and its `'O'` rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Counts {
+    /// Per object the child's entries name: its live chunks and bytes among them, with the source's
+    /// creation time and length. Zero is absent.
+    pub refcounts: Vec<(ObjectId, Refcount)>,
+    /// The orphans (chunks a consolidation or a cleaner's copy superseded) of the objects whose
+    /// first entry the child's range holds: an orphan count names no stream, so exactly one child
+    /// takes each row, whole.
+    pub orphans: Vec<(ObjectId, Orphans)>,
+}
+
+/// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'` and `'O'`)
+/// and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'` rows
+/// name): the entries whose entity hash the range holds, each `'K'` row decoded whole so every kept
+/// chunk keeps the offset the row gives it (K-SPLIT-DECISION-2026-11-09).
+pub(crate) fn child_counts(
+    rows: &[Row],
+    run_entries: &[([u8; 16], DirEntry)],
+    range: Range,
+) -> Result<Counts, PlanError> {
+    let mut parent: BTreeMap<ObjectId, Refcount> = BTreeMap::new();
+    let mut orphans: BTreeMap<ObjectId, Orphans> = BTreeMap::new();
+    let mut entries: Vec<DirEntry> = Vec::new();
+    let mut first: BTreeMap<ObjectId, [u8; 16]> = BTreeMap::new();
+    for (key, value) in rows {
+        let corrupt = || PlanError::Corrupt(key.clone());
+        match key.get(SENTINEL.len()).copied() {
+            Some(tag::DIRECTORY) => {
+                let id = directory::parse_object_key(tag::DIRECTORY, key).ok_or_else(corrupt)?;
+                let whole = directory::decode_row(id, value).ok_or_else(corrupt)?;
+                if let Some((hash, _)) = whole.first() {
+                    first.entry(id).or_insert(*hash);
+                }
+                let kept = whole
+                    .into_iter()
+                    .filter(|(hash, _)| range.contains(EntityHash::from_stored(*hash)));
+                entries.extend(kept.map(|(_, entry)| entry));
+            }
+            Some(tag::REFCOUNT) => {
+                let id = directory::parse_object_key(tag::REFCOUNT, key).ok_or_else(corrupt)?;
+                parent.insert(id, gc::decode_refcount(value).ok_or_else(corrupt)?);
+            }
+            Some(tag::ORPHAN) => {
+                let id = runindex::parse_sentinel_key(tag::ORPHAN, key).ok_or_else(corrupt)?;
+                orphans.insert(id, runindex::decode_orphans(value).ok_or_else(corrupt)?);
+            }
+            _ => {}
+        }
+    }
+    for (hash, entry) in run_entries {
+        first.entry(entry.object).or_insert(*hash);
+    }
+    let in_range = run_entries
+        .iter()
+        .filter(|(hash, _)| range.contains(EntityHash::from_stored(*hash)))
+        .map(|(_, entry)| entry);
+    entries.extend(in_range.cloned());
+    let refcounts = gc::recompute::recompute(&entries, &parent);
+    let takes = |id: &ObjectId| {
+        first
+            .get(id)
+            .is_some_and(|hash| range.contains(EntityHash::from_stored(*hash)))
+    };
+    let orphans = orphans.into_iter().filter(|(id, _)| takes(id)).collect();
+    Ok(Counts { refcounts, orphans })
 }
 
 #[cfg(test)]
