@@ -143,6 +143,70 @@ impl ShardEngine {
     }
 }
 
+impl ShardEngine {
+    /// The open-time detector (S6-DESIGN §3.3, L5): why this shard must not
+    /// serve, if it holds a row (`'R'`, `'I'` or `'E'`) of an ancestor home
+    /// without its reference list under that home's root. A list's absence
+    /// cannot be healed by a late PUT (a sweep may have decided on it), so
+    /// S4's open-path fence answers with its 409 after a topology refresh.
+    pub(crate) async fn lineage_refusal(&self) -> Result<Option<String>, GcError> {
+        let mut homes = BTreeSet::new();
+        let tags = [
+            crate::spill::directory::REFCOUNT_TAG,
+            crate::spill::runindex::POINTER_TAG,
+            crate::spill::gc::RELEASE_TAG,
+        ];
+        for tag in tags {
+            homes.extend(self.homes_under(tag).await?);
+        }
+        homes.remove(&self.home());
+        for home in homes {
+            let path = lineage::reference_list_path(&self.object_root(home), self.home());
+            match self.data_store.head(&Path::from(path.as_str())).await {
+                Ok(_) => {}
+                Err(object_store::Error::NotFound { .. }) => {
+                    return Ok(Some(format!(
+                        "shard {} holds rows of home {home} but has no reference list at {path}",
+                        self.prefix
+                    )));
+                }
+                Err(e) => return Err(store(&e)),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The distinct homes the sentinel rows of `tag` name (`tag ‖ home BE ‖
+    /// …`): one seek per home, not one read per row.
+    async fn homes_under(&self, tag: u8) -> Result<BTreeSet<u32>, GcError> {
+        let db = |e: slatedb::Error| GcError::Store(e.to_string());
+        let prefix = crate::spill::runindex::sentinel_prefix(tag);
+        let mut end = prefix.clone();
+        end.push(0xFF);
+        let mut homes = BTreeSet::new();
+        let mut from = prefix.clone();
+        loop {
+            let mut rows = self.db.scan(from..end.clone()).await.map_err(db)?;
+            let Some(kv) = rows.next().await.map_err(db)? else {
+                return Ok(homes);
+            };
+            let Some(home) = kv
+                .key
+                .strip_prefix(&prefix[..])
+                .and_then(|rest| rest.first_chunk::<4>())
+                .map(|h| u32::from_be_bytes(*h))
+            else {
+                return Ok(homes);
+            };
+            homes.insert(home);
+            let Some(next) = home.checked_add(1) else {
+                return Ok(homes);
+            };
+            from = [&prefix[..], &next.to_be_bytes()].concat();
+        }
+    }
+}
+
 /// The entry an object's path under `<root>/<kind dir>/<epoch>/<seq>` names.
 fn entry_of(kind: ObjectKind, location: &Path) -> Option<Entry> {
     let mut parts = location.parts().collect::<Vec<_>>().into_iter().rev();

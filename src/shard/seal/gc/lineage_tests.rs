@@ -131,3 +131,53 @@ async fn a_sweep_with_unreadable_or_missing_evidence_deletes_nothing() {
     assert_eq!(left(&rig).await, every, "holder 6 has no list");
     rig.engine.begin_close();
 }
+
+/// Plant one sentinel row of `tag` naming home `home`'s object `seq`.
+async fn row(rig: &Rig, tag: u8, home: u32, seq: u64) {
+    let id = crate::spill::object::ObjectId {
+        home,
+        epoch: 1,
+        seq,
+    };
+    let key = if tag == crate::spill::gc::RELEASE_TAG {
+        crate::spill::gc::release_key(Segment, id)
+    } else {
+        crate::spill::directory::sentinel_key(tag, id)
+    };
+    rig.engine.db.put(&key, b"x").await.unwrap();
+}
+
+/// A shard that holds rows of another home without its reference list under
+/// that home's root refuses to serve, naming the home; its own rows and the
+/// homes it has lists under never refuse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_shard_holding_an_ancestors_rows_without_its_list_refuses_to_serve() {
+    use crate::spill::{directory::REFCOUNT_TAG, gc::RELEASE_TAG, runindex::POINTER_TAG};
+    let rig = gc_rig("lineage-detect").await;
+    let own = rig.engine.home();
+    row(&rig, REFCOUNT_TAG, own, 1).await;
+    assert_eq!(rig.engine.lineage_refusal().await.unwrap(), None);
+    let list = |home| lineage::reference_list_path(&rig.engine.object_root(home), own);
+    row(&rig, REFCOUNT_TAG, 7, 1).await;
+    row(&rig, REFCOUNT_TAG, 7, 2).await;
+    row(&rig, POINTER_TAG, 8, 1).await;
+    row(&rig, RELEASE_TAG, 9, 1).await;
+    for home in [7, 8] {
+        put(&rig, list(home), lineage::encode(&[])).await;
+    }
+    let refusal = rig.engine.lineage_refusal().await.unwrap();
+    let reason = refusal.expect("home 9 has no list");
+    assert!(
+        reason.contains("home 9") && reason.contains(&list(9)),
+        "{reason}"
+    );
+    put(&rig, list(9), lineage::encode(&[])).await;
+    assert_eq!(rig.engine.lineage_refusal().await.unwrap(), None);
+    rig.store.delete(&Path::from(list(8))).await.unwrap();
+    let reason = rig.engine.lineage_refusal().await.unwrap();
+    assert!(
+        reason.is_some_and(|r| r.contains("home 8")),
+        "an 'I' row's home counts too"
+    );
+    rig.engine.begin_close();
+}
