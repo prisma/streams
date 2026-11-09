@@ -1569,6 +1569,19 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_claimant_fences_the_other_sources_owner_whose_reopen_holds_until_it_ends",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "31e3f460760bf07f638ce56d7736da911b69d3d88904474f14971d27850a07d3",
+    "mechanisms": [],
+    "configuration": [
+      "let faults = FaultStore::uniform(mem(), 1, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_keeps_every_stream_its_shard_serves",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

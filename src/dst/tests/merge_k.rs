@@ -7,10 +7,11 @@
 //! it holds before it becomes a leaf (L5).
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig, http_rig_named};
+use super::fixture_http::{engine_shutdown, http_rig, http_rig_named, http_rig_named_at};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::spill::object::ObjectId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -591,4 +592,216 @@ async fn a_lapsed_merge_is_rolled_back_by_a_sources_opener_that_fences_both_sour
         assert!(gone(&*store, path).await, "{path} is deleted");
     }
     engine_shutdown(&state).await;
+}
+
+/// An append of `{"n": n}` to `name` through `addr`: its status and error code.
+async fn append_to(addr: Addr, name: &str, n: u32) -> (u16, String) {
+    let path = format!("/v1/stream/{name}");
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    let (status, _, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let error = &body["error"];
+    let code = error.as_str().or_else(|| error["code"].as_str());
+    (status, code.unwrap_or_default().to_string())
+}
+
+/// Append to `name` through `addr` until it is acknowledged, within `bound`.
+async fn append_until_served(addr: Addr, name: &str, n: u32, bound: std::time::Duration) {
+    let t0 = std::time::Instant::now();
+    loop {
+        let (status, error) = append_to(addr, name, n).await;
+        if status == 204 {
+            return;
+        }
+        assert!(
+            t0.elapsed() < bound,
+            "{name} is served: last {status} {error}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Two instances over one store after a split of `00`: `inst-a` serves `000` (`low`), `inst-b`
+/// serves `001` (`high`), each having acknowledged a record since the split (`inst-a`'s engines of
+/// the split are closed first); `inst-a`'s engines are then shut down, so its next touch of `000`
+/// reopens it.
+async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr, u64) {
+    let shared: Arc<dyn object_store::ObjectStore> = store.clone();
+    let (state, addr) = http_rig_named(shared.clone(), "inst-a").await;
+    let (state_b, addr_b) =
+        http_rig_named_at(shared.clone(), "inst-b", RigRuntime::incarnation(1)).await;
+    let active = vec!["inst-a".to_string(), "inst-b".to_string()];
+    let owners = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(p, o)| ((*p).to_string(), (*o).to_string()))
+            .collect()
+    };
+    for s in [&state, &state_b] {
+        s.ownership.set_view(
+            active.clone(),
+            owners(&[("00", "inst-a"), ("000", "inst-a"), ("001", "inst-a")]),
+        );
+    }
+    let topology = crate::topology::model::Topology {
+        version: 1,
+        shards: state.shards.prefixes().shards.clone(),
+        last_op: None,
+        max_request_body_bytes: None,
+    };
+    let raw = serde_json::to_vec(&topology).unwrap();
+    object_store::ObjectStoreExt::put(&*shared, &"topology.json".into(), raw.into())
+        .await
+        .unwrap();
+    let mut taken = 0;
+    let low = stream_in_half(&state, addr, '0', &mut taken).await;
+    let high = stream_in_half(&state, addr, '1', &mut taken).await;
+    for (name, n) in [(&low, 1), (&high, 2)] {
+        assert_eq!(append_to(addr, name, n).await.0, 204, "append to {name}");
+    }
+    let desc = stored(&state, &state.deployment.raw_adapter_sref(&low)).await;
+    let parent = engine_of(&state, &desc, 0).await;
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, "op-s", "inst-a", &*clock)
+        .await
+        .expect("the split publishes");
+    let (published, etag) = crate::topology::store::read(&*shared).await.unwrap();
+    assert!(
+        state_b
+            .shards
+            .install(published.shards, Some(etag), clock.monotonic())
+    );
+    for s in [&state, &state_b] {
+        let view = owners(&[("000", "inst-a"), ("001", "inst-b")]);
+        s.ownership.set_view(active.clone(), view);
+    }
+    engine_shutdown(&state).await;
+    assert_eq!(append_to(addr, &low, 3).await.0, 204, "inst-a serves 000");
+    assert_eq!(
+        append_to(addr_b, &high, 4).await.0,
+        204,
+        "inst-b serves 001"
+    );
+    engine_shutdown(&state).await;
+    let rig = Rig {
+        store: shared,
+        state,
+        addr,
+        low,
+        high,
+        parent,
+    };
+    (rig, state_b, addr_b, split.version)
+}
+
+/// **A merge's claimant fences the other source's owner, whose reopen holds in its own fence while
+/// the claimed intent is live and serves once it ends** (S6 §7.4, across instances). `inst-b`
+/// serves `001` when a merge of `000` and `001` lapses with a manifest at `M`'s path. `inst-a`'s reopen
+/// of `000` claims it after the lapse, having opened `001`'s log for maintenance; the claimant's
+/// roll back is parked at its first delete of `M`'s files, so the intent stays claimed and live.
+/// Meanwhile `inst-b`'s `001` writer is fenced: no append of `inst-b`'s is acknowledged, and its
+/// reopen answers `503 shard_opening` (its fence sees a fresh claim, not a lapse). Released, the
+/// claimant ends the intent `RolledBack` under its single claim, and `inst-b` serves `001` again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_claimant_fences_the_other_sources_owner_whose_reopen_holds_until_it_ends() {
+    use crate::topology::intent::{self, Intent, State};
+    let faults = FaultStore::uniform(mem(), 1, FaultPlan::CLEAN);
+    let (rig, state_b, addr_b, version) = two_instances(&faults).await;
+    let desc = stored(&state_b, &state_b.deployment.raw_adapter_sref(&rig.high)).await;
+    let served = engine_of(&state_b, &desc, 0).await;
+    let snapshot = state_b.shards.prefixes();
+    let homes = [snapshot.shards.leaves["000"], snapshot.shards.leaves["001"]];
+    let merged_home = snapshot.shards.next_home;
+    let child = crate::topology::model::born_home_path("00", merged_home);
+    let left = format!("{child}/manifest/00000000000000000001.manifest");
+    object_store::ObjectStoreExt::put(&*rig.store, &left.as_str().into(), b"left".to_vec().into())
+        .await
+        .unwrap();
+    let merge = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-merge".to_string(),
+        sources: vec![("000".to_string(), homes[0]), ("001".to_string(), homes[1])],
+        children: vec![merged_home],
+        version_seen: version,
+        state: State::Preparing,
+        lease_owner: "inst-elsewhere".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    intent::create(&*rig.store, &merge).await.unwrap();
+    let under = object_store::path::Path::from(child.as_str());
+    let parked = faults.hold_class_under(StoreOp::Delete, ObjClass::of(&left), under.as_ref(), 1);
+    let t0 = std::time::Instant::now();
+    while parked.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        let (status, _) = append_to(rig.addr, &rig.low, 5).await;
+        assert_ne!(status, 204, "000 serves only once the merge is rolled back");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(40),
+            "inst-a claims the lapsed merge"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let claimed = intent::read(&*rig.store).await.unwrap().unwrap().intent;
+    assert_eq!((claimed.state, claimed.lease_epoch), (State::Preparing, 2));
+    assert!(
+        claimed.lease_owner.starts_with("opener:000@"),
+        "{}",
+        claimed.lease_owner
+    );
+
+    let fenced = served.db.put(b"merge-k-probe", b"").await;
+    let flushed = served.db.flush().await;
+    assert!(
+        fenced.is_err() || flushed.is_err(),
+        "inst-b's 001 writer is fenced by the claimant's maintenance open"
+    );
+    engine_shutdown(&state_b).await;
+    let mut answers = Vec::new();
+    let held_from = std::time::Instant::now();
+    while held_from.elapsed() < std::time::Duration::from_secs(3) {
+        answers.push(append_to(addr_b, &rig.high, 6).await);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(
+        answers.iter().all(|(status, _)| *status != 204),
+        "{answers:?}"
+    );
+    assert!(
+        answers.contains(&(503, "shard_opening".to_string())),
+        "inst-b's reopen holds in its fence: {answers:?}"
+    );
+    let still = intent::read(&*rig.store).await.unwrap().unwrap().intent;
+    assert_eq!(
+        (still.state, still.lease_epoch),
+        (State::Preparing, 2),
+        "still claimed by inst-a alone"
+    );
+
+    faults.release_hold();
+    let bound = std::time::Duration::from_secs(30);
+    append_until_served(addr_b, &rig.high, 7, bound).await;
+    append_until_served(rig.addr, &rig.low, 8, bound).await;
+    let ended = intent::read(&*rig.store).await.unwrap().unwrap().intent;
+    assert_eq!((ended.state, ended.lease_epoch), (State::RolledBack, 2));
+    assert!(gone(&*rig.store, &child).await, "M's files are deleted");
+    let reopened = engine_of(&state_b, &desc, 0).await;
+    assert!(
+        reopened.writer_epoch >= served.writer_epoch + 2,
+        "fenced by the claimant's maintenance open, then reopened: {} -> {}",
+        served.writer_epoch,
+        reopened.writer_epoch
+    );
+    let ns = |v: serde_json::Value| -> Vec<u64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["n"].as_u64())
+            .collect()
+    };
+    assert_eq!(ns(records(addr_b, &rig.high).await), [2, 4, 7]);
+    assert_eq!(ns(records(rig.addr, &rig.low).await), [1, 3, 8]);
+    engine_shutdown(&rig.state).await;
+    engine_shutdown(&state_b).await;
 }
