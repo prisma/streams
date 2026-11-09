@@ -1,0 +1,263 @@
+//! The topology policy's loop (S5): every period, the cell as the fleet tick last read it, the
+//! policy's decision (`policy::Policy::decide`), and S4's split entry for a split this instance
+//! owns. It reads no store object of its own: the beats and the fleet documents' times are the
+//! tick's reads, cached in `Standing` (S5-PLAN-CHECK §3).
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::future::BoxFuture;
+
+use super::model::Snapshot;
+use super::policy::{Axis, Decision, Instance, Leaf, Limits, Policy, Usage, View};
+use crate::fleet::{FleetRepository, Heartbeat};
+use crate::ownership::OwnershipService;
+use crate::shard_directory::ShardDirectory;
+use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
+
+/// The policy's cadence.
+pub(crate) const PERIOD: Duration = Duration::from_secs(10);
+
+/// Why S4's split entry did not start a split: its refusal's reason code (`topology_busy`,
+/// `instance_full`, `not_splittable`, `unknown_prefix`), or `unavailable` before it lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Refused(pub &'static str);
+
+/// S4's split entry: start the split of a leaf (S4-DESIGN §6). The DST stands a double in.
+pub(crate) type SplitFn =
+    Arc<dyn Fn(String) -> BoxFuture<'static, Result<(), Refused>> + Send + Sync>;
+
+/// The split entry until S4's lands: every split is refused as unavailable.
+pub(crate) fn split_unavailable() -> SplitFn {
+    Arc::new(|_prefix| Box::pin(async { Err(Refused("unavailable")) }))
+}
+
+/// What one pass reads, and through what it acts.
+#[derive(Clone)]
+pub(crate) struct Cell {
+    pub me: String,
+    pub fleet: FleetRepository,
+    pub shards: ShardDirectory,
+    pub ownership: OwnershipService,
+    pub limits: Limits,
+    /// The appends axis' safe capacity, per shard.
+    pub appends_ceiling: u64,
+    /// The RSS shed line (MB): an instance's headroom is what it has left below it; 0 is none.
+    pub rss_shed_mb: u64,
+    pub split: SplitFn,
+}
+
+/// Start the policy's loop: one pass each `period`.
+pub(crate) fn start(cell: Cell, period: Duration, tasks: &TaskSupervisor) {
+    let spawned = tasks.spawn(
+        "topology-policy",
+        crate::tasks::Policy::Noncritical,
+        move |cancel| run(cell, period, cancel),
+    );
+    if let Err(rejected) = spawned {
+        tracing::debug!(
+            ?rejected,
+            "runtime stopping: the topology policy was not started"
+        );
+    }
+}
+
+async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
+    let mut policy = Policy::default();
+    let mut seen = Seen::default();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return TaskResult::Done,
+            _ = tokio::time::sleep(period) => {}
+        }
+        let decision = pass(&cell, &mut policy, &mut seen).await;
+        tracing::debug!(?decision, "topology policy");
+    }
+}
+
+/// One pass: the view, the decision, and the split it starts. A refused split is a hold.
+pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> Decision {
+    let view = view(cell, seen);
+    let decision = policy.decide(&view, &cell.limits);
+    let Decision::Split { prefix, .. } = &decision else {
+        return decision;
+    };
+    match (cell.split)(prefix.clone()).await {
+        Ok(()) => decision,
+        Err(refused) => {
+            tracing::info!(?refused, prefix, "topology split refused");
+            match refused.0 {
+                "instance_full" => Decision::AskInstance {
+                    resident: resident(&view, &cell.me),
+                    max: cell.limits.shards_per_instance_max,
+                },
+                "topology_busy" => Decision::Hold(super::policy::Hold::IntentLive),
+                _ => Decision::Hold(super::policy::Hold::Steady),
+            }
+        }
+    }
+}
+
+fn resident(view: &View, me: &str) -> u32 {
+    view.instances
+        .iter()
+        .find(|instance| instance.id == me)
+        .map_or(0, |instance| instance.resident_shards)
+}
+
+/// What this loop has seen of the topology, on the wall clock: when each leaf a split or merge
+/// made first appeared, and when the version changed (the last operation's end). A cell's first
+/// leaves were born with it, and the version it started with ended no operation it knows of, so
+/// a restart only delays a merge.
+#[derive(Debug, Default)]
+pub(crate) struct Seen {
+    born: BTreeMap<String, i64>,
+    version: Option<u64>,
+    changed_ms: Option<i64>,
+}
+
+impl Seen {
+    fn observe(&mut self, snapshot: &Snapshot, now_ms: i64) {
+        self.born
+            .retain(|prefix, _| snapshot.iter().any(|leaf| leaf == prefix));
+        let version = snapshot.shards.version;
+        if self.version.is_some_and(|seen| seen != version) {
+            self.changed_ms = Some(now_ms);
+        }
+        self.version = Some(version);
+    }
+
+    fn born(&mut self, snapshot: &Snapshot, prefix: &str, now_ms: i64) -> i64 {
+        let first = snapshot
+            .shards
+            .leaves
+            .get(prefix)
+            .and_then(|home| snapshot.shards.homes.get(home))
+            .is_none_or(|home| home.born_version <= 1);
+        if first {
+            return 0;
+        }
+        *self.born.entry(prefix.to_owned()).or_insert(now_ms)
+    }
+}
+
+/// The cell as this pass sees it.
+fn view(cell: &Cell, seen: &mut Seen) -> View {
+    let now_ms = crate::shard::now_ms();
+    let standing = cell.fleet.standing();
+    let stale_ms = u64::try_from(cell.limits.beat_stale_ms).unwrap_or(0);
+    let (beats_fresh, beats) = match standing.cached_beats() {
+        Some((age_ms, beats)) => (age_ms <= stale_ms, beats),
+        None => (false, Arc::from([])),
+    };
+    let snapshot = cell.shards.prefixes();
+    seen.observe(&snapshot, now_ms);
+    let by_instance: BTreeMap<&str, &Heartbeat> = beats
+        .iter()
+        .map(|beat| (beat.instance.as_str(), beat))
+        .collect();
+    let leaves: Vec<Leaf> = snapshot
+        .iter()
+        .map(|prefix| {
+            let owner = cell
+                .ownership
+                .effective_owner(prefix)
+                .unwrap_or_else(|| cell.me.clone());
+            let beat = by_instance.get(owner.as_str()).copied();
+            Leaf {
+                prefix: prefix.clone(),
+                born_ms: seen.born(&snapshot, prefix, now_ms),
+                load: beat
+                    .map(|beat| load(cell, beat, prefix))
+                    .unwrap_or_default(),
+                beat_ms: beat.map(|beat| beat.ts_ms),
+                owner,
+            }
+        })
+        .collect();
+    let instances = instances(cell, &leaves, &beats, now_ms);
+    let docs = standing.doc_times();
+    // Fleet documents the tick has not read lately are treated as just changed: no topology
+    // operation starts on a stale view of the fleet (S4 §10.1 rule 1).
+    let docs_fresh = docs.age_ms.is_some_and(|age| age <= stale_ms);
+    let unseen = |at: Option<i64>| if docs_fresh { at } else { Some(now_ms) };
+    View {
+        now_ms,
+        me: cell.me.clone(),
+        instances,
+        split_demand: standing.split_demand(),
+        beats_fresh,
+        intent_live: false,
+        last_op_end_ms: seen.changed_ms,
+        desired_computed_ms: unseen(docs.desired_computed_ms),
+        youngest_override_ms: unseen(docs.youngest_override_ms),
+        congested: beats
+            .iter()
+            .any(|beat| beat.refusals > 0 && now_ms - beat.ts_ms <= cell.limits.beat_stale_ms),
+        leaves,
+    }
+}
+
+/// `prefix`'s load as its owner's beat reports it, by axis against its safe capacity.
+fn load(cell: &Cell, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
+    let Some(shard) = beat.shard_loads.iter().find(|shard| shard.prefix == prefix) else {
+        return BTreeMap::new();
+    };
+    let usage = |used: u64, safe: u64| Usage {
+        used,
+        safe,
+        top_entity: 0,
+    };
+    BTreeMap::from([
+        (
+            Axis::Appends,
+            usage(shard.appends_per_s, cell.appends_ceiling),
+        ),
+        (
+            Axis::Streams,
+            usage(shard.resident_streams, shard.handle_max_resident),
+        ),
+        (Axis::Committer, usage(shard.committer_busy_pct, 100)),
+    ])
+}
+
+/// Each beating instance's room: the leaves the ring gives it, and its RSS below the shed line.
+fn instances(cell: &Cell, leaves: &[Leaf], beats: &[Heartbeat], now_ms: i64) -> Vec<Instance> {
+    beats
+        .iter()
+        .map(|beat| {
+            let held = leaves
+                .iter()
+                .filter(|leaf| leaf.owner == beat.instance)
+                .count();
+            let below_shed = cell.rss_shed_mb == 0 || beat.rss_mb < cell.rss_shed_mb as f64;
+            Instance {
+                id: beat.instance.clone(),
+                resident_shards: u32::try_from(held).unwrap_or(u32::MAX),
+                accepting: now_ms - beat.ts_ms <= cell.limits.beat_stale_ms
+                    && !beat.draining
+                    && beat.withdrawn.is_none()
+                    && below_shed,
+            }
+        })
+        .collect()
+}
+
+/// The policy's limits from the configuration (rev 4 §4.3, Q4, S4 §10.1).
+pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
+    let cli = &config.cli;
+    let ms = |secs: u64| i64::try_from(secs.saturating_mul(1_000)).unwrap_or(i64::MAX);
+    Limits {
+        split_line_pct: cli.shard_split_line_pct,
+        split_sustain_ms: ms(cli.shard_split_sustain_secs),
+        emergency_line_pct: cli.shard_emergency_line_pct,
+        emergency_sustain_ms: ms(cli.shard_emergency_sustain_secs),
+        merge_line_pct: cli.shard_merge_line_pct,
+        merge_sustain_ms: ms(cli.shard_merge_sustain_secs),
+        reversal_min_ms: ms(cli.shard_split_reversal_min_secs),
+        cooldown_ms: ms(cli.shard_topology_cooldown_secs),
+        beat_stale_ms: ms(cli.shard_beat_stale_secs),
+        override_cooldown_ms: ms(config.fleet.rebalance_move_cooldown_secs),
+        shards_per_instance_max: cli.shards_per_instance_max,
+    }
+}

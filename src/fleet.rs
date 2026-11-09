@@ -407,6 +407,17 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     let (registry, shards) = (state.registry.clone(), state.shards.clone());
     let clock = state.runtime.clock.clone();
     crate::topology::revalidate::start(registry, shards, clock, planning::TICK_PERIOD, tasks);
+    let cell = crate::topology::policy_loop::Cell {
+        me: cfg.instance.clone(),
+        fleet: state.fleet.clone(),
+        shards: state.shards.clone(),
+        ownership: state.ownership.clone(),
+        limits: crate::topology::policy_loop::limits(&state.config),
+        appends_ceiling: state.config.cli.shard_appends_ceiling,
+        rss_shed_mb: cfg.rss_shed_mb,
+        split: crate::topology::policy_loop::split_unavailable(),
+    };
+    crate::topology::policy_loop::start(cell, crate::topology::policy_loop::PERIOD, tasks);
     let (drained, instance) = (state.clone(), cfg.instance.clone());
     tasks.set_stop_preface(drain::SUPERVISED, move || {
         Box::pin(drain::run(drained, instance))

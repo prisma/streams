@@ -3,8 +3,8 @@
 //! (item 40). One per runtime, inside its fleet repository: two runtimes in
 //! one process never share it.
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,33 @@ pub(crate) struct Standing {
     /// The prefixes the cell's live topology intent names as its sources, as this runtime's last
     /// beat read them: a rebalancer never moves one (S4-DESIGN §4.4).
     topology_sources: Mutex<Vec<String>>,
+    /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
+    /// `origin` plus one: the topology policy reads the cell from here, not from the store.
+    cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
+    /// What the tick's latest reads of desired.json and the overrides found, for the
+    /// topology policy's wait on the fleet (S4 §10.1 rule 1).
+    docs: Mutex<FleetDocs>,
+}
+
+/// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
+/// each found them, and when each was read (milliseconds from `origin` plus one; zero before
+/// the first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FleetDocs {
+    desired_computed_ms: Option<i64>,
+    youngest_override_ms: Option<i64>,
+    desired_read: u64,
+    overrides_read: u64,
+}
+
+/// The fleet documents' times as the topology policy reads them: each `None` where the
+/// document is absent or names none, and the age of the older of the two reads (`None`
+/// before both have been read once).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DocTimes {
+    pub desired_computed_ms: Option<i64>,
+    pub youngest_override_ms: Option<i64>,
+    pub age_ms: Option<u64>,
 }
 
 impl Default for Standing {
@@ -66,6 +93,8 @@ impl Default for Standing {
             drained: Mutex::new(None),
             split_demand: AtomicU64::new(0),
             topology_sources: Mutex::new(Vec::new()),
+            cached: Mutex::new((0, Arc::from([]))),
+            docs: Mutex::new(FleetDocs::default()),
         }
     }
 }
@@ -133,6 +162,47 @@ impl Standing {
         self.split_demand.load(Ordering::Relaxed)
     }
 
+    /// The tick's heartbeat read returned `beats` now.
+    pub(crate) fn cache_beats(&self, beats: &[super::Heartbeat]) {
+        if let Ok(mut cached) = self.cached.lock() {
+            *cached = (self.elapsed_ms(), Arc::from(beats));
+        }
+    }
+
+    /// The beats the tick's latest heartbeat read returned, and how long ago it returned
+    /// them; `None` before its first read.
+    pub(crate) fn cached_beats(&self) -> Option<(u64, Arc<[super::Heartbeat]>)> {
+        let (read, beats) = self.cached.lock().ok()?.clone();
+        (read > 0).then(|| (self.elapsed_ms().saturating_sub(read), beats))
+    }
+
+    /// A read of desired.json found it computed at `computed_ms` (`None`: absent).
+    pub(crate) fn note_desired(&self, computed_ms: Option<i64>) {
+        let at = self.elapsed_ms();
+        if let Ok(mut docs) = self.docs.lock() {
+            (docs.desired_computed_ms, docs.desired_read) = (computed_ms, at);
+        }
+    }
+
+    /// A read of the overrides found `youngest_ms` the newest entry's time (`None`: none).
+    pub(crate) fn note_overrides(&self, youngest_ms: Option<i64>) {
+        let at = self.elapsed_ms();
+        if let Ok(mut docs) = self.docs.lock() {
+            (docs.youngest_override_ms, docs.overrides_read) = (youngest_ms, at);
+        }
+    }
+
+    /// The fleet documents' times the latest reads found.
+    pub(crate) fn doc_times(&self) -> DocTimes {
+        let docs = self.docs.lock().map(|docs| *docs).unwrap_or_default();
+        let older = docs.desired_read.min(docs.overrides_read);
+        DocTimes {
+            desired_computed_ms: docs.desired_computed_ms,
+            youngest_override_ms: docs.youngest_override_ms,
+            age_ms: (older > 0).then(|| self.elapsed_ms().saturating_sub(older)),
+        }
+    }
+
     /// The next beat's sequence number. A beat takes it before it reads
     /// whether the runtime drains.
     pub(crate) fn next_beat(&self) -> u64 {
@@ -187,7 +257,7 @@ impl Standing {
 
 #[cfg(test)]
 mod tests {
-    use super::{Standing, Viewed, ViewedBeat};
+    use super::{DocTimes, Standing, Viewed, ViewedBeat};
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
@@ -200,6 +270,69 @@ mod tests {
         assert_eq!(standing.split_demand(), 7);
         standing.set_split_demand(0);
         assert_eq!(standing.split_demand(), 0);
+    }
+
+    fn beat(instance: &str) -> crate::fleet::Heartbeat {
+        let document = format!(
+            r#"{{"instance":"{instance}","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":false,"seq":1}}"#
+        );
+        serde_json::from_str(&document).unwrap()
+    }
+
+    /// The topology policy reads the cell from the tick's latest heartbeat read, aged from
+    /// that read on the monotonic clock.
+    #[test]
+    fn the_cached_beats_are_the_latest_reads_aged_from_it() {
+        assert!(Standing::default().cached_beats().is_none());
+        let standing = Standing {
+            origin: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
+            ..Standing::default()
+        };
+        standing.cache_beats(&[beat("streams-1"), beat("streams-2")]);
+        let (age, beats) = standing.cached_beats().unwrap();
+        assert!(age < 500, "{age}");
+        let names: Vec<&str> = beats.iter().map(|beat| beat.instance.as_str()).collect();
+        assert_eq!(names, ["streams-1", "streams-2"]);
+        *standing.cached.lock().unwrap() = (1_001, beats);
+        let (age, _) = standing.cached_beats().unwrap();
+        assert!((4_000..4_500).contains(&age), "{age}");
+        standing.cache_beats(&[]);
+        assert!(standing.cached_beats().unwrap().1.is_empty());
+    }
+
+    /// The policy reads both documents' times, aged by the older read.
+    #[test]
+    fn the_fleet_documents_times_are_the_latest_reads_aged_by_the_older() {
+        let none = DocTimes {
+            desired_computed_ms: None,
+            youngest_override_ms: None,
+            age_ms: None,
+        };
+        let standing = Standing {
+            origin: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
+            ..Standing::default()
+        };
+        assert_eq!(standing.doc_times(), none);
+        standing.note_desired(Some(7));
+        assert_eq!(
+            standing.doc_times().age_ms,
+            None,
+            "the overrides were not read yet"
+        );
+        standing.note_overrides(None);
+        let times = standing.doc_times();
+        assert_eq!(
+            (times.desired_computed_ms, times.youngest_override_ms),
+            (Some(7), None)
+        );
+        assert!(times.age_ms.unwrap() < 500, "{times:?}");
+        standing.docs.lock().unwrap().desired_read = 1_001;
+        standing.note_overrides(Some(9));
+        let times = standing.doc_times();
+        assert_eq!(times.youngest_override_ms, Some(9));
+        assert!((4_000..4_500).contains(&times.age_ms.unwrap()), "{times:?}");
+        standing.note_desired(None);
+        assert_eq!(standing.doc_times().desired_computed_ms, None);
     }
 
     #[test]

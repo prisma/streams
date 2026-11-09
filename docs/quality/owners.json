@@ -75,6 +75,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::run",
+      "path": "src/topology/policy_loop.rs",
+      "reason": "The topology policy task selects between supervised cancellation and its period (S5); compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::Inner::begin_drain",
       "path": "src/tasks/drain.rs",
       "reason": "The drain loop selects between supervised cancellation (a critical failure stops the runtime at once) and its budget-bounded drain; compiler checks expansion.",
@@ -527,6 +535,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Layout 8's key families on one shard (S3a-DESIGN §1, §2, §4.1, §6): streams and queues through the product path, a seal and a fold; every key is an entity row of a known family or a sentinel row of a tag with a split rule, and the unsealed and usage-dirty indexes are exact against the tails; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/layout8_ranges.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_policy",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The topology policy's loop over a live cell (S5): the beats the fleet tick reads carry each shard's load, and a one-shard cell over the split line doubles to four shards and stops, through the split entry's double until S4's lands; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/topology_policy.rs\""
     },
     {
       "category": "macro-dsl",
@@ -1974,6 +1990,14 @@
       "owner": "crate::blast_keys",
       "path": "src/dst/tests/topology_scaling.rs",
       "reason": "Capacity load fixture owns every client task; all are stopped through the shared flag and joined before the acknowledged count is returned. Concurrent clients are required to saturate the committer.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops",
+      "path": "src/dst/tests/topology_policy.rs",
+      "reason": "The policy DST's load generator runs beside the policy loop it drives; it is stopped through the shared flag and joined before the topology is checked. The load must run while the loop decides, so it cannot be awaited inline.",
       "syntax": "tokio::spawn"
     },
     {

@@ -174,6 +174,11 @@ OWNERS = (
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k::'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
     owner('topology_view', 'src/topology/view.rs', 'dst_tests::split_k::'),
+    # The policy (S5): its rules are unit tests per edge; the loop that feeds it the tick's
+    # cached beats and acts on its decision is the policy DST.
+    owner('topology_policy', 'src/topology/policy.rs', 'topology::policy::'),
+    owner('topology_policy_loop', 'src/topology/policy_loop.rs',
+          'topology::policy:: dst_tests::topology_policy::'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
     owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index::'),
@@ -381,6 +386,9 @@ OWNERS = (
     # The beat loop and the tick's pressure reading are proven by the rigs.
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
           'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology::'),
+    # Each shard's load in the beat: the rates are unit tests, the beat the policy DST reads.
+    owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',
+          'fleet::heartbeat::shard_load:: dst_tests::topology_policy::'),
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),

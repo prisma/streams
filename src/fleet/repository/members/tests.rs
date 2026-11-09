@@ -283,6 +283,66 @@ async fn the_repository_reads_the_instance_that_joined_it() {
     assert_eq!(store.asked(), (joined, vec![]));
 }
 
+/// The tick's read is the beats the topology policy reads from memory; a peek is not.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_ticks_read_is_cached_for_the_topology_policy_and_a_peek_is_not() {
+    let store = Arc::new(Recording::default());
+    let shared: Arc<dyn ObjectStore> = store.clone();
+    let repository = super::super::FleetRepository::new(Some(shared));
+    store.desired(2).await;
+    store.beat("streams-1", 1).await;
+    assert!(repository.standing().cached_beats().is_none());
+    repository.read_heartbeat_set().await.unwrap();
+    let (_, cached) = repository.standing().cached_beats().unwrap();
+    assert_eq!(names(&cached), [("streams-1", 1)]);
+    store.beat("streams-2", 1).await;
+    assert_eq!(repository.peek_heartbeat_set().await.unwrap().len(), 2);
+    let (_, cached) = repository.standing().cached_beats().unwrap();
+    assert_eq!(
+        names(&cached),
+        [("streams-1", 1)],
+        "a peek leaves the cache"
+    );
+    repository.read_heartbeat_set().await.unwrap();
+    let (_, cached) = repository.standing().cached_beats().unwrap();
+    assert_eq!(names(&cached), [("streams-1", 1), ("streams-2", 1)]);
+}
+
+/// The reads of desired.json and the overrides leave their times for the topology policy.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_fleet_documents_reads_leave_their_times_for_the_topology_policy() {
+    let store = Arc::new(Recording::default());
+    let shared: Arc<dyn ObjectStore> = store.clone();
+    let repository = super::super::FleetRepository::new(Some(shared.clone()));
+    repository.read_desired_state().await.unwrap();
+    repository.read_overrides().await.unwrap();
+    let times = repository.standing().doc_times();
+    assert_eq!(
+        (times.desired_computed_ms, times.youngest_override_ms),
+        (None, None)
+    );
+    assert!(times.age_ms.is_some(), "both absent documents were read");
+    let desired = r#"{"count":1,"reason":"seed","epoch":1,"computed_at_ms":1234}"#;
+    let overrides =
+        r#"{"entries":{"0":{"to":"streams-2","ms":50},"1":{"to":"streams-3","ms":70}}}"#;
+    for (path, body) in [
+        ("fleet/desired.json", desired),
+        ("fleet/overrides.json", overrides),
+    ] {
+        shared
+            .put(&object_store::path::Path::from(path), body.into())
+            .await
+            .unwrap();
+    }
+    repository.read_desired_state().await.unwrap();
+    repository.read_overrides().await.unwrap();
+    let times = repository.standing().doc_times();
+    assert_eq!(
+        (times.desired_computed_ms, times.youngest_override_ms),
+        (Some(1_234), Some(70))
+    );
+}
+
 /// The count a read finds names its members in that same read: a rise is
 /// read at once, never a pass later. A smaller count, or a document that does
 /// not validate (no count, zero, beyond the 4096-member budget), names only

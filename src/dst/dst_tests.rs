@@ -333,6 +333,9 @@ mod sse_delivery;
 #[path = "tests/topology_lifecycle.rs"]
 mod topology_lifecycle;
 
+#[path = "tests/topology_policy.rs"]
+mod topology_policy;
+
 #[path = "tests/topology_scaling.rs"]
 mod topology_scaling;
 

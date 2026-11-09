@@ -1,5 +1,5 @@
-//! The cell's versioned shard topology (S4-DESIGN §3): the stored map, and the split that
-//! changes it.
+//! The cell's versioned shard topology (S4-DESIGN §3): the stored map, the split that
+//! changes it, and the policy that decides when (S5).
 // The actor of a split or a merge: its lease, its ownership checks, its terminal write.
 pub(crate) mod actor;
 pub(crate) mod fence;
@@ -10,6 +10,8 @@ pub(crate) mod gate;
 pub(crate) mod intent;
 pub(crate) mod model;
 pub(crate) mod ops;
+pub(crate) mod policy;
+pub(crate) mod policy_loop;
 pub(crate) mod recover;
 pub(crate) mod revalidate;
 // The split's sentinel helper.

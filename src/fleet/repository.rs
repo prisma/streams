@@ -123,6 +123,7 @@ impl FleetRepository {
                 })
                 .collect(),
         );
+        self.standing.cache_beats(&beats);
         Ok(beats)
     }
 
@@ -216,9 +217,13 @@ impl FleetRepository {
         match self.read_typed::<Desired>(DESIRED_DOC).await? {
             Some((doc, version)) => {
                 validate_desired(&doc)?;
+                self.standing.note_desired(Some(doc.computed_at_ms));
                 Ok((Some(doc), Some(version)))
             }
-            None => Ok((None, None)),
+            None => {
+                self.standing.note_desired(None);
+                Ok((None, None))
+            }
         }
     }
 
@@ -228,9 +233,14 @@ impl FleetRepository {
         match self.read_typed::<Overrides>(OVERRIDES_DOC).await? {
             Some((doc, version)) => {
                 validate_overrides(&doc)?;
+                let youngest = doc.entries.values().map(|entry| entry.ms).max();
+                self.standing.note_overrides(youngest);
                 Ok((doc, Some(version)))
             }
-            None => Ok((Overrides::default(), None)),
+            None => {
+                self.standing.note_overrides(None);
+                Ok((Overrides::default(), None))
+            }
         }
     }
 
