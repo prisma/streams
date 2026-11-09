@@ -216,9 +216,9 @@ pub(crate) async fn split(
         drop(hold);
         return Err(roll_back(&*store, parent, &children, &held, format!("'T': {e}")).await);
     }
-    let released = std::cell::Cell::new(None);
+    let released = std::sync::OnceLock::new();
     let retire = |reroute| {
-        released.set(Some(paused_at.elapsed()));
+        released.get_or_init(|| paused_at.elapsed());
         if let Some(barrier) = barrier {
             barrier.retire(reroute);
         }
@@ -232,7 +232,7 @@ pub(crate) async fn split(
         op_id,
     };
     let published = publish(&op, now, retire).await.map(|mut published| {
-        published.pause = released.get().unwrap_or_default();
+        published.pause = released.get().copied().unwrap_or_default();
         published
     });
     drop(hold);

@@ -67,3 +67,24 @@ fn a_childs_seed_holds_its_rows_counts_and_identity_in_order() {
         "the routed key once, the count, the identity"
     );
 }
+
+/// **A split's future is `Send`**, so a supervised task (package 1's policy loop) can run it: it
+/// holds nothing across an await that cannot cross threads. The check is the compiler's; the test
+/// only names it.
+#[test]
+fn a_splits_future_is_send() {
+    fn send<T: Send>(_: &T) {}
+    fn check(
+        dir: &crate::shard_directory::ShardDirectory,
+        parent: &std::sync::Arc<crate::shard::ShardEngine>,
+        clock: &dyn crate::runtime::Clock,
+    ) {
+        let split = super::split(dir, parent, "op", "owner", clock);
+        send(&split);
+    }
+    let _checked: fn(
+        &crate::shard_directory::ShardDirectory,
+        &std::sync::Arc<crate::shard::ShardEngine>,
+        &dyn crate::runtime::Clock,
+    ) = check;
+}
