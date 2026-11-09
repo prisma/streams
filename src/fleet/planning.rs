@@ -653,11 +653,14 @@ mod tests {
 }
 
 #[cfg(test)]
+mod waiting_tests;
+
+#[cfg(test)]
 mod demand_tests {
     use super::{Demand, Loads, Need, REFUSAL_BEATS_HOT, Thresholds};
     use std::time::{Duration, Instant};
 
-    fn thresholds() -> Thresholds {
+    pub(super) fn thresholds() -> Thresholds {
         Thresholds {
             target_util: 0.75,
             scale_in_util: 0.5,
@@ -677,7 +680,7 @@ mod demand_tests {
 
     /// Four members at 30 % CPU: utilization alone wants two, and shrinks
     /// to three.
-    fn quiet(shards: u64) -> Loads {
+    pub(super) fn quiet(shards: u64) -> Loads {
         Loads {
             cores_used: 1.2,
             rps: 400.0,
@@ -690,9 +693,9 @@ mod demand_tests {
     }
 
     /// A plan's numbers: (need, shrink, split demand).
-    type Numbers = (u64, u64, u64);
+    pub(super) type Numbers = (u64, u64, u64);
 
-    fn n(plan: &Need) -> Numbers {
+    pub(super) fn n(plan: &Need) -> Numbers {
         (plan.need, plan.shrink, plan.split_demand)
     }
 
@@ -703,69 +706,6 @@ mod demand_tests {
         let mut demand = Demand::default();
         let first = n(&demand.plan(loads, &at, start));
         (first, n(&demand.plan(loads, &at, start + at.cpu_sustain)))
-    }
-
-    /// A member whose topology policy's split waits for an instance asks for one more at
-    /// once, and the shrink keeps it; the reason names its shards against the ceiling
-    /// (S5, Q4). A beat that says so folds its resident shards, the most of any member.
-    #[test]
-    fn a_split_waiting_for_an_instance_wants_one_more_and_names_the_ceiling() {
-        let waiting = Loads {
-            instance_full: Some(7),
-            ..quiet(64)
-        };
-        let plan = Demand::default().plan(&waiting, &thresholds(), Instant::now());
-        assert_eq!(n(&plan), (5, 5, 0));
-        assert!(
-            plan.reason.ends_with(" shards_per_instance=7/7 (5)"),
-            "{}",
-            plan.reason
-        );
-        let plan = Demand::default().plan(&quiet(64), &thresholds(), Instant::now());
-        assert_eq!(n(&plan), (2, 3, 0));
-        assert!(
-            !plan.reason.contains("shards_per_instance"),
-            "{}",
-            plan.reason
-        );
-        // One shard on one instance: the instance the split waits for is the child's home, past
-        // the clamp by the one shard the split adds and no further.
-        let one = Loads {
-            instance_full: Some(1),
-            shards: 1,
-            live: 1,
-            ..Loads::default()
-        };
-        assert_eq!(
-            n(&Demand::default().plan(&one, &thresholds(), Instant::now())),
-            (2, 2, 1)
-        );
-        let two = Loads {
-            instance_full: Some(2),
-            shards: 2,
-            live: 1,
-            ..Loads::default()
-        };
-        assert_eq!(
-            n(&Demand::default().plan(&two, &thresholds(), Instant::now())),
-            (2, 2, 0)
-        );
-        let beat = |extra: &str| -> crate::fleet::Heartbeat {
-            let document = format!(
-                r#"{{"instance":"streams-1","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":false{extra}}}"#
-            );
-            serde_json::from_str(&document).unwrap()
-        };
-        let mut loads = Loads::default();
-        loads.fold(&beat(r#","shards_resident":3"#));
-        assert_eq!(loads.instance_full, None);
-        loads.fold(&beat(
-            r#","split_refused":"instance_full","shards_resident":6"#,
-        ));
-        loads.fold(&beat(
-            r#","split_refused":"instance_full","shards_resident":4"#,
-        ));
-        assert_eq!(loads.instance_full, Some(6));
     }
 
     /// A member refusing work on three beats in a row, or one whose RSS is
