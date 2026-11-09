@@ -295,7 +295,6 @@ impl ShardEngine {
     }
 
     /// Ops waiting in the committer's queue; one it has taken is not.
-    #[cfg(test)]
     pub(crate) fn queued_ops(&self) -> usize {
         self.tx.max_capacity() - self.tx.capacity()
     }

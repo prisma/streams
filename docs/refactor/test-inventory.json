@@ -3144,6 +3144,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_that_would_fill_its_instance_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c97dca9c74a8acd8980469e78b807a8c79b4e754129a4024b7a08f9d877aba2c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_the_allocator_cannot_number_keeps_its_intent_pending",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -10270,6 +10281,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/forward_hops.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_split_route_starts_a_split_that_runs_on_to_its_publish",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "6a627a6c3de4fcbe7921e4f30e77bab63696cc1a69b318f37f93958424b3a503",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_split_routes_refusals",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "86635937a04ff80c3fea3d5bc7ed0333f44cba3260902d8c3341588999f56c72",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },
   {

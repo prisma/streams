@@ -328,7 +328,7 @@ async fn a_fold_keeps_each_chunks_max_ts() {
         .bytes()
         .await
         .unwrap();
-    let (_, runs) = crate::spill::runindex::format::decode_object(&raw).unwrap();
+    let (_, runs) = crate::spill::runindex::whole::decode_object(&raw).unwrap();
     let mut folded: Vec<_> = runs
         .iter()
         .flat_map(|(footer, entries)| {

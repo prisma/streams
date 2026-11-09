@@ -27,6 +27,7 @@ use crate::spill::object::ObjectId;
 
 pub(crate) mod format;
 pub(crate) mod tiling;
+pub(crate) mod whole;
 
 #[cfg(test)]
 mod format_tests;

@@ -20,21 +20,15 @@
 //! `kind:u8 epoch:u64 BE seq:u64 BE` (17 B) in strictly ascending order, then
 //! `crc32c:u32 BE` of everything before it. An entry's home is the root's.
 
-#[cfg(test)]
 use crate::spill::crc32c::crc32c;
-#[cfg(test)]
 use crate::spill::gc::ObjectKind;
 
-#[cfg(test)]
 const VERSION: u8 = 1;
-#[cfg(test)]
 const ENTRY: usize = 17;
 
 /// One of an ancestor's objects: its kind, epoch and seq.
-#[cfg(test)]
 pub(crate) type Entry = (ObjectKind, u64, u64);
 
-#[cfg(test)]
 /// `entries`' body, in order and without duplicates.
 pub(crate) fn encode(entries: &[Entry]) -> Vec<u8> {
     let mut sorted = entries.to_vec();

@@ -116,8 +116,7 @@ impl MaintenanceGate {
         }
     }
 
-    /// Tests until the split's snapshot pass sets it (S4 step 11): the mark starts empty.
-    #[cfg(test)]
+    /// The split's Preparing sets it: the mark starts empty.
     pub(crate) fn start_marking(&self) {
         self.touched
             .lock()
@@ -126,9 +125,8 @@ impl MaintenanceGate {
         self.marking.store(true, Ordering::Release);
     }
 
-    /// Tests until the split's delta takes it (S4 step 10): the queues marked, and the mark's
+    /// The split's delta takes it: the queues marked, and the mark's
     /// release.
-    #[cfg(test)]
     pub(crate) fn take_touched(&self) -> HashSet<[u8; 16]> {
         self.marking.store(false, Ordering::Release);
         std::mem::take(&mut *self.touched.lock().unwrap_or_else(PoisonError::into_inner))
@@ -141,8 +139,7 @@ impl MaintenanceGate {
         self.parked.load(Ordering::Acquire)
     }
 
-    /// Tests until the split's barrier sets it (S4 step 11).
-    #[cfg(test)]
+    /// The split's barrier sets it.
     pub(crate) fn set_parked(&self, on: bool) {
         self.parked.store(on, Ordering::Release);
     }
@@ -155,23 +152,18 @@ impl MaintenanceGate {
             .clone()
     }
 
-    /// Tests until the split's barrier sets it (S4 step 11): the parent retired, its operations
-    /// rerouted from now on.
-    #[cfg(test)]
+    /// The split's barrier sets it: the parent retired, its operations rerouted from now on.
     pub(crate) fn set_retired(&self, reroute: Reroute) {
         *self.retired.lock().unwrap_or_else(PoisonError::into_inner) = Some(reroute);
         self.set_splitting(true);
     }
 
-    /// Tests until the split's barrier sets it (S4 step 11): the hold passed its deadline, or
-    /// the split released it.
-    #[cfg(test)]
+    /// The hold passed its deadline, or the split released it.
     pub(crate) fn set_splitting(&self, on: bool) {
         self.splitting.store(on, Ordering::Release);
     }
 
-    /// Tests until the split takes it (S4 step 11): the exclusive hold, within `deadline`.
-    #[cfg(test)]
+    /// The split's exclusive hold, within `deadline`.
     pub(crate) async fn exclusive(
         &self,
         deadline: std::time::Duration,

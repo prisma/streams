@@ -20,8 +20,7 @@ use std::sync::Arc;
 #[cfg(kani)]
 mod proofs;
 pub(crate) mod range;
-// S4's split and S6's merge are its callers; until S4 lands, only its tests (S3a §2.8).
-#[cfg(test)]
+// S4's split and S6's merge are its callers (S3a §2.8).
 pub(crate) mod split_rules;
 
 /// The stream-state family byte, after the stream's hash.

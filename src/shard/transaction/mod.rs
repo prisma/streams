@@ -9,7 +9,6 @@
 //! a rejected group drops its streams' cached seal fences for a row re-read.
 use super::*;
 mod append;
-#[cfg(test)]
 pub(in crate::shard) mod barrier;
 mod billing;
 mod finalize;
@@ -205,7 +204,7 @@ impl<'a> CommitTransaction<'a> {
 
 impl ShardEngine {
     /// One commit group, then, if the group carried a split's barrier, the park
-    /// (`barrier`; tests until the split sends one, S4 step 11). While a split holds the
+    /// (`barrier`). While a split holds the
     /// engine past its pause, every group is answered `Splitting` instead, never committed.
     pub(in crate::shard) async fn commit_and_park(&self, ops: Vec<CommitOp>) {
         let gate = &self.gc_state().gate;
@@ -216,10 +215,7 @@ impl ShardEngine {
             }
             return;
         }
-        #[cfg(test)]
-        return barrier::commit_and_park(self, ops).await;
-        #[cfg(not(test))]
-        self.commit_group(ops).await;
+        barrier::commit_and_park(self, ops).await;
     }
 }
 

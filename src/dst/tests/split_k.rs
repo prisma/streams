@@ -593,3 +593,181 @@ async fn a_split_whose_lease_a_claimant_took_rolls_back_before_t() {
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// `cell`'s topology loop (`topology::ops`), started under a supervisor of its own, its instance
+/// holding at most `shards_max` shards.
+fn start_ops(cell: &Cell, shards_max: u32) -> crate::tasks::TaskSupervisor {
+    let tasks = crate::tasks::TaskSupervisor::new();
+    let parts = crate::topology::ops::Parts {
+        dir: cell.state.shards.clone(),
+        ownership: cell.state.ownership.clone(),
+        clock: cell.state.runtime.clock.clone(),
+        owner: "inst-a".to_string(),
+        shards_max,
+    };
+    crate::topology::ops::start(parts, &tasks);
+    tasks
+}
+
+/// A `POST` of `body` to the split route: its status and JSON body.
+async fn post_split(addr: Addr, body: &str) -> (u16, serde_json::Value) {
+    let route = "/operator/topology/split";
+    let (status, _, body) = hreq(addr, "POST", route, &[JSON], body.as_bytes()).await;
+    (status, serde_json::from_slice(&body).unwrap_or_default())
+}
+
+/// **The split route starts a split that runs on to its publish** (S4-DESIGN §11, edge #251). The
+/// route answers 202 with the operation and the version it splits from at once; the split then
+/// publishes version 2 (`last_op` the operation), its intent ends `Reclaimed`, and each child
+/// serves its stream back byte-exact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_split_route_starts_a_split_that_runs_on_to_its_publish() {
+    let cell = cell().await;
+    let want = (
+        records(cell.addr, &cell.low).await,
+        records(cell.addr, &cell.high).await,
+    );
+    let tasks = start_ops(&cell, 7);
+    let (status, started) = post_split(cell.addr, r#"{"prefix":"00"}"#).await;
+    assert_eq!(status, 202, "{started}");
+    assert_eq!(started["version"], 1);
+    let op_id = started["op_id"].as_str().unwrap().to_string();
+    let store = cell.state.data_store.clone();
+    let t0 = std::time::Instant::now();
+    let ended = loop {
+        let held = crate::topology::intent::read(&*store)
+            .await
+            .unwrap()
+            .unwrap();
+        if held.intent.is_terminal() {
+            break held.intent;
+        }
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(20),
+            "the split ends"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        (ended.op_id.as_str(), ended.state),
+        (op_id.as_str(), crate::topology::intent::State::Reclaimed)
+    );
+    let (stored, _) = crate::topology::store::read(&*store).await.unwrap();
+    assert_eq!(stored.version, 2);
+    assert_eq!(stored.last_op.map(|op| op.op_id), Some(op_id));
+    assert_eq!(
+        (
+            records(cell.addr, &cell.low).await,
+            records(cell.addr, &cell.high).await
+        ),
+        want
+    );
+    tasks.cancel();
+    engine_shutdown(&cell.state).await;
+}
+
+/// **The split route's refusals** (S4-DESIGN §11, edge #251). Before its loop runs: 503
+/// `topology_unavailable`. Then: a body that is not `{"prefix"}`, 400 `bad_request`; no leaf, 404
+/// `unknown_prefix`; an override on the leaf, 409 `topology_busy {reason: "override"}`; a live
+/// intent, 409 `topology_busy {reason: "intent"}`. The merge route answers 501 `not_implemented`.
+/// Nothing was split: the stored topology stays at version 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_split_routes_refusals() {
+    let cell = cell().await;
+    let code = |answer: &(u16, serde_json::Value)| {
+        (
+            answer.0,
+            answer.1["error"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    let leaf = r#"{"prefix":"00"}"#;
+    assert_eq!(
+        code(&post_split(cell.addr, leaf).await),
+        (503, "topology_unavailable".into())
+    );
+    let tasks = start_ops(&cell, 7);
+    assert_eq!(
+        code(&post_split(cell.addr, r#"{"leaf":"00"}"#).await),
+        (400, "bad_request".into())
+    );
+    assert_eq!(
+        code(&post_split(cell.addr, r#"{"prefix":"0110"}"#).await),
+        (404, "unknown_prefix".into())
+    );
+    let overrides = std::collections::HashMap::from([("00".to_string(), "inst-b".to_string())]);
+    cell.state.ownership.set_overrides(overrides);
+    let refused = post_split(cell.addr, leaf).await;
+    assert_eq!(
+        (code(&refused), refused.1["reason"].clone()),
+        ((409, "topology_busy".into()), "override".into())
+    );
+    cell.state
+        .ownership
+        .set_overrides(std::collections::HashMap::new());
+    let live = crate::topology::intent::Intent {
+        kind: "split".to_string(),
+        op_id: "op-other".to_string(),
+        sources: vec![("1".to_string(), 9)],
+        children: vec![90, 91],
+        version_seen: 1,
+        state: crate::topology::intent::State::Preparing,
+        lease_owner: "inst-b".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    crate::topology::intent::create(&*cell.state.data_store, &live)
+        .await
+        .unwrap();
+    let refused = post_split(cell.addr, leaf).await;
+    assert_eq!(
+        (code(&refused), refused.1["reason"].clone()),
+        ((409, "topology_busy".into()), "intent".into())
+    );
+    let (status, _, _) = hreq(
+        cell.addr,
+        "POST",
+        "/operator/topology/merge",
+        &[JSON],
+        b"{}",
+    )
+    .await;
+    assert_eq!(status, 501);
+    let (stored, _) = crate::topology::store::read(&*cell.state.data_store)
+        .await
+        .unwrap();
+    assert_eq!(stored.version, 1);
+    tasks.cancel();
+    engine_shutdown(&cell.state).await;
+}
+
+/// **A split that would fill its instance past `SHARDS_PER_INSTANCE_MAX` is refused** (S4-DESIGN
+/// §10, edge #251). With a ceiling of 1, the leaf's split answers 409 `instance_full` naming the
+/// shards it would leave resident (those open here, plus one) and the ceiling; nothing is split.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_that_would_fill_its_instance_is_refused() {
+    let cell = cell().await;
+    let tasks = start_ops(&cell, 1);
+    let (status, refused) = post_split(cell.addr, r#"{"prefix":"00"}"#).await;
+    let resident = cell.state.shards.open_count() + 1;
+    assert_eq!(
+        (status, refused),
+        (
+            409,
+            serde_json::json!({"error": "instance_full", "resident": resident, "max": 1})
+        )
+    );
+    let (stored, _) = crate::topology::store::read(&*cell.state.data_store)
+        .await
+        .unwrap();
+    assert_eq!(stored.version, 1);
+    assert!(
+        crate::topology::intent::read(&*cell.state.data_store)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    tasks.cancel();
+    engine_shutdown(&cell.state).await;
+}

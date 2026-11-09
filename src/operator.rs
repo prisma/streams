@@ -57,6 +57,79 @@ pub(crate) fn routes() -> axum::Router<Arc<AppState>> {
             "/operator/shards/{prefix}/repair-indexes",
             post(repair_indexes),
         )
+        .route("/operator/topology/split", post(topology_split))
+        .route("/operator/topology/merge", post(topology_merge))
+}
+
+/// The split route's body.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SplitBody {
+    prefix: String,
+}
+
+/// `POST /operator/topology/split` `{"prefix"}` (edge change #251, S4-DESIGN §11): starts the split
+/// of the leaf `prefix` (`""` names the root shard) on this instance's topology loop and answers once
+/// it started, while the split runs on. 202 `{op_id, version}`; 400 `bad_request`; 404
+/// `unknown_prefix`; 409 `topology_busy {reason: "intent" | "override"}`, `instance_full {resident,
+/// max}` or `not_ring_owner {owner}`; 422 `not_splittable`; 503 `topology_unavailable`.
+pub(crate) async fn topology_split(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use crate::topology::split::Refused;
+    use axum::http::StatusCode;
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
+    let Ok(SplitBody { prefix }) = serde_json::from_slice(&body) else {
+        let body = json!({"error": "bad_request", "message": "expected {\"prefix\": \"<bits>\"}"});
+        return (StatusCode::BAD_REQUEST, axum::Json(body)).into_response();
+    };
+    let (status, body) = match state.shards.topology_ops().split(prefix.clone()).await {
+        Ok(started) => (
+            StatusCode::ACCEPTED,
+            json!({"op_id": started.op_id, "version": started.version}),
+        ),
+        Err(Refused::UnknownPrefix) => (
+            StatusCode::NOT_FOUND,
+            json!({"error": "unknown_prefix", "prefix": prefix}),
+        ),
+        Err(Refused::Busy(reason)) => (
+            StatusCode::CONFLICT,
+            json!({"error": "topology_busy", "reason": reason}),
+        ),
+        Err(Refused::NotOwner(owner)) => (
+            StatusCode::CONFLICT,
+            json!({"error": "not_ring_owner", "owner": owner}),
+        ),
+        Err(Refused::InstanceFull { resident, max }) => (
+            StatusCode::CONFLICT,
+            json!({"error": "instance_full", "resident": resident, "max": max}),
+        ),
+        Err(Refused::NotSplittable(why)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"error": "not_splittable", "message": why}),
+        ),
+        Err(Refused::Unavailable(why) | Refused::RolledBack(why)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error": "topology_unavailable", "message": why}),
+        ),
+    };
+    (status, axum::Json(body)).into_response()
+}
+
+/// `POST /operator/topology/merge` (edge change #251): 501 `not_implemented` until S6's merge.
+pub(crate) async fn topology_merge(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
+    let body = json!({"error": "not_implemented", "message": "a merge lands with S6"});
+    (axum::http::StatusCode::NOT_IMPLEMENTED, axum::Json(body)).into_response()
 }
 
 /// `POST /operator/shards/{prefix}/repair-indexes` (edge change #245; `root` names the root shard):

@@ -21,9 +21,7 @@
 //!   `reclaimed` was decremented already.
 //! - `'L' ‖ kind:u8` → the orphan sweep's LIST cursor for that prefix.
 
-// S4's split is its caller (S6's merge sums the same type); until S4 lands, only its tests
-// (S3a §2.8).
-#[cfg(test)]
+// S4's split is its caller (S6's merge sums the same type) (S3a §2.8).
 pub(crate) mod recompute;
 
 use crate::crypto_page::{get_varint, put_varint};

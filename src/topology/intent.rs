@@ -87,7 +87,6 @@ pub(crate) struct Held {
 #[derive(Debug)]
 pub(crate) enum IntentError {
     /// A live intent of another operation holds the cell.
-    #[cfg(test)]
     Busy(Box<Intent>),
     /// The ETag moved under the write: another writer (a claimant) won.
     Lost,
@@ -98,7 +97,6 @@ pub(crate) enum IntentError {
 impl std::fmt::Display for IntentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(test)]
             Self::Busy(live) => write!(
                 f,
                 "a live {} intent {} holds the cell",
@@ -173,7 +171,6 @@ async fn cas(store: &dyn ObjectStore, etag: &str, intent: &Intent) -> Result<Str
     }
 }
 
-#[cfg(test)]
 /// Start an operation: write `intent` (`Preparing`) when the cell has no intent, or over a
 /// terminal one. A live intent refuses it (`Busy`); a racing writer's win is `Lost`.
 pub(crate) async fn create(store: &dyn ObjectStore, intent: &Intent) -> Result<Held, IntentError> {
@@ -252,7 +249,6 @@ impl Watch {
     }
 }
 
-#[cfg(test)]
 /// The actor's hold on its lease: the instant of its last successful renewal, on its own
 /// monotonic clock.
 #[derive(Debug, Clone, Copy)]
@@ -260,7 +256,6 @@ pub(crate) struct Lease {
     renewed: MonotonicNow,
 }
 
-#[cfg(test)]
 impl Lease {
     /// A lease just written (the create, or a renewal that landed) at `now`.
     pub(crate) fn renewed_at(now: MonotonicNow) -> Self {

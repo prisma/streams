@@ -546,6 +546,30 @@
     },
     {
       "category": "macro-dsl",
+      "count": 8,
+      "owner": "crate::topology_split",
+      "path": "src/operator.rs",
+      "reason": "The operator split route's eight JSON answers (edge change #251): 202 {op_id, version}, 400 bad_request, 404 unknown_prefix, 409 topology_busy, instance_full and not_ring_owner, 422 not_splittable, 503 topology_unavailable; serde macro output is compiled and the split DSTs assert the 202, 400, 404, 409 and 503 bodies.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::topology_merge",
+      "path": "src/operator.rs",
+      "reason": "The operator merge route's 501 not_implemented answer until S6 (edge change #251); serde macro output is compiled and the split route DST asserts the status.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/topology/ops.rs",
+      "reason": "The topology loop waits on its supervised cancellation or its next split request, whichever comes first; the compiler checks the select's expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",
       "path": "src/dst/tests/queue_product.rs",
@@ -659,7 +683,7 @@
     {
       "category": "macro-dsl",
       "count": 2,
-      "owner": "crate::split",
+      "owner": "crate::Started::finish",
       "path": "src/topology/split.rs",
       "reason": "The split's steps and the actor's lease renewals are pinned on the stack and raced, so the renewals run for exactly as long as the steps and stop before the intent's terminal write; the compiler checks the pin's expansion.",
       "syntax": "std::pin::pin"

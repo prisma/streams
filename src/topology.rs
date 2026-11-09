@@ -7,13 +7,12 @@ pub(crate) mod gate;
 // their tests until the split's route calls them (S4 step 13).
 pub(crate) mod intent;
 pub(crate) mod model;
+pub(crate) mod ops;
 pub(crate) mod recover;
 pub(crate) mod revalidate;
-// The split's sentinel helper builds for its tests until the split calls it (S4 step 11).
-#[cfg(test)]
+// The split's sentinel helper.
 pub(crate) mod sentinel;
 // The topology's CAS writes: the claimant's roll forward publishes through them.
 pub(crate) mod store;
-// The split builds for its tests until its route calls it (S4 step 13).
-#[cfg(test)]
+// The split: its route and the scaler start it through `ops`.
 pub(crate) mod split;

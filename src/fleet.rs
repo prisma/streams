@@ -366,6 +366,14 @@ impl FleetCfg {
 ///
 /// A runtime without fleet coordination starts only its supersession (#179).
 pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskSupervisor) -> bool {
+    let topology = crate::topology::ops::Parts {
+        dir: state.shards.clone(),
+        ownership: state.ownership.clone(),
+        clock: state.runtime.clock.clone(),
+        owner: state.config.cli.instance_name.clone(),
+        shards_max: state.config.cli.shards_per_instance_max,
+    };
+    crate::topology::ops::start(topology, tasks);
     if !state.fleet.enabled() {
         return supersede::start(&state.shards, &state.data_store, &state.runtime, tasks);
     }

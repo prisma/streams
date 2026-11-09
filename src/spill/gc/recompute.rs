@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! A child's refcount rows at a split (S3a-DESIGN §2.8): `'R'` is recomputed per object from the
 //! entries the child keeps (its filtered `'K'` entries and its run-index entries), never copied, so
 //! each child counts exactly the chunks it can still reclaim. S6's merge sums the same rows.

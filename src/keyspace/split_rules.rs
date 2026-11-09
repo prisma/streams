@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! What a split does with each of the parent's sentinel rows (S3a-DESIGN §2.8, agreed with S6 §7.1):
 //! one rule per tag, the table as code, so S4's split and S6's merge build a child's sentinel by
 //! the same rules and a new tag cannot exist without one (`tests::every_sentinel_tag_has_a_split_rule`).

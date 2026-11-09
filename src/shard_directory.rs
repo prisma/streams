@@ -141,6 +141,8 @@ struct DirInner {
     /// How long a request waits on an in-flight open before a retryable
     /// refusal.
     open_wait: Duration,
+    /// The way to this instance's topology loop (`topology::ops`).
+    topology_ops: crate::topology::ops::Handle,
 }
 
 /// The two open timings the directory's gate applies: the ceiling on
@@ -245,6 +247,7 @@ impl ShardDirectory {
                 gate,
                 ownership,
                 open_wait: timing.open_wait,
+                topology_ops: crate::topology::ops::Handle::default(),
             }
         });
         Self { inner }
@@ -281,6 +284,11 @@ impl ShardDirectory {
     #[cfg(test)]
     pub(crate) fn gate_for_tests(&self) -> crate::sharddir::OpenGate {
         self.inner.gate.clone()
+    }
+
+    /// The way to this instance's topology loop (`topology::ops`): splits start through it.
+    pub(crate) fn topology_ops(&self) -> &crate::topology::ops::Handle {
+        &self.inner.topology_ops
     }
 
     /// The topology this instance routes by: its shard prefixes, homes and version, and the

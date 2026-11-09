@@ -97,7 +97,7 @@ pub(crate) async fn run_entries(
         if body.len() as u64 != pointer.len {
             return Err(format!("{path}: length differs from its 'I' row"));
         }
-        let (_, runs) = runindex::format::decode_object(&body)
+        let (_, runs) = runindex::whole::decode_object(&body)
             .ok_or_else(|| format!("{path}: does not decode"))?;
         for (footer, entries) in runs {
             out.extend(entries.into_iter().map(|e| (footer.hash, e)));
@@ -107,10 +107,18 @@ pub(crate) async fn run_entries(
 }
 
 /// Why a split did not happen (the route's refusal codes, S4-DESIGN §6.2 step 0.1).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Refused {
-    /// `topology_busy`: a live intent holds the cell.
-    Busy,
+    /// `topology_busy`: a live intent holds the cell (`intent`), or an override names the parent
+    /// (`override`).
+    Busy(&'static str),
+    /// `not_ring_owner`: another instance (named) holds the parent.
+    NotOwner(String),
+    /// `instance_full`: the split would leave this instance holding `resident` shards, past its
+    /// `max` (`SHARDS_PER_INSTANCE_MAX`, S4-DESIGN §10).
+    InstanceFull { resident: usize, max: u32 },
+    /// `topology_unavailable`: no topology loop runs here, or the parent could not be opened.
+    Unavailable(String),
     /// `not_splittable`: the prefix is at the routing width, or its log holds `'T'`.
     NotSplittable(String),
     /// `unknown_prefix`: no leaf of the installed topology.
@@ -122,7 +130,15 @@ pub(crate) enum Refused {
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Busy => f.write_str("topology_busy: a live intent holds the cell"),
+            Self::Busy(reason) => write!(f, "topology_busy: {reason}"),
+            Self::NotOwner(owner) => write!(f, "not_ring_owner: {owner} holds the parent"),
+            Self::InstanceFull { resident, max } => {
+                write!(
+                    f,
+                    "instance_full: {resident} resident shards after the split, past {max}"
+                )
+            }
+            Self::Unavailable(why) => write!(f, "topology_unavailable: {why}"),
             Self::NotSplittable(why) => write!(f, "not_splittable: {why}"),
             Self::UnknownPrefix => f.write_str("unknown_prefix"),
             Self::RolledBack(why) => write!(f, "rolled back: {why}"),
@@ -273,9 +289,40 @@ struct Child {
     range: Range,
 }
 
-/// Split `parent`'s shard into its two halves (S4-DESIGN §6.2), as operation `op_id` of
-/// `owner`. Before `'T'` any failure, and a lost lease, rolls back; from `'T'` the split only rolls
-/// forward. The actor renews its intent while the steps run, and ends it once they are done.
+/// A split that started (S4-DESIGN §6.2 steps 0.1 and 0.2): its refusals passed, its homes are
+/// reserved and its intent written. The rest of it runs in `finish`, as its own task.
+pub(crate) struct Started {
+    dir: ShardDirectory,
+    parent: Arc<ShardEngine>,
+    op_id: String,
+    version: u64,
+    children: Vec<Child>,
+    held: intent::Held,
+}
+
+/// Start the split of `parent`'s shard into its two halves as operation `op_id` of `owner`: the
+/// refusals, the home CAS and the intent.
+pub(crate) async fn start(
+    dir: &ShardDirectory,
+    parent: &Arc<ShardEngine>,
+    op_id: &str,
+    owner: &str,
+) -> Result<Started, Refused> {
+    let store = parent.data_store().clone();
+    let home = refuse(dir, parent).await?;
+    let (version, children, held) = begin(&*store, parent, home, op_id, owner).await?;
+    Ok(Started {
+        dir: dir.clone(),
+        parent: parent.clone(),
+        op_id: op_id.to_string(),
+        version,
+        children,
+        held,
+    })
+}
+
+/// Split `parent`'s shard, start to finish (`start`, then `Started::finish`).
+#[cfg(test)]
 pub(crate) async fn split(
     dir: &ShardDirectory,
     parent: &Arc<ShardEngine>,
@@ -283,33 +330,53 @@ pub(crate) async fn split(
     owner: &str,
     clock: &dyn crate::runtime::Clock,
 ) -> Result<Published, Refused> {
-    let store = parent.data_store().clone();
-    let home = refuse(dir, parent).await?;
-    let (version, children, held) = begin(&*store, parent, home, op_id, owner).await?;
-    let actor = Actor::new(&*store, clock, held);
-    let op = Op {
-        dir,
-        store: &*store,
-        parent,
-        children: &children,
-        op_id,
-        version,
-    };
-    let steps = std::pin::pin!(run(&op, &actor));
-    let renewals = std::pin::pin!(actor.renew());
-    let ran = match futures_util::future::select(steps, renewals).await {
-        futures_util::future::Either::Left((ran, _)) => ran,
-        futures_util::future::Either::Right((never, _)) => match never {},
-    };
-    match &ran {
-        Ok(_) => {
-            actor.end(intent::State::Reclaimed, "published").await;
-            recover::drop_checkpoint(parent, op_id).await;
-        }
-        Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
-        Err(_) => {}
+    start(dir, parent, op_id, owner).await?.finish(clock).await
+}
+
+impl Started {
+    /// The operation's id.
+    pub(crate) fn op_id(&self) -> &str {
+        &self.op_id
     }
-    ran
+
+    /// The topology version the split started from.
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The rest of the split (S4-DESIGN §6.2 from step 0.3). Before `'T'` any failure, and a lost
+    /// lease, rolls back; from `'T'` the split only rolls forward. The actor renews its intent while
+    /// the steps run, and ends it once they are done.
+    pub(crate) async fn finish(
+        self,
+        clock: &dyn crate::runtime::Clock,
+    ) -> Result<Published, Refused> {
+        let store = self.parent.data_store().clone();
+        let actor = Actor::new(&*store, clock, self.held);
+        let op = Op {
+            dir: &self.dir,
+            store: &*store,
+            parent: &self.parent,
+            children: &self.children,
+            op_id: &self.op_id,
+            version: self.version,
+        };
+        let steps = std::pin::pin!(run(&op, &actor));
+        let renewals = std::pin::pin!(actor.renew());
+        let ran = match futures_util::future::select(steps, renewals).await {
+            futures_util::future::Either::Left((ran, _)) => ran,
+            futures_util::future::Either::Right((never, _)) => match never {},
+        };
+        match &ran {
+            Ok(_) => {
+                actor.end(intent::State::Reclaimed, "published").await;
+                recover::drop_checkpoint(&self.parent, &self.op_id).await;
+            }
+            Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
+            Err(_) => {}
+        }
+        ran
+    }
 }
 
 /// The split's steps from Preparing to its publish (S4-DESIGN §6.2), the actor's ownership checked
@@ -327,6 +394,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
         Some(_) => parent.barrier().await.ok(),
         None => None,
     };
+    #[cfg(test)]
     if let Some(point) = gate.take_pause() {
         // Tests only: a test that went away is no reason to stop the split.
         if point.reached.send(()).is_ok() {
@@ -410,7 +478,7 @@ async fn refuse(dir: &ShardDirectory, parent: &ShardEngine) -> Result<u32, Refus
         Err(e) => return Err(Refused::RolledBack(format!("'T': {e}"))),
     }
     match intent::read(&**parent.data_store()).await {
-        Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy),
+        Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy("intent")),
         Ok(_) => Ok(home),
         Err(e) => Err(Refused::RolledBack(e.to_string())),
     }
@@ -459,7 +527,7 @@ async fn begin(
     let held = intent::create(store, &preparing)
         .await
         .map_err(|e| match e {
-            intent::IntentError::Busy(_) => Refused::Busy,
+            intent::IntentError::Busy(_) => Refused::Busy("intent"),
             other => Refused::RolledBack(other.to_string()),
         })?;
     Ok((topology.version, children, held))

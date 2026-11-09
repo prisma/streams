@@ -5345,6 +5345,41 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** RATIFIED by Fable 5.1 on 2026-11-09 under the owner's delegation, EDGE-260-RATIFICATION.md (four text amendments, applied here). The field acceptance (package 2's D ramp) has not run; it stays under the owner's performance hold.
 - **Check against commit:** written with the change. `dst::dst_tests::fleet_controller::an_unreadable_router_report_defers_only_the_desired_publication` changed its driver from in-flight to utilization (a peer at three cores) because in-flight now counts only after 30 s, past its 12 s bound; what it pins, the deferral, is unchanged. The replay's shrinks land at 732 s and 1,034 s, not the review's hand-derived 782 s and 1,082 s: the window is blind from 432 s after the grow at 430 s, so the below-timer starts then.
 
+### #251 (this record's commit) — An operator starts a shard split with `POST /operator/topology/split`, answered 202 once it started while it runs on; a merge is 501 until S6
+
+- **Program item:** S4 (shard split), S4-DESIGN rev 2.1 §11, edge E3. Ratified with Fable's field names and refusals (the lead reserved #251 on 2026-11-08). E3 lands in parts; this record states each part as it ships.
+- **Surface:** operator (`/operator/*`, behind `operator_gate`: the deployment bearer in every mode).
+- **Endpoint:** `POST /operator/topology/split`, `POST /operator/topology/merge`.
+- **Condition:** an operator asks for a split of a leaf shard, or for a merge.
+- **Before:** neither route existed (404). No split could run in production.
+- **After (S4 step 13b, this commit):**
+  - **`POST /operator/topology/split` `{"prefix": "<bits>"}`** (`""` is the root shard; an unknown field is refused). It hands the request to this instance's topology loop (`topology::ops`, a supervised loop that `fleet::start_configured` starts on every cell). The loop:
+    1. refuses a prefix that is not a leaf of this instance's topology, or one an ownership override names;
+    2. opens the parent here, or refuses when another instance holds it;
+    3. runs the split's own refusals, the home CAS and the intent create;
+    4. answers. The rest of the split runs as a supervised task of its own, so it outlives the request.
+  - **Answers:**
+    - `202 {"op_id", "version"}`: the split started from `version` and runs on (its op id is `split-<prefix>-v<version>-<ms>`). The operator follows it by the intent (`GET /operator/topology.json`, a later part of E3) or by the stored topology.
+    - `400 bad_request`: the body is not `{"prefix"}`.
+    - `404 unknown_prefix` (`{prefix}`): no leaf of this instance's topology.
+    - `409 topology_busy {reason: "intent"}`: a live intent holds the cell; `{reason: "override"}`: an ownership override names the prefix (any override, not only a young one, S4 §4.4).
+    - `409 instance_full {resident, max}`: the split would leave this instance holding more than `SHARDS_PER_INSTANCE_MAX` shards (its open shards, the parent among them, plus one: the parent retires and two children open; S4 §10, the knob package 1 owns under E6).
+    - `409 not_ring_owner {owner}`: another instance holds the parent; ask it. **Not in E3's ratified list** (an addition).
+    - `422 not_splittable` (`{message}`): the prefix is at the routing width (24 bits), or its log holds `'T'`.
+    - `503 topology_unavailable` (`{message}`): no topology loop runs here, or the parent could not be opened, or the intent or topology write failed on the store; retry. **Not in E3's ratified list** (an addition).
+  - **`POST /operator/topology/merge`:** `501 not_implemented` until S6.
+  - **Not yet shipped under E3:** `GET /operator/topology.json`; `instance_full`'s RSS-headroom half (S4 §10: 2 × open transient + 2 × busy shard, which wait for stage 1's measured terms); §10.1's wait for the fleet (`fleet/desired.json` at least 60 s old, no override younger than the move cooldown), proposed as `409 topology_busy {reason: "fleet"}`.
+- **Retry semantics:** a 202 is not retried (a second POST meets `topology_busy {reason: "intent"}` while the first runs). 409 `topology_busy` and 503 `topology_unavailable` are retryable later; 404, 422 and 400 are not. A `not_ring_owner` is retried at the named owner.
+- **Who is affected:** operators only. A split it starts affects that shard's clients as #249 states (the pause, the hold, the re-route) and #250 (the hops).
+- **Pinning tests:**
+  - `dst::dst_tests::split_k::the_split_route_starts_a_split_that_runs_on_to_its_publish`: 202 with `version` 1 at once; the intent then ends `Reclaimed` under that `op_id`, the stored topology is at version 2 with `last_op` naming it, and both streams read back byte-exact from the children. Red without the routes: `left: 404, right: 202`.
+  - `dst::dst_tests::split_k::the_split_routes_refusals`: 503 `topology_unavailable` before the loop runs, then 400 `bad_request`, 404 `unknown_prefix`, 409 `topology_busy` `override`, 409 `topology_busy` `intent`, and 501 for the merge; the stored topology stays at version 1. Red without the routes: `left: (404, ""), right: (503, "topology_unavailable")`.
+  - `dst::dst_tests::split_k::a_split_that_would_fill_its_instance_is_refused`: with a ceiling of 1, `(409, {"error": "instance_full", "resident": 3, "max": 1})`, no intent and the topology at version 1. Red without the check: `left: (202, {"op_id": "split-00-v1-…", "version": 1})`.
+  - `topology::ops::tests::a_prefixs_first_route_is_its_bits_then_zeros`.
+- **Risk reason:** medium. It is the first production path that splits a shard, behind the operator bearer. Its parts (the split, its pause, the claimant, the no-shrink rule) are pinned by #249's and the split's tests.
+- **Status:** awaiting ratification (E3, with #249 and #250 as one batch); the two additions above (`not_ring_owner`, `topology_unavailable`) and the proposed `fleet` reason are for Fable.
+- **Check against commit:** written with the change.
+
 ### #250 (this record's commit) — A request through a split reaches its owner in at most two hops, each to a newer topology, and every 409 `not_ring_owner` names the answering instance's topology version
 
 - **Program item:** S4 (shard split), S4-DESIGN rev 2.1 §3.4, edge E2. Ratified with receiver-side revalidation (S4-REVIEW rev 2; the lead reserved #250 for it on 2026-11-08).
@@ -5390,9 +5425,9 @@ One record has verified=false: its commit did not match the recorded text.
   - **A split that dies in the pause** (its barrier dropped unreleased) closes the engine; the held operations get the engine-close answer (`shard_moving`, or a reopened engine's service).
   - **The open-path fence (S4 step 9):** an engine open that a live split intent names as its source (or whose log holds `'T'` before the topology that retires it) is held inside the open and its engine is not published. Every request on that shard, reads included, waits the open's patience (`shard.open_wait_ms`, 10 s) and is answered the open gate's 503 `shard_opening`, `retry-after: 3`, rather than E1's `shard_splitting`, `retry-after: 1` (the open gate, under its exception contracts, owns that answer; S4-DESIGN §14.1 departure 5). It serves once the intent ends; past 60 s held the open fails and the gate holds the shard off.
   - **The opener is the claimant (S4 step 11, S4-DESIGN §4.3 and §6.4):** a live intent whose ETag stays unchanged across 11 s (the lease, 10 s, plus 1 s of skew) of the held open's own observations, on its monotonic clock, is lapsed. The opener claims it by CAS (`lease_epoch + 1`, owner `opener:<prefix>@<writer epoch>`); its open fenced the actor's writer first, so no `'T'` lands after it reads the log. Without `'T'` it rolls the split back (each child path's clone stripped from the parent and its files deleted, the pause's `topo-<op_id>` checkpoint and the children's lists deleted, the intent `RolledBack` last) and the shard serves: the requests above meet the open gate's 503 until then, so a shard whose actor died is unavailable for about 11 s plus the patience of the request that meets the claim, where before it stayed held until its open failed at 60 s. With `'T'` it publishes the topology `'T'` names (a CAS idempotent on `last_op`), deletes the checkpoint and ends the intent `Reclaimed`; the parent never serves, and its requests re-route once this instance installs the new topology (the fleet tick's revalidation, or a forward hop). A log with `'T'` and no live intent rolls forward without a claim. A claim another claimant won, or a recovery that failed (a store error, no stored topology), holds and reads again.
-- **Still to ship under E1:** the split's route (S4 step 13). The owned-child re-submission is pinned by `dst::dst_tests::split_k::an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset`.
+- **Still to ship under E1:** nothing; the split ships behind its operator route (#251). The owned-child re-submission is pinned by `dst::dst_tests::split_k::an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset`.
 - **Retry semantics:** retryable after 1 s; nothing was written, so a plain retry cannot duplicate.
-- **Who is affected:** none yet: nothing sends a barrier or writes an intent until the split's route lands (S4 step 13). Then, clients of a splitting shard whose pause outlasts the hold, and of a shard whose split's actor stopped (held until the claim).
+- **Who is affected:** clients of a shard an operator splits (#251) whose pause outlasts the hold, and of a shard whose split's actor stopped (held until the claim). No split runs unless an operator starts one.
 - **Pinning tests:**
   - `dst::dst_tests::split_barrier::past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_release`: the held append is answered after at least 2 s, `(503, Some("1"), Some("shard_splitting"))`, a later one at once, and after the release an append is served; the stream holds neither refused record. Red with the hold removed: `answered after the hold: Elapsed(())`.
   - `application::append::contract::tests::an_append_held_past_a_splits_pause_is_unavailable_and_known_unwritten`.

@@ -211,8 +211,7 @@ pub(crate) fn born_home_path(prefix: &str, home: u32) -> String {
     format!("shards/{prefix}~{home}")
 }
 
-/// Tests until the split's route calls it (S4 step 13): the home reservation of a split.
-#[cfg(test)]
+/// The home reservation of a split.
 impl Topology {
     /// Two fresh homes for a split's children: `next_home` and the one after, with `next_home`
     /// past them. The version is unchanged (a reservation routes nothing).

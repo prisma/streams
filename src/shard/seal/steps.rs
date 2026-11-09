@@ -38,7 +38,6 @@ pub(crate) enum SealCommit {
     Purge(super::gc::purge::PurgeStep),
     /// A split's barrier (`transaction::barrier`): taken out of its group, never staged. Tests
     /// until the split sends it (S4 step 11).
-    #[cfg(test)]
     Barrier(crate::shard::transaction::barrier::BarrierReq),
 }
 
