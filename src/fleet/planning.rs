@@ -186,6 +186,8 @@ pub(super) struct Loads {
     pub(super) tracked_projects: u64,
     /// The topology's shards: a fleet larger than them adds nothing.
     pub(super) shards: u64,
+    /// A member reports a live topology intent: no shrink (S4-DESIGN §10.1).
+    pub(super) topology_busy: bool,
 }
 
 impl Loads {
@@ -203,6 +205,7 @@ impl Loads {
         self.max_rss_mb = self.max_rss_mb.max(beat.rss_mb);
         self.cached_streams = self.cached_streams.saturating_add(beat.cached_streams);
         self.tracked_projects = self.tracked_projects.saturating_add(beat.tracked_projects);
+        self.topology_busy |= beat.topology_intent.is_some();
         if beat.rps >= 5.0 {
             let store = beat.store_read_p50_ms as f64;
             self.max_loaded_p50 = self.max_loaded_p50.max(beat.ack_p50_ms).max(store);
@@ -275,7 +278,9 @@ impl Demand {
     /// demand. The shrink target uses the conservative divisor, and keeps
     /// the sustained dimensions, so a sustained refusal, RSS or latency
     /// breach blocks a shrink; edge congestion blocks it outright, since rps
-    /// falls while clients queue at the edge.
+    /// falls while clients queue at the edge, and so does a member's live
+    /// topology intent (S4-DESIGN §10.1: a split or merge is never raced by a
+    /// scale-in; scale-out is never blocked).
     pub(super) fn plan(&mut self, loads: &Loads, at: &Thresholds, now: std::time::Instant) -> Need {
         let live_plus_one = loads.live + 1;
         let need_util = ceil_count(loads.cores_used / at.target_util);
@@ -318,7 +323,7 @@ impl Demand {
             loads.shards
         };
         let need = wanted.min(shards).clamp(1, at.max);
-        let shrink = if edge_hot {
+        let shrink = if edge_hot || loads.topology_busy {
             at.max // sentinel: never below the current count, so no shrink
         } else {
             ceil_count(loads.cores_used / at.scale_in_util)
@@ -783,6 +788,28 @@ mod demand_tests {
         assert_eq!(plan(401.0, 5.0), (5, 64, 0));
         assert_eq!(plan(400.0, 5.0), (2, 3, 0));
         assert_eq!(plan(401.0, 4.9), (2, 3, 0));
+    }
+
+    /// **A live topology intent blocks a shrink, never a grow** (S4-DESIGN
+    /// §10.1). Four quiet members want two and would shrink to three; with
+    /// a fifth, idle member's beat naming a live intent, the shrink target is
+    /// the sentinel that is never below the count (64), and the grow target
+    /// stays two. The same beat naming none leaves the shrink at three.
+    #[test]
+    fn a_live_topology_intent_blocks_a_shrink_never_a_grow() {
+        let beat = |intent: &str| -> crate::fleet::Heartbeat {
+            serde_json::from_str(&format!(
+                r#"{{"instance":"streams-5","ts_ms":0,"rps":0.0,"owned_shards":[],"draining":false{intent}}}"#
+            ))
+            .unwrap()
+        };
+        let plan = |intent: &str| {
+            let mut loads = quiet(64);
+            loads.fold(&beat(intent));
+            n(&Demand::default().plan(&loads, &thresholds(), Instant::now()))
+        };
+        assert_eq!(plan(r#","topology_intent":"op-s""#), (2, 64, 0));
+        assert_eq!(plan(""), (2, 3, 0));
     }
 
     /// A pass that finds no breach restarts the sustain.

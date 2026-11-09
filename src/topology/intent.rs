@@ -210,6 +210,48 @@ pub(crate) async fn replace(
     Ok(Held { intent: next, etag })
 }
 
+/// The fleet's reader of the cell's intent (S4-DESIGN §10.1): a GET only when the object's ETag
+/// moved since the last read, and the live intent's `op_id` it last found.
+#[derive(Debug, Default)]
+pub(crate) struct Watch {
+    etag: Option<String>,
+    live: Option<String>,
+}
+
+/// What a watch reports when the intent cannot be read: live, so the fleet does not shrink.
+pub(crate) const UNREADABLE: &str = "unreadable";
+
+impl Watch {
+    /// The live intent's `op_id`, if the cell has one: none for an absent or terminal intent. A
+    /// read that fails, or an intent that does not decode, reports [`UNREADABLE`] (fail closed) and
+    /// is read again next time.
+    pub(crate) async fn live(&mut self, store: &dyn ObjectStore) -> Option<String> {
+        let opts = object_store::GetOptions {
+            if_none_match: self.etag.clone(),
+            ..Default::default()
+        };
+        let read = match store.get_opts(&path(), opts).await {
+            Err(object_store::Error::NotModified { .. }) => return self.live.clone(),
+            Err(object_store::Error::NotFound { .. }) => Ok((None, None)),
+            Err(e) => Err(e.to_string()),
+            Ok(got) => {
+                let etag = got.meta.e_tag.clone();
+                match got.bytes().await {
+                    Ok(raw) => serde_json::from_slice::<Intent>(&raw)
+                        .map(|intent| (etag, (!intent.is_terminal()).then_some(intent.op_id)))
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        };
+        (self.etag, self.live) = read.unwrap_or_else(|error| {
+            tracing::warn!(%error, "the topology intent could not be read; the fleet holds its size");
+            (None, Some(UNREADABLE.to_string()))
+        });
+        self.live.clone()
+    }
+}
+
 #[cfg(test)]
 /// The actor's hold on its lease: the instant of its last successful renewal, on its own
 /// monotonic clock.

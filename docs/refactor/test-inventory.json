@@ -1503,6 +1503,17 @@
     "scenarios": []
   },
   {
+    "name": "a_members_heartbeat_names_the_live_topology_intent_until_it_ends",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "22c5d3eb782a7b4a4a36a1b23ce4b30a54c43b5da5e434ed491ca2c515eb3c39",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_keeps_every_stream_its_shard_serves",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

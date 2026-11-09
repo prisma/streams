@@ -165,7 +165,7 @@ OWNERS = (
     owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
     owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
-    owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence::'),
+    owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence:: dst_tests::fleet_topology::'),
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence::'),
     owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
@@ -374,7 +374,7 @@ OWNERS = (
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
-          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain::'),
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology::'),
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),

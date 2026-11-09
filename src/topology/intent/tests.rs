@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 
-use super::{Intent, IntentError, LEASE, Lapse, Lease, Outcome, SKEW, State};
+use super::{Intent, IntentError, LEASE, Lapse, Lease, Outcome, SKEW, State, UNREADABLE, Watch};
 use crate::runtime::{Clock, ManualClock};
 
 fn store() -> Arc<dyn ObjectStore> {
@@ -122,4 +122,31 @@ fn the_lease_and_the_lapse_are_measured_on_the_observers_monotonic_clock() {
     );
     clock.advance_monotonic(span - Duration::from_millis(1));
     assert_eq!(lapse.observe("e2", clock.monotonic()), None);
+}
+
+/// **The fleet's watch reports the live intent's operation, and none once it ends.** No intent:
+/// none. A live split: its `op_id`, again while the object is unchanged. Ended `Reclaimed`: none.
+/// An object that does not decode: `unreadable` (the fleet then holds its size), and a live intent
+/// written over it is read again.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_watch_reports_the_live_intents_operation_and_none_once_it_ends() {
+    let store = store();
+    let mut watch = Watch::default();
+    assert_eq!(watch.live(&*store).await, None, "no intent");
+    let held = super::create(&*store, &split("op-w")).await.unwrap();
+    assert_eq!(watch.live(&*store).await.as_deref(), Some("op-w"));
+    assert_eq!(
+        watch.live(&*store).await.as_deref(),
+        Some("op-w"),
+        "unchanged"
+    );
+    let done = ended(held.intent.clone(), State::Reclaimed, "published");
+    super::replace(&*store, &held, done).await.unwrap();
+    assert_eq!(watch.live(&*store).await, None, "ended");
+    let path = object_store::path::Path::from(super::INTENT_PATH);
+    store.put(&path, b"{".to_vec().into()).await.unwrap();
+    assert_eq!(watch.live(&*store).await.as_deref(), Some(UNREADABLE));
+    let raw = serde_json::to_vec(&split("op-x")).unwrap();
+    store.put(&path, raw.into()).await.unwrap();
+    assert_eq!(watch.live(&*store).await.as_deref(), Some("op-x"));
 }

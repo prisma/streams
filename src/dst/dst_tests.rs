@@ -33,6 +33,8 @@ mod billing_late_close;
 #[path = "tests/latch_calibration.rs"]
 mod latch_calibration;
 
+#[path = "tests/fleet_topology.rs"]
+mod fleet_topology;
 #[path = "tests/l0_watermark.rs"]
 mod l0_watermark;
 #[path = "tests/open_fence.rs"]

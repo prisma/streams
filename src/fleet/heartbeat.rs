@@ -176,6 +176,12 @@ pub(crate) struct Heartbeat {
     /// version.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub viewed: standing::Viewed,
+    /// The `op_id` of the cell's live topology intent as this instance last
+    /// read it (`topology::intent::Watch`; `unreadable` when the read
+    /// failed): while any member reports one the fleet does not shrink
+    /// (S4-DESIGN §10.1). Absent with none, and from an earlier version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology_intent: Option<String>,
 }
 
 /// Start this runtime's heartbeat beside its fleet tick. It joins the fleet
@@ -212,19 +218,27 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
         _ = cancel.cancelled() => return TaskResult::Done,
         () = state.fleet.create_drain_marker() => {}
     }
+    let mut intent = crate::topology::intent::Watch::default();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = beats.tick() => {}
             () = state.fleet.standing().beat_requested() => {}
         }
+        let topology_intent = tokio::select! {
+            _ = cancel.cancelled() => break,
+            live = intent.live(&*state.data_store) => live,
+        };
         sampler.observe(
             Instant::now(),
             state.admission.fleet_ops(),
             cpu_time_secs(),
             instance_refusals(&state),
         );
-        let heartbeat = sampler.heartbeat(&state, &instance);
+        let heartbeat = Heartbeat {
+            topology_intent,
+            ..sampler.heartbeat(&state, &instance)
+        };
         let published = tokio::select! {
             _ = cancel.cancelled() => break,
             published = state.fleet.publish_heartbeat(&instance, &heartbeat) => published,
@@ -363,6 +377,7 @@ impl Sampler {
             withdrawn: state.withdrawal(),
             seq,
             viewed: left_out(state),
+            topology_intent: None,
         }
     }
 }
