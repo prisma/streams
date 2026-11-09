@@ -5367,10 +5367,18 @@ One record has verified=false: its commit did not match the recorded text.
     - `409 not_ring_owner {owner}`: another instance holds the parent; ask it. **Not in E3's ratified list** (an addition).
     - `422 not_splittable` (`{message}`): the prefix is at the routing width (24 bits), or its log holds `'T'`.
     - `503 topology_unavailable` (`{message}`): no topology loop runs here, or the parent could not be opened, or the intent or topology write failed on the store; retry. **Not in E3's ratified list** (an addition).
-  - **`POST /operator/topology/merge`:** `501 not_implemented` until S6.
+  - **`POST /operator/topology/merge` `{"prefix": "<bits>"}`** (S6, package 6's commit; until it lands this route answers `501 not_implemented`). The prefix names the parent whose halves `<prefix>0` and `<prefix>1` merge; `""` is refused, since the root has no parent. It runs on the same topology loop and lease actor as the split (`topology::ops`, `topology::actor`). Answers:
+    - `202 {"op_id", "version"}`: the merge started and runs on;
+    - `400 bad_request`: the body is not `{"prefix"}`;
+    - `404 unknown_prefix`: `<prefix>0` and `<prefix>1` are not both leaves of the installed topology;
+    - `409 topology_busy {reason: "intent" | "override"}`: a live intent holds the cell, or an override names either half;
+    - `409 not_ring_owner {owner}`: a half's ring owner is another instance (both halves must be this instance's);
+    - `422 not_mergeable {message}`: a half holds `'T'`, or the two are not siblings;
+    - `503 topology_unavailable {message}`: no topology loop runs here, or the merge rolled back before `'T'`.
+    There is no `instance_full`: a merge lowers the count.
   - **`GET /operator/topology.json`** (`cache-control: no-store`): `{version, shards: [{prefix, home, owner, born_version, state}], intent: null | {kind, op_id, sources, children, state, started_ms, lease_until_ms, outcome}}`. `version` is this instance's topology; each leaf's `owner` is the ring's (null without a ring) and its `state` is `splitting` while a live intent names it as a source, else `serving`. The intent's `state` is derived from S4 §6.1's durable witnesses, the newest first: its own terminal state (`Reclaimed`, `RolledBack`); `Published` (the stored topology past `version_seen`, its `last_op` the operation); `SourcesRetired` (the parent's `'T'`, read only where the parent is open); `ChildrenReady` (both children's manifests initialized); `Quiesced` (the `topo-<op_id>` checkpoint); else `Preparing`. An intent that does not decode shows `{error: "intent_unreadable", message}`.
   - **Not yet shipped under E3:** `instance_full`'s RSS-headroom half (S4 §10: 2 × open transient + 2 × busy shard, which wait for stage 1's measured terms).
-- **Retry semantics:** a 202 is not retried (a second POST meets `topology_busy {reason: "intent"}` while the first runs). 409 `topology_busy` and 503 `topology_unavailable` are retryable later; 404, 422 and 400 are not. A `not_ring_owner` is retried at the named owner.
+- **Retry semantics:** a 202 is not retried (a second POST meets `topology_busy {reason: "intent"}` while the first runs). 409 `topology_busy`, 409 `instance_full` and 503 `topology_unavailable` are retryable later; 400, 404 and 422 (`not_splittable`, `not_mergeable`) are definitive until the topology changes. A split's `not_ring_owner` is retried at the named owner; a merge's is definitive until both halves are this instance's.
 - **Who is affected:** operators only. A split it starts affects that shard's clients as #249 states (the pause, the hold, the re-route) and #250 (the hops).
 - **Pinning tests:**
   - `dst::dst_tests::split_k::the_split_route_starts_a_split_that_runs_on_to_its_publish`: 202 with `version` 1 at once; the intent then ends `Reclaimed` under that `op_id`, the stored topology is at version 2 with `last_op` naming it, and both streams read back byte-exact from the children. Red without the routes: `left: 404, right: 202`.
