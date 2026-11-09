@@ -469,8 +469,9 @@ async fn clone_child(
     db.close().await.map_err(|e| format!("close {path}: {e}"))
 }
 
-/// Published (S4-DESIGN §6.2 step 4): the topology CAS and its install, the children opened here,
-/// the barrier retired to them, and once the parent's held operations drained, the parent retired.
+/// Published (S4-DESIGN §6.2 step 4): the topology CAS and its install, then at once the barrier
+/// retired to the children (each held append waits for its child's open), the children opened here,
+/// and once the parent's held operations drained, the parent retired.
 async fn publish(
     op: &Op<'_>,
     now: crate::runtime::MonotonicNow,
@@ -491,6 +492,21 @@ async fn publish(
     let mut shards = next.shards.clone();
     shards.version = next.version;
     dir.install(shards, Some(etag), now);
+    let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
+    let resolver = dir.clone();
+    let reroute: super::gate::Reroute = Arc::new(move |route: [u8; 16]| {
+        let (dir, ours) = (
+            resolver.clone(),
+            ranges.iter().any(|r| r.holds_route(&route)),
+        );
+        Box::pin(async move {
+            if !ours {
+                return None;
+            }
+            dir.resolve(&route, Adoption::Internal).await.ok()
+        })
+    });
+    retire(reroute);
     let opens = children.iter().map(|child| async move {
         let bits = u128::from_str_radix(&child.prefix, 2).unwrap_or(0);
         let route = (bits << (128 - child.prefix.len())).to_be_bytes();
@@ -504,18 +520,6 @@ async fn publish(
     for open in futures_util::future::join_all(opens).await {
         opened.push(open?);
     }
-    let engines: Vec<(Range, Arc<ShardEngine>)> = children
-        .iter()
-        .zip(&opened)
-        .map(|(c, (_, _, e))| (c.range, e.clone()))
-        .collect();
-    let reroute: super::gate::Reroute = Arc::new(move |route: &[u8; 16]| {
-        engines
-            .iter()
-            .find(|(r, _)| r.holds_route(route))
-            .map(|(_, e)| e.clone())
-    });
-    retire(reroute);
     let drained = tokio::time::Instant::now() + DRAIN;
     while parent.queued_ops() > 0 && tokio::time::Instant::now() < drained {
         tokio::time::sleep(Duration::from_millis(5)).await;

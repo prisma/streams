@@ -227,9 +227,13 @@ impl ShardEngine {
 /// engine its route names, unchanged (it was never offered to a group, so its child acks it with
 /// the child's offset); every other one is answered `Splitting`.
 async fn held(op: CommitOp, reroute: Option<&crate::topology::gate::Reroute>) {
-    let child = match (&op, reroute) {
-        (CommitOp::Append(req), Some(reroute)) => reroute(&req.route),
+    let route = match (&op, reroute) {
+        (CommitOp::Append(req), Some(reroute)) => Some(reroute(req.route)),
         _ => None,
+    };
+    let child = match route {
+        Some(child) => child.await,
+        None => None,
     };
     let Some(child) = child else {
         return CommitTransaction::reject_op(op, AppendErr::Splitting);

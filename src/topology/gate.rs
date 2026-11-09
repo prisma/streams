@@ -39,8 +39,13 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 use crate::shard::ShardEngine;
 
 /// Where a retired parent's operations go (S4-DESIGN §6.2 step 4): for a route hash, the child
-/// engine this instance owns, if any.
-pub(crate) type Reroute = Arc<dyn Fn(&[u8; 16]) -> Option<Arc<ShardEngine>> + Send + Sync>;
+/// engine this instance owns, once open, if any. Asynchronous, so a split releases its barrier as
+/// soon as its topology is installed and a held operation waits for its child's open instead.
+pub(crate) type Reroute = Arc<
+    dyn Fn([u8; 16]) -> futures_util::future::BoxFuture<'static, Option<Arc<ShardEngine>>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Default)]
 pub(crate) struct MaintenanceGate {

@@ -199,9 +199,9 @@ async fn a_retired_parents_held_append_is_answered_by_its_new_owner() {
     let asked = Arc::new(std::sync::Mutex::new(0_usize));
     let reroute: crate::topology::gate::Reroute = {
         let asked = asked.clone();
-        Arc::new(move |_route: &[u8; 16]| {
+        Arc::new(move |_route: [u8; 16]| {
             *asked.lock().unwrap() += 1;
-            None
+            Box::pin(std::future::ready(None))
         })
     };
     let base = engine.appends_enqueued();
