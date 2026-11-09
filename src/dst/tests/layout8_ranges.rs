@@ -86,6 +86,8 @@ async fn populate(
     let engine = engines[0].clone();
     engine.seal_requested().await.expect("seal");
     engine.fold_once().await.expect("fold");
+    // No deadline seal may take the pages appended next: the index check needs some unsealed.
+    engine.pause_seal(true);
     for name in names.iter().step_by(5) {
         let (st, _, _) = hreq(addr, "POST", &format!("/v1/stream/{name}"), &[JSON], ROW).await;
         assert_eq!(st, 204, "append to {name} after the fold");
@@ -197,6 +199,8 @@ async fn every_key_family_lies_in_its_range_and_the_indexes_are_exact() {
 async fn the_operator_route_repairs_a_shards_indexes_at_its_next_open() {
     let options = HttpRigOptions {
         prefixes: vec![String::new()],
+        // No seal on any engine the rig opens: the stream's page stays unsealed, so its row stays.
+        seal: Some(|s| s.auto = false),
         ..Default::default()
     };
     let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
