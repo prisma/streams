@@ -79,6 +79,7 @@
     "http_serve_drain": 58,
     "http_serve_http2_bounds": 31,
     "http_telemetry_append": 3,
+    "keyspace_range": 19,
     "lane_rows": 6,
     "lifecycle_fence_relay": 5,
     "maintenance_row": 14,

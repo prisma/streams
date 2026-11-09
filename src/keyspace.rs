@@ -17,6 +17,8 @@
 
 use std::sync::Arc;
 
+pub(crate) mod range;
+
 /// The stream-state family byte, after the stream's hash.
 pub(crate) const STREAM: u8 = b'S';
 /// The queue family's tag.
@@ -32,6 +34,26 @@ pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
 pub(crate) const SENTINEL: [u8; 16] = [0xFF; 16];
 /// The tail row's tag after `hash ‖ 'S'`.
 const TAIL_TAG: u8 = b't';
+
+/// The sentinel's tags (S3a-DESIGN rev 3 §2.4): every shard-wide row is `SENTINEL ‖ tag ‖ suffix`, and
+/// each tag is read by its own prefix. A tag is defined here as its first writer lands; the full set,
+/// reserved tags included, is `tests::SENTINEL_TAGS`.
+pub(crate) mod tag {
+    /// The seal directory: one row per segment object of the current fold period.
+    pub(crate) const DIRECTORY: u8 = b'K';
+    /// A segment object's refcount.
+    pub(crate) const REFCOUNT: u8 = b'R';
+    /// A run-index object's pointer.
+    pub(crate) const POINTER: u8 = b'I';
+    /// A consolidation's superseded chunks.
+    pub(crate) const ORPHAN: u8 = b'O';
+    /// An own object to delete after its grace.
+    pub(crate) const GARBAGE: u8 = b'G';
+    /// A dead stream's purge head.
+    pub(crate) const HEAD: u8 = b'H';
+    /// A background scan's cursor (the orphan sweep's, per object kind).
+    pub(crate) const CURSOR: u8 = b'L';
+}
 
 /// A stream-state row key: the stream's hash and the `'S'` family byte,
 /// with room for `extra` more bytes.
@@ -79,6 +101,71 @@ mod projection_tests;
 #[cfg(test)]
 mod tests {
     use super::{QUEUE, QUEUE_PREFIX_LEN, SENTINEL, STREAM, queue_row, stream_row, tail_hash};
+
+    /// Every sentinel tag of layout 8 (S3a-DESIGN rev 3 §2.4), the reserved ones included: the seal's
+    /// and the gc's (`tag`), and those whose writers land later in 4a, in S3b, S4 and S6. The usage
+    /// month finals' `'V'` is not one: it leaves the sentinel for its stream's own range in 4a's
+    /// commit 3.
+    pub(crate) const SENTINEL_TAGS: [u8; 18] = [
+        super::tag::DIRECTORY,
+        super::tag::REFCOUNT,
+        super::tag::POINTER,
+        super::tag::ORPHAN,
+        super::tag::GARBAGE,
+        super::tag::HEAD,
+        super::tag::CURSOR,
+        b'U', // usage debt index (4a commit 3)
+        b'Y', // the log's layout and home (4a commit 4)
+        b'W', // unsealed streams (4a commit 7)
+        b'M', // usage awaiting the ledger (4a commit 7)
+        b'Q', // queue roster, by deadline (4a commit 2; #150 adopts it)
+        b'D', // queue debt index (reserved for #150)
+        b'Z', // queue trim hints (S3b)
+        b'N', // queue-state gauges (S3b)
+        b'E', // lineage pending release (S6)
+        b'C', // lineage-sweep cursor (S6)
+        b'T', // retired parent (S4)
+    ];
+
+    #[test]
+    fn the_sentinel_tags_are_distinct() {
+        let mut tags = SENTINEL_TAGS.to_vec();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), SENTINEL_TAGS.len());
+    }
+
+    /// Every sentinel row's key, byte for byte: `FF×16 ‖ tag ‖ suffix`.
+    #[test]
+    fn every_sentinel_key_is_pinned() {
+        use crate::spill::{directory, gc, object::ObjectId, runindex};
+        let id = ObjectId { epoch: 3, seq: 9 };
+        let object = "00000000000000030000000000000009";
+        let ff = "ffffffffffffffffffffffffffffffff";
+        let hex = |k: Vec<u8>| crate::crypto::hex(&k);
+        let pinned = [
+            (hex(directory::directory_key(id)), format!("{ff}4b{object}")),
+            (hex(gc::refcount_key(id)), format!("{ff}52{object}")),
+            (hex(runindex::pointer_key(id)), format!("{ff}49{object}")),
+            (hex(runindex::orphan_key(id)), format!("{ff}4f{object}")),
+            (hex(gc::garbage_key(id)), format!("{ff}47{object}")),
+            (
+                hex(gc::head_key(&[0x11; 16])),
+                format!("{ff}48{}", "11".repeat(16)),
+            ),
+            (
+                hex(gc::sweep_key(gc::ObjectKind::Segment)),
+                format!("{ff}4c00"),
+            ),
+            (
+                hex(gc::sweep_key(gc::ObjectKind::RunIndex)),
+                format!("{ff}4c01"),
+            ),
+        ];
+        for (key, want) in pinned {
+            assert_eq!(key, want);
+        }
+    }
 
     #[test]
     fn stream_and_queue_keys_carry_their_family_tags() {

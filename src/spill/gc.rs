@@ -26,12 +26,12 @@ use crate::spill::directory::{DirEntry, REFCOUNT_TAG, sentinel_key};
 use crate::spill::object::ObjectId;
 use crate::spill::runindex::tiling::{Span, drop_covered, sort_for_drop};
 
-pub(crate) const GARBAGE_TAG: u8 = b'G';
-pub(crate) const HEAD_TAG: u8 = b'H';
+pub(crate) const GARBAGE_TAG: u8 = crate::keyspace::tag::GARBAGE;
+pub(crate) const HEAD_TAG: u8 = crate::keyspace::tag::HEAD;
 /// Every sentinel tag sorts below the usage month-finals' `'V'`: the drain
 /// scans `'V'` per billed segment, and a key above it would make every
 /// such scan read a data block of each SST holding it.
-pub(crate) const SWEEP_TAG: u8 = b'L';
+pub(crate) const SWEEP_TAG: u8 = crate::keyspace::tag::CURSOR;
 const VERSION: u8 = 1;
 
 /// A segment object's unreclaimed chunks.

@@ -1319,29 +1319,22 @@ pub(crate) async fn load_or_init_topology(
     }
 }
 
-pub(crate) fn hash_bits(hash: &[u8; 16]) -> String {
-    let mut bits = String::with_capacity(24);
-    for byte in hash.iter().take(3) {
-        bits.push_str(&format!("{byte:08b}"));
-    }
-    bits
-}
-
 /// Longest-prefix match of the stream hash's leading bits against the shard
 /// set. `shards` must form a complete prefix code.
 pub(crate) fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
-    let bits = hash_bits(hash);
     shards
         .iter()
-        .filter(|p| bits.starts_with(p.as_str()))
+        .filter(|p| shard_prefix_matches(p, hash))
         .max_by_key(|p| p.len())
         .cloned()
         .unwrap_or_default()
 }
 
-/// Does `hash` fall inside the shard identified by bit-prefix `prefix`?
+/// Does `hash` fall inside bit-prefix `prefix`? A label, or a prefix past the 24 bits the
+/// registry routes on, matches no hash.
 pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
-    hash_bits(hash).starts_with(prefix)
+    let routed = prefix.len() <= 24;
+    routed && crate::keyspace::range::Range::parse(prefix).is_some_and(|range| range.contains(hash))
 }
 
 pub(crate) mod cache;

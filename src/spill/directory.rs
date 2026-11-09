@@ -26,8 +26,8 @@ pub(crate) use row::{
     DirEntry, KeySummary, MAX_BLOOM_BYTES, MAX_SUMMARY_KEYS, decode_row, encode_row,
 };
 
-pub(crate) const DIRECTORY_TAG: u8 = b'K';
-pub(crate) const REFCOUNT_TAG: u8 = b'R';
+pub(crate) const DIRECTORY_TAG: u8 = crate::keyspace::tag::DIRECTORY;
+pub(crate) const REFCOUNT_TAG: u8 = crate::keyspace::tag::REFCOUNT;
 
 /// `0xFF×16 ‖ tag ‖ epoch BE ‖ seq BE`: a row about one object.
 pub(crate) fn sentinel_key(tag: u8, id: ObjectId) -> Vec<u8> {

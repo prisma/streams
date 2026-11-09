@@ -189,6 +189,7 @@ OWNERS = (
     owner('shard_seal_gc_purge', 'src/shard/seal/gc/purge.rs', 'shard::seal::gc_tests:: shard::seal::gc:: dst_tests::purge_lifecycle::'),
     owner('shard_seal_gc_sweep', 'src/shard/seal/gc/sweep.rs', 'shard::seal::gc_tests:: shard::seal::gc::'),
     owner('shard_seal_gc_clean', 'src/shard/seal/gc/clean.rs', 'shard::seal::gc::clean:: shard::seal::gc_tests:: dst_tests::reads_merged::'),
+    owner('keyspace_range', 'src/keyspace/range.rs', 'keyspace::range::'),
     owner('spill_gc', 'src/spill/gc.rs', 'spill::gc_tests:: shard::seal::gc_tests::'),
     owner('spill_runindex', 'src/spill/runindex.rs', 'spill::runindex:: shard::seal::fold_tests::'),
     owner('spill_runindex_format', 'src/spill/runindex/format.rs', 'spill::runindex::format_tests:: shard::seal::fold_tests::'),

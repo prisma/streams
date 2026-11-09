@@ -211,7 +211,7 @@ fn name_hash(name: &str) -> [u8; 16] {
     out
 }
 
-/// Mirrors registry::hash_bits + shard_for_hash (longest-prefix match).
+/// Mirrors registry::shard_for_hash (longest-prefix match over the first 24 bits).
 fn shard_for(topology: &[String], hash: &[u8; 16]) -> String {
     let mut bits = String::with_capacity(24);
     for byte in hash.iter().take(3) {

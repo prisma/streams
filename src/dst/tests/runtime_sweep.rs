@@ -59,10 +59,8 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let name = (0..256)
         .map(|i| format!("cold-{i}"))
         .find(|n| {
-            crate::registry::hash_bits(
-                &crate::crypto::RouteHash::for_stream(&state.deployment.raw_adapter_sref(n)).0,
-            )
-            .starts_with("00")
+            let route = crate::crypto::RouteHash::for_stream(&state.deployment.raw_adapter_sref(n));
+            crate::registry::shard_prefix_matches("00", &route.0)
         })
         .expect("a cold name landing in shard 00");
     let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
