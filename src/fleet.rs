@@ -20,6 +20,7 @@ mod count_balance;
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;
+mod hysteresis;
 mod outbox;
 mod planning;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
@@ -431,7 +432,6 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         // operator view read through.
         let repository = state.fleet.clone();
         let mut eager_after: Option<String> = None;
-        let mut below_since: Option<Instant> = None;
         let mut demand = planning::Demand::default();
         // Rebalancer (SCALING.md §4): consecutive ticks with absorb lag
         // over threshold, and the churn guard on shard moves.
@@ -439,6 +439,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         let mut last_move: Option<Instant> = None;
         let rebalance_lag_secs: u64 = state.config.fleet.rebalance_lag_secs;
         let rebalance_cooldown: u64 = state.config.fleet.rebalance_move_cooldown_secs;
+        let mut gate = hysteresis::Gate::new(cfg.scale_in);
         // (ring_active, overrides) as last observed — the parked-session
         // wake fires only on real ownership-view changes.
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
@@ -520,11 +521,9 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             loads.edge_p50 = fresh_edge_p50(reports.as_deref().unwrap_or(&[]), now_ms());
             loads.shards = state.shards.prefixes().len() as u64;
 
-            // 3. Desired count (`planning::Demand::plan`).
-            let planned = demand.plan(&loads, &cfg.thresholds(), Instant::now());
-            state.fleet.standing().set_split_demand(planned.split_demand);
-            let (need, need_shrink) = (planned.need, planned.shrink);
-
+            // 3. The published count, then the desired count
+            // (`planning::Demand::plan`) over the in-flight the hysteresis
+            // gate holds sustained.
             let (cur, version): (Option<Desired>, Option<UpdateVersion>) =
                 match fleet_io!(repository.read_desired_state()) {
                     Ok(view) => view,
@@ -533,6 +532,11 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         continue;
                     }
                 };
+            let now = hysteresis::Now::current();
+            gate.hold(&mut loads, cur.as_ref(), now);
+            let planned = demand.plan(&loads, &cfg.thresholds(), now.at);
+            state.fleet.standing().set_split_demand(planned.split_demand);
+            let (need, need_shrink) = (planned.need, planned.shrink);
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // FLEET_MIN: hard floor on the fleet size (HA / pinned test
             // rings). All dimensions and the shrink target respect it.
@@ -850,26 +854,14 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 }
             }
 
-            // Scale-out publishes `need` immediately; scale-in publishes
-            // the conservative `need_shrink` and only after the sustain
-            // window — and only when even the conservative target is
-            // below the current count (no flapping at the 75 % boundary).
-            let (publish, publish_count) = if reports.is_err() {
-                (false, need) // unreadable router snapshot: no scale decision this tick
-            } else if cur.is_none() {
-                (true, need) // bootstrap: make the count observable
-            } else if need > cur_count {
-                below_since = None;
-                (true, need)
-            } else if need_shrink < cur_count {
-                let since = *below_since.get_or_insert_with(Instant::now);
-                (since.elapsed() >= cfg.scale_in, need_shrink)
+            // When the planned count is published (`hysteresis::Gate`);
+            // an unreadable router snapshot makes no scale decision.
+            let decided = if reports.is_err() {
+                None
             } else {
-                below_since = None;
-                (false, need)
+                gate.decide((need, need_shrink), cur.as_ref(), now)
             };
-
-            if publish {
+            if let Some(publish_count) = decided {
                 let epoch = cur.as_ref().map(|d| d.epoch + 1).unwrap_or(1);
                 // The transition and its event commit in ONE CAS write
                 // (§12.4). Deterministic id: (epoch) — a re-published
@@ -907,7 +899,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                         publish_count,
                         next.reason
                     );
-                    below_since = None;
+                    gate.published();
                 }
                 // Lost the CAS: another instance published; converge next tick.
             }

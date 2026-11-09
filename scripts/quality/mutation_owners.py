@@ -339,6 +339,10 @@ OWNERS = (
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    # The publish rule and the in-flight window: the replay over the review's
+    # trace, and the tick's wiring in the desired-count DSTs.
+    owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
+          'fleet::hysteresis:: dst_tests::fleet_controller::desired::'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet::'),
