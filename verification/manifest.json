@@ -2729,13 +2729,18 @@
         "src/application/creation/reconcile.rs",
         "src/registry/fork_debt.rs",
         "src/registry/replaced.rs",
-        "src/registry.rs"
+        "src/registry.rs",
+        "src/shard/seal/gc/release.rs",
+        "src/shard/seal/gc/lineage.rs",
+        "src/spill/lineage.rs"
       ],
       "verification_paths": [
         "verification/tla/history/RefGC.tla",
         "verification/tla/history/MC_RefGC.tla",
         "verification/tla/history/ForkPin.tla",
-        "verification/tla/history/MC_ForkPin.tla"
+        "verification/tla/history/MC_ForkPin.tla",
+        "verification/tla/history/LineageGC.tla",
+        "verification/tla/history/MC_LineageGC.tla"
       ],
       "requirements": [
         "F5",
@@ -2761,7 +2766,7 @@
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, the segment cleaner's copy C = {ca1} of a1 alone (the same span, which the newer object wins in reads, folds and merges, and reclaims; its commit re-checks under the refcount lock that a1 is still a pick and A has no 'H' row), a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints.",
+      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, the segment cleaner's copy C = {ca1} of a1 alone (the same span, which the newer object wins in reads, folds and merges, and reclaims; its commit re-checks under the refcount lock that a1 is still a pick and A has no 'H' row), a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints. LineageGC (S6 two-holder arm): a retired home's objects o1 and o2 held by two leaves C0 = {o1, o2} and C1 = {o2} after a split, each with its own 'R' counts, 'E' rows stamped with its pin clock, release logs, released-all marker and reference list; one reader per leaf; the merge of C0 and C1 into M (counts summed, 'E' rows dropped, M's list before its CAS, the sources retired with their reads, the version's grace restarted); the lineage sweeper over the leaves' lists and logs at an aged version; the pin clock to 3 per holder.",
       "checks": [
         {
           "id": "TLA-019/baseline",
@@ -3225,6 +3230,106 @@
           "expect": {
             "result": "violation",
             "property": "Witness_OldBinaryOverwroteDebt"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-baseline",
+          "role": "baseline",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_baseline.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-019/lineage-nc-sweeper-one-holder",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_sweeper_one_holder.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoDeleteWhileReferenced"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-release-before-zero",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_release_before_zero.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoDeleteWhileReferenced"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-no-version-grace",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_no_version_grace.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReadsServed"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-merge-drops-sibling",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_merge_drops_sibling.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-list-after-cas",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_list_after_cas.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HolderListed"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-list-missing-holds-nothing",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_list_missing_holds_nothing.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoDeleteWhileReferenced"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-nc-merge-carries-pending",
+          "role": "negative-control",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_nc_merge_carries_pending.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoDeleteWhileReferenced"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-witness-AncestorDeleted",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_w_AncestorDeleted.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_AncestorDeleted"
+          }
+        },
+        {
+          "id": "TLA-019/lineage-witness-LineageDrained",
+          "role": "witness",
+          "spec": "verification/tla/history/MC_LineageGC.tla",
+          "config": "verification/tla/history/MC_LineageGC_w_LineageDrained.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LineageDrained"
           }
         }
       ],
