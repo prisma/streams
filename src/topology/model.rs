@@ -206,6 +206,78 @@ impl TryFrom<Unchecked> for Topology {
     }
 }
 
+/// Where an operation-born home's shard log lives: `shards/<prefix>~<home>` (S4-DESIGN §3.1).
+#[cfg(test)]
+pub(crate) fn born_home_path(prefix: &str, home: u32) -> String {
+    format!("shards/{prefix}~{home}")
+}
+
+/// Tests until the split calls them (S4 step 11): the topology's two writes of a split.
+#[cfg(test)]
+impl Topology {
+    /// Two fresh homes for a split's children: `next_home` and the one after, with `next_home`
+    /// past them. The version is unchanged (a reservation routes nothing).
+    pub(crate) fn reserve_homes(&self) -> (Self, [u32; 2]) {
+        let mut next = self.clone();
+        let first = self.shards.next_home;
+        next.shards.next_home = first.saturating_add(2);
+        (next, [first, first.saturating_add(1)])
+    }
+
+    /// The topology once `op_id` split leaf `prefix` into its halves at `children` (S4-DESIGN §6.2
+    /// step 4.1): the next version; the halves are leaves at their homes, born at it, whose parent
+    /// is the prefix's home, retired at it; and `last_op` names the operation. Refused for a
+    /// prefix that is no leaf or is at the routing width, or children that are not fresh homes
+    /// below `next_home`.
+    pub(crate) fn split(
+        &self,
+        prefix: &str,
+        children: [u32; 2],
+        op_id: &str,
+    ) -> Result<Self, String> {
+        let parent = *self
+            .shards
+            .leaves
+            .get(prefix)
+            .ok_or_else(|| format!("{prefix:?} is no leaf"))?;
+        if prefix.len() >= crate::keyspace::ROUTE_PREFIX_BITS {
+            return Err(format!("{prefix:?} is at the routing width"));
+        }
+        let fresh = |h: u32| h < self.shards.next_home && !self.shards.homes.contains_key(&h);
+        if children[0] == children[1] || !children.into_iter().all(fresh) {
+            return Err(format!("{children:?} are not two fresh reserved homes"));
+        }
+        let mut next = self.clone();
+        let version = self.version + 1;
+        next.version = version;
+        next.shards.version = version;
+        next.shards.leaves.remove(prefix);
+        if let Some(home) = next.shards.homes.get_mut(&parent) {
+            home.retired_version = Some(version);
+        }
+        for (half, home) in ["0", "1"].into_iter().zip(children) {
+            let child = format!("{prefix}{half}");
+            next.shards.leaves.insert(child.clone(), home);
+            let born = Home {
+                path: born_home_path(&child, home),
+                prefix: child,
+                parents: vec![parent],
+                born_version: version,
+                retired_version: None,
+            };
+            next.shards.homes.insert(home, born);
+        }
+        next.shards.shards = next.shards.leaves.keys().cloned().collect();
+        next.last_op = Some(LastOp {
+            op_id: op_id.to_string(),
+            kind: "split".to_string(),
+            sources: vec![(prefix.to_string(), parent)],
+            children: children.to_vec(),
+        });
+        Ok(next)
+    }
+}
+
 impl crate::config::validation::InitialShards {
     /// A new cell's topology (version 1): `2^n` shards of `n`-bit prefixes in numeric order,
     /// each its own home (the prefix read as a number) at `shards/<prefix>`, and the body
@@ -334,6 +406,69 @@ mod tests {
                 &serde_json::json!({"0": 0, "1": 1}),
                 &serde_json::json!(2)
             )
+        );
+    }
+
+    /// **A split reserves two homes, then publishes its halves.** On a two-shard cell, the
+    /// reservation takes homes 2 and 3 and leaves the version; the split of `"1"` makes version
+    /// 2 with leaves `0`, `10`, `11` at homes 0, 2, 3, the children at `shards/1x~h` with parent
+    /// home 1, home 1 retired at version 2, and `last_op` naming it. The result decodes through
+    /// the checked form unchanged.
+    #[test]
+    fn a_split_reserves_two_homes_then_publishes_its_halves() {
+        let t = initial(2);
+        let (reserved, homes) = t.reserve_homes();
+        assert_eq!(
+            (homes, reserved.version, reserved.shards.next_home),
+            ([2, 3], 1, 4)
+        );
+        let split = reserved.split("1", homes, "op-1").unwrap();
+        assert_eq!(split.version, 2);
+        assert_eq!(*split.shards, ["0", "10", "11"]);
+        let leaves: Vec<(&str, u32)> = split
+            .shards
+            .leaves
+            .iter()
+            .map(|(p, h)| (p.as_str(), *h))
+            .collect();
+        assert_eq!(leaves, [("0", 0), ("10", 2), ("11", 3)]);
+        let child = &split.shards.homes[&3];
+        assert_eq!(
+            (
+                child.path.as_str(),
+                child.parents.as_slice(),
+                child.born_version
+            ),
+            ("shards/11~3", [1].as_slice(), 2)
+        );
+        assert_eq!(split.shards.homes[&1].retired_version, Some(2));
+        let op = split.last_op.as_ref().unwrap();
+        assert_eq!(
+            (
+                op.op_id.as_str(),
+                op.sources.as_slice(),
+                op.children.as_slice()
+            ),
+            ("op-1", [("1".to_string(), 1)].as_slice(), [2, 3].as_slice())
+        );
+        let round: Topology = serde_json::from_slice(&serde_json::to_vec(&split).unwrap()).unwrap();
+        assert_eq!(round, split);
+    }
+
+    /// **A split of what is no splittable leaf, or into homes not reserved, is refused.**
+    #[test]
+    fn a_split_of_no_leaf_or_into_unreserved_homes_is_refused() {
+        let (t, homes) = initial(2).reserve_homes();
+        assert!(t.split("10", homes, "op").is_err(), "no leaf");
+        assert!(t.split("1", [1, 3], "op").is_err(), "a live home");
+        assert!(t.split("1", [2, 2], "op").is_err(), "one home twice");
+        assert!(t.split("1", [4, 5], "op").is_err(), "not reserved");
+        let mut deep = t;
+        let width = "1".repeat(crate::keyspace::ROUTE_PREFIX_BITS);
+        deep.shards.leaves.insert(width.clone(), 1);
+        assert!(
+            deep.split(&width, homes, "op").is_err(),
+            "at the routing width"
         );
     }
 }

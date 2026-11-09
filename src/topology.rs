@@ -10,3 +10,6 @@ pub(crate) mod revalidate;
 // The split's sentinel helper builds for its tests until the split calls it (S4 step 11).
 #[cfg(test)]
 pub(crate) mod sentinel;
+// The topology's CAS writes build for their tests until the split publishes (S4 step 11).
+#[cfg(test)]
+pub(crate) mod store;
