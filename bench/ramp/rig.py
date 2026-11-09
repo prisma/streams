@@ -43,7 +43,12 @@ def sh(*cmd, env=None, check=True, timeout=None):
 
 
 def compose(*args, env):
-    return sh("docker", "compose", "-p", PROJECT, "-f", "compose.yml", *args, env=env)
+    """docker compose on compose.yml plus RIG_COMPOSE_EXTRA's files (colon-separated; ramp.py's
+    servers past compose.yml's eight)."""
+    files = ["-f", "compose.yml"]
+    for extra in filter(None, (env or {}).get("RIG_COMPOSE_EXTRA", "").split(":")):
+        files += ["-f", extra]
+    return sh("docker", "compose", "-p", PROJECT, *files, *args, env=env)
 
 
 def server(k=1):

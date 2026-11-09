@@ -25,6 +25,20 @@ hold. Fixed INSTANCES and SHARDS today (the fleet does not resize on this
 workload); the same rig measures the tuning packages as they land and,
 later, dynamic split and merge (P5) with FLEET_MIN=1.
 
+#149's own run (--fleet-max up to 64, --shards 1): the cell starts on one
+instance and one shard; servers past compose.yml's eight come from a compose
+file written for the run (fleet_compose). The Scaler follows the desired
+count after --scale-in-secs (0 for Compute's external mode, which applies
+Streams' count within a second; 30 for the interim D ramp's runs). Every
+sample also reads the topology the heartbeats report (the shards the live
+instances own, and the topology version where the server exposes one), so a
+step records the shards it grew to; --low-until COUNT checks the low steps
+ran on --fleet-min instances and at most --low-max-shards shards, and
+--drain-secs, after the last step, waits with no load for the cell to merge
+back and scale in, as #149's "done when" asks. --set KEY=VALUE puts server
+settings on top of the posture (recorded), for instance trigger constants
+scaled to the ramp's 60x compressed time.
+
 Tenancy, with auth enforced from cell-admin feed files (tenants.sh, cached
 per count under --tenants-cache): `one` gives every stream one project's
 token; `each` gives stream i project i's token. `--auth off` runs `one`
@@ -78,6 +92,37 @@ http {{
 """
 
 
+BASE_SERVERS = 8  # compose.yml's streams-1..8
+
+
+def fleet_compose(n, out_dir):
+    """A compose file for servers 9..N (with compose.yml's server anchors copied, since YAML anchors do
+    not cross files); its path, or None when compose.yml's eight suffice."""
+    if n <= BASE_SERVERS:
+        return None
+    base = open(os.path.join(HERE, "compose.yml")).read()
+    head = base[base.index("x-server:"):base.index("\nservices:")]
+    servers = "".join(
+        f"  streams-{k}:\n    <<: *server\n"
+        f"    environment: {{ <<: *env, INSTANCE_NAME: streams-{k}, SELF_URL: \"http://streams-{k}:8080\" }}\n"
+        f"    ports: [\"127.0.0.1:{8200 + k}:8080\"]\n" for k in range(BASE_SERVERS + 1, n + 1))
+    path = os.path.abspath(os.path.join(out_dir, f"compose-fleet-{n}.yml"))
+    # Relative paths in the copied anchors (env_file) resolve against compose.yml's directory.
+    open(path, "w").write(head.replace("../../deploy", os.path.join(rig.ROOT, "deploy")) + "\nservices:\n" + servers)
+    return path
+
+
+def topology_view(view, now_ms=None):
+    """The shards the live heartbeats own (union) and the topology version, from one /operator/data.json."""
+    now_ms = now_ms or time.time() * 1000
+    beats = (view.get("fleet") or {}).get("heartbeats") or []
+    live = [h for h in beats if now_ms - (h.get("ts_ms") or 0) < 15000]
+    owned = sorted({s for h in live for s in (h.get("owned_shards") or [])})
+    topo = view.get("topology") or (view.get("fleet") or {}).get("topology") or {}
+    return {"shards": len(owned), "owned": owned, "instances": len(live),
+            "topology_version": topo.get("version") if isinstance(topo, dict) else None}
+
+
 class Watch(threading.Thread):
     """Every 5 s: each server's resident set (statm), shed counters, engines."""
 
@@ -87,6 +132,7 @@ class Watch(threading.Thread):
         self.live = live  # a Scaler: poll the servers it runs, else 1..INSTANCES
         self.stop = threading.Event()
         self.first, self.last, self.rss_max = {}, {}, {}
+        self.topo = []  # topology_view rows, one a sample
 
     def poll(self, k):
         name = f"streams-{k}"
@@ -115,9 +161,22 @@ class Watch(threading.Thread):
                     self.last[name] = row["shed"]
                 if "rss_mb" in row:
                     self.rss_max[name] = max(self.rss_max.get(name, 0), row["rss_mb"])
+            try:
+                view = topology_view(self.posture.debug(1, "/operator/data.json"))
+                view.pop("owned")
+                view["t"] = round(time.time(), 1)
+                self.topo.append(view)
+                self.out.write(json.dumps({"topology": view}) + "\n")
+            except OSError:
+                pass
             self.out.flush()
             if self.stop.wait(5):
                 return
+
+    def shard_range(self):
+        """[first, last, max] shards the samples saw, or None."""
+        seen = [v["shards"] for v in self.topo]
+        return [seen[0], seen[-1], max(seen)] if seen else None
 
     def sheds(self):
         return sum(self.last[n] - self.first.get(n, 0) for n in self.last)
@@ -170,13 +229,14 @@ class Scaler(threading.Thread):
     """Compute's scaler on the Mac: every 5 s it reads the fleet's desired
     count (`fleet.desired.count` on /operator/data.json, from streams-1, which
     it never stops) and starts servers up to it, or stops the newest after
-    the desired count has stayed below the live count for 30 s, within
+    the desired count has stayed below the live count for --scale-in-secs, within
     FLEET_MIN..FLEET_MAX; then it reloads the router with the live servers."""
 
     def __init__(self, a, env, posture, conf, log):
         super().__init__(daemon=True)
         self.a, self.env, self.posture, self.conf, self.log = a, env, posture, conf, log
         self.live, self.below_since = a.fleet_min, None
+        self.history = [(time.time(), a.fleet_min)]  # (t, live) after each resize
         self.stop = threading.Event()
 
     def resize(self, n):
@@ -188,8 +248,14 @@ class Scaler(threading.Thread):
             # SIGTERM: the server drains its shards within its drain budget (144 s)
             rig.compose("stop", "-t", "180", *[f"streams-{k}" for k in range(n + 1, self.live + 1)], env=self.env)
         self.live = n
+        self.history.append((time.time(), n))
         open(self.conf, "w").write(router_conf(n))
         sh("docker", "exec", f"{rig.PROJECT}-router-1", "nginx", "-s", "reload", check=False)
+
+    def peak_since(self, t):
+        """The most servers live at any time since T."""
+        before = [n for at, n in self.history if at <= t]
+        return max([before[-1] if before else self.a.fleet_min] + [n for at, n in self.history if at > t])
 
     def run(self):
         while not self.stop.wait(5):
@@ -201,7 +267,7 @@ class Scaler(threading.Thread):
             now = time.time()
             self.below_since = (self.below_since or now) if want < self.live else None
             row = {"t": round(now), "desired": desired.get("count"), "reason": desired.get("reason"), "live": self.live}
-            if want > self.live or (want < self.live and now - self.below_since >= 30):
+            if want > self.live or (want < self.live and now - self.below_since >= self.a.scale_in_secs):
                 row["resize_to"] = want
                 self.resize(want)
                 self.below_since = None
@@ -215,11 +281,13 @@ def run_continuous(a, out_dir, results):
     conf = os.path.abspath(os.path.join(out_dir, "router.conf"))
     open(conf, "w").write(router_conf(a.fleet_min))
     if a.auth == "off":
-        posture = rig.Posture("off", out_dir, fleet=True)
+        posture = rig.Posture("off", out_dir, fleet=True, overrides=a.set)
     else:
-        posture = rig.Posture("on", out_dir, max(a.counts) if a.tenancy == "each" else 1, a.tenants_cache, fleet=True)
+        posture = rig.Posture("on", out_dir, max(a.counts) if a.tenancy == "each" else 1, a.tenants_cache, fleet=True,
+                              overrides=a.set)
+    extra = fleet_compose(a.fleet_max, out_dir)
     env = posture.compose_env(INITIAL_SHARDS=a.shards, FLEET_MIN=a.fleet_min, FLEET_MAX=a.fleet_max,
-                              ROUTER_CONF=conf)
+                              ROUTER_CONF=conf, **({"RIG_COMPOSE_EXTRA": extra} if extra else {}))
     rig.compose("down", "-v", "--remove-orphans", env=env)
     rig.compose("up", "-d", "s3lite", *[f"streams-{k}" for k in range(1, a.fleet_min + 1)], env=env)
     for k in range(1, a.fleet_min + 1):
@@ -245,7 +313,12 @@ def run_continuous(a, out_dir, results):
             ooms = [f"streams-{k}" for k in range(1, a.fleet_max + 1)
                     if sh("docker", "inspect", "-f", "{{.State.OOMKilled}}", rig.server(k), check=False).strip() == "true"]
             ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
-            step = {"count": count, "shards": a.shards, "fleet": [a.fleet_min, a.fleet_max],
+            shards = watch.shard_range()
+            if count <= a.low_until:  # #149: the low steps run on FLEET_MIN instances with few shards
+                checks["few"] = (max(live_start, scaler.live, scaler.peak_since(started)) <= a.fleet_min
+                                 and shards is not None and shards[2] <= a.low_max_shards)
+                ok = ok and checks["few"]
+            step = {"count": count, "shards": a.shards, "shard_range": shards, "fleet": [a.fleet_min, a.fleet_max],
                     "live": [live_start, scaler.live], "tenancy": a.tenancy, "auth": a.auth,
                     "period_secs": a.period, "step_secs": a.step_secs, "wall_secs": round(time.time() - started),
                     "held": round(held, 4) if held is not None else None, "pass": ok, "checks": checks,
@@ -261,9 +334,36 @@ def run_continuous(a, out_dir, results):
                 print(f"RAMP_STOP at {count}", flush=True)
                 return
         print("RAMP_HELD every step", flush=True)
+        if a.drain_secs:
+            drain(a, out_dir, results, posture, scaler)
     finally:
         scaler.stop.set()
         scaler.join()
+
+
+def drain(a, out_dir, results, posture, scaler):
+    """#149's last line: with the load gone, the cell merges its shards and scales back in. Wait up
+    to --drain-secs with no traffic; it holds once FLEET_MIN instances own at most --low-max-shards
+    shards, and the time it took is recorded."""
+    print(f"== drain: no load, up to {a.drain_secs} s {time.strftime('%H:%MZ', time.gmtime())}", flush=True)
+    watch = Watch(a.fleet_max, os.path.join(out_dir, "watch-drain.jsonl"), posture, live=scaler)
+    watch.start()
+    started, done_at = time.time(), None
+    try:
+        while time.time() - started < a.drain_secs:
+            time.sleep(15)
+            last = watch.topo[-1] if watch.topo else None
+            if last and scaler.live <= a.fleet_min and last["shards"] <= a.low_max_shards:
+                done_at = time.time()
+                break
+    finally:
+        watch.stop.set()
+        watch.join()
+    row = {"count": "drain", "pass": done_at is not None, "secs": round((done_at or time.time()) - started),
+           "live_end": scaler.live, "shard_range": watch.shard_range(), "fleet": [a.fleet_min, a.fleet_max]}
+    open(results, "a").write(json.dumps(row) + "\n")
+    print(json.dumps(row), flush=True)
+    print("DRAIN_HELD" if done_at else f"DRAIN_STOP after {a.drain_secs} s", flush=True)
 
 
 def verdict(count, period, step_secs, pop, sheds, ooms):
@@ -327,12 +427,18 @@ def main():
     ap.add_argument("--period", type=float, default=60.0, help="seconds between two touches of one stream")
     ap.add_argument("--step-secs", type=int, default=180)
     ap.add_argument("--out", default=os.path.join(HERE, "results", time.strftime("ramp-%Y%m%dT%H%M%SZ", time.gmtime())))
+    ap.add_argument("--scale-in-secs", type=float, default=30,
+                    help="the Scaler stops servers once desired stays below live this long (0: Compute's external mode)")
+    ap.add_argument("--low-until", type=int, default=0, help="steps up to this count must run on --fleet-min instances")
+    ap.add_argument("--low-max-shards", type=int, default=2, help="... and at most this many shards (also the drain's end)")
+    ap.add_argument("--drain-secs", type=int, default=0, help="after the last step, wait this long with no load to merge back")
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top (recorded)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (DRY lines), start nothing")
     a = ap.parse_args()
     if (a.fleet_min is None) != (a.fleet_max is None):
         raise SystemExit("--fleet-min and --fleet-max go together")
-    if a.fleet_max is not None and not 1 <= a.fleet_min <= a.fleet_max <= 8:
-        raise SystemExit("1 <= --fleet-min <= --fleet-max <= 8 (compose.yml's servers)")
+    if a.fleet_max is not None and not 1 <= a.fleet_min <= a.fleet_max <= 64:
+        raise SystemExit("1 <= --fleet-min <= --fleet-max <= 64")
     a.shards = a.shards or a.fleet_max or a.instances
     if a.tenancy == "each" and a.auth == "off":
         raise SystemExit("--tenancy each needs --auth enforce")
@@ -343,7 +449,12 @@ def main():
     if a.dry_run:
         fleet = f"fleet {a.fleet_min}-{a.fleet_max} (one cell)" if a.fleet_max else f"{a.instances} instance(s) (a cell a step)"
         print(f"DRY ramp {fleet} shards {a.shards} tenancy {a.tenancy} auth {a.auth} counts {a.counts} "
-              f"period {a.period} s, {a.step_secs} s a step")
+              f"period {a.period} s, {a.step_secs} s a step, scale-in {a.scale_in_secs:g} s, "
+              f"low until {a.low_until} on <= {a.low_max_shards} shards, drain {a.drain_secs} s, set {a.set}")
+        extra = fleet_compose(a.fleet_max or 0, a.out)
+        if extra:  # the generated servers parse (compose config starts nothing)
+            names = rig.compose("config", "--services", env=dict(os.environ, RIG_COMPOSE_EXTRA=extra)).split()
+            print(f"DRY fleet compose {os.path.basename(extra)}: {len([n for n in names if n.startswith('streams-')])} servers")
         return
     try:
         if a.fleet_max is not None:
@@ -365,6 +476,11 @@ def main():
         else:
             print("RAMP_HELD every step", flush=True)
     finally:
+        # Every server's log, stopped ones included, before the cell goes (a failed step's 500s need them).
+        for k in range(1, 9):
+            log = sh("docker", "logs", rig.server(k), check=False)
+            if "No such container" not in log:
+                open(os.path.join(a.out, f"server-{k}.log"), "w").write(log)
         rig.compose("down", "-v", "--remove-orphans",
                     env=dict(os.environ, ROUTER_CONF=os.path.abspath(os.path.join(a.out, "router.conf"))))
         print("RAMP_DONE", a.out, flush=True)

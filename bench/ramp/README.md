@@ -160,3 +160,19 @@ and owner prices, validity, the steady append p99, the RSS against its shed
 line, the measured vCPU and the shards. `--first-only` runs one point per size
 first. Run it from the worktree the image was built from: run-local checks the
 server's commit.
+
+## #149's run (`ramp.py`, one shard to start)
+
+`--shards 1 --fleet-min 1 --fleet-max N` starts the cell on one instance and
+one shard; servers past compose.yml's eight come from a compose file the
+run writes (`fleet_compose`), so N may go to 64 (the Mac holds about 12 at
+1 GiB). `--scale-in-secs 0` makes the Scaler follow `fleet.desired.count`
+at once, as Compute's external mode does (the interim D ramp ran 30 s).
+Every sample reads the shards the live heartbeats own, so each step records
+its `shard_range` (first, last, max). `--low-until 1000 --low-max-shards 2`
+fails a low step that ran on more than `--fleet-min` instances or 2 shards,
+and `--drain-secs` waits with no load after the last step for the merge back
+and the scale-in (`count: "drain"` in `steps.jsonl`). `--set KEY=VALUE` puts
+server settings on top, for the trigger constants scaled to the 60x
+compressed time. Every server's log is kept in the results directory.
+`docs/SCALE-VALIDATION-149.md` §6 has the command.
