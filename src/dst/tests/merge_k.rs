@@ -540,6 +540,52 @@ async fn a_merge_past_its_lease_reclaims_its_own_intent_and_publishes() {
     engine_shutdown(&state).await;
 }
 
+/// **A merge serves what its sources wrote after the split** (S6 §7.2). Each child appends a
+/// record and flushes it into an SST of its own, under its born home's path (`shards/000-h`),
+/// before the merge; the merged leaf reads both children's SSTs as external tables, so both
+/// streams read back every record, the parent's and the children's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_serves_what_its_sources_wrote_after_the_split() {
+    let Rig {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+        ..
+    } = rig().await;
+    split_00(&state, &parent).await;
+    for (name, n) in [(&low, 5), (&high, 6)] {
+        let path = format!("/v1/stream/{name}");
+        let body = format!(r#"[{{"n":{n}}}]"#);
+        let (status, _, _) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+        assert_eq!(status, 204, "append to {name} after the split");
+    }
+    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    for half in &halves {
+        half.db
+            .flush()
+            .await
+            .expect("the child flushes an SST of its own");
+    }
+    let want = (records(addr, &low).await, records(addr, &high).await);
+    let clock = state.runtime.clock.clone();
+    crate::topology::merge::merge(
+        &state.shards,
+        [&halves[0], &halves[1]],
+        "op-m",
+        "inst-a",
+        &*clock,
+    )
+    .await
+    .expect("the merge publishes");
+    assert_eq!(
+        (records(addr, &low).await, records(addr, &high).await),
+        want
+    );
+    engine_shutdown(&state).await;
+}
+
 /// The log at `path`'s checkpoints named `name`.
 async fn checkpoints(store: &Arc<dyn object_store::ObjectStore>, path: &str, name: &str) -> usize {
     let admin = slatedb::admin::AdminBuilder::new(path, store.clone()).build();
@@ -740,7 +786,11 @@ async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr, u64) {
         s.ownership.set_view(active.clone(), view);
     }
     engine_shutdown(&state).await;
-    assert_eq!(append_to(addr, &low, 3).await.0, 204, "inst-a serves 000");
+    assert_eq!(
+        append_to(addr, &low, 3).await,
+        (204, String::new()),
+        "inst-a serves 000"
+    );
     assert_eq!(
         append_to(addr_b, &high, 4).await.0,
         204,

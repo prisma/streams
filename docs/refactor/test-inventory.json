@@ -1637,6 +1637,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_serves_what_its_sources_wrote_after_the_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "beb54a32743f18b43a895dfe9e85a08d9abfcc376c033e914b5ba8f9589a4a91",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_that_would_fill_its_instance_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
