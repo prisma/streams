@@ -16,6 +16,9 @@
 //!   blocks the split, and the order has no cycle. An object a writer PUT before its batch
 //!   waited out a split is an orphan under the parent's home, for the sweep, like a barriered
 //!   seal's.
+//! - **"Splitting"** ([`MaintenanceGate::splitting`]): set when a split's barrier holds the
+//!   committer past its pause (`shard::transaction::barrier`); while it stands, every group
+//!   the committer gathers is answered `503 shard_splitting`, never committed.
 //! - **"Collection off"** ([`MaintenanceGate::collection_off`]): while a split prepares, the
 //!   passes that delete or rewrite objects stand down (the orphan sweep, consolidation, the
 //!   cleaner, purge reclaim and the run-index merge). Seals, folds, trims and `request_purge`
@@ -29,6 +32,7 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 pub(crate) struct MaintenanceGate {
     lock: RwLock<()>,
     collection_off: AtomicBool,
+    splitting: AtomicBool,
 }
 
 impl MaintenanceGate {
@@ -45,6 +49,19 @@ impl MaintenanceGate {
     /// Whether the collection passes stand down (a split prepares).
     pub(crate) fn collection_off(&self) -> bool {
         self.collection_off.load(Ordering::Acquire)
+    }
+
+    /// Whether a split holds the engine past its pause (S4-DESIGN §8): the committer answers
+    /// every group `Splitting`.
+    pub(crate) fn splitting(&self) -> bool {
+        self.splitting.load(Ordering::Acquire)
+    }
+
+    /// Tests until the split's barrier sets it (S4 step 11): the hold passed its deadline, or
+    /// the split released it.
+    #[cfg(test)]
+    pub(crate) fn set_splitting(&self, on: bool) {
+        self.splitting.store(on, Ordering::Release);
     }
 
     /// Tests until the split takes it (S4 step 11): the exclusive hold, within `deadline`.

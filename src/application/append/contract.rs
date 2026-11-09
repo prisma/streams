@@ -54,6 +54,7 @@ pub(crate) enum AppendCode {
     ProducerEpochSeq,
     ProducerSequenceReused,
     ShardMoving,
+    ShardSplitting,
     NotOwner,
     ShardOpen,
     RateLimited(&'static str),
@@ -99,6 +100,7 @@ impl AppendCode {
             Self::ProducerEpochSeq => "producer_epoch_seq",
             Self::ProducerSequenceReused => "producer_sequence_reused",
             Self::ShardMoving => "shard_moving",
+            Self::ShardSplitting => "shard_splitting",
             Self::NotOwner => "not_ring_owner",
             Self::ShardOpen => "shard_open",
             Self::RateLimited(code) => code,
@@ -336,6 +338,13 @@ impl AppendFailure {
                 e.conflict = Some(Box::new(AppendConflict::OutcomeUnknown));
                 e.retry(1)
             }
+            // Held past a split's pause and never offered to a group: not written.
+            AppendErr::Splitting => Self::new(
+                Unavailable,
+                AppendCode::ShardSplitting,
+                "shard splitting; retry",
+            )
+            .retry(1),
         }
     }
     pub(crate) fn definitively_rejected(&self) -> bool {
@@ -581,6 +590,19 @@ mod boundary_tests {
                 command.retry_is_recognised()
             });
         assert_eq!(recognised, [false, true, true, true]);
+    }
+    /// An append held past a split's pause was never offered to a group: it is answered
+    /// `503 shard_splitting` with a 1 s wait, its outcome known, and it is no definitive
+    /// rejection (an owed final stays owed).
+    #[test]
+    fn an_append_held_past_a_splits_pause_is_unavailable_and_known_unwritten() {
+        let held = AppendFailure::from_commit(0, false, AppendErr::Splitting);
+        assert_eq!(
+            (held.class, held.code.as_str(), held.retry_after),
+            (FailureClass::Unavailable, "shard_splitting", Some(1))
+        );
+        assert!(!held.outcome_unknown() && !held.definitively_rejected());
+        assert!(!held.answering(false).outcome_unknown());
     }
     /// A group the committer stranded may have been written: its outcome is
     /// unknown unless the command's retry is recognised. Its code and wait

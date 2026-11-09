@@ -239,13 +239,10 @@ impl Workload {
                 | AppendErr::CtMismatch
                 | AppendErr::BadBody(_),
             )) => Outcome::Rejected,
-            // Fenced, closed, or failed mid-flight: the write may or may
-            // not have landed. Exactly the state the soak wedge produced.
-            Ok(Err(AppendErr::Moved | AppendErr::Closed { .. } | AppendErr::Internal(_))) => {
-                Outcome::Unknown
-            }
-            // Responder dropped: the request's fate is unobservable.
-            Err(_) => Outcome::Unknown,
+            // Fenced, closed, failed mid-flight or held by a split: the write
+            // may or may not have landed (the soak wedge's state), or it is
+            // taken as unknown. A dropped responder's fate is unobservable.
+            Ok(Err(_)) | Err(_) => Outcome::Unknown,
         }
     }
 
@@ -334,8 +331,7 @@ impl Workload {
                 self.coverage.hit(mech::APPEND_REJECTED);
                 Outcome::Rejected
             }
-            Ok(Err(AppendErr::Moved | AppendErr::Closed { .. } | AppendErr::Internal(_)))
-            | Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 self.coverage.hit(mech::APPEND_UNKNOWN);
                 Outcome::Unknown
             }

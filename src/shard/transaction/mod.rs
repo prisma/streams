@@ -205,8 +205,15 @@ impl<'a> CommitTransaction<'a> {
 
 impl ShardEngine {
     /// One commit group, then, if the group carried a split's barrier, the park
-    /// (`barrier`; tests until the split sends one, S4 step 11).
+    /// (`barrier`; tests until the split sends one, S4 step 11). While a split holds the
+    /// engine past its pause, every group is answered `Splitting` instead, never committed.
     pub(in crate::shard) async fn commit_and_park(&self, ops: Vec<CommitOp>) {
+        if self.gc_state().gate.splitting() {
+            for op in ops {
+                CommitTransaction::reject_op(op, AppendErr::Splitting);
+            }
+            return;
+        }
         #[cfg(test)]
         return barrier::commit_and_park(self, ops).await;
         #[cfg(not(test))]

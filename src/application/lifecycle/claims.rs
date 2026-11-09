@@ -289,9 +289,9 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
         | Closed { .. }
         | SealSuperseded => FinalDisposition::DefinitivelyRejected,
         // A producer gap or epoch/sequence disagreement may still resolve
-        // once the producer catches up; an internal failure or a moved
-        // shard is about the moment.
-        ProducerGap { .. } | ProducerEpochSeq | Internal(_) | Moved => {
+        // once the producer catches up; an internal failure, a moved
+        // shard or a split's hold is about the moment.
+        ProducerGap { .. } | ProducerEpochSeq | Internal(_) | Moved | Splitting => {
             FinalDisposition::AmbiguousOrTransient
         }
     }

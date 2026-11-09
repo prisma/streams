@@ -3,6 +3,10 @@
 //! durable and answers it, then answers the barrier ("parked") and parks: operations dequeued
 //! after the barrier's group wait in the queue, never offered to a group, until the split releases
 //! the barrier.
+//! - **The hold** ([`HOLD`], provisional, S4-DESIGN §8): a barrier not released within it sets
+//!   the gate's `splitting`, and the committer resumes only to answer every group it gathers
+//!   `Splitting` (`503 shard_splitting`, `Retry-After: 1`), the held operations first, until
+//!   the release. So nothing waits on a long pause past the hold.
 //! - **`Resume`** (a rollback): the queue proceeds in order.
 //!
 //! Built for tests until the split sends the first barrier (S4 step 11); until then the committer
@@ -11,11 +15,17 @@
 //!   runs the open-path fence (S4 step 9), which decides from the stored intent and `'T'`
 //!   whether the parent serves again. A parked parent never resumes on its own.
 
-use futures_util::future::{self, Either};
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::future;
 use tokio::sync::oneshot;
 
 use crate::shard::seal::SealCommit;
 use crate::shard::{CommitOp, ShardEngine};
+
+/// How long a parked committer holds its queue before it answers it `Splitting`.
+pub(crate) const HOLD: Duration = Duration::from_secs(2);
 
 /// The barrier as the committer receives it.
 pub(crate) struct BarrierReq {
@@ -32,7 +42,8 @@ pub(crate) enum Release {
 
 /// A parked committer, held by its split. Dropped without a release, it closes the engine.
 pub(crate) struct Barrier {
-    release: oneshot::Sender<Release>,
+    engine: Arc<ShardEngine>,
+    release: Option<oneshot::Sender<Release>>,
 }
 
 /// Why a barrier did not park its committer.
@@ -44,15 +55,29 @@ pub(crate) enum BarrierError {
 
 impl Barrier {
     /// Release the committer: the held operations proceed in order.
-    pub(crate) fn resume(self) {
-        // A committer that already exited (its engine closed) has nothing to resume.
-        drop(self.release.send(Release::Resume));
+    pub(crate) fn resume(mut self) {
+        let Some(release) = self.release.take() else {
+            return;
+        };
+        // Cleared first: a park past its hold sees the release after it set the flag.
+        self.engine.gc_state().gate.set_splitting(false);
+        // A committer past its hold, or one that exited (its engine closed), receives none.
+        drop(release.send(Release::Resume));
+    }
+}
+
+impl Drop for Barrier {
+    fn drop(&mut self) {
+        if self.release.take().is_some() {
+            tracing::error!(shard = %self.engine.prefix, "a split dropped its barrier unreleased; closing");
+            self.engine.begin_close();
+        }
     }
 }
 
 impl ShardEngine {
     /// Park this engine's committer after the group its barrier joins (see the module).
-    pub(crate) async fn barrier(&self) -> Result<Barrier, BarrierError> {
+    pub(crate) async fn barrier(self: &Arc<Self>) -> Result<Barrier, BarrierError> {
         let (parked, parked_rx) = oneshot::channel();
         let (release_tx, release) = oneshot::channel();
         let commit = SealCommit::Barrier(BarrierReq { parked, release });
@@ -62,7 +87,8 @@ impl ShardEngine {
             .map_err(|_| BarrierError::Closed)?;
         parked_rx.await.map_err(|_| BarrierError::Closed)?;
         Ok(Barrier {
-            release: release_tx,
+            engine: self.clone(),
+            release: Some(release_tx),
         })
     }
 }
@@ -91,22 +117,25 @@ fn take_barrier(ops: &mut Vec<CommitOp>) -> Option<BarrierReq> {
     }
 }
 
-/// Answer the barrier and hold the queue until its split releases it.
+/// Answer the barrier and hold the queue until its split releases it, at most [`HOLD`].
 async fn park(engine: &ShardEngine, req: BarrierReq) {
-    let BarrierReq { parked, release } = req;
+    let BarrierReq {
+        parked,
+        mut release,
+    } = req;
     if engine.is_closed() || parked.send(()).is_err() {
         // Closed (the split sees `Closed`), or the split gave up before the park: nothing held.
         return;
     }
     let closed = Box::pin(engine.closed());
-    let Either::Right((released, _)) = future::select(closed, release).await else {
+    // Closed, resumed, or dropped (the handle closed the engine): the park ends.
+    let Err(_) = tokio::time::timeout(HOLD, future::select(closed, &mut release)).await else {
         return;
     };
-    match released {
-        Ok(Release::Resume) => {}
-        Err(_) => {
-            tracing::error!(shard = %engine.prefix, "a split dropped its barrier unreleased; closing");
-            engine.begin_close();
-        }
+    let gate = &engine.gc_state().gate;
+    gate.set_splitting(true);
+    if let Ok(Release::Resume) = release.try_recv() {
+        // Released as the hold ended: `resume` cleared the flag before this set it.
+        gate.set_splitting(false);
     }
 }

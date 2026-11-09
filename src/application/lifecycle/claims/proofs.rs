@@ -14,7 +14,7 @@ use super::{ClaimStep, EnterSeal, FinalDisposition, claim_step, final_err_dispos
 use crate::application::append::AppendFailure;
 use crate::shard::AppendErr;
 
-const VARIANTS: u8 = 11;
+const VARIANTS: u8 = 12;
 
 fn construct(index: u8) -> AppendErr {
     match index {
@@ -37,7 +37,8 @@ fn construct(index: u8) -> AppendErr {
         7 => AppendErr::CtMismatch,
         8 => AppendErr::BadBody(String::new()),
         9 => AppendErr::Internal(String::new()),
-        _ => AppendErr::Moved,
+        10 => AppendErr::Moved,
+        _ => AppendErr::Splitting,
     }
 }
 
@@ -56,16 +57,17 @@ fn variant(error: &AppendErr) -> u8 {
         AppendErr::BadBody(_) => 8,
         AppendErr::Internal(_) => 9,
         AppendErr::Moved => 10,
+        AppendErr::Splitting => 11,
     }
 }
 
 /// The adopted contract (docs/seal-transitions.md, `FinalDisposition`):
 /// ordering disagreements (producer gap, epoch-must-start-at-zero) and the
-/// moment (internal failure, shard move) retain the owed final; refusals
+/// moment (internal failure, shard move, a split's hold) retain the owed final; refusals
 /// about the request itself release it.
 fn contract(index: u8) -> FinalDisposition {
     match index {
-        4 | 6 | 9 | 10 => FinalDisposition::AmbiguousOrTransient,
+        4 | 6 | 9 | 10 | 11 => FinalDisposition::AmbiguousOrTransient,
         _ => FinalDisposition::DefinitivelyRejected,
     }
 }

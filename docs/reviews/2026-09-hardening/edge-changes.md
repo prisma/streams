@@ -5373,6 +5373,31 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with the design (E2); this record states the shipped form.
 - **Check against commit:** written with the change.
 
+### #249 (this record's commit) — An append held past a split's 2 s pause is answered 503 `shard_splitting` with `Retry-After: 1`, never written, until the split releases its shard
+
+- **Program item:** S4 (shard split), S4-DESIGN rev 2.1 §5.2 and §8, edge E1. Ratified with the design (the lead reserved #249 for E1 on 2026-11-08). E1 lands in parts; this record states each part as it ships.
+- **Surface:** both (raw append routes; the product surface translates the raw 503).
+- **Endpoint:** every append, close and seal fence that enters a shard's committer.
+- **Condition:** a split pauses the shard (its barrier parks the committer) for longer than the hold, 2 s, provisional until Tigris measures the arm that ships (Q3: 2x the measured p99 if above 1.5 s).
+- **Before:** no split existed; a shard's committer never held an operation.
+- **After (S4 step 7, this commit):**
+  - **The barrier** takes effect after the group that carries it: that group commits and is answered as before. Every operation queued after it waits, never offered to a group.
+  - **Within the hold:** a release serves the held operations in order, acked with their offsets.
+  - **Past the hold:** the held operations, then every later one, are answered raw 503 `shard_splitting`, "shard splitting; retry", `retry-after: 1`. None was offered to a group, so none was written, and the answer carries no `outcome_unknown`. The product surface renders it 503 `temporarily_unavailable`, retryable, keeping `retry-after: 1`. An owed seal final stays owed (KANI-042: transient, as a moved shard).
+  - **Reads,** SSE and long polls are served throughout (durable state).
+  - **Queue operations** held past the hold get the refusal an engine retirement gives them today. Their own `shard_splitting` answer comes with the re-route.
+  - **A split that dies in the pause** (its barrier dropped unreleased) closes the engine; the held operations get the engine-close answer (`shard_moving`, or a reopened engine's service).
+- **Still to ship under E1:** the local re-route on publication (held operations re-submitted to the owned child, else 409 with the version), the open-path fence's 503 `shard_splitting` for every request, reads included, and the parent with `'T'`.
+- **Retry semantics:** retryable after 1 s; nothing was written, so a plain retry cannot duplicate.
+- **Who is affected:** none yet: nothing sends a barrier until the split itself lands (S4 step 11). Then, clients of a splitting shard whose pause outlasts the hold.
+- **Pinning tests:**
+  - `dst::dst_tests::split_barrier::past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_release`: the held append is answered after at least 2 s, `(503, Some("1"), Some("shard_splitting"))`, a later one at once, and after the release an append is served; the stream holds neither refused record. Red with the hold removed: `answered after the hold: Elapsed(())`.
+  - `application::append::contract::tests::an_append_held_past_a_splits_pause_is_unavailable_and_known_unwritten`.
+  - `dst::dst_tests::split_barrier::a_barrier_parks_after_its_group_and_a_resume_serves_the_held_appends_in_order` and `a_barrier_dropped_unreleased_closes_its_engine` (S4 step 7a).
+- **Risk reason:** low until the split ships (unreachable); then medium: a pause past 2 s refuses writes on one shard for its remainder, which is the design's trade against holding clients through a long pause.
+- **Status:** ratified with the design (E1); this record states the shipped part.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low

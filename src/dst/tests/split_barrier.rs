@@ -3,6 +3,8 @@
 //! that carries it. That group commits and is answered; operations queued after it wait, never
 //! offered to a group, until the split releases the barrier. A resume serves them in order; a
 //! barrier dropped unreleased closes the engine rather than resume a parent it cannot vouch for.
+//! Past the 2 s hold, the held appends and every later one are answered `503 shard_splitting`,
+//! `Retry-After: 1`, until the release.
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
 use super::fixture_http::{engine_shutdown, http_rig};
@@ -30,11 +32,19 @@ async fn until(what: &str, ready: impl Fn() -> bool) {
 
 /// An append of `{"n": n}` to the stream: its status. `answered` is set once it returns.
 async fn append(addr: Addr, n: u32, answered: &AtomicBool) -> u16 {
+    let answer = append_answer(addr, n).await;
+    answered.store(true, Ordering::SeqCst);
+    answer.0
+}
+
+/// An append of `{"n": n}`: its status, `Retry-After` and error code.
+async fn append_answer(addr: Addr, n: u32) -> (u16, Option<String>, Option<String>) {
     let body = format!(r#"[{{"n":{n}}}]"#);
     let path = format!("/v1/stream/{NAME}");
-    let status = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await.0;
-    answered.store(true, Ordering::SeqCst);
-    status
+    let (status, headers, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let code = error["error"]["code"].as_str().map(str::to_string);
+    (status, headers.get("retry-after").cloned(), code)
 }
 
 /// The stream's records, read back.
@@ -128,5 +138,43 @@ async fn a_barrier_dropped_unreleased_closes_its_engine() {
         .await
         .expect("the held append is answered");
     assert!(open, "open while parked");
+    engine_shutdown(&state).await;
+}
+
+/// **Past its hold, a parked engine answers `503 shard_splitting` until the release.** An
+/// append held by the barrier is answered after the 2 s hold, `503 shard_splitting` with
+/// `Retry-After: 1`, and so is one sent after it, at once. After the resume an append is
+/// served, and the stream holds neither refused record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_release() {
+    let (state, addr, engine) = serving().await;
+    let barrier = tokio::time::timeout(BOUND, engine.barrier())
+        .await
+        .expect("parked")
+        .expect("the barrier parks");
+    let parked_at = Instant::now();
+    let splitting = (
+        503,
+        Some("1".to_string()),
+        Some("shard_splitting".to_string()),
+    );
+    let held = tokio::time::timeout(BOUND, append_answer(addr, 2)).await;
+    assert_eq!(held.expect("answered after the hold"), splitting);
+    let waited = parked_at.elapsed();
+    assert!(
+        waited >= Duration::from_secs(2),
+        "held for the hold: {waited:?}"
+    );
+    let sent_at = Instant::now();
+    let later = tokio::time::timeout(Duration::from_secs(1), append_answer(addr, 3)).await;
+    assert_eq!(later.expect("answered at once"), splitting);
+    assert!(sent_at.elapsed() < Duration::from_secs(1));
+    barrier.resume();
+    assert_eq!(
+        append_answer(addr, 4).await.0,
+        204,
+        "served after the release"
+    );
+    assert_eq!(records(addr).await, serde_json::json!([{"n": 1}, {"n": 4}]));
     engine_shutdown(&state).await;
 }

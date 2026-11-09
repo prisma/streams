@@ -394,6 +394,8 @@ pub(crate) enum AppendErr {
     /// The shard was fenced by a new owner mid-request: retryable, the
     /// router converges within the anti-flap holdoff.
     Moved,
+    /// A split held the shard past its pause (S4 §8); never offered to a group, retryable.
+    Splitting,
 }
 
 /// Producer rows keyed by (key hash, producer id): epoch, sequence, offset and request hash.
@@ -1579,13 +1581,6 @@ impl ShardEngine {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Test-only ground truth for deletion tests: the number of
-    /// DURABLE state rows (cursor/lease/ack, every generation) this
-    /// consumer still has under this identity. The generation model
-    /// makes leaked residue invisible to behavioral asserts — a
-    /// recreated consumer ignores dead generations by design — so
-    /// burial is proven by counting rows, not by pulling.
-    #[cfg(test)]
     /// Test-only residue factory: durable lease rows under an OLD
     /// consumer generation, modeling the multi-generation residue a
     /// crashed/raced deletion leaves behind (round-17 stress gate).
@@ -1616,6 +1611,10 @@ impl ShardEngine {
             .map_err(|e| e.to_string())
     }
 
+    /// Test-only ground truth for deletion tests: the DURABLE state rows (cursor/lease/ack,
+    /// every generation) this consumer still has under this identity. The generation model makes
+    /// leaked residue invisible to behavioral asserts (a recreated consumer ignores dead
+    /// generations by design), so burial is proven by counting rows, not by pulling.
     #[cfg(test)]
     pub(crate) async fn count_consumer_state_rows(
         &self,
