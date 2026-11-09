@@ -32,13 +32,14 @@ import {
   placeCanary,
   placedProjects,
   placementTally,
+  kindOf,
   prefixesOf,
   SYSTEM_PROJECT,
   scopesOf,
   type Weights,
   weightValues,
 } from "./rules";
-import { type CellState, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
+import { type CellState, type ContainerKind, GATE_DEFAULT, journal, STATE_FORMAT, writeDurable } from "./state";
 import { Conflict, type StateStore } from "./store";
 import { openStore, publishNote } from "./stores";
 import { cellSigningKey, customerClaims, loadSigningKey, readPublicKey, signJwt } from "./tokens";
@@ -157,6 +158,7 @@ const profilesOf = (given: readonly string[], shareK?: number) =>
 interface Placement {
   project: string;
   workspace: string;
+  kind: ContainerKind;
   weights: Weights;
   quotas: Quotas;
   scopes: string;
@@ -177,9 +179,9 @@ function place(
   checkPlacement(state, p.project, p.workspace, denylist, { tally: kept.tally });
   checkPacking(state, p.weights, sizing);
   const credential = newCredentialId(state);
-  const { project, workspace, quotas, scopes, stream_prefixes } = p;
-  admitProject(state, { project, workspace, quotas, scopes, stream_prefixes, credential: { id: credential, seq: kept.seq } });
-  journal(state, "admit", `${project} workspace=${workspace} credential=${credential}`);
+  const { project, workspace, kind, quotas, scopes, stream_prefixes } = p;
+  admitProject(state, { project, workspace, kind, quotas, scopes, stream_prefixes, credential: { id: credential, seq: kept.seq } });
+  journal(state, "admit", `${project} workspace=${workspace} kind=${kind} credential=${credential}`);
   return credential;
 }
 
@@ -187,6 +189,7 @@ export async function admit(f: Flags, io: Io): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");
   const workspace = f.must("workspace");
+  const kind = kindOf(f.get("kind"));
   await store.exclusive(async () => {
     const { state: first } = await loadChecked(store);
     const sizing = checkSizing(first, readProfiles(profilesOf(f.all("profile"), first.cell.share_k)));
@@ -199,9 +202,9 @@ export async function admit(f: Flags, io: Io): Promise<void> {
     const scopes = scopesOf(f.get("scopes"));
     const stream_prefixes = prefixesOf(f.all("prefix"));
     await burnIds(store, [project]);
-    const placement = { project, workspace, weights, quotas, scopes, stream_prefixes };
+    const placement = { project, workspace, kind, weights, quotas, scopes, stream_prefixes };
     const { result: credential, state } = await mutate(store, (state) => place(state, placement, sizing, denylist));
-    io.out(`admitted ${project} (workspace ${workspace}) with credential ${credential}`);
+    io.out(`admitted ${project} (workspace ${workspace}, ${kind}) with credential ${credential}`);
     io.out(`quotas: ${QUOTA_FIELDS.map((q) => `${q}=${quotas[q]}`).join(" ")}`);
     io.out(`bundle: ${store.bundlePath} (feed_version ${state.feed_version}); ${publishNote(store)}`);
   });
@@ -211,6 +214,8 @@ export async function admit(f: Flags, io: Io): Promise<void> {
 export interface Admission {
   project: string;
   workspace: string;
+  /// Streams unless given.
+  kind?: ContainerKind;
   quota: readonly string[];
   weight: readonly string[];
 }
@@ -237,8 +242,8 @@ function placeEach(
     try {
       const weights = weightValues(state, a.weight);
       const quotas = admittedQuotas(state, a.quota, sizing.stored_default, weights);
-      const { project, workspace } = a;
-      place(state, { project, workspace, weights, quotas, scopes }, sizing, denylist, { tally, seq });
+      const { project, workspace, kind = "streams" } = a;
+      place(state, { project, workspace, kind, weights, quotas, scopes }, sizing, denylist, { tally, seq });
       seq += 1;
       tally.placed += 1;
       tally.active.set(workspace, (tally.active.get(workspace) ?? 0) + 1);

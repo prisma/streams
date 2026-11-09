@@ -72,6 +72,7 @@ pub(super) async fn sr_rig(
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas::default(),
         },
@@ -211,6 +212,7 @@ pub(super) fn rig_policy(project: &str, ov: u64, ppv: u64) -> crate::project_pol
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
+        kind: crate::project_policy::ContainerKind::Streams,
         status: crate::project_policy::ProjectStatus::Active,
         quotas: crate::project_policy::ProjectQuotas::default(),
     }

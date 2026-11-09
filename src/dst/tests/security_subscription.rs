@@ -186,6 +186,7 @@ async fn transfer_terminates_established_subscriptions() {
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
+        kind: crate::project_policy::ContainerKind::Streams,
         status: crate::project_policy::ProjectStatus::Active,
         quotas: crate::project_policy::ProjectQuotas::default(),
     };
@@ -367,6 +368,7 @@ async fn subscription_terminates_at_token_expiry() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas::default(),
         },
@@ -506,6 +508,7 @@ async fn suspension_terminates_established_subscriptions() {
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
+        kind: crate::project_policy::ContainerKind::Streams,
         status: crate::project_policy::ProjectStatus::Active,
         quotas: crate::project_policy::ProjectQuotas::default(),
     };

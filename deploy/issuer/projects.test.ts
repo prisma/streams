@@ -61,7 +61,7 @@ describe("creating a project", () => {
       max_stored_bytes: STORED_DEFAULT, request_weight: 1, byte_weight: 1,
     };
     expect(body.container).toEqual({
-      id, workspaceId: "ws_a", displayName: "Orders", status: "active", createdAt: state.projects[id].admitted_at,
+      id, workspaceId: "ws_a", kind: "streams", displayName: "Orders", status: "active", createdAt: state.projects[id].admitted_at,
       createdBy: by, cellId: CELL, endpoint: CELL_ORIGIN, quotas,
     });
     expect(body.endpoint).toBe(CELL_ORIGIN);
@@ -72,7 +72,7 @@ describe("creating a project", () => {
     // The state: the project and its credential, the secret's hash only.
     const pepper = parsePeppers(readFileSync(cell.pepper, "utf8"), "pepper")[0];
     expect(state.projects[id]).toMatchObject({
-      workspace_id: "ws_a", phase: "active", status: "active", project_policy_version: 1, display_name: "Orders",
+      workspace_id: "ws_a", kind: "streams", phase: "active", status: "active", project_policy_version: 1, display_name: "Orders",
       created_by: { user_id: "usr_ws_a", email: "owner@ws_a.example.com" }, quotas,
     });
     expect(state.credentials[cid]).toMatchObject({
@@ -98,6 +98,19 @@ describe("creating a project", () => {
       before: { feed_version: before }, after: { feed_version: before + 1, project_policy_version: 1, grant_version: 1 },
       request_id: res.headers.get("x-request-id"),
     }]);
+  });
+
+  test("makes a queues container when the create asks for one, publishes its kind, and refuses another kind", async () => {
+    const cell = await allowedCell();
+    const m = await managed(cell);
+    const a = m.signIn("ws_a");
+    const [status, body] = await answer(await m.send("POST", PROJECTS, a, { displayName: "Jobs", kind: "queues" }));
+    expect([status, body.container.kind]).toEqual([201, "queues"]);
+    const bundle = customerOnly(readBundle(cell.state));
+    expect((bundle.policies.containers as any[]).map((p) => [p.container_id, p.kind])).toEqual([[body.container.id, "queues"]]);
+    expect(await answer(await m.send("POST", PROJECTS, a, { displayName: "Both", kind: "both" }))).toEqual([
+      400, refusal("invalid_request", "kind is streams or queues"),
+    ]);
   });
 
   test("answers a create whose state landed but whose bundle failed to publish as made, and the next revalidation publishes it", async () => {
@@ -392,7 +405,7 @@ describe("creating a project", () => {
       [{ displayName: "x".repeat(65) }, "displayName is 1 to 64 characters, without control characters"],
       [{ displayName: "a\nb" }, "displayName is 1 to 64 characters, without control characters"],
       [{ displayName: 5 }, "displayName is 1 to 64 characters, without control characters"],
-      [{ displayName: "A", quotas: {} }, 'unknown member "quotas": the body takes displayName'],
+      [{ displayName: "A", quotas: {} }, 'unknown member "quotas": the body takes displayName, kind'],
       [JSON.stringify({ displayName: "A", pad: "x".repeat(5000) }), "the body is larger than 4096 bytes"],
     ];
     for (const [body, message] of cases) {

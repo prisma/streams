@@ -40,8 +40,8 @@ use crate::auth::{
     AUD_CUSTOMER, AUD_INTERNAL, AuthService, JwksKey, JwksSnapshot, KeyAudience, audience_shared,
 };
 use crate::project_policy::{
-    CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource, ProjectQuotas,
-    ProjectStatus,
+    ContainerKind, CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource,
+    ProjectQuotas, ProjectStatus,
 };
 use crate::tenant::ProjectId;
 
@@ -90,6 +90,7 @@ struct PolicyDoc {
     project_policy_version: u64,
     #[serde(rename = "generation")]
     ownership_version: u64,
+    kind: ContainerKind,
     status: ProjectStatus,
     /// Required, as in the contract (shared-cells R3): a policy without
     /// quotas would be an unlimited project. Each field may be absent.
@@ -455,7 +456,7 @@ mod tests {
                 "feed_version": 1,
                 "containers": [{
                     "container_id": "proj_456", "cell_id": "fra-cell-07", "policy_version": 1,
-                    "generation": 1, "status": "active", "quotas": {}
+                    "generation": 1, "kind": "streams", "status": "active", "quotas": {}
                 }]
             })
             .to_string(),
@@ -779,7 +780,7 @@ mod tests {
         let stored = |quotas: &str| {
             let doc = r#"{"feed_version": 1, "containers": [{"container_id": "proj_456",
                 "cell_id": "fra-cell-07",
-                "policy_version": 1, "generation": 1,
+                "policy_version": 1, "generation": 1, "kind": "streams",
                 "status": "active", "quotas": QUOTAS}]}"#;
             let s = parse_policies(doc.replace("QUOTAS", quotas)).unwrap();
             s.projects[&ProjectId::new("proj_456").unwrap()]
@@ -790,21 +791,31 @@ mod tests {
         assert_eq!(stored("{}"), 0);
     }
 
-    /// Edge #253: the feed names a container and no workspace or owner. A
-    /// policy that still names its workspace, or a token-side owner field,
-    /// is refused whole (unknown field), as the old key `projects` is.
+    /// Edge #253: the feed names a container, its kind (`streams` or
+    /// `queues`) and no workspace or owner. A policy without its kind, with
+    /// another, or still naming its workspace is refused whole, as the old
+    /// key `projects` is.
     #[test]
-    fn a_policy_naming_a_workspace_is_refused() {
+    fn a_policy_names_its_containers_kind_and_no_workspace() {
         let feed = |entry: &str| {
             parse_policies(format!(
                 r#"{{"feed_version": 1, "containers": [{{"container_id": "ct_1",
                 "cell_id": "fra-cell-07", "policy_version": 1, "generation": 1,
                 "status": "active", "quotas": {{}}{entry}}}]}}"#
             ))
-            .map(|s| s.projects.len())
+            .map(|s| s.projects[&ProjectId::new("ct_1").unwrap()].kind)
         };
-        assert_eq!(feed("").unwrap(), 1);
-        assert!(feed(r#", "workspace_id": "ws_789""#).is_err());
+        assert_eq!(
+            feed(r#", "kind": "streams""#).unwrap(),
+            ContainerKind::Streams
+        );
+        assert_eq!(
+            feed(r#", "kind": "queues""#).unwrap(),
+            ContainerKind::Queues
+        );
+        assert!(feed("").is_err(), "a policy without its kind parsed");
+        assert!(feed(r#", "kind": "both""#).is_err());
+        assert!(feed(r#", "kind": "streams", "workspace_id": "ws_789""#).is_err());
         let old_key = parse_policies(r#"{"feed_version": 1, "projects": []}"#);
         assert!(old_key.is_err(), "the old key parsed");
     }
@@ -817,7 +828,7 @@ mod tests {
                 "container_id": "proj_456",
                 "cell_id": "fra-cell-07",
                 "policy_version": 40,
-                "generation": 12,
+                "generation": 12, "kind": "streams",
                 "status": "active",
                 "quotas": { "requests_per_sec": 100 }
             }]
@@ -924,7 +935,7 @@ mod tests {
         let (mut policies, mut grants) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for i in 0..n {
             policies.push(format!(
-                r#"{{"container_id":"proj_{i:08}","cell_id":"test-cell","policy_version":1,"generation":1,"status":"active","quotas":{quotas}}}"#
+                r#"{{"container_id":"proj_{i:08}","cell_id":"test-cell","policy_version":1,"generation":1,"kind":"streams","status":"active","quotas":{quotas}}}"#
             ));
             grants.push(format!(
                 r#"{{"credential_id":"strcred_{i:08}","container_id":"proj_{i:08}","grant_version":1,"status":"active","scopes":"streams.records.read streams.records.append"}}"#

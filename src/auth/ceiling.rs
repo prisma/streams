@@ -448,6 +448,7 @@ mod tests {
             cell_id: "cell".into(),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: ProjectStatus::Active,
             quotas: ProjectQuotas::default(),
         };

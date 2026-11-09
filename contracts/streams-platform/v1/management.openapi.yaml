@@ -42,6 +42,10 @@ paths:
               required: [displayName]
               properties:
                 displayName: { type: string }
+                kind:
+                  type: string
+                  enum: [streams, queues]
+                  description: What the container holds, fixed at creation; streams when absent.
       responses:
         "201":
           content:
@@ -255,10 +259,11 @@ components:
   schemas:
     Container:
       type: object
-      required: [id, workspaceId, displayName, status, createdAt, cellId, endpoint, quotas]
+      required: [id, workspaceId, kind, displayName, status, createdAt, cellId, endpoint, quotas]
       properties:
         id: { type: string }
         workspaceId: { type: string, description: The owner link; never in a feed or a token. }
+        kind: { type: string, enum: [streams, queues] }
         displayName: { type: string }
         status: { type: string, enum: [active, suspended, deleting] }
         createdAt: { type: string, format: date-time }

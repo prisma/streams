@@ -52,6 +52,7 @@ async fn shadow_mode_observes_without_enforcing() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 40,
             ownership_version: 12,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas::default(),
         },
@@ -246,6 +247,7 @@ async fn enforce_mode_gates_the_product_surface() {
         cell_id: std::sync::Arc::from(cell),
         project_policy_version: 1,
         ownership_version: 12,
+        kind: crate::project_policy::ContainerKind::Streams,
         status,
         quotas: crate::project_policy::ProjectQuotas::default(),
     };

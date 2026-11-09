@@ -15,10 +15,11 @@ import { basename, dirname, join } from "node:path";
 import { AdminError } from "./errors";
 import type { Ceilings, Quotas } from "./profile";
 
-export const STATE_FORMAT = "streams-cell-admin/v2";
-/// The format before the issuer's fields. No production cell holds one
-/// and no reader for it is kept: a v1 cell is initialised again.
-const STATE_FORMAT_V1 = "streams-cell-admin/v1";
+export const STATE_FORMAT = "streams-cell-admin/v3";
+/// The formats before the container's kind (v2) and before the issuer's
+/// fields (v1). No reader for either is kept: such a cell is initialised
+/// again (layout 8 resets every cell anyway).
+const OLD_STATE_FORMATS = ["streams-cell-admin/v1", "streams-cell-admin/v2"];
 export const STATE_FILE = "cell-state.json";
 export const BUNDLE_FILE = "feeds-bundle.json";
 
@@ -64,8 +65,14 @@ export interface Actor {
   email: string;
 }
 
+/// What a container holds, fixed at its admission and published in its
+/// policy (edge #253).
+export type ContainerKind = "streams" | "queues";
+export const CONTAINER_KINDS: readonly ContainerKind[] = ["streams", "queues"];
+
 export interface ProjectRecord {
   workspace_id: string;
+  kind: ContainerKind;
   phase: Phase;
   /// Published as the policy entry's status; `suspended` makes the cell
   /// answer the project's requests 403 container_not_active.
@@ -211,11 +218,11 @@ export async function withLock<T>(dir: string, fn: () => Promise<T>): Promise<T>
   }
 }
 
-/// A state document's text as a v2 state, or a refusal naming `where`.
+/// A state document's text as a v3 state, or a refusal naming `where`.
 export function parseState(text: string, where: string): CellState {
   const state = JSON.parse(text) as CellState;
-  if ((state.format as string) === STATE_FORMAT_V1) {
-    throw new AdminError(`${where} is a ${STATE_FORMAT_V1} state, which this cell-admin does not read: re-initialise the cell`);
+  if (OLD_STATE_FORMATS.includes(state.format as string)) {
+    throw new AdminError(`${where} is a ${state.format} state, which this cell-admin does not read: re-initialise the cell`);
   }
   if (state.format !== STATE_FORMAT) {
     throw new AdminError(`${where} is not a ${STATE_FORMAT} state`);

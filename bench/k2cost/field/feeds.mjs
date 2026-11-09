@@ -64,7 +64,7 @@ if (cmd === "init") {
       feed_version: 1,
       containers: [{
         container_id: project, cell_id: cell,
-        policy_version: 1, generation: 1, status: "active", quotas: {},
+        policy_version: 1, generation: 1, kind: "streams", status: "active", quotas: {},
       }],
     },
     grants: {

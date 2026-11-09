@@ -537,6 +537,7 @@ async fn watch_capability_respects_project_suspension() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Suspended,
             quotas: crate::project_policy::ProjectQuotas::default(),
         },
@@ -593,6 +594,7 @@ async fn watch_capability_waits_occupy_project_admission() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas {
                 max_inflight_requests: 1,
@@ -713,6 +715,7 @@ async fn stale_policy_fails_watch_capabilities_closed() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas::default(),
         },

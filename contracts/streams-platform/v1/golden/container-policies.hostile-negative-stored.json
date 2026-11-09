@@ -7,6 +7,7 @@
       "cell_id": "local-cell",
       "policy_version": 1,
       "generation": 1,
+      "kind": "streams",
       "status": "active",
       "quotas": { "max_stored_bytes": -1 }
     }

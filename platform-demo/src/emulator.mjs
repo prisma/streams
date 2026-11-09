@@ -116,10 +116,12 @@ let gen = { keys: 0, policies: 0, grants: 0 };
 let credSeq = 0;
 
 for (const fx of argAll("fixture")) {
-  const [pid, ws, cell] = fx.split(":");
-  const cell_id = cell ?? firstCell;
+  // pid:workspace[:cell[:kind]], a streams container unless kind says queues.
+  const [pid, ws, cell, kind = "streams"] = fx.split(":");
+  const cell_id = cell || firstCell;
   if (!cells.has(cell_id)) throw new Error(`fixture ${fx}: unknown cell ${cell_id}`);
-  projects.set(pid, { workspace_id: ws, status: "active", ppv: 1, ov: 1, quotas: {}, cell_id });
+  if (kind !== "streams" && kind !== "queues") throw new Error(`fixture ${fx}: kind is streams or queues`);
+  projects.set(pid, { workspace_id: ws, kind, status: "active", ppv: 1, ov: 1, quotas: {}, cell_id });
 }
 
 // ---- feed projection (atomic full snapshots, per cell) -------------------
@@ -148,6 +150,7 @@ function snapshotBodies(cellId) {
         cell_id: p.cell_id,
         policy_version: p.ppv,
         generation: p.ov,
+        kind: p.kind,
         status: p.status === "active" ? "active" : "suspended", // cell vocabulary; saga states read as not-active
         quotas: p.quotas,
       })),

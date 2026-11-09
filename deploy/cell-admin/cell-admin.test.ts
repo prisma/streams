@@ -113,7 +113,7 @@ for (const kind of STORES) {
         // alerting watch's canary stream, so neither's create meets the other's.
         expect(b.policies.containers).toEqual([{
           container_id: "sp_canary_cell_sc1", cell_id: "cell_sc1",
-          policy_version: 1, generation: 1, status: "active",
+          policy_version: 1, generation: 1, kind: "streams", status: "active",
           quotas: { ...CEILINGS, requests_per_sec: 5, max_streams: 2 },
         }]);
         const [[id, canary]] = Object.entries(readState(c.state).credentials);
@@ -288,6 +288,18 @@ for (const kind of STORES) {
     });
 
     describe("admit", () => {
+      test("records the container's kind, streams unless --kind queues says otherwise, and publishes it", async () => {
+        const c = await initCell();
+        expect((await run("admit", "--state", c.state, "--project", "proj_s", "--workspace", "w")).code).toBe(0);
+        expect((await run("admit", "--state", c.state, "--project", "proj_q", "--workspace", "w", "--kind", "queues")).code)
+          .toBe(0);
+        const r = await run("admit", "--state", c.state, "--project", "proj_x", "--workspace", "w", "--kind", "both");
+        expect([r.code, r.err.split("\n")[0]]).toEqual([2, 'cell-admin admit: --kind is streams or queues, not "both"']);
+        const kinds = (customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => [p.container_id, p.kind]);
+        expect(kinds).toEqual([["proj_q", "queues"], ["proj_s", "streams"]]);
+        expect(readState(c.state).projects.proj_q.kind).toBe("queues");
+      });
+
       test("refuses a stream prefix the cell's grants parser refuses, and no writer publishes one", async () => {
         const c = await initCell();
         const refused: [string, string][] = [
@@ -333,7 +345,7 @@ for (const kind of STORES) {
           feed_version: 2,
           containers: [{
             container_id: "proj_a", cell_id: "cell_sc1", policy_version: 1,
-            generation: 1, status: "active",
+            generation: 1, kind: "streams", status: "active",
             quotas: { ...CEILINGS, max_streams: 100, queued_append_bytes: 1048576 },
           }],
         });
@@ -759,13 +771,16 @@ for (const kind of STORES) {
         expect(r.err).toContain("is at feed_version 1 but its bundle is at 2: the state was restored from a stale copy");
       });
 
-      test("refuses a streams-cell-admin/v1 state: no reader for it exists, the cell is re-initialised", async () => {
+      test("refuses a v1 or v2 state: no reader for either exists, the cell is re-initialised", async () => {
         const c = await initCell();
         const path = statePathOf(c.state);
-        writeStateText(c.state, JSON.stringify({ ...readState(c.state), format: "streams-cell-admin/v1" }));
-        const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
-        expect([r.code, r.err]).toEqual([1, `cell-admin admit: ${path} is a streams-cell-admin/v1 state, ` +
-          "which this cell-admin does not read: re-initialise the cell"]);
+        const fresh = readState(c.state);
+        for (const format of ["streams-cell-admin/v1", "streams-cell-admin/v2"]) {
+          writeStateText(c.state, JSON.stringify({ ...fresh, format }));
+          const r = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w");
+          expect([r.code, r.err]).toEqual([1, `cell-admin admit: ${path} is a ${format} state, ` +
+            "which this cell-admin does not read: re-initialise the cell"]);
+        }
       });
 
       test("the bundle publishes each project's status and each credential's expiry from the state", async () => {

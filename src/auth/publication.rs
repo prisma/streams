@@ -149,6 +149,9 @@ fn check_projects_transition(op: &ProjectPolicy, np: &ProjectPolicy) -> Result<(
     if np.project_policy_version < op.project_policy_version {
         return Err("policy_version regressed");
     }
+    if np.kind != op.kind {
+        return Err("kind changed");
+    }
     Ok(())
 }
 

@@ -54,6 +54,7 @@ const bundle = {
       cell_id: CELL,
       policy_version: 1,
       generation: 1,
+      kind: "streams",
       status: "active",
       quotas: {},
     })),

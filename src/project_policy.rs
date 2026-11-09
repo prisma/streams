@@ -18,6 +18,14 @@ use std::sync::Arc;
 
 use crate::tenant::{ProjectId, ScopeSet, StreamGrant};
 
+/// Edge #253: what a container holds, fixed at its creation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ContainerKind {
+    Streams,
+    Queues,
+}
+
 /// §11. Every status except `Active` fails closed at authorization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +90,7 @@ pub(crate) struct ProjectPolicy {
     pub cell_id: Arc<str>,
     pub project_policy_version: u64,
     pub ownership_version: u64,
+    pub kind: ContainerKind,
     pub status: ProjectStatus,
     pub quotas: ProjectQuotas,
 }

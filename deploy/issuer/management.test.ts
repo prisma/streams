@@ -51,6 +51,7 @@ describe("the management API's sessions", () => {
       containers: [{
         id: "sp_a",
         workspaceId: "ws_sp_a",
+        kind: "streams",
         displayName: "sp_a",
         status: "active",
         createdAt: state.projects.sp_a.admitted_at,

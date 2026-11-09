@@ -129,7 +129,7 @@ describe("admitProject", () => {
     const s = readState(c.state);
     const id = newCredentialId(s);
     admitProject(s, {
-      project: "sp_0123", workspace: "wksp_9", quotas: admittedQuotas(s, ["requests_per_sec=10"], 10737418240),
+      project: "sp_0123", workspace: "wksp_9", kind: "streams", quotas: admittedQuotas(s, ["requests_per_sec=10"], 10737418240),
       scopes: "streams.catalog.read streams.records.read", display_name: "Orders",
       created_by: { user_id: "u1", email: "u1@example.com" },
       credential: { id, secret_hash: "aGFzaA", hv: 1, hint: "x1y2z3", display_name: "ci" },
@@ -143,7 +143,7 @@ describe("admitProject", () => {
     expect((b.policies.containers as any[]).map((p) => [p.container_id, p.quotas.requests_per_sec])).toEqual([["sp_0123", 10]]);
     expect(b.grants.credentials).toEqual([{ credential_id: id, container_id: "sp_0123", grant_version: 1,
       status: "active", scopes: "streams.catalog.read streams.records.read", expires_at: null }]);
-    expect(() => admitProject(s, { project: "sp_0123", workspace: "w", quotas: s.projects.sp_0123.quotas,
+    expect(() => admitProject(s, { project: "sp_0123", workspace: "w", kind: "streams", quotas: s.projects.sp_0123.quotas,
       scopes: "streams.catalog.read", credential: { id: newCredentialId(s) } })).toThrow("project sp_0123 is already on this cell");
   });
 });

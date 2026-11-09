@@ -104,6 +104,7 @@ fn dab_policies(
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: feed_version,
                 ownership_version: 1,
+                kind: crate::project_policy::ContainerKind::Streams,
                 status,
                 quotas: crate::project_policy::ProjectQuotas::default(),
             },

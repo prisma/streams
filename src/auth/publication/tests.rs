@@ -5,8 +5,8 @@ use super::{AuthService, HighWater, JwksKey, JwksSnapshot, feed_fp};
 use crate::auth::AuthMode;
 use crate::auth::ceiling::{CellCeiling, SharedBounds};
 use crate::project_policy::{
-    CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy, ProjectQuotas,
-    ProjectStatus,
+    ContainerKind, CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy,
+    ProjectQuotas, ProjectStatus,
 };
 use crate::tenant::{ProjectId, ScopeSet, StreamGrant};
 
@@ -106,6 +106,7 @@ fn policy(version: u64) -> ProjectPolicy {
         cell_id: Arc::from("test-cell"),
         project_policy_version: version,
         ownership_version: version,
+        kind: crate::project_policy::ContainerKind::Streams,
         status: ProjectStatus::Active,
         quotas: ProjectQuotas::default(),
     }
@@ -173,6 +174,28 @@ fn refused_policy_changes_neither_snapshot_history_nor_generation() {
     assert_eq!(history(&service), history_before);
     assert_eq!(service.auth_generation(), generation);
     assert_eq!(*service.generation_watch().borrow(), generation);
+}
+
+/// Edge #253: a container's kind is fixed at its creation. A policy that
+/// changes it, even at a newer version, is refused and changes nothing.
+#[test]
+fn a_policy_that_changes_its_containers_kind_is_refused() {
+    let service = service();
+    let snapshot = |p: ProjectPolicy, feed_version| PolicySnapshot {
+        projects: HashMap::from([(p.project_id.clone(), p)]),
+        fetched_at_unix: 100,
+        feed_version,
+    };
+    service.publish_policies(snapshot(policy(7), 10)).unwrap();
+    let before = service.projects.load_full();
+    let mut changed = policy(8);
+    changed.kind = ContainerKind::Queues;
+    assert_eq!(
+        service.publish_policies(snapshot(changed, 11)),
+        Err("kind changed")
+    );
+    assert!(Arc::ptr_eq(&before, &service.projects.load_full()));
+    service.publish_policies(snapshot(policy(8), 11)).unwrap();
 }
 
 /// Shared-cells H1: a policy publishes at its effective quotas, and the

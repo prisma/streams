@@ -46,6 +46,7 @@ async fn project_rate_quota_backstop_answers_429() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas {
                 requests_per_sec: 2,
@@ -187,6 +188,7 @@ async fn volume_quotas_meter_appends_and_reads() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas {
                 append_records_per_sec: 2,
@@ -387,6 +389,7 @@ async fn quota_rig(
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas,
         },
@@ -894,6 +897,7 @@ async fn max_streams_transition_seeds_from_reality() {
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
+            kind: crate::project_policy::ContainerKind::Streams,
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas {
                 max_streams: 2,

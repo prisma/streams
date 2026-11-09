@@ -101,6 +101,7 @@ impl<'de> Visitor<'de> for PoliciesVisitor {
                 cell_id: cells.share(Arc::<str>::from(doc.cell_id)),
                 project_policy_version: doc.project_policy_version,
                 ownership_version: doc.ownership_version,
+                kind: doc.kind,
                 status: doc.status,
                 quotas: doc.quotas,
             };

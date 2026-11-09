@@ -20,7 +20,7 @@ const USAGE = `usage: cell-admin <command> --state DIR|s3://BUCKET/cells/CELL [-
   init      --cell-id C --deployment-project P (--key-file K | --public-key FILE)
             [--profile F]... [--issuer URL] [--workspace-cap N] [--max-projects N] [--denylist FILE]
             [--cell-env FILE]
-  admit     --project P --workspace W [--quota field=value]... [--weight request=N|bytes=N]... [--class m|l]
+  admit     --project P --workspace W [--kind streams|queues] [--quota field=value]... [--weight request=N|bytes=N]... [--class m|l]
             [--scopes "s ..."] [--prefix p]... [--profile F]...
   check-sizing --profile F [--profile F]...
   reprofile --recorded-profile F [--recorded-profile F]... --profile F [--profile F]...
@@ -56,7 +56,7 @@ const COMMANDS = {
   admit: {
     run: admit,
     spec: {
-      single: ["state", "s3-credentials", "project", "workspace", "scopes", "class"],
+      single: ["state", "s3-credentials", "project", "workspace", "kind", "scopes", "class"],
       multi: ["quota", "weight", "prefix", "profile"],
       required: ["state", "project", "workspace"],
     },

@@ -15,6 +15,7 @@ export function projectView(cfg: IssuerConfig, state: CellState, id: string, p: 
   return {
     id,
     workspaceId: p.workspace_id,
+    kind: p.kind,
     displayName: p.display_name ?? id,
     status: p.phase === "active" ? p.status : "deleting",
     createdAt: p.admitted_at,

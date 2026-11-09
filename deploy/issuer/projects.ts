@@ -40,7 +40,7 @@ import {
   placedProjects,
 } from "../cell-admin/rules";
 import { newSecret, presentedSecret, secretFields } from "../cell-admin/secrets";
-import { type CellState, journal } from "../cell-admin/state";
+import { CONTAINER_KINDS, type CellState, type ContainerKind, journal } from "../cell-admin/state";
 import {
   audited,
   type Call,
@@ -146,11 +146,16 @@ export class Projects {
   }
 
   async create(c: GrowthCall): Promise<Response> {
-    const body = await readObject(c.req, ["displayName"]);
+    const body = await readObject(c.req, ["displayName", "kind"]);
     const name = typeof body === "string" ? null : displayNameOf(body.displayName);
     if (typeof body === "string" || name === null) {
       const message = typeof body === "string" ? body : "displayName is 1 to 64 characters, without control characters";
       return refused(this.deps, c, { status: 400, code: "invalid_request", message });
+    }
+    // A streams container unless the create names its kind (edge #253).
+    const kind = body.kind === undefined ? "streams" : CONTAINER_KINDS.find((k) => k === body.kind);
+    if (kind === undefined) {
+      return refused(this.deps, c, { status: 400, code: "invalid_request", message: "kind is streams or queues" });
     }
     const w = c.session.workspace_id;
     const wait = this.deps.limits.take("project_create_workspace", w);
@@ -193,7 +198,7 @@ export class Projects {
     } catch (e) {
       return refused(this.deps, c, placementRefusal(e, w, cap));
     }
-    return this.place(c, { id, name, cap, place, storedDefault });
+    return this.place(c, { id, name, kind, cap, place, storedDefault });
   }
 
   /// Delete a project (design §10): offboarding's first phase in one
@@ -230,7 +235,7 @@ export class Projects {
   /// Burn the id, then place the project in one compare-and-swap.
   private async place(
     c: GrowthCall,
-    a: { id: string; name: string; cap: number; place: (s: CellState) => void; storedDefault: number },
+    a: { id: string; name: string; kind: ContainerKind; cap: number; place: (s: CellState) => void; storedDefault: number },
   ): Promise<Response> {
     const w = c.session.workspace_id;
     const by = { user_id: c.session.user_id, email: c.session.email };
@@ -255,13 +260,14 @@ export class Projects {
       admitProject(s, {
         project: a.id,
         workspace: w,
+        kind: a.kind,
         quotas: admittedQuotas(s, [`requests_per_sec=${rps}`], a.storedDefault),
         scopes: CUSTOMER_SCOPES.join(" "),
         display_name: a.name,
         created_by: by,
         credential: { id: cid, ...fields, display_name: FIRST_CREDENTIAL_NAME, created_by: by },
       });
-      journal(s, "project.create", `${a.id} workspace=${w} credential=${cid} user=${by.user_id}`);
+      journal(s, "project.create", `${a.id} workspace=${w} kind=${a.kind} credential=${cid} user=${by.user_id}`);
       return cid;
     });
     if (done instanceof Response) return done;

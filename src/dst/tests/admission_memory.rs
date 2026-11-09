@@ -284,17 +284,7 @@ async fn pm_enforce_rig(
     .unwrap();
     let pid = crate::tenant::ProjectId::new("proj-pm").unwrap();
     let mut projects = std::collections::HashMap::new();
-    projects.insert(
-        pid.clone(),
-        crate::project_policy::ProjectPolicy {
-            project_id: pid.clone(),
-            cell_id: std::sync::Arc::from("test-cell"),
-            project_policy_version: 1,
-            ownership_version: 1,
-            status: crate::project_policy::ProjectStatus::Active,
-            quotas: crate::project_policy::ProjectQuotas::default(),
-        },
-    );
+    projects.insert(pid.clone(), rig_policy("proj-pm", 1, 1));
     svc.publish_policies(crate::project_policy::PolicySnapshot {
         projects,
         fetched_at_unix: now,

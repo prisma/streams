@@ -420,6 +420,7 @@ For file projection, write to a temporary file, flush it, and atomically rename 
       "cell_id": "fra-cell-07",
       "policy_version": 9,
       "generation": 3,
+      "kind": "streams",
       "status": "active",
       "quotas": {
         "requests_per_sec": 1000,
@@ -438,6 +439,8 @@ For file projection, write to a temporary file, flush it, and atomically rename 
 ```
 
 Only projects assigned to this cell are present.
+
+`kind` is `streams` or `queues`: what the container holds, fixed when it is created. A policy without it is refused, and so is one that changes the kind of a container the cell already holds (edge #253).
 
 ### 7.4 Credential-grant snapshot shape
 

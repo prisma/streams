@@ -249,6 +249,7 @@ async fn shared_cell_certification_smoke() {
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
+                kind: crate::project_policy::ContainerKind::Streams,
                 status: crate::project_policy::ProjectStatus::Active,
                 quotas: crate::project_policy::ProjectQuotas::default(),
             },

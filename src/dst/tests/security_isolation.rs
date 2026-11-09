@@ -51,6 +51,7 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
+                kind: crate::project_policy::ContainerKind::Streams,
                 status: crate::project_policy::ProjectStatus::Active,
                 quotas: crate::project_policy::ProjectQuotas::default(),
             },
@@ -273,6 +274,7 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
+                kind: crate::project_policy::ContainerKind::Streams,
                 status: crate::project_policy::ProjectStatus::Active,
                 quotas: crate::project_policy::ProjectQuotas {
                     requests_per_sec: rps,

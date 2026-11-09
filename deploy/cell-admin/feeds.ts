@@ -52,6 +52,7 @@ export const policyEntry = (state: CellState, id: string, p: ProjectRecord) => (
   cell_id: state.cell.cell_id,
   policy_version: p.project_policy_version,
   generation: p.ownership_version,
+  kind: p.kind,
   status: p.status,
   quotas: { ...p.quotas },
 });

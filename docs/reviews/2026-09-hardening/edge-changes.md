@@ -446,7 +446,8 @@ In each of these changes, a request that used to succeed can now fail permanentl
      - 3a-1, ff4b54bae: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
      - 3a-2a, 865907392: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
      - 3a-2b, eb1bd8862: the env names and flags say container.
-     - 3a-3, this commit: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
+     - 3a-3, ec89e78f4: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
+     - 3b-1, this commit: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
      - Pending: 3b (kind and single-name refusals), 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
@@ -473,6 +474,11 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - its answers carry `containers` and `container` where they carried `projects` and `project`; the codes are `409 container_limit` and the readiness and served reasons `container_suspended` and `container_deleting`, and its refusal messages say container;
     - a cell made without `--workspace-cap` holds a workspace to 1,000 containers (it was 1), the control plane's single cap (CONTAINER-VALIDATION §5b item 2, the owner's decision of 2026-11-08); an allow-list entry's `--max-projects` still overrides it;
     - the management contract (`contracts/streams-platform/v1/management.openapi.yaml`) lists those routes, the one-credential `GET`, the `Container`, `Readiness` and `Served` shapes and the exchange's `cellId`, and has no `/admin/projects/{id}/transfer` route; the emulator's deletion route is `/admin/containers/{id}/delete`.
+  - From 3b-1's commit on:
+    - every policy names its container's `kind`, `streams` or `queues`; a policy without it, or with another value, is refused whole (the contract's schema requires it), and a policy that changes the kind of a container the cell holds is refused (`kind changed`) and changes nothing;
+    - cell-admin's state is `streams-cell-admin/v3` and records each container's kind (a v1 or v2 state is refused: re-initialise the cell); `admit --kind streams|queues` and the issuer's create body `{"displayName","kind"?}` set it, `streams` when absent; the canary is a streams container; the issuer's container view shows `kind`;
+    - the emulator's `--fixture id:workspace[:cell[:kind]]` and the bench and campaign feed generators publish `kind`;
+    - nothing refuses a create by kind yet: that is 3b-2.
   - Until 3c: the issuer page's copy, cell-admin's flags and state fields (`--max-projects`, `--project`, `projects`, `project_id`), the audit records and the operator fields still say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.

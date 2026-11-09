@@ -13,7 +13,7 @@
         "type": "object",
         "required": [
           "container_id", "cell_id",
-          "policy_version", "generation", "status", "quotas"
+          "policy_version", "generation", "kind", "status", "quotas"
         ],
         "additionalProperties": false,
         "properties": {
@@ -21,6 +21,10 @@
           "cell_id": { "$ref": "#/$defs/id" },
           "policy_version": { "type": "integer", "minimum": 1 },
           "generation": { "type": "integer", "minimum": 1 },
+          "kind": {
+            "enum": ["streams", "queues"],
+            "description": "What the container holds, fixed at its creation: a streams container holds streams and a queues container queues. The cell refuses a policy that changes an accepted container's kind (edge #253)."
+          },
           "status": { "enum": ["active", "suspended", "deleting", "deleted"] },
           "quotas": {
             "type": "object",

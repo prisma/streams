@@ -65,6 +65,7 @@ pub(super) fn policy(i: usize, quotas: ProjectQuotas) -> ProjectPolicy {
         cell_id: Arc::from("test-cell"),
         project_policy_version: 1,
         ownership_version: 1,
+        kind: crate::project_policy::ContainerKind::Streams,
         status: ProjectStatus::Active,
         quotas,
     }

@@ -21,7 +21,7 @@ import {
   type QuotaField,
   type Quotas,
 } from "./profile";
-import type { Actor, CellState, CredentialRecord, ProjectRecord } from "./state";
+import { type Actor, CONTAINER_KINDS, type CellState, type ContainerKind, type CredentialRecord, type ProjectRecord } from "./state";
 
 /// The id grammar of the policy feed and the server (src/tenant.rs).
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -495,6 +495,14 @@ export function scopesOf(raw: string | undefined): string {
 
 /// A credential's stream prefixes from `--prefix`: none, or 1 to 64 that
 /// the cell's grants parser takes (prefixes.ts).
+/// `--kind`: a container's kind, streams unless given.
+export function kindOf(raw: string | undefined): ContainerKind {
+  if (raw === undefined) return "streams";
+  const kind = CONTAINER_KINDS.find((k) => k === raw);
+  if (kind === undefined) throw new AdminError(`--kind is streams or queues, not ${JSON.stringify(raw)}`, 2);
+  return kind;
+}
+
 export function prefixesOf(prefixes: readonly string[]): string[] | undefined {
   if (prefixes.length === 0) return undefined;
   if (prefixes.length > PREFIX_MAX_COUNT) throw new AdminError(`--prefix: 1 to ${PREFIX_MAX_COUNT} prefixes`, 2);
@@ -549,6 +557,7 @@ export function admitProject(
   a: {
     project: string;
     workspace: string;
+    kind: ContainerKind;
     quotas: Quotas;
     scopes: string;
     stream_prefixes?: string[];
@@ -561,6 +570,7 @@ export function admitProject(
   const now = new Date().toISOString();
   state.projects[a.project] = {
     workspace_id: a.workspace,
+    kind: a.kind,
     phase: "active",
     status: "active",
     project_policy_version: 1,
@@ -640,6 +650,7 @@ export function placeCanary(state: CellState, storedDefault: number): void {
   admitProject(state, {
     project: canaryProjectId(state.cell.cell_id),
     workspace: CANARY_WORKSPACE,
+    kind: "streams",
     quotas: admittedQuotas(state, ["requests_per_sec=5", "max_streams=2"], storedDefault),
     scopes: "streams.catalog.read",
     display_name: "canary",
