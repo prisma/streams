@@ -51,6 +51,16 @@ pub(crate) struct MaintenanceGate {
     retired: Mutex<Option<Reroute>>,
     marking: AtomicBool,
     touched: Mutex<HashSet<[u8; 16]>>,
+    /// Tests: where a split pauses once its barrier parks (`pause_at_park`).
+    #[cfg(test)]
+    pause: Mutex<Option<PausePoint>>,
+}
+
+/// Tests: a split that reaches its pause answers `reached` and waits for `go`.
+#[cfg(test)]
+pub(crate) struct PausePoint {
+    pub(crate) reached: tokio::sync::oneshot::Sender<()>,
+    pub(crate) go: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl MaintenanceGate {
@@ -73,6 +83,21 @@ impl MaintenanceGate {
     /// every group `Splitting`.
     pub(crate) fn splitting(&self) -> bool {
         self.splitting.load(Ordering::Acquire)
+    }
+
+    /// Tests: the next split of this engine stops once its barrier parked, until the test says go.
+    #[cfg(test)]
+    pub(crate) fn pause_at_park(&self, point: PausePoint) {
+        *self.pause.lock().unwrap_or_else(PoisonError::into_inner) = Some(point);
+    }
+
+    /// Tests: the pause point a split takes, if a test set one.
+    #[cfg(test)]
+    pub(crate) fn take_pause(&self) -> Option<PausePoint> {
+        self.pause
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// The committer's touched-queue mark (S4-DESIGN §7.2): while it is set, every queue whose

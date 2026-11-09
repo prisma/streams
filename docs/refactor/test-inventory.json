@@ -3082,7 +3082,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0eaa9eecb8a9ed57983e614be8fa06a8670a79552e1572cab98052d3df835265",
+    "function_sha256": "0908f585a576c22bfe46da153b818968fb4e5a245e3b852cad3278c4905a117c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
@@ -4040,6 +4040,17 @@
       "crate::failpoints::release_append_before_enqueue(\"opcrecreate\");"
     ],
     "file": "src/dst/tests/billing_operation_counts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "aed3ec67c539733220a40e7bf1b6e039f780929ab63323163ffb3ee738f2f490",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },
   {

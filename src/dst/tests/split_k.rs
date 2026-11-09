@@ -47,10 +47,29 @@ async fn refcounts(engine: &crate::shard::ShardEngine) -> BTreeMap<ObjectId, (u6
         .collect()
 }
 
-/// **A split's children each serve their stream back byte-exact, and their counts sum to the
-/// parent's.**
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
+/// A rig whose stored topology is its own, with a stream in each half of the leaf `00` holding two
+/// records each, and the leaf's engine.
+struct Cell {
+    state: State,
+    addr: Addr,
+    low: String,
+    high: String,
+    parent: Arc<crate::shard::ShardEngine>,
+}
+
+/// One record of `n`, padded.
+fn body(n: u32) -> String {
+    format!(r#"[{{"n":{n},"pad":"{}"}}]"#, "x".repeat(64))
+}
+
+/// An append of `{"n": n}` to `name`: its status and the next offset it reports.
+async fn append(addr: Addr, name: &str, n: u32) -> (u16, Option<String>) {
+    let path = format!("/v1/stream/{name}");
+    let (status, headers, _) = hreq(addr, "POST", &path, &[JSON], body(n).as_bytes()).await;
+    (status, headers.get("stream-next-offset").cloned())
+}
+
+async fn cell() -> Cell {
     let store = mem();
     let (state, addr) = http_rig(store.clone()).await;
     // The cell's stored topology, as boot leaves it: the rig's own.
@@ -67,21 +86,32 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
     let mut taken = 0;
     let low = stream_in_half(&state, addr, '0', &mut taken).await;
     let high = stream_in_half(&state, addr, '1', &mut taken).await;
-    let body = |n: u32| format!(r#"[{{"n":{n},"pad":"{}"}}]"#, "x".repeat(64));
     for (name, n) in [(&low, 1), (&high, 2), (&low, 3), (&high, 4)] {
-        let (status, _, _) = hreq(
-            addr,
-            "POST",
-            &format!("/v1/stream/{name}"),
-            &[JSON],
-            body(n).as_bytes(),
-        )
-        .await;
-        assert_eq!(status, 204, "append to {name}");
+        assert_eq!(append(addr, name, n).await.0, 204, "append to {name}");
     }
     let desc = stored(&state, &state.deployment.raw_adapter_sref(&low)).await;
     let parent = engine_of(&state, &desc, 0).await;
     assert_eq!(parent.prefix, "00");
+    Cell {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+    }
+}
+
+/// **A split's children each serve their stream back byte-exact, and their counts sum to the
+/// parent's.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
+    let Cell {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+    } = cell().await;
     parent.seal_requested().await.expect("seal");
     let before = refcounts(&parent).await;
     let shared: Vec<ObjectId> = before
@@ -89,10 +119,11 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
         .filter(|(_, (chunks, _))| *chunks == 2)
         .map(|(id, _)| *id)
         .collect();
-    assert_eq!(
-        shared.len(),
-        1,
-        "one object holds both streams' chunks: {before:?}"
+    // One seal holds both streams' chunks in one object; the sealer may have sealed the first two
+    // records on its own too, in an object of its own that both streams also share.
+    assert!(
+        !shared.is_empty(),
+        "an object holds both streams' chunks: {before:?}"
     );
     let want = (records(addr, &low).await, records(addr, &high).await);
 
@@ -121,18 +152,84 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
             (at.0, at.1) = (at.0 + chunks, at.1 + bytes);
         }
     }
-    assert_eq!(
-        summed.get(&shared[0]),
-        before.get(&shared[0]),
-        "the children sum to the parent"
-    );
-    for (_, _, child) in &published.children {
+    for id in &shared {
         assert_eq!(
-            refcounts(child).await.get(&shared[0]).map(|c| c.0),
-            Some(1),
-            "{}",
-            child.prefix
+            summed.get(id),
+            before.get(id),
+            "the children sum to the parent: {id:?}"
         );
     }
+    for (_, _, child) in &published.children {
+        let counted = refcounts(child).await;
+        let chunks: Vec<_> = shared
+            .iter()
+            .map(|id| counted.get(id).map(|c| c.0))
+            .collect();
+        assert_eq!(chunks, vec![Some(1); shared.len()], "{}", child.prefix);
+    }
     engine_shutdown(&state).await;
+}
+
+/// **An append the split held is acked by its child, at its exact offset.** The split pauses once
+/// its barrier parked; an append to the lower stream then waits in the parent's queue. Released, the
+/// split publishes and re-routes it: the append is answered 204 by the child, the stream's next
+/// offset moves past it, and the stream reads its three records in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset() {
+    let Cell {
+        state,
+        addr,
+        low,
+        parent,
+        ..
+    } = cell().await;
+    let (before, _) = records_and_next(addr, &low).await;
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    parent.gc_state().gate.pause_at_park(point);
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, "op-held", "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split paused at its park");
+        let release = async {
+            until_queued(&parent).await;
+            assert!(go_tx.send(()).is_ok(), "the split waits for go");
+        };
+        futures_util::future::join(append(addr, &low, 9), release)
+            .await
+            .0
+    };
+    let (published, (status, next)) = futures_util::future::join(split, control).await;
+    let published = published.expect("the split publishes");
+    assert_eq!(published.version, 2);
+    assert_eq!(status, 204, "the held append is acked");
+    let (after, read_next) = records_and_next(addr, &low).await;
+    let mut want = before.as_array().cloned().unwrap_or_default();
+    want.push(serde_json::from_str::<serde_json::Value>(&body(9)).unwrap()[0].clone());
+    assert_eq!(
+        after,
+        serde_json::Value::Array(want),
+        "the held record, last"
+    );
+    assert!(next.is_some(), "the ack reports its offset");
+    assert_eq!(next, read_next, "acked at the offset the child serves next");
+    engine_shutdown(&state).await;
+}
+
+/// The records of `name` and the next offset its read reports.
+async fn records_and_next(addr: Addr, name: &str) -> (serde_json::Value, Option<String>) {
+    let (status, headers, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
+    let records = serde_json::from_slice(&body).unwrap_or_default();
+    (records, headers.get("stream-next-offset").cloned())
+}
+
+/// Wait until `engine`'s committer holds an operation in its queue, at most 5 s.
+async fn until_queued(engine: &crate::shard::ShardEngine) {
+    let t0 = std::time::Instant::now();
+    while engine.queued_ops() == 0 {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "held");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
 }

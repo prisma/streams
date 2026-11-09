@@ -175,6 +175,12 @@ pub(crate) async fn split(
         Some(_) => parent.barrier().await.ok(),
         None => None,
     };
+    if let Some(point) = gate.take_pause() {
+        // Tests only: a test that went away is no reason to stop the split.
+        if point.reached.send(()).is_ok() {
+            drop(point.go.await);
+        }
+    }
     let copied = match (&prepared, &barrier) {
         (Ok(()), Some(_)) => copy(&*store, parent, &children, op_id).await,
         (Err(e), _) => Err(e.clone()),
