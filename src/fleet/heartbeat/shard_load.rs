@@ -1,5 +1,6 @@
 //! One owned shard's load in the heartbeat: the topology policy's input (S5, SCALING-DESIGN
 //! rev 4 §4.3). Rates span the ack latency's window of the shard's commit-group timings.
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,62 @@ pub(crate) struct ShardLoad {
     pub resident_streams: u64,
     #[serde(default)]
     pub handle_max_resident: u64,
+    /// The part of `appends_per_s` the shard's busiest stream carried over the last beat: one
+    /// entity's share of the appends axis, which a split cannot relieve (`hot_entity`).
+    #[serde(default)]
+    pub top_stream_appends_per_s: u64,
+}
+
+/// Each owned shard's resident streams' applied tails at the last beat, and so how much of the
+/// shard's appends its busiest stream carried since the beat before (rev 4 §4.3's hot entity).
+#[derive(Debug, Default)]
+pub(super) struct TopStreams {
+    tails: BTreeMap<String, HashMap<[u8; 16], u64>>,
+    /// By shard: the busiest stream's growth over the last beat, and every stream's.
+    shares: BTreeMap<String, (u64, u64)>,
+}
+
+impl TopStreams {
+    /// Read each of `engines`' streams' tails now, and measure each shard's share against the
+    /// last reading.
+    pub(super) fn observe(&mut self, engines: &[(String, Arc<ShardEngine>)]) {
+        let mut tails = BTreeMap::new();
+        let mut shares = BTreeMap::new();
+        for (prefix, engine) in engines {
+            let now: HashMap<[u8; 16], u64> = engine.applied_tails().into_iter().collect();
+            shares.insert(prefix.clone(), share(self.tails.get(prefix), &now));
+            tails.insert(prefix.clone(), now);
+        }
+        (self.tails, self.shares) = (tails, shares);
+    }
+
+    /// The part of `appends_per_s` the busiest stream of `prefix` carried over the last beat.
+    fn top_of(&self, prefix: &str, appends_per_s: u64) -> u64 {
+        match self.shares.get(prefix) {
+            Some(&(top, all)) if all > 0 => {
+                let part = u128::from(appends_per_s) * u128::from(top) / u128::from(all);
+                u64::try_from(part).unwrap_or(u64::MAX)
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// The busiest stream's growth from `before` to `now`, and every stream's. A stream not in
+/// `before` has no measured growth; with no `before` nothing is measured.
+fn share(before: Option<&HashMap<[u8; 16], u64>>, now: &HashMap<[u8; 16], u64>) -> (u64, u64) {
+    let Some(before) = before else {
+        return (0, 0);
+    };
+    let (mut top, mut all) = (0_u64, 0_u64);
+    for (hash, next) in now {
+        if let Some(previous) = before.get(hash) {
+            let grew = next.saturating_sub(*previous);
+            top = top.max(grew);
+            all = all.saturating_add(grew);
+        }
+    }
+    (top, all)
 }
 
 /// What `groups` committed in the `window_ms` before `now_ms`: records and bytes per second,
@@ -64,6 +121,7 @@ pub(super) fn of_engines(
     handle_max_resident: usize,
     now_ms: i64,
     window_ms: i64,
+    top: &TopStreams,
 ) -> Vec<ShardLoad> {
     engines
         .iter()
@@ -83,6 +141,7 @@ pub(super) fn of_engines(
                 committer_busy_pct,
                 resident_streams: engine.resident_streams() as u64,
                 handle_max_resident: handle_max_resident as u64,
+                top_stream_appends_per_s: top.top_of(prefix, appends_per_s),
             }
         })
         .collect()
@@ -90,7 +149,8 @@ pub(super) fn of_engines(
 
 #[cfg(test)]
 mod tests {
-    use super::{GroupTiming, TIMING_RING, rates};
+    use super::{GroupTiming, TIMING_RING, TopStreams, rates, share};
+    use std::collections::{BTreeMap, HashMap};
 
     const NOW: i64 = 1_000_000;
 
@@ -132,6 +192,26 @@ mod tests {
             (846, 8_466, 8),
             "a ring not full spans the window"
         );
+    }
+
+    /// The busiest stream's growth over the beat against every stream's: a stream new since
+    /// the last beat, and a first beat, measure nothing.
+    #[test]
+    fn a_shards_busiest_stream_is_measured_by_its_tails_growth() {
+        let tails = |pairs: &[(u8, u64)]| -> HashMap<[u8; 16], u64> {
+            pairs.iter().map(|&(id, next)| ([id; 16], next)).collect()
+        };
+        let before = tails(&[(1, 100), (2, 50), (3, 10)]);
+        let now = tails(&[(1, 160), (2, 70), (3, 10), (4, 900)]);
+        assert_eq!(share(Some(&before), &now), (60, 80));
+        assert_eq!(share(None, &now), (0, 0));
+        let top = TopStreams {
+            tails: BTreeMap::new(),
+            shares: BTreeMap::from([("0".to_owned(), (60, 80)), ("1".to_owned(), (0, 0))]),
+        };
+        assert_eq!(top.top_of("0", 200), 150, "three quarters of 200");
+        assert_eq!(top.top_of("1", 200), 0, "nothing measured");
+        assert_eq!(top.top_of("10", 200), 0, "a shard not observed");
     }
 
     #[test]

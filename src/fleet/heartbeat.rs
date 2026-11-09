@@ -261,6 +261,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             cpu_time_secs(),
             instance_refusals(&state),
         );
+        sampler.top.observe(&state.shards.engines_by_prefix());
         let heartbeat = Heartbeat {
             topology_intent,
             reserved_shards,
@@ -313,6 +314,8 @@ struct Sampler {
     refused: u64,
     /// Consecutive readings that each counted a refusal.
     refusal_beats: u32,
+    /// Each owned shard's streams' tails at the last reading (S5's hot entity).
+    top: shard_load::TopStreams,
 }
 
 impl Sampler {
@@ -326,6 +329,7 @@ impl Sampler {
             refusals,
             refused: 0,
             refusal_beats: 0,
+            top: shard_load::TopStreams::default(),
         }
     }
 
@@ -381,7 +385,8 @@ impl Sampler {
         // reads the drain that began before its number was taken.
         let seq = state.fleet.standing().next_beat();
         let handle_max = state.config.cli.handle_max_resident;
-        let shard_loads = shard_load::of_engines(&engines, handle_max, ts_ms, ACK_WINDOW_MS);
+        let shard_loads =
+            shard_load::of_engines(&engines, handle_max, ts_ms, ACK_WINDOW_MS, &self.top);
         Heartbeat {
             instance: instance.to_string(),
             ts_ms,

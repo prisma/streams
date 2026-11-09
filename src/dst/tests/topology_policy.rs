@@ -461,3 +461,54 @@ async fn the_policys_split_through_s4_keeps_every_stream_whole() {
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
 }
+
+/// Appends to one stream at about `per_sec` a second until `stop`.
+async fn load_one(addr: std::net::SocketAddr, per_sec: u64, stop: Arc<AtomicBool>) {
+    let pause = Duration::from_millis(1_000 / per_sec);
+    let json = [("content-type", "application/json")];
+    hreq(addr, "PUT", "/v1/stream/hot", &json, b"").await;
+    while !stop.load(Ordering::Relaxed) {
+        hreq(addr, "POST", "/v1/stream/hot", &json, br#"{"n":1}"#).await;
+        tokio::time::sleep(pause).await;
+    }
+}
+
+/// One stream carrying all of a shard's appends over the line is a hot entity: a split cannot
+/// relieve it (one shard per entity), so the policy holds `hot_entity`, the beat says so, and
+/// nothing splits (rev 4 §4.3; EDGE-261-RATIFICATION A3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
+)]
+async fn one_stream_carrying_a_shards_appends_holds_hot_entity_and_does_not_split() {
+    let fleet = seeded().await;
+    let (rig, asked) = policy_rig(
+        fleet.clone(),
+        |cli| {
+            cli.fleet_max = 1;
+            lines(cli);
+        },
+        split_double,
+    )
+    .await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let generator = tokio::spawn(load_one(rig.addr, 20, stop.clone()));
+    let beat = beat_until(&fleet, |beat| {
+        beat["topology_decision"] == "hold=hot_entity"
+    })
+    .await;
+    stop.store(true, Ordering::Relaxed);
+    generator.await.unwrap();
+    assert_eq!(beat["topology_decision"], "hold=hot_entity", "{beat}");
+    let load = &beat["shard_loads"][0];
+    assert!(
+        load["top_stream_appends_per_s"].as_u64() > Some(0),
+        "{beat}"
+    );
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(leaves(&rig.state), [""]);
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}

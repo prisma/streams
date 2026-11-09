@@ -290,7 +290,11 @@ fn load(cell: &Cell, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
     BTreeMap::from([
         (
             Axis::Appends,
-            usage(shard.appends_per_s, cell.appends_ceiling),
+            Usage {
+                used: shard.appends_per_s,
+                safe: cell.appends_ceiling,
+                top_entity: shard.top_stream_appends_per_s,
+            },
         ),
         (
             Axis::Streams,

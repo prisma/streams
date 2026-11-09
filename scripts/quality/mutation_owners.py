@@ -310,7 +310,9 @@ OWNERS = (
     owner('transaction_overlay', 'src/shard/transaction/overlay.rs', 'shard::'),
     owner('transaction_prepare', 'src/shard/transaction/prepare.rs', 'shard::'),
     owner('transaction_hot', 'src/shard/transaction/hot.rs', 'shard::resident_tests::'),
-    owner('shard_resident', 'src/shard/resident.rs', 'shard::'),
+    # applied_tails feeds the beat's hot-entity share, which the policy DST pins (S5).
+    owner('shard_resident', 'src/shard/resident.rs',
+          'shard:: dst_tests::topology_policy::one_stream_carrying'),
     owner('transaction_publish', 'src/shard/transaction/publish.rs', 'shard::'),
     owner('queue_config', 'src/shard/transaction/queue/config.rs', 'shard::'),
     owner('queue_load', 'src/shard/transaction/queue/load.rs', 'shard::'),

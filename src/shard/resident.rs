@@ -93,6 +93,22 @@ impl ShardEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
+    /// Each resident stream's applied tail (its next offset), by stream hash: what the
+    /// heartbeat compares beat to beat to find the stream carrying most of the shard's appends
+    /// (S5, `hot_entity`). A handle whose state is poisoned is left out.
+    pub(crate) fn applied_tails(&self) -> Vec<([u8; 16], u64)> {
+        let handles: Vec<Arc<StreamHandle>> = self
+            .streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        handles
+            .iter()
+            .filter_map(|handle| Some((handle.hash, handle.state.lock().ok()?.applied.next)))
+            .collect()
+    }
 }
 
 impl StreamHandle {
