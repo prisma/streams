@@ -26,6 +26,8 @@ use super::{AppState, cpu_time_secs, rss_bytes, standing};
 use crate::shard::now_ms;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
+mod shard_load;
+
 /// How often this instance publishes its heartbeat.
 pub(super) const PERIOD: Duration = Duration::from_secs(2);
 /// Commits older than this no longer describe the durable-write cost; the
@@ -188,6 +190,9 @@ pub(crate) struct Heartbeat {
     /// otherwise, and from an earlier version.
     #[serde(default)]
     pub reserved_shards: u32,
+    /// Each owned shard's load: the topology policy's split and merge lines (S5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shard_loads: Vec<shard_load::ShardLoad>,
 }
 
 /// Start this runtime's heartbeat beside its fleet tick. It joins the fleet
@@ -364,6 +369,8 @@ impl Sampler {
         // The sequence first: a beat numbered from the drain's first on
         // reads the drain that began before its number was taken.
         let seq = state.fleet.standing().next_beat();
+        let handle_max = state.config.cli.handle_max_resident;
+        let shard_loads = shard_load::of_engines(&engines, handle_max, ts_ms, ACK_WINDOW_MS);
         Heartbeat {
             instance: instance.to_string(),
             ts_ms,
@@ -398,6 +405,7 @@ impl Sampler {
             viewed: left_out(state),
             topology_intent: None,
             reserved_shards: 0,
+            shard_loads,
         }
     }
 }
