@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use super::{Job, LINEAGE_GRACE, plan};
+use super::{Job, LINEAGE_GRACE, Live, plan};
 use crate::runtime::{Clock, ManualClock, MonotonicNow};
 use crate::topology::model::{Home, ShardSet, Snapshot};
 
@@ -51,18 +51,28 @@ fn the_loop_sweeps_each_retired_home_by_its_smallest_holder_once_the_version_age
     let listed = BTreeMap::from([(0, BTreeSet::from([2, 1, 3])), (4, BTreeSet::new())]);
 
     assert_eq!(
-        plan(&snapshot(None), &listed, at),
+        plan(&snapshot(None), &Live::default(), &listed, at),
         [],
         "not yet installed here"
     );
     clock.advance_monotonic(LINEAGE_GRACE - Duration::from_millis(1));
     assert_eq!(
-        plan(&snapshot(Some(at)), &listed, clock.monotonic()),
+        plan(
+            &snapshot(Some(at)),
+            &Live::default(),
+            &listed,
+            clock.monotonic()
+        ),
         [],
         "within the grace"
     );
     clock.advance_monotonic(Duration::from_millis(1));
-    let jobs = plan(&snapshot(Some(at)), &listed, clock.monotonic());
+    let jobs = plan(
+        &snapshot(Some(at)),
+        &Live::default(),
+        &listed,
+        clock.monotonic(),
+    );
     assert_eq!(
         jobs,
         [
@@ -80,6 +90,32 @@ fn the_loop_sweeps_each_retired_home_by_its_smallest_holder_once_the_version_age
             },
         ],
         "home 3's list is ignored (never a leaf); home 4, held by none, is swept by the smallest leaf"
+    );
+}
+
+/// A live intent's source is never swept, and the children it names hold what
+/// their lists name: their lists are read though they are not leaves yet, and a
+/// leaf still sweeps.
+#[test]
+fn a_live_intents_source_is_not_swept_and_its_children_hold_their_lists() {
+    let clock = ManualClock::at(0);
+    let at = clock.monotonic();
+    clock.advance_monotonic(LINEAGE_GRACE);
+    let listed = BTreeMap::from([(0, BTreeSet::from([2, 6])), (4, BTreeSet::new())]);
+    let live = Live {
+        sources: BTreeSet::from([4]),
+        children: BTreeSet::from([6]),
+    };
+    let jobs = plan(&snapshot(Some(at)), &live, &listed, clock.monotonic());
+    assert_eq!(
+        jobs,
+        [Job {
+            home: 0,
+            root: "shards/root".into(),
+            by: "1".into(),
+            holders: vec![2, 6],
+        }],
+        "home 4 is the live intent's source; child 6's list counts, and leaf 2 sweeps"
     );
 }
 
@@ -104,4 +140,51 @@ async fn the_holders_under_a_root_are_its_reference_lists() {
     }
     let homes = super::listed_under(&store, "shards/root").await.unwrap();
     assert_eq!(homes, BTreeSet::from([2, 11]));
+}
+
+/// The pass reads the cell's intent: a live one names its source homes and its
+/// child homes; a terminal one, or none, names nothing; one that does not
+/// decode fails the pass.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_pass_reads_what_the_live_intent_names() {
+    use crate::topology::intent::{self, Intent, State};
+    use object_store::ObjectStoreExt;
+    let store = object_store::memory::InMemory::new();
+    assert_eq!(super::live_intent(&store).await.unwrap(), Live::default());
+    let mut merge = Intent {
+        kind: "merge".into(),
+        op_id: "op-1".into(),
+        sources: vec![("00".into(), 3), ("01".into(), 4)],
+        children: vec![9],
+        version_seen: 5,
+        state: State::Preparing,
+        lease_owner: "inst-a".into(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    let held = intent::create(&store, &merge).await.unwrap();
+    let live = super::live_intent(&store).await.unwrap();
+    assert_eq!(
+        live,
+        Live {
+            sources: BTreeSet::from([3, 4]),
+            children: BTreeSet::from([9]),
+        }
+    );
+    merge.state = State::RolledBack;
+    intent::replace(&store, &held, merge).await.unwrap();
+    assert_eq!(super::live_intent(&store).await.unwrap(), Live::default());
+    store
+        .put(
+            &"topology/intent.json".into(),
+            bytes::Bytes::from_static(b"{").into(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        super::live_intent(&store).await.is_err(),
+        "a corrupt intent fails closed"
+    );
 }

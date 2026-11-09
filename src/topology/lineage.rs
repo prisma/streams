@@ -15,9 +15,10 @@
 //!   home when no leaf holds anything there. Two sweepers at once are safe
 //!   (every step is idempotent and each decides from one snapshot).
 //!
-//! S4's live intent (a home named as a source of an unresolved operation is
-//! never swept) joins `plan` with the intent's commit, before the first split
-//! can retire a home.
+//! - **The live intent.** A home that the cell's unresolved operation names as a
+//!   source is never swept. A child it names counts as a holder: its reference
+//!   list was written before the operation's CAS, and if the operation publishes,
+//!   it is a leaf holding exactly that.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -46,17 +47,26 @@ pub(crate) struct Job {
     pub(crate) holders: Vec<u32>,
 }
 
+/// What the cell's unresolved topology intent names (empty when there is none,
+/// or it is terminal).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Live {
+    pub(crate) sources: BTreeSet<u32>,
+    pub(crate) children: BTreeSet<u32>,
+}
+
 /// Whether `snap`'s version was held here for the grace at `now`.
 pub(crate) fn aged(snap: &Snapshot, now: MonotonicNow) -> bool {
     snap.installed_at
         .is_some_and(|at| now.since(at) >= LINEAGE_GRACE)
 }
 
-/// The sweeps due under `snap` (see the module), given per retired home the
-/// homes `listed` with a reference list under its root. Nothing before the
-/// version has aged.
+/// The sweeps due under `snap` and the live intent `live` (see the module),
+/// given per retired home the homes `listed` with a reference list under its
+/// root. Nothing before the version has aged.
 pub(crate) fn plan(
     snap: &Snapshot,
+    live: &Live,
     listed: &BTreeMap<u32, BTreeSet<u32>>,
     now: MonotonicNow,
 ) -> Vec<Job> {
@@ -69,17 +79,22 @@ pub(crate) fn plan(
     };
     let mut jobs = Vec::new();
     for (&home, entry) in &snap.shards.homes {
-        if entry.retired_version.is_none() || leaves.contains_key(&home) {
+        let swept = entry.retired_version.is_some() && !leaves.contains_key(&home);
+        if !swept || live.sources.contains(&home) {
             continue;
         }
         let holders: Vec<u32> = listed
             .get(&home)
             .into_iter()
             .flatten()
-            .filter(|h| leaves.contains_key(h))
+            .filter(|h| leaves.contains_key(h) || live.children.contains(h))
             .copied()
             .collect();
-        let by = holders.first().copied().unwrap_or(first);
+        let by = holders
+            .iter()
+            .find(|h| leaves.contains_key(h))
+            .copied()
+            .unwrap_or(first);
         let Some(prefix) = leaves.get(&by) else {
             continue;
         };
@@ -107,6 +122,21 @@ async fn listed_under(store: &dyn ObjectStore, root: &str) -> object_store::Resu
     Ok(homes)
 }
 
+/// What the cell's unresolved topology intent names. A terminal intent, or none,
+/// names nothing. One that does not decode fails the pass closed.
+async fn live_intent(store: &dyn ObjectStore) -> Result<Live, String> {
+    let held = crate::topology::intent::read(store)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(held) = held.filter(|h| !h.intent.is_terminal()) else {
+        return Ok(Live::default());
+    };
+    Ok(Live {
+        sources: held.intent.sources.iter().map(|(_, home)| *home).collect(),
+        children: held.intent.children.iter().copied().collect(),
+    })
+}
+
 /// One pass at `now`: the sweeps this process ran (through engines it has
 /// open) and the objects they deleted.
 pub(crate) async fn once(
@@ -128,7 +158,8 @@ pub(crate) async fn once(
         }
     }
     let (mut ran, mut deleted) = (0, 0);
-    for job in plan(&snap, &listed, now) {
+    let live = live_intent(store).await?;
+    for job in plan(&snap, &live, &listed, now) {
         let Some(engine) = shards.open(&job.by) else {
             continue;
         };
