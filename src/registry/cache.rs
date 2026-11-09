@@ -557,6 +557,21 @@ impl Registry {
         );
     }
 
+    /// Test-only: plant an absence in the cache as if this instance had
+    /// read the name before another created it, the stale-absence shape
+    /// (another instance created and deleted it since).
+    #[cfg(test)]
+    pub(crate) fn test_poison_cache_absent(&self, sref: &crate::tenant::TenantStreamRef) {
+        self.cache_insert(
+            sref.clone(),
+            CachedDesc {
+                desc: None,
+                at: Instant::now(),
+                etag: None,
+            },
+        );
+    }
+
     /// Test-only: a retained tier of `budget` bytes, empty.
     #[cfg(test)]
     pub(crate) fn retain_budget_for_tests(&self, budget: usize) {

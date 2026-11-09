@@ -2,10 +2,6 @@
 use super::raw::CreatePlan;
 use super::*;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "resolve; claim resolution is one decision over the existing descriptor's lifecycle, retained name and pending initialization; splitting it would separate the verdicts from the descriptor they judge"
-)]
 pub(super) async fn resolve(
     state: &Arc<CreationService>,
     plan: &CreatePlan,
@@ -13,9 +9,6 @@ pub(super) async fn resolve(
     let key = &plan.key;
     let content_type = plan.content_type.clone();
     let ttl_secs = plan.ttl_secs;
-    let expires_at_ms = plan.expires_at_ms;
-    let expected_fork_ref = plan.expected_fork_ref.clone();
-    let needs_init = plan.needs_init;
     let create_hash = &plan.create_hash;
     // Resolve existing.
     let existing = match state.registry.get(&plan.sref).await {
@@ -43,21 +36,7 @@ pub(super) async fn resolve(
             // snapshot can predate a fork anchored by another instance, and
             // replacing a retained source strands every fork reading through
             // it. One winner; a live winner validates like an idempotent PUT.
-            let (mut fresh, _) = fresh_desc(
-                state,
-                &plan.sref,
-                key,
-                content_type.clone(),
-                ttl_secs,
-                expires_at_ms,
-            );
-            fresh.forked_from = expected_fork_ref.clone();
-            let fp = fresh.key_fingerprint.clone();
-            fresh.init = needs_init.then(|| crate::registry::InitState {
-                request_hash: create_hash.clone(),
-                key_fingerprint: fp,
-                claimed_ms: now_ms(),
-            });
+            let fresh = claimed_fresh(state, plan);
             match state
                 .registry
                 .recreate(&plan.sref, fresh, |d| recreatable(d, now))
@@ -78,23 +57,12 @@ pub(super) async fn resolve(
             }
         }
         None => {
-            let (mut fresh, _) = fresh_desc(
-                state,
-                &plan.sref,
-                key,
-                content_type.clone(),
-                ttl_secs,
-                expires_at_ms,
-            );
-            fresh.forked_from = expected_fork_ref.clone();
-            let fp = fresh.key_fingerprint.clone();
-            fresh.init = needs_init.then(|| crate::registry::InitState {
-                request_hash: create_hash.clone(),
-                key_fingerprint: fp,
-                claimed_ms: now_ms(),
-            });
+            let fresh = claimed_fresh(state, plan);
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
+                // Lost to a tombstone a stale cached absence hid (edge
+                // #253): the lost PUT refreshed the cache, so resolve again.
+                Ok((false, d)) if !desc_alive(&d) => return Box::pin(resolve(state, plan)).await,
                 Ok((false, d)) => {
                     // Raced: treat as idempotent-config path.
                     if crate::registry::media_type(&d.content_type)
@@ -268,4 +236,28 @@ fn resume_initialization(
     }
 
     Ok(resume_init)
+}
+
+/// A fresh incarnation of the plan's stream, its initialization claimed
+/// by this request when it needs one.
+fn claimed_fresh(
+    state: &Arc<CreationService>,
+    plan: &CreatePlan,
+) -> crate::registry::PersistedDescriptor {
+    let (mut fresh, _) = fresh_desc(
+        state,
+        &plan.sref,
+        &plan.key,
+        plan.content_type.clone(),
+        plan.ttl_secs,
+        plan.expires_at_ms,
+    );
+    fresh.forked_from = plan.expected_fork_ref.clone();
+    let fp = fresh.key_fingerprint.clone();
+    fresh.init = plan.needs_init.then(|| crate::registry::InitState {
+        request_hash: plan.create_hash.clone(),
+        key_fingerprint: fp,
+        claimed_ms: now_ms(),
+    });
+    fresh
 }

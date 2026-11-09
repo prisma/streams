@@ -179,18 +179,30 @@ impl CreationService {
             );
             d
         };
-        let (created, desc) = match existing {
-            Some(d) if desc_alive(&d) => (false, validate_live(d)?),
-            Some(_) => {
+        let internal = |e: object_store::Error| {
+            CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
+        };
+        // A lost create-only PUT hands back the winner, judged as a read
+        // would be: a stale cached absence can meet a tombstone (edge #253).
+        let (made, found) = match existing {
+            Some(d) => (false, d),
+            None => self
+                .registry
+                .create(build_fresh())
+                .await
+                .map_err(internal)?,
+        };
+        let (created, desc) = match found {
+            d if made => (true, d),
+            d if desc_alive(&d) => (false, validate_live(d)?),
+            _ => {
                 // One instant judges the CAS and the winner it declines on.
                 let now = now_ms();
                 let (created, winner) = self
                     .registry
                     .recreate(&sref, build_fresh(), |d| recreatable(d, now))
                     .await
-                    .map_err(|e| {
-                        CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
-                    })?;
+                    .map_err(internal)?;
                 if created {
                     (true, winner)
                 } else if retained_for_forks(&winner, now) {
@@ -202,16 +214,6 @@ impl CreationService {
                     .into());
                 } else {
                     (false, validate_live(winner)?)
-                }
-            }
-            None => {
-                let (created, d) = self.registry.create(build_fresh()).await.map_err(|e| {
-                    CreationError::new(CreationFailure::Storage, "internal", &e.to_string())
-                })?;
-                if created {
-                    (true, d)
-                } else {
-                    (false, validate_live(d)?)
                 }
             }
         };

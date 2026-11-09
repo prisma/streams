@@ -431,7 +431,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high: a request that used to succeed can fail permanently. It is narrow: only servers that set no ceiling, which excludes production and every release-posture deployment; and accepting such a record was unsafe for shared feeds, because a record whose prepared frame (up to 6 x its size) exceeds the 1 MiB ring disconnects every subscriber of the feed at once. RATIFIED by the owner on 2026-09-30.
 - **Check against commit:** written with the change.
 
-### #253 (5263d590b + 6c7ac12c9 part 1; fe94f96b2 part 2; part 3 in commits) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
+### #253 (aa18fc236 + 9b04ac3f3 part 1; 78d03da28 part 2; part 3 in commits) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
 
 - **Program item:** millions of containers per Streams cell, design rev 3, stage 0 (`~/.streams-k2/analysis/mproj/MILLIONS-OF-PROJECTS-DESIGN.md` §10). The validation is `CONTAINER-VALIDATION.md`, and the plan for the account removal is `ACCOUNT-REMOVAL-PLAN.md`.
 - **Owner decision (2026-11-08, verbatim):** "This sounds exactly right! Let's use the term Container rather than Project. Please validate that this will work. You have my approval for this change in the edge." The model, verbatim: "a user is part of a Workspace, they create a project, and inside that project, they can create Postgres databases, as well as Streams and Queue containers. Initially, I think we are going to expose these as having only a single queue or Stream in them - perhaps called `default` [...] I don't think we will ever want a single container to hold both Streams and Queues."
@@ -440,18 +440,19 @@ In each of these changes, a request that used to succeed can now fail permanentl
   - On caps: "We currently only limit on the workspace level. And this is handled by control plane. Let's set a single relatively high level: 1000." So there is one cap, 1,000 containers per workspace, enforced by the control plane. The beta's cell-admin and issuer default `workspace_cap` goes from 1 to 1,000 in part 3.
 - **One record, three parts (the lead, 2026-11-08):** the owner approved #253 as one change, so it keeps one number. Each part's commit says "Edge change #253 (part N of 3)", and each part amends **Landed in** and **Status**.
 - **Landed in:**
-  1. Part 1, 5263d590b (the record's first commit) and its test 6c7ac12c9: usage records no workspace or account.
-  2. Part 2, fe94f96b2: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
+  1. Part 1, aa18fc236 (the record's first commit) and its test 9b04ac3f3: usage records no workspace or account.
+  2. Part 2, 78d03da28: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
   3. Part 3, in commits:
-     - 3a-1, ff4b54bae: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
-     - 3a-2a, 865907392: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
-     - 3a-2b, eb1bd8862: the env names and flags say container.
-     - 3a-3, ec89e78f4: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
-     - 3b-1, 4d58bbf4c: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
-     - 3b-2, acc1a02cd: a create of the other kind is refused `409 container_kind_mismatch`.
-     - 3b-3a, fc89196da: at `max_streams` 1 a container creates only `default` (`409 container_single_stream`).
-     - 3b-4, this commit: a single-stream container's credentials hold no `streams.forks.create` or `streams.dlq.configure`.
-     - Pending: 3b-3b (the lost-race arms check liveness), 3c (internal names, operator fields, docs).
+     - 3a-1, f45f8c7f3: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
+     - 3a-2a, 3ec0ea27a: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
+     - 3a-2b, 0cfb469d7: the env names and flags say container.
+     - 3a-3, 8f9f94137: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
+     - 3b-1, da082941d: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
+     - 3b-2, 940b24d49: a create of the other kind is refused `409 container_kind_mismatch`.
+     - 3b-3a, f05d2980d: at `max_streams` 1 a container creates only `default` (`409 container_single_stream`).
+     - 3b-4, c1f0125a7: a single-stream container's credentials hold no `streams.forks.create` or `streams.dlq.configure`.
+     - 3b-3b, this commit: a create that loses the create-only PUT to a tombstone recreates it.
+     - Pending: 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
   - From part 2's commit on:
@@ -490,6 +491,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - a deleted stream's `default` is created again at once; a deleted queue's answers `409 queue_deleting` until its cleanup is done (pinned, unchanged);
     - platform-e2e's per-instance `max_streams` leg uses a cap of 2 for proj-b, since at 1 the name rule answers first.
   - From 3b-4's commit on: a customer credential cell-admin or the issuer makes for a container whose `max_streams` is 1 holds neither `streams.forks.create` nor `streams.dlq.configure` (a fork and a dead-letter stream are second streams); one asked for with only those scopes is refused. Credentials made before a quota change keep their scopes, which the name rule makes unusable.
+  - From 3b-3b's commit on: a create whose cached read saw no descriptor while the store held a tombstone (another instance created and deleted the name since) recreates the name (`201`), product and raw alike; before, the lost create-only PUT answered the tombstone as an existing stream (`200` with a dead descriptor). This is what makes a single-stream container's delete-then-recreate of `default` safe across instances.
   - Until 3c: the issuer page's copy, cell-admin's flags and state fields (`--max-projects`, `--project`, `projects`, `project_id`), the audit records and the operator fields still say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.

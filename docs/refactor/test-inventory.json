@@ -433,6 +433,17 @@
     ]
   },
   {
+    "name": "a_create_over_a_stale_absence_recreates_the_tombstone_it_meets",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f4281f83ca4d778f62817ff1c33a95ef038e297d02e254e6bdd0e9a1bc04a590",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/single_stream.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_create_pays_for_its_registry_writes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
