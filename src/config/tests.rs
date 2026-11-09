@@ -691,7 +691,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("fleet-max", "FLEET_MAX", "4"),
     ("shards-per-instance-max", "SHARDS_PER_INSTANCE_MAX", "7"),
 ];
-
+mod topology_surface;
 /// The complete CLI surface, pinned: every long flag, its env name and
 /// its default. A PR that renames/rewires an option fails here first.
 /// Table generated from clap's own argument registry.
@@ -717,6 +717,7 @@ fn cli_surface_is_pinned() {
     actual.sort();
     let mut want: Vec<(String, String, String)> = EXPECTED_CLI_SURFACE
         .iter()
+        .chain(topology_surface::EXPECTED)
         .map(|(f, e, d)| (f.to_string(), e.to_string(), d.to_string()))
         .collect();
     want.sort();

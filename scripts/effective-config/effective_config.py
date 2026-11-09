@@ -77,7 +77,9 @@ COMPUTE_SCRIPTS = ['bench/fleet/deploy-fleet.sh', 'bench/soak/deploy-region.sh',
 # 129 -> 130: PROJECT_TRACKER_MAX (cli.project_tracker_max, tuning P2 item 3b).
 # 130 -> 129: ACCOUNT_ID (cli.account_id) left with the account (edge #253 part 2).
 # 129 -> 130: SHARDS_PER_INSTANCE_MAX (cli.shards_per_instance_max, Q4; S5 and S4's split route).
-PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 130
+# 130 -> 140: the shard topology policy's other ten knobs, SHARD_SPLIT_LINE_PCT
+# through SHARD_APPENDS_CEILING (S5, SCALING-DESIGN rev 4 §4.3).
+PIN_OLD_LEAVES, PIN_NEW_LEAVES = 156, 140
 PIN_ARGS_LINES = 522
 PIN_RC4_NAMES, PIN_ENV_KNOBS, PIN_HELPERS = 72, 70, 6
 

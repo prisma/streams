@@ -492,6 +492,52 @@ pub struct CliArgs {
     #[arg(long, env = "FLEET_MAX", default_value_t = 4)]
     pub(crate) fleet_max: u64,
 
+    /// A shard splits when it holds at least this percent of its safe capacity on any axis
+    /// (appends, resident handles, the fleet's demand past the shards) for
+    /// `SHARD_SPLIT_SUSTAIN_SECS` (SCALING-DESIGN rev 4 §4.3, provisional).
+    #[arg(long, env = "SHARD_SPLIT_LINE_PCT", default_value_t = 70)]
+    pub(crate) shard_split_line_pct: u64,
+
+    /// How long the split line must hold on fresh beats before a split.
+    #[arg(long, env = "SHARD_SPLIT_SUSTAIN_SECS", default_value_t = 600)]
+    pub(crate) shard_split_sustain_secs: u64,
+
+    /// The emergency split line: a shard this full splits after
+    /// `SHARD_EMERGENCY_SUSTAIN_SECS`.
+    #[arg(long, env = "SHARD_EMERGENCY_LINE_PCT", default_value_t = 90)]
+    pub(crate) shard_emergency_line_pct: u64,
+
+    /// How long the emergency line must hold before a split.
+    #[arg(long, env = "SHARD_EMERGENCY_SUSTAIN_SECS", default_value_t = 45)]
+    pub(crate) shard_emergency_sustain_secs: u64,
+
+    /// Two sibling shards merge when together they use less than this percent of one
+    /// shard's safe capacity on every axis for `SHARD_MERGE_SUSTAIN_SECS`.
+    #[arg(long, env = "SHARD_MERGE_LINE_PCT", default_value_t = 25)]
+    pub(crate) shard_merge_line_pct: u64,
+
+    /// How long two siblings must stay quiet before they merge.
+    #[arg(long, env = "SHARD_MERGE_SUSTAIN_SECS", default_value_t = 21600)]
+    pub(crate) shard_merge_sustain_secs: u64,
+
+    /// A shard younger than this never merges: no split is reversed sooner.
+    #[arg(long, env = "SHARD_SPLIT_REVERSAL_MIN_SECS", default_value_t = 43200)]
+    pub(crate) shard_split_reversal_min_secs: u64,
+
+    /// The quiet between two topology operations, and the age the fleet's desired count
+    /// must reach before one starts (S4 §10.1).
+    #[arg(long, env = "SHARD_TOPOLOGY_COOLDOWN_SECS", default_value_t = 60)]
+    pub(crate) shard_topology_cooldown_secs: u64,
+
+    /// A shard's load from a beat older than this is stale: it restarts the shard's
+    /// sustains, and stale beats block every merge.
+    #[arg(long, env = "SHARD_BEAT_STALE_SECS", default_value_t = 30)]
+    pub(crate) shard_beat_stale_secs: u64,
+
+    /// A shard's safe appends per second, the appends axis' capacity.
+    #[arg(long, env = "SHARD_APPENDS_CEILING", default_value_t = 5000)]
+    pub(crate) shard_appends_ceiling: u64,
+
     /// The most shards one instance holds (Q4, provisional): a split needs room for both
     /// children beside the parent, and another instance with room for one.
     #[arg(long, env = "SHARDS_PER_INSTANCE_MAX", default_value_t = 7)]
@@ -580,6 +626,16 @@ impl CliArgs {
             scale_latency_ms: 250,
             scale_lat_sustain_secs: 20,
             fleet_max: 4,
+            shard_split_line_pct: 70,
+            shard_split_sustain_secs: 600,
+            shard_emergency_line_pct: 90,
+            shard_emergency_sustain_secs: 45,
+            shard_merge_line_pct: 25,
+            shard_merge_sustain_secs: 21600,
+            shard_split_reversal_min_secs: 43200,
+            shard_topology_cooldown_secs: 60,
+            shard_beat_stale_secs: 30,
+            shard_appends_ceiling: 5000,
             shards_per_instance_max: 7,
         }
     }
