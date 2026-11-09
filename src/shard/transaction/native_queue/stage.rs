@@ -247,6 +247,7 @@ impl super::super::CommitTransaction<'_> {
     pub(super) fn nq_flush_state(&mut self, hash: &[u8; 16], st: &mut NativeStage) {
         if st.state_dirty {
             let raw = st.state.encode();
+            self.engine.gc_state().gate.mark_touched(hash);
             self.batch.put(keys::state(hash), raw);
             self.extra_writes = true;
             st.state_dirty = false;

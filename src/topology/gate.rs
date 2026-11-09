@@ -22,11 +22,15 @@
 //!   published, the parent is **retired**: each append goes to the child engine this instance
 //!   owns for its route ([`Reroute`]), and every other operation is answered as in the hold,
 //!   which its handler turns into the new owner's `409` (`application::append::submit`).
+//! - **The touched-queue mark** ([`MaintenanceGate::mark_touched`], S4-DESIGN §7.2): from the
+//!   split's snapshot pass until the release, the committer records every queue whose state row
+//!   a group writes, so the delta re-reads exactly those.
 //! - **"Collection off"** ([`MaintenanceGate::collection_off`]): while a split prepares, the
 //!   passes that delete or rewrite objects stand down (the orphan sweep, consolidation, the
 //!   cleaner, purge reclaim and the run-index merge). Seals, folds, trims and `request_purge`
 //!   continue: their rows are sentinel rows the split's delta covers, or objects its lists cover.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -44,6 +48,8 @@ pub(crate) struct MaintenanceGate {
     collection_off: AtomicBool,
     splitting: AtomicBool,
     retired: Mutex<Option<Reroute>>,
+    marking: AtomicBool,
+    touched: Mutex<HashSet<[u8; 16]>>,
 }
 
 impl MaintenanceGate {
@@ -66,6 +72,35 @@ impl MaintenanceGate {
     /// every group `Splitting`.
     pub(crate) fn splitting(&self) -> bool {
         self.splitting.load(Ordering::Acquire)
+    }
+
+    /// The committer's touched-queue mark (S4-DESIGN §7.2): while it is set, every queue whose
+    /// state row a commit group writes. Bounded by the shard's distinct queues.
+    pub(crate) fn mark_touched(&self, hash: &[u8; 16]) {
+        if self.marking.load(Ordering::Acquire) {
+            self.touched
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(*hash);
+        }
+    }
+
+    /// Tests until the split's snapshot pass sets it (S4 step 11): the mark starts empty.
+    #[cfg(test)]
+    pub(crate) fn start_marking(&self) {
+        self.touched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.marking.store(true, Ordering::Release);
+    }
+
+    /// Tests until the split's delta takes it (S4 step 10): the queues marked, and the mark's
+    /// release.
+    #[cfg(test)]
+    pub(crate) fn take_touched(&self) -> HashSet<[u8; 16]> {
+        self.marking.store(false, Ordering::Release);
+        std::mem::take(&mut *self.touched.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// The retired parent's reroute, once its split published (read only while `splitting`).
