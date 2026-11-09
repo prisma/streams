@@ -208,9 +208,11 @@ impl ShardEngine {
     /// (`barrier`; tests until the split sends one, S4 step 11). While a split holds the
     /// engine past its pause, every group is answered `Splitting` instead, never committed.
     pub(in crate::shard) async fn commit_and_park(&self, ops: Vec<CommitOp>) {
-        if self.gc_state().gate.splitting() {
+        let gate = &self.gc_state().gate;
+        if gate.splitting() {
+            let reroute = gate.reroute();
             for op in ops {
-                CommitTransaction::reject_op(op, AppendErr::Splitting);
+                held(op, reroute.as_ref()).await;
             }
             return;
         }
@@ -218,5 +220,21 @@ impl ShardEngine {
         return barrier::commit_and_park(self, ops).await;
         #[cfg(not(test))]
         self.commit_group(ops).await;
+    }
+}
+
+/// An operation a split holds past its pause: an append of a retired parent goes to the child
+/// engine its route names, unchanged (it was never offered to a group, so its child acks it with
+/// the child's offset); every other one is answered `Splitting`.
+async fn held(op: CommitOp, reroute: Option<&crate::topology::gate::Reroute>) {
+    let child = match (&op, reroute) {
+        (CommitOp::Append(req), Some(reroute)) => reroute(&req.route),
+        _ => None,
+    };
+    let Some(child) = child else {
+        return CommitTransaction::reject_op(op, AppendErr::Splitting);
+    };
+    if let Err(mpsc::error::SendError(op)) = child.tx.send(op).await {
+        CommitTransaction::reject_op(op, AppendErr::Splitting);
     }
 }

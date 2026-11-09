@@ -18,21 +18,32 @@
 //!   seal's.
 //! - **"Splitting"** ([`MaintenanceGate::splitting`]): set when a split's barrier holds the
 //!   committer past its pause (`shard::transaction::barrier`); while it stands, every group
-//!   the committer gathers is answered `503 shard_splitting`, never committed.
+//!   the committer gathers is answered `503 shard_splitting`, never committed. Once the split
+//!   published, the parent is **retired**: each append goes to the child engine this instance
+//!   owns for its route ([`Reroute`]), and every other operation is answered as in the hold,
+//!   which its handler turns into the new owner's `409` (`application::append::submit`).
 //! - **"Collection off"** ([`MaintenanceGate::collection_off`]): while a split prepares, the
 //!   passes that delete or rewrite objects stand down (the orphan sweep, consolidation, the
 //!   cleaner, purge reclaim and the run-index merge). Seals, folds, trims and `request_purge`
 //!   continue: their rows are sentinel rows the split's delta covers, or objects its lists cover.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::{RwLock, RwLockReadGuard};
+
+use crate::shard::ShardEngine;
+
+/// Where a retired parent's operations go (S4-DESIGN §6.2 step 4): for a route hash, the child
+/// engine this instance owns, if any.
+pub(crate) type Reroute = Arc<dyn Fn(&[u8; 16]) -> Option<Arc<ShardEngine>> + Send + Sync>;
 
 #[derive(Default)]
 pub(crate) struct MaintenanceGate {
     lock: RwLock<()>,
     collection_off: AtomicBool,
     splitting: AtomicBool,
+    retired: Mutex<Option<Reroute>>,
 }
 
 impl MaintenanceGate {
@@ -55,6 +66,22 @@ impl MaintenanceGate {
     /// every group `Splitting`.
     pub(crate) fn splitting(&self) -> bool {
         self.splitting.load(Ordering::Acquire)
+    }
+
+    /// The retired parent's reroute, once its split published (read only while `splitting`).
+    pub(crate) fn reroute(&self) -> Option<Reroute> {
+        self.retired
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Tests until the split's barrier sets it (S4 step 11): the parent retired, its operations
+    /// rerouted from now on.
+    #[cfg(test)]
+    pub(crate) fn set_retired(&self, reroute: Reroute) {
+        *self.retired.lock().unwrap_or_else(PoisonError::into_inner) = Some(reroute);
+        self.set_splitting(true);
     }
 
     /// Tests until the split's barrier sets it (S4 step 11): the hold passed its deadline, or

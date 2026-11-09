@@ -2665,6 +2665,17 @@
     "scenarios": []
   },
   {
+    "name": "a_retired_parents_held_append_is_answered_by_its_new_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "577dfe3d03aea241b4dec014dff6344e9ab989c2bbb64803bfbf0c638ae47297",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_barrier.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_retry_across_two_splits_meets_its_row_when_the_clocks_disagree",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"

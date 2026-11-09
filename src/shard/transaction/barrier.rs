@@ -8,6 +8,10 @@
 //!   `Splitting` (`503 shard_splitting`, `Retry-After: 1`), the held operations first, until
 //!   the release. So nothing waits on a long pause past the hold.
 //! - **`Resume`** (a rollback): the queue proceeds in order.
+//! - **`Retired`** (the split published, its snapshot installed): every held operation, then
+//!   every later one, is rerouted (`commit_and_park`): an append to the child engine this
+//!   instance owns for its route, acked with the child's offset; any other is answered
+//!   `Splitting`, which the append path re-resolves into the new owner's `409`.
 //!
 //! Built for tests until the split sends the first barrier (S4 step 11); until then the committer
 //! runs exactly `commit_group`.
@@ -38,6 +42,8 @@ pub(crate) struct BarrierReq {
 pub(crate) enum Release {
     /// The split rolled back: the held operations proceed in order.
     Resume,
+    /// The split published: the parent is retired (its gate holds the reroute).
+    Retired,
 }
 
 /// A parked committer, held by its split. Dropped without a release, it closes the engine.
@@ -63,6 +69,18 @@ impl Barrier {
         self.engine.gc_state().gate.set_splitting(false);
         // A committer past its hold, or one that exited (its engine closed), receives none.
         drop(release.send(Release::Resume));
+    }
+}
+
+impl Barrier {
+    /// The split published: from now on each append goes to the child engine `reroute` names
+    /// for its route, and every other operation is answered `Splitting` (see the module).
+    pub(crate) fn retire(mut self, reroute: crate::topology::gate::Reroute) {
+        let Some(release) = self.release.take() else {
+            return;
+        };
+        self.engine.gc_state().gate.set_retired(reroute);
+        drop(release.send(Release::Retired));
     }
 }
 

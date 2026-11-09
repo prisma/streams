@@ -164,7 +164,7 @@ OWNERS = (
     owner('topology_mod', 'src/topology.rs', 'topology::'),
     owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
-    owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests::'),
+    owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests:: dst_tests::split_barrier::'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent::'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
@@ -284,7 +284,7 @@ OWNERS = (
     owner('shard_lifecycle', 'src/shard/lifecycle.rs', 'shard::'),
     owner('transaction_finalize', 'src/shard/transaction/finalize.rs', 'shard::'),
     owner('transaction_maintenance', 'src/shard/transaction/maintenance.rs', 'shard::'),
-    owner('transaction_group', 'src/shard/transaction/mod.rs', 'shard::'),
+    owner('transaction_group', 'src/shard/transaction/mod.rs', 'shard:: dst_tests::split_barrier::'),
     owner('transaction_barrier', 'src/shard/transaction/barrier.rs', 'dst_tests::split_barrier::'),
     owner('transaction_billing', 'src/shard/transaction/billing.rs', 'shard::'),
     owner('transaction_overlay', 'src/shard/transaction/overlay.rs', 'shard::'),
@@ -521,12 +521,12 @@ OWNERS = (
           'application::append:: dst_tests::append_application:: dst_tests::producer_protocol::'),
     owner('append_contract', 'src/application/append/contract.rs',
           'application::append:: dst_tests::append_application:: dst_tests::producer_protocol:: '
-          'dst_tests::producer_handoff::'),
+          'dst_tests::producer_handoff:: dst_tests::split_barrier::'),
     owner('append_route', 'src/application/append/route.rs',
           'application::append:: dst_tests::append_application:: dst_tests::topology_lifecycle::'),
     owner('append_submit', 'src/application/append/submit.rs',
           'application::append:: dst_tests::append_application:: dst_tests::durability_failures:: '
-          'dst_tests::persistence_faults:: dst_tests::l0_watermark::'),
+          'dst_tests::persistence_faults:: dst_tests::l0_watermark:: dst_tests::split_barrier::'),
     # Production files under a critical prefix that the planner listed as
     # unregistered (NEXT-WORK §10): a push that changes one was refused.
     owner('read_range', 'src/application/read_range.rs',

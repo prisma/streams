@@ -94,12 +94,31 @@ pub(super) async fn submit(
         return Err(enqueue_refused(&error));
     }
     match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
+        Ok(Ok(Err(AppendErr::Splitting))) => held_by_a_split(state, seg).await,
         Ok(Ok(o)) => Ok(o),
         _ => fail(
             FailureClass::Timeout,
             AppendCode::AppendTimeout,
             "append timed out; outcome unknown",
         ),
+    }
+}
+
+/// An append a split held, never written. Once the split published, its route resolves under
+/// the new topology: where another instance owns the child, the answer is that owner's `409`
+/// (with the topology version, which the forward takes one hop); otherwise it stays the hold's
+/// `503 shard_splitting`.
+async fn held_by_a_split(
+    state: &AppendService,
+    seg: &SegRoute,
+) -> Result<Result<AppendAck, AppendErr>, AppendFailure> {
+    let resolved = state
+        .shards
+        .resolve(&seg.shard_route, crate::shard_directory::Adoption::External)
+        .await;
+    match resolved {
+        Ok(_) => Ok(Err(AppendErr::Splitting)),
+        Err(e) => Err(AppendFailure::from_resolve(e)),
     }
 }
 

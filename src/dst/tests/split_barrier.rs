@@ -4,10 +4,11 @@
 //! offered to a group, until the split releases the barrier. A resume serves them in order; a
 //! barrier dropped unreleased closes the engine rather than resume a parent it cannot vouch for.
 //! Past the 2 s hold, the held appends and every later one are answered `503 shard_splitting`,
-//! `Retry-After: 1`, until the release.
+//! `Retry-After: 1`, until the release. Once the split published, a held append whose child
+//! another instance owns is answered that owner's `409 not_ring_owner`.
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig};
+use super::fixture_http::{engine_shutdown, http_rig, http_rig_named};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -177,4 +178,59 @@ async fn past_its_hold_a_parked_engine_answers_503_shard_splitting_until_the_rel
     );
     assert_eq!(records(addr).await, serde_json::json!([{"n": 1}, {"n": 4}]));
     engine_shutdown(&state).await;
+}
+
+/// **A retired parent's held append is answered by its new owner.** The barrier parks; an
+/// append waits; the split publishes (here: the ring gives the shard to inst-b) and retires the
+/// parent with a reroute that owns no child. The reroute is asked once, for the held append's
+/// route, and the append is answered `409 not_ring_owner` naming inst-b, as is a later one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_retired_parents_held_append_is_answered_by_its_new_owner() {
+    let (state, addr) = http_rig_named(mem(), "inst-a").await;
+    raw_put(addr, NAME, &[JSON], br#"[{"n":1}]"#).await;
+    let desc = stored(&state, &state.deployment.raw_adapter_sref(NAME)).await;
+    let engine = engine_of(&state, &desc, 0).await;
+    let barrier = tokio::time::timeout(BOUND, engine.barrier())
+        .await
+        .expect("parked")
+        .expect("the barrier parks");
+    let asked = Arc::new(std::sync::Mutex::new(0_usize));
+    let reroute: crate::topology::gate::Reroute = {
+        let asked = asked.clone();
+        Arc::new(move |_route: &[u8; 16]| {
+            *asked.lock().unwrap() += 1;
+            None
+        })
+    };
+    let base = engine.appends_enqueued();
+    let control = async {
+        until("the held append is enqueued", || {
+            engine.appends_enqueued() > base
+        })
+        .await;
+        let members = ["inst-a", "inst-b"].map(str::to_string).to_vec();
+        state.ownership.set_ring_active(members);
+        state.ownership.set_override("", "inst-b");
+        barrier.retire(reroute);
+    };
+    let (held, ()) = futures_util::future::join(replayed(addr, 2), control).await;
+    let moved = (
+        409,
+        Some("inst-b".to_string()),
+        Some("not_ring_owner".to_string()),
+    );
+    assert_eq!(held, moved, "the held append");
+    assert_eq!(*asked.lock().unwrap(), 1, "the reroute was asked for it");
+    assert_eq!(replayed(addr, 3).await, moved, "a later append");
+    engine_shutdown(&state).await;
+}
+
+/// An append of `{"n": n}`: its status, `Streams-Replay-To` and error code.
+async fn replayed(addr: Addr, n: u32) -> (u16, Option<String>, Option<String>) {
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    let path = format!("/v1/stream/{NAME}");
+    let (status, headers, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let code = error["error"]["code"].as_str().map(str::to_string);
+    (status, headers.get("streams-replay-to").cloned(), code)
 }
