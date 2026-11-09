@@ -212,6 +212,7 @@ OWNERS = (
     owner('shard_seal_fold_merge', 'src/shard/seal/fold/merge.rs', 'shard::seal::fold::merge_tests:: shard::seal::fold_tests::merges shard::seal::fold_tests::tiling shard::seal::gc_tests:: shard::seal::gc:: dst_tests::reads_merged::'),
     owner('shard_seal_runs', 'src/shard/seal/runs.rs', 'shard::seal::runs::runs_tests:: shard::seal::fold_tests:: shard::seal::consolidate_tests::'),
     owner('shard_seal_consolidate', 'src/shard/seal/consolidate.rs', 'shard::seal::consolidate_tests:: shard::seal::consolidate:: shard::seal::gc_tests::'),
+    owner('shard_seal_gc_lineage', 'src/shard/seal/gc/lineage.rs', 'shard::seal::gc::lineage_tests::'),
     owner('shard_seal_gc_release', 'src/shard/seal/gc/release.rs', 'shard::seal::gc::release_tests:: shard::seal::gc_tests:: shard::seal::gc::sweep_tests::'),
     owner('shard_seal_gc', 'src/shard/seal/gc.rs',
           'shard::seal::gc_tests:: shard::seal::gc:: shard::seal::fold_tests::merges dst_tests::purge_lifecycle:: '
