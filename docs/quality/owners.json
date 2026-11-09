@@ -562,6 +562,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::topology",
+      "path": "src/topology/view.rs",
+      "reason": "The operator topology view's JSON (edge change #251): each leaf, the intent with its derived state, an unreadable intent's error, and the whole body; serde macro output is compiled and the split DSTs assert the version, the leaves' states and births, and each derived intent state.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::run",
       "path": "src/topology/ops.rs",

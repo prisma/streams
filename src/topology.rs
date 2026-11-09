@@ -14,5 +14,6 @@ pub(crate) mod revalidate;
 pub(crate) mod sentinel;
 // The topology's CAS writes: the claimant's roll forward publishes through them.
 pub(crate) mod store;
+pub(crate) mod view;
 // The split: its route and the scaler start it through `ops`.
 pub(crate) mod split;

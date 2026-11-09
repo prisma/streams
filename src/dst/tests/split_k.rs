@@ -669,6 +669,26 @@ async fn the_split_route_starts_a_split_that_runs_on_to_its_publish() {
         ),
         want
     );
+    let view = topology_view(cell.addr).await;
+    let leaves: Vec<(String, serde_json::Value)> = view["shards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["prefix"].as_str().is_some_and(|p| p.starts_with("00")))
+        .map(|s| {
+            (
+                s["prefix"].as_str().unwrap().to_string(),
+                s["born_version"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        leaves,
+        [("000".to_string(), 2.into()), ("001".to_string(), 2.into())]
+    );
+    assert_eq!(view["version"], 2);
+    assert_eq!(view["intent"]["state"], "Reclaimed");
+    assert_eq!(view["intent"]["outcome"]["result"], "published");
     tasks.cancel();
     engine_shutdown(&cell.state).await;
 }
@@ -844,4 +864,94 @@ async fn a_split_waits_for_the_fleet_to_settle() {
     );
     tasks.cancel();
     engine_shutdown(&rig.state).await;
+}
+
+/// `GET /operator/topology.json`'s body.
+async fn topology_view(addr: Addr) -> serde_json::Value {
+    let (status, _, body) = hreq(addr, "GET", "/operator/topology.json", &[], b"").await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// **The topology view derives a live intent's state from its witnesses** (S4-DESIGN §6.1, §11,
+/// edge #251). With no intent the leaf `00` serves and the intent is null. A live split of `00` no
+/// actor runs is then given each witness in turn, and the view names the newest: `Preparing`
+/// (none, the leaf `splitting`), `Quiesced` (the pause's checkpoint), `ChildrenReady` (both
+/// children's logs initialized), `SourcesRetired` (the parent's `'T'`), `Published` (the stored
+/// topology at the next version naming the operation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_topology_view_derives_a_live_intents_state_from_its_witnesses() {
+    use crate::topology::intent;
+    let cell = cell().await;
+    let store = cell.state.data_store.clone();
+    let view = topology_view(cell.addr).await;
+    assert_eq!(
+        (view["version"].clone(), view["intent"].clone()),
+        (1.into(), serde_json::Value::Null)
+    );
+    let leaf = |view: &serde_json::Value| {
+        let shards = view["shards"].as_array().unwrap().clone();
+        shards.into_iter().find(|s| s["prefix"] == "00").unwrap()
+    };
+    assert_eq!(leaf(&view)["state"], "serving");
+    let home = cell.state.shards.prefixes().shards.leaves["00"];
+    let live = intent::Intent {
+        kind: "split".to_string(),
+        op_id: "op-view".to_string(),
+        sources: vec![("00".to_string(), home)],
+        children: vec![90, 91],
+        version_seen: 1,
+        state: intent::State::Preparing,
+        lease_owner: "inst-a".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    intent::create(&*store, &live).await.unwrap();
+    let state = |view: serde_json::Value| view["intent"]["state"].as_str().unwrap().to_string();
+    let view = topology_view(cell.addr).await;
+    assert_eq!(leaf(&view)["state"], "splitting");
+    assert_eq!(state(view), "Preparing");
+    let options = slatedb::config::CheckpointOptions {
+        lifetime: Some(std::time::Duration::from_secs(3600)),
+        source: None,
+        name: Some("topo-op-view".to_string()),
+    };
+    let scope = slatedb::config::CheckpointScope::All;
+    cell.parent
+        .db
+        .create_checkpoint(scope, &options)
+        .await
+        .unwrap();
+    assert_eq!(state(topology_view(cell.addr).await), "Quiesced");
+    for (prefix, home) in [("000", 90), ("001", 91)] {
+        let path = crate::topology::model::born_home_path(prefix, home);
+        let db = slatedb::Db::open(path.as_str(), store.clone())
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+    }
+    assert_eq!(state(topology_view(cell.addr).await), "ChildrenReady");
+    let retired = crate::topology::fence::Retired {
+        version: 2,
+        op_id: "op-view".to_string(),
+        children: vec![("000".to_string(), 90), ("001".to_string(), 91)],
+    };
+    let row = serde_json::to_vec(&retired).unwrap();
+    cell.parent
+        .db
+        .put(crate::topology::fence::retired_key(), row)
+        .await
+        .unwrap();
+    assert_eq!(state(topology_view(cell.addr).await), "SourcesRetired");
+    let (stored, etag) = crate::topology::store::read(&*store).await.unwrap();
+    let mut reserved = stored;
+    reserved.shards.next_home = 92;
+    let published = reserved.split("00", [90, 91], "op-view").unwrap();
+    crate::topology::store::replace(&*store, &etag, &published)
+        .await
+        .unwrap();
+    assert_eq!(state(topology_view(cell.addr).await), "Published");
+    engine_shutdown(&cell.state).await;
 }

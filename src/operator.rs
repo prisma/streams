@@ -57,8 +57,25 @@ pub(crate) fn routes() -> axum::Router<Arc<AppState>> {
             "/operator/shards/{prefix}/repair-indexes",
             post(repair_indexes),
         )
+        .route("/operator/topology.json", get(topology_view))
         .route("/operator/topology/split", post(topology_split))
         .route("/operator/topology/merge", post(topology_merge))
+}
+
+/// `GET /operator/topology.json` (edge change #251, S4-DESIGN §11): `{version, shards: [{prefix,
+/// home, owner, born_version, state}], intent: null | {kind, op_id, sources, children, state,
+/// started_ms, lease_until_ms, outcome}}`, the intent's state derived from its durable witnesses
+/// (`topology::view`).
+pub(crate) async fn topology_view(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
+    let body =
+        crate::topology::view::topology(&state.shards, &state.ownership, &state.data_store).await;
+    ([("cache-control", "no-store")], axum::Json(body)).into_response()
 }
 
 /// The split route's body.

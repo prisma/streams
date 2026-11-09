@@ -69,7 +69,7 @@ pub(crate) fn lineage_of(shards: &ShardSet, home: u32) -> Vec<u32> {
 }
 
 /// The children of the split `intent` names: each half of its source's prefix and its home.
-fn children_of(intent: &Intent) -> Vec<(String, u32)> {
+pub(crate) fn children_of(intent: &Intent) -> Vec<(String, u32)> {
     let Some((prefix, _)) = intent.sources.first() else {
         return Vec::new();
     };
