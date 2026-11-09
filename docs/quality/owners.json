@@ -715,6 +715,38 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::post_split",
+      "path": "src/dst/tests/split_route_refusals.rs",
+      "reason": "The split route's request body, built as JSON for the prefix under test; serde macro output is compiled and each DST asserts the route's answer.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_split_of_a_leaf_another_instance_owns_names_that_instance",
+      "path": "src/dst/tests/split_route_refusals.rs",
+      "reason": "The expected not_ring_owner answer, compared whole with the route's JSON body; serde macro output is compiled and the DST asserts it.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_leaf_at_the_routing_width_is_not_splittable",
+      "path": "src/dst/tests/split_route_refusals.rs",
+      "reason": "The expected not_splittable answer for a 24-bit leaf, compared whole with the route's JSON body; serde macro output is compiled and the DST asserts it.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_parent_whose_log_holds_t_is_not_splittable",
+      "path": "src/dst/tests/split_route_refusals.rs",
+      "reason": "The expected not_splittable answer for a retired parent, compared whole with the route's JSON body; serde macro output is compiled and the DST asserts it.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::a_purge_request_mid_pass_abandons_the_copy",
       "path": "src/shard/seal/gc/clean/tests.rs",
       "reason": "The cleaner's pass and the purge request that overtakes its copy run concurrently in one test task, so the request lands while the pass waits after its PUT; the compiler checks the join's expansion and both futures borrow the test's rig.",
@@ -847,6 +879,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "The split end to end on a serving rig (S4-DESIGN section 6, K-SPLIT-DECISION-2026-11-09 section 5): two streams sealed into one segment object, the leaf split in two, each child serving its stream back byte-exact and the children's refcounts summing to the parent's; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/split_k.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::split_route_refusals",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split route's refusals split_k does not pin (edge #251, C3): 409 not_ring_owner naming the owning instance, and 422 not_splittable for a leaf at the routing width and for a parent whose log holds 'T'; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_route_refusals.rs\""
     },
     {
       "category": "by-path-module",

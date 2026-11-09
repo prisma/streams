@@ -1345,6 +1345,17 @@
     "scenarios": []
   },
   {
+    "name": "a_leaf_at_the_routing_width_is_not_splittable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a1a9e20c31b8ac84754f0e550347b6766ceb5f47bdecdcb04e6cadcd206b32ac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_route_refusals.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_listing_holds_its_reservation_until_it_has_answered",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1678,6 +1689,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_parent_whose_log_holds_t_is_not_splittable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d1f9025233a0eab9a911230c89cb677188f83ce78d41f42a3cf22efdbae4e9d4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_route_refusals.rs",
     "scenarios": []
   },
   {
@@ -3108,6 +3130,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_of_a_leaf_another_instance_owns_names_that_instance",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d258160cc63c4cf1e84187df5d288406e62210033b8ca56cca7eacfbf439148c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_route_refusals.rs",
     "scenarios": []
   },
   {

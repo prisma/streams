@@ -48,6 +48,9 @@ mod split_barrier;
 #[path = "tests/split_k.rs"]
 mod split_k;
 
+#[path = "tests/split_route_refusals.rs"]
+mod split_route_refusals;
+
 #[path = "tests/billing_walk_custody.rs"]
 mod billing_walk_custody;
 
