@@ -181,12 +181,14 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
     engine_shutdown(&state).await;
 }
 
-/// **A split whose clone fails after its checkpoint rolls back and deletes the checkpoint.** A
-/// manifest that does not decode already sits at the first child's path, so its clone fails inside
-/// the pause: the split refuses `RolledBack`, its intent ends `RolledBack`, no `topo-<op_id>`
-/// checkpoint is left on the parent, and the parent still serves both streams.
+/// **A split whose clone fails after its checkpoint rolls back, leaving nothing of its children.**
+/// A manifest that does not decode already sits at the first child's path, so its clone fails inside
+/// the pause while the other's may succeed: the split refuses `RolledBack`, its intent ends
+/// `RolledBack`, the parent holds exactly the checkpoints it held before (no `topo-<op_id>`, no
+/// clone's final checkpoint), neither child path holds a file (S4-DESIGN §6.4's takeover GC), and
+/// the parent still serves both streams.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_split_that_rolls_back_after_its_checkpoint_deletes_it() {
+async fn a_split_that_rolls_back_leaves_nothing_of_its_children() {
     let store = mem();
     let Cell {
         state,
@@ -196,6 +198,9 @@ async fn a_split_that_rolls_back_after_its_checkpoint_deletes_it() {
         parent,
     } = cell_over(store.clone()).await;
     let want = (records(addr, &low).await, records(addr, &high).await);
+    let admin =
+        slatedb::admin::AdminBuilder::new(parent.log_path(), parent.data_store().clone()).build();
+    let held = admin.list_checkpoints(None).await.unwrap();
     let home = state.shards.prefixes().shards.next_home;
     let path = crate::topology::model::born_home_path("000", home);
     let junk = format!("{path}/manifest/00000000000000000001.manifest");
@@ -220,19 +225,38 @@ async fn a_split_that_rolls_back_after_its_checkpoint_deletes_it() {
         ended.intent.state,
         crate::topology::intent::State::RolledBack
     );
-    let admin =
-        slatedb::admin::AdminBuilder::new(parent.log_path(), parent.data_store().clone()).build();
     let left = admin.list_checkpoints(Some("topo-op-r")).await.unwrap();
     assert!(
         left.is_empty(),
         "the rollback deletes the checkpoint: {left:?}"
     );
+    let ids = |all: Vec<slatedb::Checkpoint>| all.into_iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(admin.list_checkpoints(None).await.unwrap()),
+        ids(held),
+        "no clone's final checkpoint is left on the parent"
+    );
+    for (prefix, home) in [("000", home), ("001", home + 1)] {
+        let path = crate::topology::model::born_home_path(prefix, home);
+        let files = object_paths(&*store, &path).await;
+        assert!(files.is_empty(), "{path} holds {files:?}");
+    }
     assert!(!parent.is_closed(), "the parent serves on");
     assert_eq!(
         (records(addr, &low).await, records(addr, &high).await),
         want
     );
     engine_shutdown(&state).await;
+}
+
+/// Every object under `prefix` in `store`.
+async fn object_paths(store: &dyn object_store::ObjectStore, prefix: &str) -> Vec<String> {
+    use futures_util::TryStreamExt;
+    let prefix = object_store::path::Path::from(prefix);
+    let all: Vec<_> = store.list(Some(&prefix)).try_collect().await.unwrap();
+    all.into_iter()
+        .map(|meta| meta.location.to_string())
+        .collect()
 }
 
 /// Every reference list in `store` (S6-DESIGN §2.3): its path and ETag.

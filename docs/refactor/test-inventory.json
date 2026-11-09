@@ -3089,11 +3089,11 @@
     "scenarios": []
   },
   {
-    "name": "a_split_that_rolls_back_after_its_checkpoint_deletes_it",
+    "name": "a_split_that_rolls_back_leaves_nothing_of_its_children",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "352c348d0a02df9e9045d312af441c284831ceeccb54a1b65b09c64d40262d46",
+    "function_sha256": "d4f863a7e23cd1d0123419742d6161c58d9c18ac99f813d988f72933702257e4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",

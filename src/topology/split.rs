@@ -557,9 +557,10 @@ async fn publish(
     })
 }
 
-/// Roll back before `'T'` (S4-DESIGN §6.4's first rows): collection resumes, the touched mark is
-/// dropped, the lists are deleted and the intent ends `RolledBack`. The children's paths are left for
-/// S6's never-leaf sweeper.
+/// Roll back before `'T'` (S4-DESIGN §6.4's first rows): collection resumes and the touched mark is
+/// dropped; the children's paths get the takeover GC, then the pause's checkpoint and the lists are
+/// deleted, and the intent ends `RolledBack` last, so a rollback cut short is a claimant's to redo. A
+/// stale clone that lands after it is S6's never-leaf sweeper's.
 async fn roll_back(
     store: &dyn ObjectStore,
     parent: &ShardEngine,
@@ -570,6 +571,11 @@ async fn roll_back(
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(false);
     drop(gate.take_touched());
+    for child in children {
+        let path = super::model::born_home_path(&child.prefix, child.home);
+        delete_child(parent.data_store(), &path).await;
+    }
+    drop_checkpoint(parent, &held.intent.op_id).await;
     if let Ok(rows) = sentinel_rows(parent).await {
         for child in children {
             let Ok(counts) = sentinel::child_counts(&rows, &[], child.range) else {
@@ -583,8 +589,31 @@ async fn roll_back(
     }
     let ended = held_terminal(held, intent::State::RolledBack, &why);
     drop(intent::replace(store, held, ended).await);
-    drop_checkpoint(parent, &held.intent.op_id).await;
     Refused::RolledBack(why)
+}
+
+/// The takeover GC of a child's `path` (S4-DESIGN §6.4): its clone's final checkpoints stripped
+/// from its sources, then its files (SlateDB's `delete_db`). A path whose manifest does not decode,
+/// or that holds files but no manifest, has the files it listed deleted one by one; one that holds
+/// none is left untouched.
+async fn delete_child(store: &Arc<dyn ObjectStore>, path: &str) {
+    use futures_util::TryStreamExt;
+    let prefix = object_store::path::Path::from(path);
+    let listed: Vec<_> = store
+        .list(Some(&prefix))
+        .try_collect()
+        .await
+        .unwrap_or_default();
+    if listed.is_empty() {
+        return;
+    }
+    let admin = slatedb::admin::AdminBuilder::new(path, store.clone()).build();
+    if admin.delete_db(true).await.is_ok() {
+        return;
+    }
+    for meta in listed {
+        drop(store.delete(&meta.location).await);
+    }
 }
 
 /// Delete `child`'s reference and supplementary lists under each of the `ancestors`' roots.
