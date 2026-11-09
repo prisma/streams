@@ -238,6 +238,7 @@ pub(crate) async fn split(
     drop(hold);
     let ended = held_terminal(&held, intent::State::Reclaimed, "published");
     drop(intent::replace(&*store, &held, ended).await);
+    drop_checkpoint(parent, op_id).await;
     published.map_err(Refused::RolledBack)
 }
 
@@ -551,7 +552,26 @@ async fn roll_back(
     }
     let ended = held_terminal(held, intent::State::RolledBack, &why);
     drop(intent::replace(store, held, ended).await);
+    drop_checkpoint(parent, &held.intent.op_id).await;
     Refused::RolledBack(why)
+}
+
+/// Delete the pause's checkpoint of operation `op_id` from the parent, if it was taken: the children
+/// were cloned from it (or never will be). A failed delete is left to the checkpoint's lifetime.
+async fn drop_checkpoint(parent: &ShardEngine, op_id: &str) {
+    let path = parent.log_path();
+    let admin =
+        slatedb::admin::AdminBuilder::new(path.as_str(), parent.data_store().clone()).build();
+    let name = format!("topo-{op_id}");
+    let Ok(taken) = admin.list_checkpoints(Some(&name)).await else {
+        return;
+    };
+    for checkpoint in taken
+        .into_iter()
+        .filter(|c| c.name.as_deref() == Some(&*name))
+    {
+        drop(admin.delete_checkpoint(checkpoint.id).await);
+    }
 }
 
 /// `held`'s intent, ended in `state` with `result`.

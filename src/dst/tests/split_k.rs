@@ -144,6 +144,13 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
         .collect();
     assert_eq!(prefixes, ["000", "001"]);
     assert!(parent.is_closed(), "the parent is retired");
+    let admin =
+        slatedb::admin::AdminBuilder::new(parent.log_path(), parent.data_store().clone()).build();
+    let left = admin.list_checkpoints(Some("topo-op-k")).await.unwrap();
+    assert!(
+        left.is_empty(),
+        "the pause's checkpoint is deleted: {left:?}"
+    );
 
     assert_eq!(
         (records(addr, &low).await, records(addr, &high).await),
@@ -171,6 +178,60 @@ async fn a_split_serves_each_stream_from_its_child_and_the_counts_sum() {
             .collect();
         assert_eq!(chunks, vec![Some(1); shared.len()], "{}", child.prefix);
     }
+    engine_shutdown(&state).await;
+}
+
+/// **A split whose clone fails after its checkpoint rolls back and deletes the checkpoint.** A
+/// manifest that does not decode already sits at the first child's path, so its clone fails inside
+/// the pause: the split refuses `RolledBack`, its intent ends `RolledBack`, no `topo-<op_id>`
+/// checkpoint is left on the parent, and the parent still serves both streams.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_that_rolls_back_after_its_checkpoint_deletes_it() {
+    let store = mem();
+    let Cell {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+    } = cell_over(store.clone()).await;
+    let want = (records(addr, &low).await, records(addr, &high).await);
+    let home = state.shards.prefixes().shards.next_home;
+    let path = crate::topology::model::born_home_path("000", home);
+    let junk = format!("{path}/manifest/00000000000000000001.manifest");
+    object_store::ObjectStoreExt::put(&*store, &junk.as_str().into(), b"junk".to_vec().into())
+        .await
+        .unwrap();
+
+    let clock = state.runtime.clock.clone();
+    let refused = crate::topology::split::split(&state.shards, &parent, "op-r", "inst-a", &*clock)
+        .await
+        .err()
+        .expect("the split rolls back");
+    assert!(
+        matches!(&refused, crate::topology::split::Refused::RolledBack(why) if why.contains(&path)),
+        "{refused}"
+    );
+    let ended = crate::topology::intent::read(&*store)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ended.intent.state,
+        crate::topology::intent::State::RolledBack
+    );
+    let admin =
+        slatedb::admin::AdminBuilder::new(parent.log_path(), parent.data_store().clone()).build();
+    let left = admin.list_checkpoints(Some("topo-op-r")).await.unwrap();
+    assert!(
+        left.is_empty(),
+        "the rollback deletes the checkpoint: {left:?}"
+    );
+    assert!(!parent.is_closed(), "the parent serves on");
+    assert_eq!(
+        (records(addr, &low).await, records(addr, &high).await),
+        want
+    );
     engine_shutdown(&state).await;
 }
 

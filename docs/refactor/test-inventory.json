@@ -3082,7 +3082,18 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0908f585a576c22bfe46da153b818968fb4e5a245e3b852cad3278c4905a117c",
+    "function_sha256": "2bc023389a8a4031b92b0090ff6e6f4f125a5db7cb8ec231ed027015f9d0cd25",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_that_rolls_back_after_its_checkpoint_deletes_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "352c348d0a02df9e9045d312af441c284831ceeccb54a1b65b09c64d40262d46",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
