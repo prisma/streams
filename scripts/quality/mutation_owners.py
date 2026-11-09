@@ -169,7 +169,9 @@ OWNERS = (
     owner('billing_stored_meta', 'src/billing/stored_meta.rs', 'billing::stored_meta:: golden_tests::billing:: shard::billing_read_tests::'),
     owner('shard_rows', 'src/shard/rows.rs', 'shard:: golden_tests:: native_queue'),
     owner('shard_handle_load', 'src/shard/handle_load.rs', 'shard:: native_queue dst_tests::history_recovery::'),
-    owner('shard_seal', 'src/shard/seal.rs', 'shard::seal:: dst_tests::idle_release::'),
+    owner('shard_seal', 'src/shard/seal.rs',
+          'shard::seal:: dst_tests::idle_release:: '
+          'shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home'),
     owner('shard_seal_steps', 'src/shard/seal/steps.rs', 'shard::seal::'),
     owner('shard_seal_open', 'src/shard/seal/open.rs', 'shard::seal:: shard::billing_read_tests::'),
     owner('shard_seal_read', 'src/shard/seal/read.rs', 'dst_tests::read_reserve:: shard::seal::read_tests:: shard::seal::read::plan_tests:: shard::seal::runs::runs_tests::a_read_the_directory_tiles_alone_fetches_no_footer shard::seal::fold_tests:: shard::seal::consolidate_tests:: dst_tests::reads_raw:: dst_tests::reads_applied:: shard::seal::gc_tests::'),
