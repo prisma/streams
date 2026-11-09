@@ -885,6 +885,35 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   another instance owns it, or it is retired or not yet touched (a second
   call right after a 202 answers 404). A load fault or a stale index row
   also repairs at the shard's next open without the call.
+- **Shard split** (S4, edge changes #249-#251):
+  `POST /operator/topology/split` `{"prefix": "<bits>"}` (`""` is the root
+  shard, which the index-repair path route above spells `root`) on the
+  instance that owns the parent, with the deployment bearer; 202
+  `{op_id, version}` means it started and runs on. Follow it at
+  `GET /operator/topology.json`: `intent.state` runs `Preparing` →
+  `Quiesced` → `ChildrenReady` → `SourcesRetired` → `Published` →
+  `Reclaimed` (`outcome: "published"`), or `RolledBack`; the parent's leaf
+  shows `state: "splitting"` until then, and the children appear at the
+  new `version` with `born_version`. Clients of that shard see at most a 2
+  s stall; past it, appends get 503 `temporarily_unavailable` (raw
+  `shard_splitting`), `retry-after: 1`, nothing written, until the
+  publish; reads are served throughout. Refusals: 409 `topology_busy`
+  `fleet` — the fleet's count is younger than 60 s or a move younger than
+  `REBALANCE_MOVE_COOLDOWN_SECS`: wait and retry; `intent` — one operation
+  per cell, follow it; `override` — a move names the parent: wait for
+  return-home or drop the override; 409 `not_ring_owner {owner}` — call
+  that instance (operator routes are not forwarded); 409
+  `instance_full {resident, max}` — at its peak (the parent open beside
+  both children) the instance would hold more than
+  `SHARDS_PER_INSTANCE_MAX` shards; 422 `not_splittable` — 24 bits, or
+  already retired; 404 `unknown_prefix` — not a leaf of this instance's
+  topology (it may be stale: read `topology.json`); 503
+  `topology_unavailable` — retry; if its message names a rolled-back
+  `op_id`, `topology.json` shows why. If the instance running the split
+  dies, the next open of the parent (any request) claims the split after
+  11 s and rolls it back, or forward if the parent was already retired;
+  the shard answers 503 `shard_opening` meanwhile.
+  `POST /operator/topology/merge` is 501 until S6.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
