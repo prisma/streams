@@ -1,12 +1,12 @@
 #![cfg(test)]
 //! The helper's routing (S4-DESIGN §7, S3a §2.8): every tag's rule, on rows of each kind.
 
-use super::{PlanError, Row, check_sums, child_counts, route};
+use super::{PlanError, Row, check_sums, child_counts, child_lists, route};
 use crate::keyspace::range::Range;
 use crate::keyspace::{SENTINEL, tag};
 use crate::spill::directory::split::decode_row_in_range;
 use crate::spill::directory::{KeySummary, directory_key, encode_row};
-use crate::spill::gc::{self, Refcount};
+use crate::spill::gc::{self, ObjectKind, Refcount};
 use crate::spill::object::{ChunkInput, ObjectId, encode};
 use crate::spill::runindex::{self, Orphans};
 use crate::spill::test_pages::keyed_page;
@@ -229,4 +229,42 @@ fn the_childrens_counts_must_sum_to_the_sources() {
     let mut lost = children;
     lost.iter_mut().for_each(|c| c.orphans.clear());
     assert_eq!(check_sums(&rows, &lost), Err(PlanError::Mismatch(OBJECT)));
+}
+
+/// **A child lists every ancestor object it holds, per home, once.** Its counts name `OBJECT`
+/// (home 0) and a segment of home 3; the source's `'I'` rows name a run index of home 0 and one of
+/// home 3, the latter twice over. The lists hold, per home, its segments and run indexes in order,
+/// each once; a home the child holds nothing of has no list.
+#[test]
+fn a_child_lists_every_ancestor_object_it_holds_per_home_once() {
+    let ancestor = ObjectId {
+        home: 3,
+        epoch: 2,
+        seq: 9,
+    };
+    let counts = super::Counts {
+        refcounts: vec![
+            (OBJECT, Refcount::default()),
+            (ancestor, Refcount::default()),
+        ],
+        orphans: vec![],
+    };
+    let rows = [
+        (runindex::pointer_key(OTHER), vec![]),
+        (runindex::pointer_key(ancestor), vec![]),
+        (runindex::pointer_key(ancestor), vec![]),
+        (directory_key(OBJECT), vec![]),
+    ];
+    let lists = child_lists(&rows, &counts).unwrap();
+    let want = std::collections::BTreeMap::from([
+        (
+            0,
+            vec![(ObjectKind::Segment, 1, 1), (ObjectKind::RunIndex, 1, 2)],
+        ),
+        (
+            3,
+            vec![(ObjectKind::Segment, 2, 9), (ObjectKind::RunIndex, 2, 9)],
+        ),
+    ]);
+    assert_eq!(lists, want);
 }

@@ -16,7 +16,7 @@ use crate::keyspace::range::Range;
 use crate::keyspace::split_rules::{SplitRule, routed_hash, split_rule};
 use crate::keyspace::{EntityHash, SENTINEL, tag};
 use crate::spill::directory::{self, DirEntry};
-use crate::spill::gc::{self, Refcount};
+use crate::spill::gc::{self, ObjectKind, Refcount};
 use crate::spill::object::ObjectId;
 use crate::spill::runindex::{self, Orphans};
 
@@ -193,6 +193,43 @@ pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanEr
         Some(id) => Err(PlanError::Mismatch(id)),
         None => Ok(()),
     }
+}
+
+/// An ancestor object a reference list names: its kind, epoch and seq (its home is the list's).
+pub(crate) type ListEntry = (ObjectKind, u64, u64);
+
+/// A child's reference-list entries (S4-DESIGN §7.3, S6-DESIGN §2.3): per ancestor home, the
+/// objects of that home the child holds at birth. They are the segment objects its counts name and
+/// the run-index objects the source's `'I'` rows name (both children read them all), each listed
+/// once, in order. The split PUTs one list per home, in Preparing (S4 step 11).
+pub(crate) fn child_lists(
+    rows: &[Row],
+    counts: &Counts,
+) -> Result<BTreeMap<u32, Vec<ListEntry>>, PlanError> {
+    let mut held: Vec<(ObjectKind, ObjectId)> = counts
+        .refcounts
+        .iter()
+        .map(|(id, _)| (ObjectKind::Segment, *id))
+        .collect();
+    for (key, _) in rows {
+        if key.get(SENTINEL.len()) == Some(&tag::POINTER) {
+            let id = runindex::parse_sentinel_key(tag::POINTER, key)
+                .ok_or_else(|| PlanError::Corrupt(key.clone()))?;
+            held.push((ObjectKind::RunIndex, id));
+        }
+    }
+    let mut lists: BTreeMap<u32, Vec<ListEntry>> = BTreeMap::new();
+    for (kind, id) in held {
+        lists
+            .entry(id.home)
+            .or_default()
+            .push((kind, id.epoch, id.seq));
+    }
+    for list in lists.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    Ok(lists)
 }
 
 #[cfg(test)]
