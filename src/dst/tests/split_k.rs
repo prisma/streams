@@ -769,20 +769,23 @@ async fn the_split_routes_refusals() {
     engine_shutdown(&cell.state).await;
 }
 
-/// **A split that would fill its instance past `SHARDS_PER_INSTANCE_MAX` is refused** (S4-DESIGN
-/// §10, edge #251). With a ceiling of 1, the leaf's split answers 409 `instance_full` naming the
-/// shards it would leave resident (those open here, plus one) and the ceiling; nothing is split.
+/// **A split that would fill its instance past `SHARDS_PER_INSTANCE_MAX` is refused at its peak**
+/// (S4-DESIGN §10, edge #251, #261). The instance holds the parent and both children until the
+/// publish, so with a ceiling one above the shards open here (the parent among them) the leaf's
+/// split answers 409 `instance_full` naming that peak (the open shards plus two) and the ceiling;
+/// nothing is split.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_that_would_fill_its_instance_is_refused() {
     let cell = cell().await;
-    let tasks = start_ops(&cell, 1);
+    let open = cell.state.shards.open_count();
+    let max = u32::try_from(open + 1).unwrap();
+    let tasks = start_ops(&cell, max);
     let (status, refused) = post_split(cell.addr, r#"{"prefix":"00"}"#).await;
-    let resident = cell.state.shards.open_count() + 1;
     assert_eq!(
         (status, refused),
         (
             409,
-            serde_json::json!({"error": "instance_full", "resident": resident, "max": 1})
+            serde_json::json!({"error": "instance_full", "resident": open + 2, "max": max})
         )
     );
     let (stored, _) = crate::topology::store::read(&*cell.state.data_store)

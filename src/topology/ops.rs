@@ -135,9 +135,10 @@ fn finish(started: split::Started, clock: Arc<dyn Clock>, tasks: &TaskSupervisor
 
 impl Parts {
     /// Start the split of leaf `prefix` (S4-DESIGN §6.2 step 0): refused for no leaf, an override on
-    /// it, a fleet that has not settled (`fleet_settled`), another instance holding it, or an instance the split would fill past `shards_max` (its
-    /// open shards, the parent among them, plus one: the parent retires and two children open,
-    /// S4-DESIGN §10); else the parent is opened here and the split started.
+    /// it, a fleet that has not settled (`fleet_settled`), another instance holding it, or an
+    /// instance the split would fill past `shards_max` at its peak (its open shards, the parent among
+    /// them, plus two: the parent stays open beside both children until the publish, S4-DESIGN §10,
+    /// #261); else the parent is opened here and the split started.
     async fn start(&self, prefix: &str) -> Result<split::Started, Refused> {
         let snapshot = self.dir.prefixes();
         if !snapshot.shards.leaves.contains_key(prefix) {
@@ -155,7 +156,7 @@ impl Parts {
                 ResolveError::NotOwner { owner, .. } => Refused::NotOwner(owner),
                 other => Refused::Unavailable(format!("{other:?}")),
             })?;
-        let resident = self.dir.open_count().saturating_add(1);
+        let resident = self.dir.open_count().saturating_add(2);
         if resident > usize::try_from(self.shards_max).unwrap_or(usize::MAX) {
             return Err(Refused::InstanceFull {
                 resident,

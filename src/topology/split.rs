@@ -115,8 +115,8 @@ pub(crate) enum Refused {
     Busy(&'static str),
     /// `not_ring_owner`: another instance (named) holds the parent.
     NotOwner(String),
-    /// `instance_full`: the split would leave this instance holding `resident` shards, past its
-    /// `max` (`SHARDS_PER_INSTANCE_MAX`, S4-DESIGN §10).
+    /// `instance_full`: at its peak (the parent and both children) the split would have this
+    /// instance hold `resident` shards, past its `max` (`SHARDS_PER_INSTANCE_MAX`, S4-DESIGN §10).
     InstanceFull { resident: usize, max: u32 },
     /// `topology_unavailable`: no topology loop runs here, or the parent could not be opened.
     Unavailable(String),
@@ -136,7 +136,7 @@ impl std::fmt::Display for Refused {
             Self::InstanceFull { resident, max } => {
                 write!(
                     f,
-                    "instance_full: {resident} resident shards after the split, past {max}"
+                    "instance_full: {resident} resident shards at the split's peak, past {max}"
                 )
             }
             Self::Unavailable(why) => write!(f, "topology_unavailable: {why}"),
