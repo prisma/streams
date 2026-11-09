@@ -221,5 +221,7 @@ pub(crate) async fn delete_lists(
     }
 }
 
+// The merge's claimant (S6 §7.4), dispatched from the fence for a merge's intent.
+pub(crate) mod merge;
 #[cfg(test)]
 mod tests;

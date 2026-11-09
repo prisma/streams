@@ -258,6 +258,9 @@ async fn recover(
     retired: Option<Retired>,
     live: Option<Held>,
 ) -> Result<(), String> {
+    if recover::merge::is_merge(retired.as_ref(), live.as_ref()) {
+        return recover::merge::recover(engine, snapshot, retired, live).await;
+    }
     let store = engine.data_store();
     let owner = format!("opener:{}@{}", engine.prefix, engine.writer_epoch);
     let claimed = match &live {

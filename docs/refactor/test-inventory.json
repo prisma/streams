@@ -1341,6 +1341,17 @@
     "scenarios": []
   },
   {
+    "name": "a_lapsed_merge_is_rolled_back_by_a_sources_opener_that_fences_both_sources",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2c6721505424fcd12ffacc8d1a6a449dfabc7084d4643e866c474a258d943ddc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_large_record_absorbs_after_restart_under_default_policy",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

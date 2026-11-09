@@ -63,7 +63,7 @@ fn a_merge_of_non_leaves_or_onto_a_used_home_is_refused() {
 /// when a copy began.
 #[test]
 fn a_claimant_decides_each_row_of_the_recovery_table() {
-    use super::{Evidence, Recovery, recovery};
+    use crate::topology::recover::merge::{Evidence, Recovery, recovery};
     let at = |retired: [bool; 2], copy_began, merged_complete, published| Evidence {
         retired,
         copy_began,

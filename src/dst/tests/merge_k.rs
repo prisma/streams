@@ -128,3 +128,121 @@ async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
     }
     engine_shutdown(&state).await;
 }
+
+/// The log at `path`'s checkpoints named `name`.
+async fn checkpoints(store: &Arc<dyn object_store::ObjectStore>, path: &str, name: &str) -> usize {
+    let admin = slatedb::admin::AdminBuilder::new(path, store.clone()).build();
+    admin.list_checkpoints(Some(name)).await.unwrap().len()
+}
+
+/// Whether nothing lies at or under `path`.
+async fn gone(store: &dyn object_store::ObjectStore, path: &str) -> bool {
+    use futures_util::TryStreamExt;
+    let at = object_store::path::Path::from(path);
+    let head = object_store::ObjectStoreExt::head(store, &at).await;
+    let under: Vec<_> = store.list(Some(&at)).try_collect().await.unwrap();
+    matches!(head, Err(object_store::Error::NotFound { .. })) && under.is_empty()
+}
+
+/// **A lapsed merge is rolled back by a source's opener, which fences both sources first.** An
+/// actor that stopped in the merge's copy left a `topo-` checkpoint on each source, `M`'s lists
+/// under both sources' roots, files at `M`'s path, and a live merge intent no one renews. The
+/// reopen of `00` holds through the lapse; its opener opens `01`'s log for maintenance too (so
+/// `01`'s previous writer is fenced), claims the intent, deletes what the actor left on both
+/// sources, ends the intent `RolledBack`, and serves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_lapsed_merge_is_rolled_back_by_a_sources_opener_that_fences_both_sources() {
+    use crate::topology::intent::{self, Intent, State};
+    let store = mem();
+    let (state, addr) = http_rig(store.clone()).await;
+    let topology = crate::topology::model::Topology {
+        version: 1,
+        shards: state.shards.prefixes().shards.clone(),
+        last_op: None,
+        max_request_body_bytes: None,
+    };
+    let raw = serde_json::to_vec(&topology).unwrap();
+    object_store::ObjectStoreExt::put(&*store, &"topology.json".into(), raw.into())
+        .await
+        .unwrap();
+    let mut taken = 0;
+    let low = stream_in_half(&state, addr, '0', &mut taken).await;
+    let desc = stored(&state, &state.deployment.raw_adapter_sref(&low)).await;
+    let parent = engine_of(&state, &desc, 0).await;
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, "op-s", "inst-a", &*clock)
+        .await
+        .expect("the split publishes");
+    let snapshot = state.shards.prefixes();
+    let homes = [snapshot.shards.leaves["000"], snapshot.shards.leaves["001"]];
+    let merged_home = snapshot.shards.next_home;
+    let mut logs = Vec::new();
+    let mut lists = Vec::new();
+    for (_, home, engine) in &split.children {
+        let options = slatedb::config::CheckpointOptions {
+            lifetime: Some(std::time::Duration::from_secs(3600)),
+            source: None,
+            name: Some("topo-op-merge".to_string()),
+        };
+        engine
+            .db
+            .create_checkpoint(slatedb::config::CheckpointScope::All, &options)
+            .await
+            .unwrap();
+        logs.push(engine.log_path());
+        let root = snapshot.shards.homes[home].path.clone();
+        lists.push(crate::spill::lineage::reference_list_path(
+            &root,
+            merged_home,
+        ));
+    }
+    let child = crate::topology::model::born_home_path("00", merged_home);
+    let file = format!("{child}/manifest/00000000000000000001.manifest");
+    for path in lists.iter().chain([&file]) {
+        object_store::ObjectStoreExt::put(&*store, &path.as_str().into(), b"left".to_vec().into())
+            .await
+            .unwrap();
+    }
+    engine_shutdown(&state).await;
+    let merge = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-merge".to_string(),
+        sources: vec![("000".to_string(), homes[0]), ("001".to_string(), homes[1])],
+        children: vec![merged_home],
+        version_seen: split.version,
+        state: State::Preparing,
+        lease_owner: "inst-elsewhere".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    intent::create(&*store, &merge).await.unwrap();
+    let t0 = tokio::time::Instant::now();
+    loop {
+        let path = format!("/v1/stream/{low}");
+        let (status, _, _) = hreq(addr, "POST", &path, &[JSON], br#"[{"n":9}]"#).await;
+        if status == 204 {
+            break;
+        }
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(40),
+            "served once rolled back"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let ended = intent::read(&*store).await.unwrap().unwrap().intent;
+    assert_eq!(ended.state, State::RolledBack);
+    assert_eq!(ended.lease_epoch, 2, "claimed");
+    for log in &logs {
+        assert_eq!(
+            checkpoints(&store, log, "topo-op-merge").await,
+            0,
+            "{log}'s checkpoint"
+        );
+    }
+    for path in lists.iter().chain([&child]) {
+        assert!(gone(&*store, path).await, "{path} is deleted");
+    }
+    engine_shutdown(&state).await;
+}

@@ -16,7 +16,7 @@ use std::time::Duration;
 use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::config::{CheckpointOptions, CheckpointScope};
 
-use super::model::{Home, LastOp, Topology, born_home_path};
+use super::model::born_home_path;
 use super::sentinel::{Counts, Row};
 use super::split::key_bounds;
 use super::{fence, intent, sentinel, store};
@@ -68,65 +68,6 @@ struct Pair {
     sources: [(Arc<ShardEngine>, u32); 2],
     prefix: String,
     home: u32,
-}
-
-impl Topology {
-    /// One fresh home for a merged leaf: `next_home`, with `next_home` past it.
-    pub(crate) fn reserve_home(&self) -> (Self, u32) {
-        let mut next = self.clone();
-        let home = self.shards.next_home;
-        next.shards.next_home = home.saturating_add(1);
-        (next, home)
-    }
-
-    /// The topology once `op_id` merged the sibling leaves under `prefix` into `home` (S6 §7.2
-    /// step 4): the next version; `prefix` a leaf at `home`, born at it, whose parents are the two
-    /// sources' homes, both retired at it; and `last_op` names the operation. Refused unless both
-    /// halves are leaves and `home` is fresh below `next_home`.
-    pub(crate) fn merged(&self, prefix: &str, home: u32, op_id: &str) -> Result<Self, String> {
-        let halves = [format!("{prefix}0"), format!("{prefix}1")];
-        let mut parents = Vec::with_capacity(2);
-        for half in &halves {
-            let leaf = self
-                .shards
-                .leaves
-                .get(half)
-                .ok_or_else(|| format!("{half:?} is no leaf"))?;
-            parents.push(*leaf);
-        }
-        if home >= self.shards.next_home || self.shards.homes.contains_key(&home) {
-            return Err(format!("{home} is not a fresh reserved home"));
-        }
-        let mut next = self.clone();
-        let version = self.version + 1;
-        next.version = version;
-        next.shards.version = version;
-        let mut sources = Vec::with_capacity(2);
-        for (half, parent) in halves.iter().zip(&parents) {
-            next.shards.leaves.remove(half);
-            if let Some(source) = next.shards.homes.get_mut(parent) {
-                source.retired_version = Some(version);
-            }
-            sources.push((half.clone(), *parent));
-        }
-        next.shards.leaves.insert(prefix.to_string(), home);
-        let born = Home {
-            path: born_home_path(prefix, home),
-            prefix: prefix.to_string(),
-            parents,
-            born_version: version,
-            retired_version: None,
-        };
-        next.shards.homes.insert(home, born);
-        next.shards.shards = next.shards.leaves.keys().cloned().collect();
-        next.last_op = Some(LastOp {
-            op_id: op_id.to_string(),
-            kind: "merge".to_string(),
-            sources,
-            children: vec![home],
-        });
-        Ok(next)
-    }
 }
 
 /// The parts every publishing step reads.
@@ -590,51 +531,6 @@ async fn roll_back(
     let ended = terminal(held, intent::State::RolledBack, &why);
     drop(intent::replace(store, held, ended).await);
     Refused::RolledBack(why)
-}
-
-/// What a claimant of a lapsed merge intent found, once its own opens had fenced **both** sources
-/// (S6 §7.4, L8): a claim that fenced one source could decide while the other's previous writer
-/// still acks writes `M`'s older checkpoint lacks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Evidence {
-    /// Whether each source's log holds `'T'` (this merge's).
-    pub(crate) retired: [bool; 2],
-    /// Whether a `topo-<op_id>` checkpoint, or any file under `M`'s path, exists.
-    pub(crate) copy_began: bool,
-    /// Whether `M`'s log is complete (its seeded clone finished: `'Y'` present).
-    pub(crate) merged_complete: bool,
-    /// Whether the stored topology already names this operation as its `last_op`.
-    pub(crate) published: bool,
-}
-
-/// The claimant's decision for a lapsed merge intent (S6 §7.4's table).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Recovery {
-    /// `'T'` in neither source, nothing copied: delete `M`'s lists, end the intent `RolledBack`.
-    RollBack,
-    /// `'T'` in neither source, a copy begun: also delete `M`'s clone (its manifest's
-    /// `external_dbs` checkpoints, its files) and both `topo-` checkpoints, then roll back.
-    RollBackWithTakeoverGc,
-    /// `'T'` in one or both sources and `M` complete: write the missing `'T'`, publish (idempotent
-    /// on `last_op`), release any hold with `Retired`, then close both, and end `Reclaimed`.
-    RollForward,
-    /// The topology already names the operation: end the intent `Reclaimed`.
-    Reclaim,
-    /// `'T'` written but `M` not complete cannot arise (`'T'` follows `M`'s seeded clone); the claim
-    /// stops and pages rather than guess.
-    Inconsistent,
-}
-
-/// S6 §7.4's table over `evidence`.
-pub(crate) fn recovery(evidence: Evidence) -> Recovery {
-    let any_retired = evidence.retired.iter().any(|r| *r);
-    match (evidence.published, any_retired, evidence.merged_complete) {
-        (true, _, _) => Recovery::Reclaim,
-        (false, true, true) => Recovery::RollForward,
-        (false, true, false) => Recovery::Inconsistent,
-        (false, false, _) if evidence.copy_began => Recovery::RollBackWithTakeoverGc,
-        (false, false, _) => Recovery::RollBack,
-    }
 }
 
 /// `held`'s intent, ended in `state` with `result`.
