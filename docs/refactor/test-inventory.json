@@ -2680,7 +2680,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "577dfe3d03aea241b4dec014dff6344e9ab989c2bbb64803bfbf0c638ae47297",
+    "function_sha256": "09beb93d1c31b07434b81aea61946d13132c3e436d8e36b5effa014eef603145",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_barrier.rs",
@@ -10057,11 +10057,21 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c8b443cfb0d16ea155fc7489bbce6aaae5085f980c3fbffb873a3796cf11f1de",
+    "function_sha256": "d0a439bd707c39dff10fd06b27da7905b7d27ff3b2dfc11fe2f6bd65b530f0d3",
     "mechanisms": [],
-    "configuration": [
-      "..FaultPlan::CLEAN"
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_pause_on_a_store_twenty_five_ms_away_stays_within_the_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a timing measurement, run under the machine's lock\"]"
     ],
+    "function_sha256": "0c85b4caf8050474d801af0259b229299592bd1bed94ac590bc697d59d730e9d",
+    "mechanisms": [],
+    "configuration": [],
     "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },
