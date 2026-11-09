@@ -172,7 +172,7 @@ OWNERS = (
     owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k::'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k::'),
-    owner('topology_actor', 'src/topology/actor.rs', 'dst_tests::split_k::'),
+    owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
     owner('topology_view', 'src/topology/view.rs', 'dst_tests::split_k::'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),

@@ -63,6 +63,35 @@ impl<'a> Actor<'a> {
         Ok(())
     }
 
+    /// `owned`, or, when only the actor's own clock passed its lease (its renewals did not land,
+    /// and no claimant took the intent), a re-claim (S4-DESIGN §4.3): the intent CASed at the next
+    /// epoch under the same owner, the lease renewed, and the actor runs on. The CAS lands only
+    /// over the intent the actor last wrote, so a claimant's write wins it; an actor fenced but not
+    /// yet claimed re-claims and then fails its `'T'` on the fence, as before.
+    pub(crate) async fn still_owned(&self, step: &str) -> Result<(), String> {
+        let refused = self.owned(step);
+        if refused.is_ok() || self.lost.load(std::sync::atomic::Ordering::Acquire) {
+            return refused;
+        }
+        let held = self.held();
+        let mut next = held.intent.clone();
+        next.lease_epoch = next.lease_epoch.saturating_add(1);
+        let lease_ms = i64::try_from(intent::LEASE.as_millis()).unwrap_or(i64::MAX);
+        next.lease_until_ms = self.clock.now().ms().saturating_add(lease_ms);
+        let at = self.clock.monotonic();
+        match intent::replace(self.store, &held, next).await {
+            Ok(reclaimed) => {
+                self.renewed(reclaimed, at);
+                Ok(())
+            }
+            Err(intent::IntentError::Lost) => {
+                self.lost.store(true, std::sync::atomic::Ordering::Release);
+                refused
+            }
+            Err(_) => refused,
+        }
+    }
+
     /// Renew the lease every third of it, for as long as the split runs (S4-DESIGN §4.2).
     pub(crate) async fn renew(&self) -> std::convert::Infallible {
         loop {
@@ -80,12 +109,7 @@ impl<'a> Actor<'a> {
         next.lease_until_ms = self.clock.now().ms().saturating_add(lease_ms);
         let renewed_at = self.clock.monotonic();
         match intent::replace(self.store, &held, next).await {
-            Ok(renewed) => {
-                self.keep(renewed);
-                if let Ok(mut lease) = self.lease.lock() {
-                    *lease = intent::Lease::renewed_at(renewed_at);
-                }
-            }
+            Ok(renewed) => self.renewed(renewed, renewed_at),
             Err(intent::IntentError::Lost) => {
                 if !self.adopt(&held).await {
                     self.lost.store(true, std::sync::atomic::Ordering::Release);
@@ -111,6 +135,14 @@ impl<'a> Actor<'a> {
         ours
     }
 
+    /// A renewal or re-claim landed as `held` at `at`: the actor keeps it and its lease restarts.
+    fn renewed(&self, held: intent::Held, at: crate::runtime::MonotonicNow) {
+        self.keep(held);
+        if let Ok(mut lease) = self.lease.lock() {
+            *lease = intent::Lease::renewed_at(at);
+        }
+    }
+
     fn keep(&self, held: intent::Held) {
         if let Ok(mut kept) = self.held.lock() {
             *kept = held;
@@ -131,3 +163,6 @@ impl<'a> Actor<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

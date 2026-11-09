@@ -270,7 +270,10 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
     let parent = op.parent;
     let gate = &parent.gc_state().gate;
     let prepared = prepare(op.store, parent, op.children).await;
-    let prepared = prepared.and_then(|put| actor.owned("the pause").map(|()| put));
+    let prepared = match prepared {
+        Ok(put) => actor.still_owned("the pause").await.map(|()| put),
+        Err(e) => Err(e),
+    };
     let hold = match prepared {
         Ok(_) => gate.exclusive(QUIESCE).await,
         Err(_) => None,
@@ -327,7 +330,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
 /// The parent's `'T'` (S4-DESIGN §6.2 step 3.1), written and flushed while the actor still owns its
 /// intent: from it the split only rolls forward.
 async fn write_retired(op: &Op<'_>, actor: &Actor<'_>) -> Result<(), String> {
-    actor.owned("'T'")?;
+    actor.still_owned("'T'").await?;
     let retired = fence::Retired {
         version: op.version + 1,
         op_id: op.op_id.to_string(),
@@ -480,7 +483,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
     }
     // A clone CASes its final checkpoint onto the parent's manifest, which no writer epoch fences
     // (S4-REVIEW-rev2 N1): ownership is checked right before and right after them.
-    actor.owned("the clones")?;
+    actor.still_owned("the clones").await?;
     let clones = children.iter().zip(&plan).map(|(child, (routed, counts))| {
         let seed = seed_rows(routed, counts, child.home);
         clone_child(parent, &checkpoint, child, seed)
@@ -488,7 +491,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
     for cloned in futures_util::future::join_all(clones).await {
         cloned?;
     }
-    actor.owned("'T', after the clones")
+    actor.still_owned("'T', after the clones").await
 }
 
 /// Each child's routed rows and counts from the parent's sentinel `rows`.
