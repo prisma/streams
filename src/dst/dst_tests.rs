@@ -406,5 +406,7 @@ mod weighted_shares;
 #[path = "tests/shared_cell_weighted.rs"]
 mod shared_cell_weighted;
 
+#[path = "tests/layout8_ranges.rs"]
+mod layout8_ranges;
 #[path = "tests/shard_ownership.rs"]
 mod shard_ownership;

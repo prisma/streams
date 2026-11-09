@@ -5279,6 +5279,17 @@
     "scenarios": []
   },
   {
+    "name": "every_key_family_lies_in_its_range_and_the_indexes_are_exact",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "79d0f749460b0c660e70ed56f70c3300d8a956ba9a89c09d37f3bba6cc98d0d4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/layout8_ranges.rs",
+    "scenarios": []
+  },
+  {
     "name": "every_project_on_a_weighted_cell_holds_its_own_weighted_ceilings",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -87,7 +87,7 @@ pub(crate) struct ShardMaintenance {
     pub last_progress_ms: i64,
 }
 
-mod open_index;
+pub(crate) mod open_index;
 pub(crate) use open_index::{check_identity, load_or_rebuild_maintenance};
 
 /// Read visibility level. `Durable` (the pinned default everywhere)

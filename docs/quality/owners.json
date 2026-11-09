@@ -481,6 +481,22 @@
       "syntax": "serde_json::json"
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::layout8_ranges",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Layout 8's key families on one shard (S3a-DESIGN §1, §2, §4.1, §6): streams and queues through the product path, a seal and a fold; every key is an entity row of a known family or a sentinel row of a tag with a split rule, and the unsealed and usage-dirty indexes are exact against the tails; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/layout8_ranges.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::populate",
+      "path": "src/dst/tests/layout8_ranges.rs",
+      "reason": "The layout 8 range DST's queue documents (an empty queue config, a message body, a claim) through the product routes; serde macro output is compiled and the DST asserts every key family and index it leaves.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",
