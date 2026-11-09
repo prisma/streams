@@ -6765,12 +6765,11 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "0c058fc05bd8828af3126d85eb39e8c87c1f13776e4053429f21a3f08015af77",
+    "function_sha256": "59b8110b225f91357e2e40c59efeb382ee38dce1800277d52052ef8a80b5a00c",
     "mechanisms": [],
     "configuration": [
       "let pbefore = crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"sel019\");",
       "crate::failpoints::arm_scaler_before_publish(\"sel019\");",
-      "while crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"sel019\") <= pbefore",
       "crate::failpoints::release_scaler_before_publish(\"sel019\");"
     ],
     "file": "src/dst/tests/topology_lifecycle.rs",

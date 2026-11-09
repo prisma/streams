@@ -203,6 +203,24 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     engine_shutdown(&state).await;
 }
 
+/// Waits until the scaler parks `name`'s transition before its publication (a park count above
+/// `before`): the entered-proof that a merge reached phase B. Bounded, so a merge that never gets
+/// there fails the test instead of hanging it.
+async fn parked_before_publish(name: &str, before: usize) {
+    let fp = crate::failpoints::Fp::ScalerBeforePublish;
+    let entered = async {
+        while crate::failpoints::parked(fp, name) <= before {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    let bound = std::time::Duration::from_secs(10);
+    let reached = tokio::time::timeout(bound, entered).await;
+    assert!(
+        reached.is_ok(),
+        "the merge never parked before its publication"
+    );
+}
+
 /// SEL-019: merge phase B refuses to publish under a sealing
 /// collection — the merge stays pending and resumable, and completes
 /// once the seal claim clears. (The split half has been pinned since
@@ -284,10 +302,7 @@ async fn merge_phase_b_declines_under_sealing() {
     });
     // Entered-proof: the merge REACHED phase B (parents sealed, parked
     // before publication) before the seal claim is planted.
-    while crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, "sel019") <= pbefore
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    parked_before_publish("sel019", pbefore).await;
     state
         .registry
         .invalidate(&state.deployment.raw_adapter_sref("sel019"));
