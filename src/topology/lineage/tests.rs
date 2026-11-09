@@ -128,6 +128,8 @@ async fn the_holders_under_a_root_are_its_reference_lists() {
     for path in [
         "shards/root/lineage/refs/2",
         "shards/root/lineage/refs/11",
+        "shards/root/lineage/refs/11-d",
+        "shards/root/lineage/refs/12-d",
         "shards/root/lineage/refs/x",
         "shards/root/lineage/rel/5/all",
         "shards/root/hseg/0000000000000001/0000000000000001",
@@ -139,7 +141,11 @@ async fn the_holders_under_a_root_are_its_reference_lists() {
             .unwrap();
     }
     let homes = super::listed_under(&store, "shards/root").await.unwrap();
-    assert_eq!(homes, BTreeSet::from([2, 11]));
+    assert_eq!(
+        homes,
+        BTreeSet::from([2, 11, 12]),
+        "a -d list names its holder"
+    );
 }
 
 /// The pass reads the cell's intent: a live one names its source homes and its

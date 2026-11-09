@@ -115,7 +115,12 @@ async fn listed_under(store: &dyn ObjectStore, root: &str) -> object_store::Resu
     let mut homes = BTreeSet::new();
     while let Some(meta) = listing.next().await {
         let meta = meta?;
-        if let Some(home) = meta.location.filename().and_then(|n| n.parse::<u32>().ok()) {
+        // `<h>` is a reference list and `<h>-d` its supplementary list: both name holder `h`.
+        let name = meta
+            .location
+            .filename()
+            .map(|n| n.strip_suffix("-d").unwrap_or(n));
+        if let Some(home) = name.and_then(|n| n.parse::<u32>().ok()) {
             homes.insert(home);
         }
     }

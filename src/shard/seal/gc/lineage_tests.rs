@@ -245,3 +245,29 @@ async fn the_open_path_fence_fails_a_shard_whose_ancestor_list_is_missing() {
     assert!(!rig.engine.gc_state().gate.collection_off());
     rig.engine.begin_close();
 }
+
+/// A holder's supplementary list (`refs/<h>-d`, the split's pause PUTs only the holdings its
+/// Preparing list lacked) holds as its reference list does: the sweep keeps what either names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_holders_supplementary_list_holds_as_its_reference_list_does() {
+    let rig = gc_rig("lineage-supplementary").await;
+    let all: [Entry; 3] = [(Segment, 1, 1), (Segment, 1, 2), (Segment, 1, 3)];
+    objects(&rig, &all).await;
+    put(
+        &rig,
+        lineage::reference_list_path(ROOT, 5),
+        lineage::encode(&[(Segment, 1, 1)]),
+    )
+    .await;
+    put(
+        &rig,
+        lineage::supplementary_list_path(ROOT, 5),
+        lineage::encode(&[(Segment, 1, 2)]),
+    )
+    .await;
+    let report = rig.engine.sweep_lineage(ROOT, &[5]).await.unwrap();
+    assert_eq!((report.held, report.deleted), (2, 1));
+    let kept: BTreeSet<String> = [(Segment, 1, 1), (Segment, 1, 2)].map(path_of).into();
+    assert_eq!(left(&rig).await, kept);
+    rig.engine.begin_close();
+}

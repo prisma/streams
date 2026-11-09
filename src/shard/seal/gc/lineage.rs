@@ -98,8 +98,8 @@ impl ShardEngine {
         Ok(unheld)
     }
 
-    /// What `holder` still holds under `root`: its reference list less its
-    /// logged releases, or nothing once its released-all marker exists;
+    /// What `holder` still holds under `root`: its reference list (with its
+    /// supplementary list, if any) less its logged releases, or nothing once its released-all marker exists;
     /// `None` when it has no reference list there.
     pub(crate) async fn held_by(
         &self,
@@ -114,6 +114,11 @@ impl ShardEngine {
         };
         let all = lineage::released_all_path(root, holder);
         let mut held: BTreeSet<Entry> = list.into_iter().collect();
+        // The split's pause may have listed more in a supplementary list (`-d`): it holds those too.
+        let supplementary = lineage::supplementary_list_path(root, holder);
+        if let Some(more) = self.lineage_body(&supplementary).await? {
+            held.extend(more);
+        }
         let released = Path::from(format!("{root}/lineage/rel/{holder}/"));
         let mut logs = self.data_store.list(Some(&released));
         let mut paths = Vec::new();
