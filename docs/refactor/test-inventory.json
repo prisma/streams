@@ -3148,7 +3148,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d4f863a7e23cd1d0123419742d6161c58d9c18ac99f813d988f72933702257e4",
+    "function_sha256": "cd7d3119b5d7cb6676764c56078d84a0c5903190c23480e4785e3d2923f492f5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
@@ -10310,7 +10310,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6726d128485560b662a8da8c56b726b3cc1d8f3d3419243f34cc457f808438c6",
+    "function_sha256": "4d1c24c18850156220777e87b829e43228d64210564eefcc0d8a38f07efa1d21",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",

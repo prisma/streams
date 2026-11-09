@@ -254,6 +254,11 @@ async fn a_split_that_rolls_back_leaves_nothing_of_its_children() {
         (records(addr, &low).await, records(addr, &high).await),
         want
     );
+    let view = topology_view(addr).await;
+    assert_eq!(
+        view["never_leaf_paths"], 2,
+        "the rolled-back attempt's two homes"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -689,6 +694,7 @@ async fn the_split_route_starts_a_split_that_runs_on_to_its_publish() {
     assert_eq!(view["version"], 2);
     assert_eq!(view["intent"]["state"], "Reclaimed");
     assert_eq!(view["intent"]["outcome"]["result"], "published");
+    assert_eq!(view["never_leaf_paths"], 0, "both homes published");
     tasks.cancel();
     engine_shutdown(&cell.state).await;
 }
