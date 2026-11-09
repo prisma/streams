@@ -17,6 +17,16 @@ async fn first_publication(
     count: u64,
     cli: fn(&mut crate::config::CliArgs),
 ) -> crate::fleet::Desired {
+    first_publication_over(count, (0, 150.0), cli).await
+}
+
+/// `first_publication`, with each of the two peers reporting `peers`: its
+/// in-flight requests and its CPU percent.
+async fn first_publication_over(
+    count: u64,
+    peers: (i64, f64),
+    cli: fn(&mut crate::config::CliArgs),
+) -> crate::fleet::Desired {
     let fleet = mem();
     let seed = format!(r#"{{"count":{count},"epoch":1,"reason":"seed","computed_at_ms":0}}"#);
     fleet
@@ -24,7 +34,7 @@ async fn first_publication(
         .await
         .unwrap();
     for peer in ["streams-2", "streams-3"] {
-        peer_heartbeat(&fleet, peer, 0, 150.0).await;
+        peer_heartbeat(&fleet, peer, peers.0, peers.1).await;
     }
     let rig = http_rig_build(
         mem(),
@@ -407,4 +417,29 @@ async fn a_product_surface_request_counts_toward_the_fleets_load() {
         "four product requests and one raw one succeeded; the 404 does not count"
     );
     engine_shutdown(&state).await;
+}
+
+/// The in-flight the planner reads is what lasted the 30 s window
+/// (FLEET-HYSTERESIS-REVIEW.md §3, H1), not the members' fold: two peers
+/// report 700 in flight each, at a tenth of a core, over a seed of 512 that
+/// shrinks at the first tick (`SCALE_IN_SECS` 0), and that publication's
+/// reason reads `inflight=0`. This pins the tick's wiring: the gate's
+/// sustained value is what reaches `planning::Demand::plan`. Before, the
+/// first tick read the fold's 1,400.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_planner_reads_no_in_flight_shorter_than_the_window() {
+    let desired = first_publication_over(512, (700, 10.0), |cli| {
+        cli.fleet_max = 512;
+        cli.scale_in_secs = 0;
+    })
+    .await;
+    let read = desired
+        .reason
+        .split(' ')
+        .find_map(|segment| segment.strip_prefix("inflight="));
+    assert_eq!(
+        (desired.epoch, read),
+        (2, Some("0")),
+        "the first tick publishes, and the planner read no in-flight: {desired:?}"
+    );
 }

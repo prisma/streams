@@ -439,7 +439,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
         let mut last_move: Option<Instant> = None;
         let rebalance_lag_secs: u64 = state.config.fleet.rebalance_lag_secs;
         let rebalance_cooldown: u64 = state.config.fleet.rebalance_move_cooldown_secs;
-        let mut gate = hysteresis::Gate::new(cfg.scale_in);
+        let mut gate = hysteresis::Gate::new(cfg.scale_in, rebalance_cooldown);
         // (ring_active, overrides) as last observed — the parked-session
         // wake fires only on real ownership-view changes.
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;

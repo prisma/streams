@@ -317,7 +317,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
             .await
             .unwrap();
     }
-    peer_heartbeat(&inner, "streams-2", 300, 0.0).await;
+    peer_heartbeat(&inner, "streams-2", 0, 300.0).await;
     // Four shards: the count this test plans (three) is within the
     // topology, which clamps it (item 6). "00" goes to streams-2 as with
     // one shard: the ring scores each shard on its own.
@@ -381,8 +381,9 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         "only the desired publication is deferred"
     );
 
-    // Readable again: 300 in flight over 105 admitted slots wants a third
-    // instance, and the next tick publishes it.
+    // Readable again: three cores in use over the 0.75 target want a third
+    // instance or more, and the next tick publishes it (utilization, not
+    // in-flight, which counts only once it has lasted 30 s).
     inner
         .delete(&Path::from("routers/edge-1.json"))
         .await
@@ -399,7 +400,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
     );
     assert!(
         desired.count >= 3,
-        "edge-slot dimension must scale out: {}",
+        "the utilization dimension must scale out: {}",
         desired.count
     );
     assert_reason_ends_with_rate_and_live(&desired.reason);

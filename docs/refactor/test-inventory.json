@@ -4320,7 +4320,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "23ad0be0c6a41fd93847e1fd6d7800003785207cb72acef7ccbe47b7f7849cd4",
+    "function_sha256": "54e9ba7d18b7561061d8f316249f7d802fa419f180e9077a9b13762bfb18e21f",
     "mechanisms": [],
     "configuration": [
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
@@ -9842,6 +9842,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_planner_reads_no_in_flight_shorter_than_the_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "1f41da57cd3d047950d88f70cd2a07f36074f56cdd99766923176a18f57cc4a3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_desired.rs",
     "scenarios": []
   },
   {
