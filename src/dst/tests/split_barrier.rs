@@ -234,3 +234,56 @@ async fn replayed(addr: Addr, n: u32) -> (u16, Option<String>, Option<String>) {
     let code = error["error"]["code"].as_str().map(str::to_string);
     (status, headers.get("streams-replay-to").cloned(), code)
 }
+
+/// **The pause sequence, end to end, and its rollback.** In the split's order: collection off,
+/// the maintenance gate exclusive, then the barrier. While paused, an append and a fold of the
+/// sealed records both wait (the fold's index batch at the gate), and the orphan sweep stands
+/// down. The rollback releases in reverse: the resume serves the append, the gate's release
+/// lets the fold land, and collection resumes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_pause_sequence_quiesces_writers_and_its_rollback_resumes_them() {
+    let (state, addr, engine) = serving().await;
+    engine.seal_requested().await.expect("seal");
+    let gate = &engine.gc_state().gate;
+    gate.set_collection_off(true);
+    let quiesce = gate.exclusive(BOUND).await.expect("the gate is free");
+    let barrier = tokio::time::timeout(BOUND, engine.barrier())
+        .await
+        .expect("parked")
+        .expect("the barrier parks");
+    let swept = engine.sweep_orphans().await.expect("sweep");
+    assert_eq!(swept.listed, 0, "the sweep stands down");
+    let (appended, folded) = (AtomicBool::new(false), AtomicBool::new(false));
+    let fold = async {
+        let report = engine.fold_once().await.expect("fold");
+        folded.store(true, Ordering::SeqCst);
+        report
+    };
+    let base = engine.appends_enqueued();
+    let control = async {
+        until("the append is enqueued", || {
+            engine.appends_enqueued() > base
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let paused = (
+            appended.load(Ordering::SeqCst),
+            folded.load(Ordering::SeqCst),
+        );
+        barrier.resume();
+        until("the append is served", || appended.load(Ordering::SeqCst)).await;
+        let fold_waits = !folded.load(Ordering::SeqCst);
+        drop(quiesce);
+        gate.set_collection_off(false);
+        (paused, fold_waits)
+    };
+    let all = futures_util::future::join3(append(addr, 2, &appended), fold, control);
+    let (status, report, (paused, fold_waits)) =
+        tokio::time::timeout(BOUND, all).await.expect("resumed");
+    assert_eq!(paused, (false, false), "both wait while paused");
+    assert!(fold_waits, "the fold waits for the gate after the resume");
+    assert_eq!(status, 204);
+    assert!(report.rows > 0, "the fold landed: {report:?}");
+    assert_eq!(records(addr).await, serde_json::json!([{"n": 1}, {"n": 2}]));
+    engine_shutdown(&state).await;
+}
