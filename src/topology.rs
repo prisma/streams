@@ -7,3 +7,6 @@ pub(crate) mod gate;
 pub(crate) mod intent;
 pub(crate) mod model;
 pub(crate) mod revalidate;
+// The split's sentinel helper builds for its tests until the split calls it (S4 step 11).
+#[cfg(test)]
+pub(crate) mod sentinel;

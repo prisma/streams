@@ -167,6 +167,7 @@ OWNERS = (
     owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence::'),
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence::'),
+    owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
     owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),
