@@ -4,7 +4,7 @@ use axum::http::Method;
 
 use super::{appends, carries_body, query_on_cell};
 
-/// A shared cell's projects (`PROJECT_SHARE_K`).
+/// A shared cell's projects (`CONTAINER_SHARE_K`).
 const SHARED: u64 = 8;
 
 #[test]

@@ -260,7 +260,7 @@ OWNERS = (
     # The stream-count seed walk, once per project (the landing-4 review's L2).
     owner('quota_stream_seed', 'src/quota/stream_seed.rs',
           'quota::stream_seed:: dst_tests::quota_stream_seed::'),
-    # The tracker's entries and size, PROJECT_TRACKER_MAX at project
+    # The tracker's entries and size, CONTAINER_TRACKER_MAX at project
     # admission (tuning 3b); quota::tests holds the eviction churn test.
     owner('quota_tracker', 'src/quota/tracker.rs',
           'quota:: dst_tests::quota_tracker::'),

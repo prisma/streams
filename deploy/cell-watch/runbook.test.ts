@@ -170,7 +170,7 @@ describe("RUNBOOK.md's drills paragraph", () => {
 
   test("names each drill's cause beside its row, and the PAGE rules without one", () => {
     for (const want of [
-      "a policy naming `PROJECT_ID` in the bundle (row 7)",
+      "a policy naming `CONTAINER_ID` in the bundle (row 7)",
       "the three feed files deleted, as the wrapper's `feeds deleted` does (row 6",
       "`POST /v1/debug/seal-pause?on=1` until the lag latch engages",
       "the cell stopped (row 3 after 2 min and the uptime check after 3 failures",

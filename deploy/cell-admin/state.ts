@@ -24,7 +24,7 @@ export const BUNDLE_FILE = "feeds-bundle.json";
 
 export interface CellConfig {
   cell_id: string;
-  /// The deployment's PROJECT_ID: reserved, never placed.
+  /// The deployment's CONTAINER_ID: reserved, never placed.
   deployment_project_id: string;
   issuer: string;
   share_k: number;

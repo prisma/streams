@@ -101,7 +101,7 @@ impl ServerConfig {
                 64 * 1024 * 1024
             });
         }
-        self.sse.feed_project_bytes_raw = env.get("SSE_FEED_PROJECT_BYTES");
+        self.sse.feed_project_bytes_raw = env.get("SSE_FEED_CONTAINER_BYTES");
         if let Some(v) = env_parse::<u64>(env, "SSE_HEARTBEAT_MS").filter(|v| *v > 0) {
             self.sse.heartbeat_ms = v;
         }

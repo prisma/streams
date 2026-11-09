@@ -366,12 +366,12 @@ async fn a_rendered_hold_rides_its_body_and_an_unrendered_one_is_released() {
     drop(response);
 }
 
-/// The shared-cell profile's memory line, `PROJECT_MEMORY_PRESSURE_BYTES`
+/// The shared-cell profile's memory line, `CONTAINER_MEMORY_PRESSURE_BYTES`
 /// in `deploy/profiles/shared-cell.env`.
 fn shared_cell_profile_line() -> u64 {
     include_str!("../../../deploy/profiles/shared-cell.env")
         .lines()
-        .find_map(|line| line.strip_prefix("PROJECT_MEMORY_PRESSURE_BYTES="))
+        .find_map(|line| line.strip_prefix("CONTAINER_MEMORY_PRESSURE_BYTES="))
         .expect("the shared-cell profile sets a memory line")
         .parse()
         .expect("the memory line is a byte count")

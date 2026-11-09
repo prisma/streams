@@ -28,7 +28,7 @@ afterEach(cleanup);
 const answer = async (res: Response): Promise<[number, any]> => [res.status, await res.json()];
 const refusal = (code: string, message: string) => ({ error: { code, message } });
 const PROJECTS = "/v1/workspaces/ws_a/streams/projects";
-/// The shared-cell profile's PROJECT_STORED_BYTES_DEFAULT, 0: no stored-bytes
+/// The shared-cell profile's CONTAINER_STORED_BYTES_DEFAULT, 0: no stored-bytes
 /// limit (edge change #244). Every project the issuer places carries it
 /// explicitly.
 const STORED_DEFAULT = 0;

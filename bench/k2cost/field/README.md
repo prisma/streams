@@ -298,7 +298,7 @@ scale values, stated explicitly; the WAL posture; binary poll defaults (no
 read from the artifact bucket by the `FEEDS_S3_*` names only and
 materialized by app-server into `/tmp/feeds/{keys,policies,grants}.json`,
 refresh 60 s), `BILLING_MODE=required`, `USAGE_STREAM_KEY`, real-shaped
-`PROJECT_ID`/`CELL_ID` (`proj_`/`cell_` + 24 chars,
+`CONTAINER_ID`/`CELL_ID` (`proj_`/`cell_` + 24 chars,
 minted once per cell), `REGION=eu-central-1`, `ROLLUP=1` on `streams-1`,
 `STREAMS_CURSOR_KEY`, a deployment bearer `AUTH_TOKEN` (it gates every
 `/v1/debug` route, `src/http/debug.rs`) and `FLEET_AUTH_MODE=static` with
@@ -323,7 +323,7 @@ Deviations from the letter of §6, all deliberate:
   most 24 h and must be rotated by the platform; nothing on Compute rotates
   it for us and F1/F2 run 24-48 h. §6 accepts static fleet auth ("it costs
   the same"). Customer traffic is fully in enforce mode.
-- **Deployment and customer projects differ** (`PROJECT_ID` vs the feeds'
+- **Deployment and customer projects differ** (`CONTAINER_ID` vs the feeds'
   customer project), as in `run-local.sh` and `mt-tenants.sh`.
 - **T-single has `FLEET_MAX=2`**, not 1: with 1 fleet mode is off and the
   heartbeats are not published. There is no second ordinal, so the cell is

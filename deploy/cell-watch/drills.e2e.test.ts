@@ -112,7 +112,7 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
   const debug = (path: string) => fetch(`${cell.origin}/v1/debug/${path}`, { method: "POST", headers: { authorization: `Bearer ${operator}` } });
   const v = bundle.policies.feed_version;
 
-  // Row 7: a policy naming the deployment's PROJECT_ID is dropped, and the drop pages.
+  // Row 7: a policy naming the deployment's CONTAINER_ID is dropped, and the drop pages.
   let mark = p.changes.length;
   const reserved = { ...(bundle.policies.containers[0] as object), container_id: "proj_deploy" };
   writeFeed(feeds, "policies", { feed_version: v + 1, containers: [...bundle.policies.containers, reserved] });

@@ -250,10 +250,10 @@ class DryRun(unittest.TestCase):
                          "deployment project proj-k2cost-deploy")
         env = self.server_env(out, 1)
         # The ids cell-admin's init is given: its policies name this cell.
-        self.assertEqual((env["CELL_ID"], env["PROJECT_ID"], env.get("ACCOUNT_ID")),
+        self.assertEqual((env["CELL_ID"], env["CONTAINER_ID"], env.get("ACCOUNT_ID")),
                          ("cell-k2", "proj-k2cost-deploy", None))
         self.assertEqual(env["STREAMS_AUTH_POLICY_FILE"], "<secrets>/feeds/policies.json")
-        self.assertEqual(env["PROJECT_SHARE_K"], profile("shared-cell.env")["PROJECT_SHARE_K"])
+        self.assertEqual(env["CONTAINER_SHARE_K"], profile("shared-cell.env")["CONTAINER_SHARE_K"])
         # A manifest path relative to the checkout is the checkout's.
         rel = os.path.relpath(m, REPO)
         out = self.ok(self.point(f"POSTURE=launch\nTENANTS_MANIFEST={rel}\nPHASES='tenants --time-scale 0.5'\n"))

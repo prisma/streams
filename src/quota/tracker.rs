@@ -1,6 +1,6 @@
 //! The project tracker (tuning item 3b): a first-seen project's entry, and
 //! the most projects a registry tracks at once, `MAX_TRACKED_PROJECTS` until
-//! the instance's `PROJECT_TRACKER_MAX` sizes it at project admission
+//! the instance's `CONTAINER_TRACKER_MAX` sizes it at project admission
 //! (`product::project_admission`). Every clone of a registry shares it.
 
 use std::collections::HashMap;

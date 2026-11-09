@@ -54,7 +54,7 @@ fn an_unparseable_project_allowance_falls_back_to_half_of_the_cell() {
     };
     assert_eq!(
         configured_project_cap(&cfg, 1_000),
-        Err(r#"SSE_FEED_PROJECT_BYTES="32 MiB" does not parse as a byte count"#.to_string())
+        Err(r#"SSE_FEED_CONTAINER_BYTES="32 MiB" does not parse as a byte count"#.to_string())
     );
     assert_eq!(caps(&cfg), (1_000, 500));
 }

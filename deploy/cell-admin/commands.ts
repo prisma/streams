@@ -61,7 +61,7 @@ export async function init(f: Flags, io: Io): Promise<void> {
   if (cell.length > 118) throw new AdminError("--cell-id: at most 118 characters (its canary is sp_canary_<cell id>)", 2);
   checkId("--deployment-project", deployment);
   if (deployment === "proj_local" || deployment === SYSTEM_PROJECT) {
-    throw new AdminError("a shared cell needs a real PROJECT_ID, not a placeholder");
+    throw new AdminError("a shared cell needs a real CONTAINER_ID, not a placeholder");
   }
   const profiles = profilesOf(f.all("profile"));
   const env = readProfiles(profiles);
@@ -336,7 +336,7 @@ export async function list(f: Flags, io: Io): Promise<void> {
   const projects = Object.entries(state.projects).filter(([id]) => !isCanary(id));
   const placed = placedProjects(state).length;
   io.out(`cell ${c.cell_id}: k=${c.share_k}, feed_version ${state.feed_version}, keys ${state.keys.map((k) => k.kid).join(",")}`);
-  io.out(`reserved: PROJECT_ID ${c.deployment_project_id}, ${SYSTEM_PROJECT}`);
+  io.out(`reserved: CONTAINER_ID ${c.deployment_project_id}, ${SYSTEM_PROJECT}`);
   io.out(`ceilings: ${BOUNDED_FIELDS.map((q) => `${q}=${c.ceilings[q]}`).join(" ")}`);
   io.out(`projects: ${placed} placed of ${c.max_projects}, ${projects.length - placed} offboarded; workspace cap ${c.workspace_cap}`);
   for (const [id, p] of projects.sort(([a], [b]) => (a < b ? -1 : 1))) {

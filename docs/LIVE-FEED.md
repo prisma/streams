@@ -205,7 +205,7 @@ remained at deletion time. The matrix skip list died with the matrix.
 ## Per-project retention allowance (round-12 decision, 2026-08-31)
 
 The 1-GiB cell profile pins `SSE_FEED_TOTAL_BYTES=64 MiB` and
-`SSE_FEED_PROJECT_BYTES=32 MiB` — kept at these values by the
+`SSE_FEED_CONTAINER_BYTES=32 MiB` — kept at these values by the
 round-12 review decision after the six directed field legs (see
 docs/PERF-LIVEFEED.md §4). Name it exactly:
 
@@ -278,8 +278,8 @@ can push the whole instance to the global RSS shed line.
 
 | Env | Default | Meaning |
 |---|---|---|
-| `PROJECT_MEMORY_PRESSURE_BYTES` | `0` (disabled) | engage watermark per project (a project of byte weight w > 1 on a shared cell: the line x w, held so two unit lines fit beside it in the instance read memory; edge change #198) |
-| `PROJECT_MEMORY_RELEASE_PCT` | `75` | release when pressure falls below this % of the watermark |
+| `CONTAINER_MEMORY_PRESSURE_BYTES` | `0` (disabled) | engage watermark per project (a project of byte weight w > 1 on a shared cell: the line x w, held so two unit lines fit beside it in the instance read memory; edge change #198) |
+| `CONTAINER_MEMORY_RELEASE_PCT` | `75` | release when pressure falls below this % of the watermark |
 
 **Pressure model v1** (`PROJECT_PRESSURE_MODEL_VERSION=1`, printed at
 boot and served under `debug/load.project_pressure_model`):
@@ -320,8 +320,8 @@ it (round-13.1: authentication precedes every tarpit/capacity
 answer; pre-auth keeps only catastrophic survival accounting).
 
 **Behavior at the watermark.** Hysteresis latch: engage at
-`PROJECT_MEMORY_PRESSURE_BYTES`, release below
-`PROJECT_MEMORY_RELEASE_PCT`% of it. While engaged, new appends
+`CONTAINER_MEMORY_PRESSURE_BYTES`, release below
+`CONTAINER_MEMORY_RELEASE_PCT`% of it. While engaged, new appends
 (product and raw adapter) receive a typed, project-audited refusal —
 `429` body error `container_memory_pressure`, `Retry-After: 1` —
 lossless by construction (the record was never accepted). Existing

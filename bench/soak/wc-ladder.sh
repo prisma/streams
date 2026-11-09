@@ -81,7 +81,7 @@ fi
 RUNGFLAGS=(--env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-2000})
 [ -n "${WC_FEED_RING:-}" ]    && RUNGFLAGS+=(--env SSE_FEED_RING_BYTES=$WC_FEED_RING)
 [ -n "${WC_FEED_TOTAL:-}" ]   && RUNGFLAGS+=(--env SSE_FEED_TOTAL_BYTES=$WC_FEED_TOTAL)
-[ -n "${WC_FEED_PROJECT:-}" ] && RUNGFLAGS+=(--env SSE_FEED_PROJECT_BYTES=$WC_FEED_PROJECT)
+[ -n "${WC_FEED_PROJECT:-}" ] && RUNGFLAGS+=(--env SSE_FEED_CONTAINER_BYTES=$WC_FEED_PROJECT)
 # Cache-posture experiments (round-12 F4/F5: the L1 writes-only diet's
 # full cache trim put WAN store reads on the append path — 137 ms ->
 # 7.3 s p50; tune per rung instead of all-or-nothing).
@@ -90,8 +90,8 @@ RUNGFLAGS=(--env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-2000})
 [ -n "${WC_HISTORY_CACHE:-}" ]  && RUNGFLAGS+=(--env HISTORY_CACHE_BYTES=$WC_HISTORY_CACHE)
 # Round-13: the per-project memory-pressure backstop (acceptance legs
 # set it; 0/absent = off, matching the binary default).
-[ -n "${WC_PMP:-}" ] && RUNGFLAGS+=(--env PROJECT_MEMORY_PRESSURE_BYTES=$WC_PMP)
-[ -n "${WC_PMP_RELEASE:-}" ] && RUNGFLAGS+=(--env PROJECT_MEMORY_RELEASE_PCT=$WC_PMP_RELEASE)
+[ -n "${WC_PMP:-}" ] && RUNGFLAGS+=(--env CONTAINER_MEMORY_PRESSURE_BYTES=$WC_PMP)
+[ -n "${WC_PMP_RELEASE:-}" ] && RUNGFLAGS+=(--env CONTAINER_MEMORY_RELEASE_PCT=$WC_PMP_RELEASE)
 
 "$HERE/build-upload.sh"
 
@@ -204,7 +204,7 @@ deploy server \
   --env ADMIT_RSS_SHED_MB=${WC_RSS_SHED:-600} \
   --env MAX_RECORD_PAYLOAD_BYTES=${WC_RECORD_CEILING:-131072} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
-  --env PROJECT_ID=proj-mt-deploy \
+  --env CONTAINER_ID=proj-mt-deploy \
   --env SLATEDB_RT_THREADS=${WC_SLATE_RT:-2} \
   --env STREAMS_AUTH_MODE=enforce \
   --env STREAMS_AUTH_ISSUER=https://auth.prisma.io \

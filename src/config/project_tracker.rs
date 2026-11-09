@@ -1,6 +1,6 @@
 //! Boot-time bound on the project tracker (tuning item 3b).
 //!
-//! `PROJECT_TRACKER_MAX` sizes the instance's project tracker
+//! `CONTAINER_TRACKER_MAX` sizes the instance's project tracker
 //! (`quota::QuotaRegistry`), whose entries cost about 500 B each. A tracker
 //! is allowed at most an eighth of the RSS shed line, so a large tracker
 //! cannot by itself carry the instance to the line its writes are shed at;
@@ -34,7 +34,7 @@ pub(crate) fn validate_project_tracker(cli: &CliArgs) -> Vec<String> {
         return Vec::new();
     }
     vec![format!(
-        "PROJECT_TRACKER_MAX={} exceeds {bound}, the most an instance with \
+        "CONTAINER_TRACKER_MAX={} exceeds {bound}, the most an instance with \
          ADMIT_RSS_SHED_MB={} may track: an eighth of the shed line at {ENTRY_BYTES} B a project \
          (the default {DEFAULT_PROJECT_TRACKER_MAX} at any line, and while the line is off)",
         cli.project_tracker_max, cli.admit_rss_shed_mb
@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(
             validate_project_tracker(&cli),
             [
-                "PROJECT_TRACKER_MAX=131073 exceeds 131072, the most an instance with \
+                "CONTAINER_TRACKER_MAX=131073 exceeds 131072, the most an instance with \
               ADMIT_RSS_SHED_MB=500 may track: an eighth of the shed line at 500 B a project \
               (the default 32768 at any line, and while the line is off)"
             ]

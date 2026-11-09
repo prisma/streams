@@ -299,7 +299,7 @@ pub(crate) struct ProjectRetention {
     admission: std::sync::OnceLock<Arc<crate::quota::ProjectAdmission>>,
 }
 
-/// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
+/// The project allowance: SSE_FEED_CONTAINER_BYTES, defaulting to a
 /// HALF of the cell ceiling. Strict form for release validation
 /// (an unparseable value must fail boot, round-10e).
 pub(crate) fn configured_project_cap(
@@ -308,10 +308,9 @@ pub(crate) fn configured_project_cap(
 ) -> Result<u64, String> {
     match cfg.feed_project_bytes_raw.as_deref() {
         None => Ok(global / 2),
-        Some(raw) => raw
-            .trim()
-            .parse()
-            .map_err(|_| format!("SSE_FEED_PROJECT_BYTES={raw:?} does not parse as a byte count")),
+        Some(raw) => raw.trim().parse().map_err(|_| {
+            format!("SSE_FEED_CONTAINER_BYTES={raw:?} does not parse as a byte count")
+        }),
     }
 }
 

@@ -40,7 +40,7 @@ afterEach(cleanup);
 /// The quotas a project is admitted with when none is given: each bounded
 /// axis at its ceiling, append records/s 0 (no project limit, as the
 /// server reads it), and the stored bytes at the profile's
-/// PROJECT_STORED_BYTES_DEFAULT, 0: no stored-bytes limit (the owner's
+/// CONTAINER_STORED_BYTES_DEFAULT, 0: no stored-bytes limit (the owner's
 /// decision of 2026-11-03, edge change #244), and weight 1 on both weights.
 const CEILINGS = {
   requests_per_sec: 176,
@@ -177,7 +177,7 @@ for (const kind of STORES) {
         const c = await initCell();
         let r = await run("init", "--state", freshState(c.root, "c1"), "--cell-id", "c1", "--deployment-project",
           "proj_local", "--key-file", c.key);
-        expect(r.err).toBe("cell-admin init: a shared cell needs a real PROJECT_ID, not a placeholder");
+        expect(r.err).toBe("cell-admin init: a shared cell needs a real CONTAINER_ID, not a placeholder");
         r = await run("init", "--state", c.state, "--cell-id", "cell_sc1", "--deployment-project", "proj_d",
           "--key-file", c.key);
         expect(r.err).toBe(`cell-admin init: ${statePathOf(c.state)} exists: a cell is initialised once`);
@@ -214,19 +214,19 @@ for (const kind of STORES) {
           const c = fresh();
           const cells = join(c.root, "scratch.env");
           writeFileSync(cells, "# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_old\n\n  REGION=fra\n" +
-            "PROJECT_ID=proj_old\nRUST_LOG=info", { mode: 0o640 });
+            "CONTAINER_ID=proj_old\nRUST_LOG=info", { mode: 0o640 });
           const r = await initInto(c, "--issuer", "https://issuer.example/streams", "--cell-env", cells);
           expect([r.code, r.err, r.out.split("\n").at(-1)]).toEqual([0, "",
-            `cells file: ${cells} (CELL_ID, PROJECT_ID, STREAMS_AUTH_ISSUER)`]);
+            `cells file: ${cells} (CELL_ID, CONTAINER_ID, STREAMS_AUTH_ISSUER)`]);
           expect(readFileSync(cells, "utf8")).toBe("# the scratch cell\nCELL_STAGE=scratch\nCELL_ID=cell_sc1\n\n" +
-            "  REGION=fra\nPROJECT_ID=proj_deploy\nRUST_LOG=info\n" +
+            "  REGION=fra\nCONTAINER_ID=proj_deploy\nRUST_LOG=info\n" +
             "STREAMS_AUTH_ISSUER=https://issuer.example/streams\n");
           expect(readState(c.state).cell).toMatchObject({ cell_id: "cell_sc1", deployment_project_id: "proj_deploy",
             issuer: "https://issuer.example/streams" });
           expect(statSync(cells).mode & 0o777).toBe(0o640);
           expect(staged(c.root)).toEqual([]);
           // The Composer entry takes exactly these three from the cells file.
-          for (const key of ["CELL_ID", "PROJECT_ID", "STREAMS_AUTH_ISSUER"]) {
+          for (const key of ["CELL_ID", "CONTAINER_ID", "STREAMS_AUTH_ISSUER"]) {
             expect(CHILD_NAMES[key]).toEqual({ from: "cells", required: true });
           }
         });
@@ -236,7 +236,7 @@ for (const kind of STORES) {
           const cells = join(c.root, "cert.env");
           expect((await initInto(c, "--cell-env", cells)).code).toBe(0);
           expect(readFileSync(cells, "utf8")).toBe(
-            "CELL_ID=cell_sc1\nPROJECT_ID=proj_deploy\nSTREAMS_AUTH_ISSUER=https://auth.prisma.io\n");
+            "CELL_ID=cell_sc1\nCONTAINER_ID=proj_deploy\nSTREAMS_AUTH_ISSUER=https://auth.prisma.io\n");
           expect(statSync(cells).mode & 0o777).toBe(0o644);
         });
 
@@ -370,7 +370,7 @@ for (const kind of STORES) {
         ["a weight as a quota", ["--quota", "byte_weight=5"],
           "--quota byte_weight: a weight is not a quota; admit sets it with --weight"],
         ["the system project", ["--project", "system"], "project system is reserved on cell cell_sc1"],
-        ["the deployment's PROJECT_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],
+        ["the deployment's CONTAINER_ID", ["--project", "proj_deploy"], "project proj_deploy is reserved on cell cell_sc1"],
         ["an id outside the grammar", ["--project", "proj/a"], '--project "proj/a" is not a valid id'],
       ];
       test.each(refusals)("refuses %s and publishes nothing", async (_what, flags, message) => {

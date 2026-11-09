@@ -63,7 +63,7 @@ fn foreign_create(
 impl AppState {
     /// Project admission of verified principal `p`, under the quotas it
     /// verified against (`project_admission`): its request counted, its
-    /// project tracked in a tracker this instance's PROJECT_TRACKER_MAX
+    /// project tracked in a tracker this instance's CONTAINER_TRACKER_MAX
     /// sizes (tuning item 3b).
     pub(super) fn admit_project(&self, p: &RequestPrincipal) -> Result<QuotaGuard, QuotaRefusal> {
         let quotas = self.quotas.sized_to(self.config.cli.project_tracker_max);

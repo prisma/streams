@@ -444,7 +444,7 @@ class LayerB(unittest.TestCase):
 
     def test_missing_pins_and_the_identity_are_reported(self):
         with open(self.w.rig["profiles"]["shared-cell.env"]["path"], "w") as f:
-            f.write("STREAMS_RELEASE_POSTURE=1\nINITIAL_SHARDS=1\nPROJECT_SHARE_K=8\n")
+            f.write("STREAMS_RELEASE_POSTURE=1\nINITIAL_SHARDS=1\nCONTAINER_SHARE_K=8\n")
         self.w.rig["debug_load_sha256"] = None
         m = self.mutated(lambda w: None, "identity")
         self.assertEqual((m["profile"]["pins_missing"], m["server_sha256"]), (["KEEP_AWAKE=1"], None))

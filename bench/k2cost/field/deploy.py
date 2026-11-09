@@ -269,7 +269,7 @@ def server_env(run, cell, cfg, st, sec, bins, feeds_key, i) -> dict:
         "STREAMS_AUTH_KEYS_FILE": f"{FEEDS_DIR}/keys.json", "STREAMS_AUTH_POLICY_FILE": f"{FEEDS_DIR}/policies.json",
         "STREAMS_AUTH_GRANTS_FILE": f"{FEEDS_DIR}/grants.json", "STREAMS_AUTH_REFRESH_SECS": "60",
         "FEEDS_S3_KEY": feeds_key, "FLEET_AUTH_MODE": "static",
-        "BILLING_MODE": "required", "PROJECT_ID": st["deploy_project_id"],
+        "BILLING_MODE": "required", "CONTAINER_ID": st["deploy_project_id"],
         "CELL_ID": st["cell_id"], "REGION": F.REGION, "CPU_LOG_SECS": CPU_LOG_SECS, **sec,
     })
     if i == 1:

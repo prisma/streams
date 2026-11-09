@@ -630,7 +630,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "MAX_RECORD_PAYLOAD_BYTES",
         "131072",
     ),
-    ("project-id", "PROJECT_ID", "proj_local"),
+    ("container-id", "CONTAINER_ID", "proj_local"),
     ("cell-id", "CELL_ID", "local"),
     ("telemetry-region", "REGION", ""),
     ("usage-stream-key", "USAGE_STREAM_KEY", ""),
@@ -644,13 +644,13 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
     ("scale-cpu-sustain-secs", "SCALE_CPU_SUSTAIN_SECS", "20"),
     ("scale-edge-latency-ms", "SCALE_EDGE_LATENCY_MS", "1000"),
     (
-        "project-memory-pressure-bytes",
-        "PROJECT_MEMORY_PRESSURE_BYTES",
+        "container-memory-pressure-bytes",
+        "CONTAINER_MEMORY_PRESSURE_BYTES",
         "0",
     ),
     (
-        "project-memory-release-pct",
-        "PROJECT_MEMORY_RELEASE_PCT",
+        "container-memory-release-pct",
+        "CONTAINER_MEMORY_RELEASE_PCT",
         "75",
     ),
     ("admit-rss-shed-mb", "ADMIT_RSS_SHED_MB", "500"),
@@ -661,7 +661,7 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "256",
     ),
     ("admit-max-inflight", "ADMIT_MAX_INFLIGHT", "4096"),
-    ("project-share-k", "PROJECT_SHARE_K", "1"),
+    ("container-share-k", "CONTAINER_SHARE_K", "1"),
     (
         "cell-envelope-requests-per-sec",
         "CELL_ENVELOPE_REQUESTS_PER_SEC",
@@ -678,11 +678,11 @@ const EXPECTED_CLI_SURFACE: &[(&str, &str, &str)] = &[
         "0",
     ),
     (
-        "project-stored-bytes-default",
-        "PROJECT_STORED_BYTES_DEFAULT",
+        "container-stored-bytes-default",
+        "CONTAINER_STORED_BYTES_DEFAULT",
         "0",
     ),
-    ("project-tracker-max", "PROJECT_TRACKER_MAX", "32768"),
+    ("container-tracker-max", "CONTAINER_TRACKER_MAX", "32768"),
     ("scale-edge-slots", "SCALE_EDGE_SLOTS", "140"),
     ("shared-cache-bytes", "SHARED_CACHE_BYTES", "134217728"),
     ("scale-in-secs", "SCALE_IN_SECS", "300"),
@@ -775,7 +775,7 @@ fn the_rss_shed_line_is_described_on_its_own_flag() {
     };
     let shed = help("admit-rss-shed-mb");
     assert!(shed.starts_with("RSS shed threshold (MB)"), "{shed:?}");
-    let pressure = help("project-memory-pressure-bytes");
+    let pressure = help("container-memory-pressure-bytes");
     assert!(
         pressure.starts_with("Round-13: per-project memory-pressure"),
         "{pressure:?}"

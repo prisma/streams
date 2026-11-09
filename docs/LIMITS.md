@@ -19,7 +19,7 @@ with every answer and its retry rule is
 ## Storage
 
 - A project has no stored-bytes limit. The shipped profiles set
-  `PROJECT_STORED_BYTES_DEFAULT=0`, which `cell-admin` and the interim
+  `CONTAINER_STORED_BYTES_DEFAULT=0`, which `cell-admin` and the interim
   issuer publish as each project's `max_stored_bytes`, and the server reads
   0 as no limit (`auth::ceiling`, `quota::stored::StoredTable::admit`).
   Streams keep their data until they are deleted or expire (an expiry is

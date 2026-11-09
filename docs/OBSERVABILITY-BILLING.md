@@ -626,8 +626,8 @@ descriptor at creation, from the authenticated principal, never from
 stream names, client headers, or any other request-derived value, and
 usage records no workspace or account (edge #253): Console maps a
 container to its project and workspace. The deployment's own
-`PROJECT_ID` is reserved and never placed. `BILLING_MODE=required`
-refuses to boot on the placeholder `PROJECT_ID` and `CELL_ID`.
+`CONTAINER_ID` is reserved and never placed. `BILLING_MODE=required`
+refuses to boot on the placeholder `CONTAINER_ID` and `CELL_ID`.
 
 It is the invoice/audit artifact. The live dashboard reads the rollup DB; historical finalized months may be served from the immutable object or cache.
 

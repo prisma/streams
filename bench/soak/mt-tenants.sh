@@ -155,7 +155,7 @@ SERVER_COMMON=(
   # Enforce refuses to boot with a default deployment project id; the
   # 2026-08-19 stage-1 crash-loop was exactly this refusal (correct
   # behavior — billing must never land on a placeholder project).
-  --env PROJECT_ID=proj-mt-deploy
+  --env CONTAINER_ID=proj-mt-deploy
 )
 verify_server_live() { # retry /livez until 200 or fail loudly
   local URL=$(cat "$S/url-server-$R.txt")

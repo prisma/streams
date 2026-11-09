@@ -20,7 +20,7 @@ env FLEET_AUTH_MODE=workload
 env WORKLOAD_TOKEN_FILE=/tmp/platform-e2e-placeholder/a/workload.jwt
 env STREAMS_RELEASE_POSTURE=1
 env CELL_ID=cell-a
-env PROJECT_ID=proj-deploy-e2e
+env CONTAINER_ID=proj-deploy-e2e
 env USAGE_STREAM_KEY=CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=
 env OUTBOX_SWEEP_SECS=2
 env ROLLUP=1

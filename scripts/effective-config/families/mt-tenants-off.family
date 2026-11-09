@@ -72,7 +72,7 @@ env TRIM_PER_OP=65536
 env POOL_IDLE_SECS=4
 supervisor KEEP_AWAKE=1
 env CELL_ID=mt-cell-1
-env PROJECT_ID=proj-mt-deploy
+env CONTAINER_ID=proj-mt-deploy
 env STREAMS_AUTH_MODE=off
 include deploy/profiles/compute-1g.env
 supervisor APP_BINARY_SHA256=placeholder-sha256-of-the-downloaded-binary

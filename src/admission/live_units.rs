@@ -14,7 +14,7 @@
 //!   memory's quarter of the line, so the certified 1 GiB baseline plus
 //!   both stays under the line);
 //! - its project's: the instance's divided by the cell's share k
-//!   (`PROJECT_SHARE_K`), as every other shared bound (`auth::ceiling`);
+//!   (`CONTAINER_SHARE_K`), as every other shared bound (`auth::ceiling`);
 //!   a dedicated cell (k = 1) gives its project the whole budget.
 //!
 //! A 0 shed line (off, as rigs run) leaves the units unbounded. The units

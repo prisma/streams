@@ -103,7 +103,7 @@ function spawnServer() {
     STREAMS_AUTH_POLICY_FILE: join(dir, "policies.json"),
     STREAMS_AUTH_GRANTS_FILE: join(dir, "grants.json"),
     CELL_ID: CELL,
-    PROJECT_ID: "proj-deploy-camp",
+    CONTAINER_ID: "proj-deploy-camp",
     AUTH_TOKEN: "camp-account-token",
     USAGE_STREAM_KEY: KEY_B64,
   };

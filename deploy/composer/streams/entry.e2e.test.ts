@@ -159,7 +159,7 @@ function cellLines(stage: string, s3: string, extra: string[] = []): string[] {
   return [
     `CELL_STAGE=${stage}`,
     "CELL_ID=cell_e2e",
-    "PROJECT_ID=proj_deploy",
+    "CONTAINER_ID=proj_deploy",
     "STREAMS_AUTH_ISSUER=https://auth.prisma.io",
     "PATH_PREFIX=e2e",
     "REGION=local",
@@ -333,7 +333,7 @@ const SUMMARY: [string, string][] = [
   ["engine.slatedb_rt_threads", "SLATEDB_RT_THREADS"],
   ["sse.feed_ring_bytes", "SSE_FEED_RING_BYTES"],
   ["sse.feed_total_bytes", "SSE_FEED_TOTAL_BYTES"],
-  ["sse.feed_project_bytes", "SSE_FEED_PROJECT_BYTES"],
+  ["sse.feed_project_bytes", "SSE_FEED_CONTAINER_BYTES"],
   ["billing.telemetry_cache_bytes", "TELEMETRY_CACHE_BYTES"],
   ["http.binary_sha256", "APP_BINARY_SHA256"],
   ["runtime.memprofile_cert", "MEMPROFILE_CERT"],

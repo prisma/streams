@@ -26,7 +26,7 @@
 #   global-name-maps   process-global maps keyed by bare stream name
 #                      (scaler sketches/cooldowns/hot keys)
 #   tenant-fallback    deployment-global tenant identity (env
-#                      PROJECT_ID, the proj_local default); gone by Stage 7
+#                      CONTAINER_ID, the proj_local default); gone by Stage 7
 #   internal-target    internal RPC identity headers; Stage 4 adds the
 #                      project dimension (streams-internal-container)
 #
@@ -90,7 +90,7 @@ collect() {
     if (( ${#map_sources[@]} )); then
       scan global-name-maps 'HashMap<String' "${map_sources[@]}"
     fi
-    scan tenant-fallback '(proj_local|"PROJECT_ID")' "${SOURCES[@]}"
+    scan tenant-fallback '(proj_local|"CONTAINER_ID")' "${SOURCES[@]}"
     scan internal-target 'streams-internal-(epoch|seg|identity|container)' "${SOURCES[@]}"
   } | LC_ALL=C sort -u
 }

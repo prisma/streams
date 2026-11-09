@@ -25,7 +25,7 @@ and every project gets that share unless the operator set a lower value
 for it. More than 8 projects are placed on a cell, because most projects
 use far less than their ceiling.
 
-Source: `deploy/profiles/shared-cell.env` (`PROJECT_SHARE_K=8` and the
+Source: `deploy/profiles/shared-cell.env` (`CONTAINER_SHARE_K=8` and the
 shared bounds), `src/auth/ceiling.rs` (`CellCeiling::effective`; its test
 `a_shared_cell_holds_every_bounded_axis_to_its_share` pins the shares).
 

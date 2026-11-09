@@ -42,7 +42,7 @@ const platform = (name: string): Source => ({ from: "platform", name });
 export const CHILD_NAMES: Readonly<Record<string, Source>> = {
   CELL_STAGE: cell,
   CELL_ID: cell,
-  PROJECT_ID: cell,
+  CONTAINER_ID: cell,
   STREAMS_AUTH_ISSUER: cell,
   PATH_PREFIX: cell,
   REGION: cell,

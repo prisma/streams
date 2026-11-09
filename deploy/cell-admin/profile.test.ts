@@ -68,8 +68,8 @@ describe("the shared-cell profile", () => {
     const env = readProfiles(DEFAULT_PROFILES);
     expect(
       [
-        "SSE_FEED_PROJECT_BYTES",
-        "PROJECT_MEMORY_PRESSURE_BYTES",
+        "SSE_FEED_CONTAINER_BYTES",
+        "CONTAINER_MEMORY_PRESSURE_BYTES",
         "MAX_REQUEST_BODY_BYTES",
         "MAX_UNABSORBED_BYTES_PER_SHARD",
         "TAIL_RING_BYTES",
@@ -80,7 +80,7 @@ describe("the shared-cell profile", () => {
   test("its shard line is the binary's default, and k projects at their memory lines just reach it", () => {
     const env = readProfiles(DEFAULT_PROFILES);
     expect(src("src/config/model.rs")).toContain("unabsorbed_bytes_shard: 256 * 1024 * 1024,");
-    const [k, line, shard] = ["PROJECT_SHARE_K", "PROJECT_MEMORY_PRESSURE_BYTES", "MAX_UNABSORBED_BYTES_PER_SHARD"].map(
+    const [k, line, shard] = ["CONTAINER_SHARE_K", "CONTAINER_MEMORY_PRESSURE_BYTES", "MAX_UNABSORBED_BYTES_PER_SHARD"].map(
       (n) => Number(env.get(n)),
     );
     expect([k * line, shard]).toEqual([256 * 1024 * 1024, 256 * 1024 * 1024]);
@@ -109,18 +109,18 @@ describe("the shared-cell profile", () => {
     ["KEEP_AWAKE", undefined, "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE", "0", "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE_UNTIL_MS", "1767225600000", "profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good"],
-    ["PROJECT_SHARE_K", "0", "profile PROJECT_SHARE_K=0 is not a positive integer"],
-    ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
-    ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "33554433", "8 projects at their memory lines (268435464) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
+    ["CONTAINER_SHARE_K", "0", "profile CONTAINER_SHARE_K=0 is not a positive integer"],
+    ["CONTAINER_SHARE_K", undefined, "profile does not set CONTAINER_SHARE_K"],
+    ["SSE_FEED_CONTAINER_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
+    ["CONTAINER_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
+    ["CONTAINER_MEMORY_PRESSURE_BYTES", "33554433", "8 projects at their memory lines (268435464) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
     ["MAX_UNABSORBED_BYTES_PER_SHARD", "268435455", "8 projects at their memory lines (268435456) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435455"],
     ["MAX_UNABSORBED_BYTES_PER_SHARD", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_SHARD"],
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
-    ["PROJECT_STORED_BYTES_DEFAULT", undefined, "profile does not set PROJECT_STORED_BYTES_DEFAULT"],
-    ["PROJECT_STORED_BYTES_DEFAULT", "-1", "profile PROJECT_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
+    ["CONTAINER_STORED_BYTES_DEFAULT", undefined, "profile does not set CONTAINER_STORED_BYTES_DEFAULT"],
+    ["CONTAINER_STORED_BYTES_DEFAULT", "-1", "profile CONTAINER_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
   ];
   test.each(breaks)("refuses %s=%s", (name, value, message) => {
     const env = readProfiles(DEFAULT_PROFILES);
@@ -131,7 +131,7 @@ describe("the shared-cell profile", () => {
 
   test("k = 1 is a dedicated cell, not a refusal: its ceilings are the bounds", () => {
     const env = readProfiles(DEFAULT_PROFILES);
-    env.set("PROJECT_SHARE_K", "1");
+    env.set("CONTAINER_SHARE_K", "1");
     const s = cellSizing(env);
     expect([s.share_k, s.dedicated, s.ceilings]).toEqual([1, true, s.bounds]);
   });
@@ -172,19 +172,19 @@ describe("the dedicated-cell profile", () => {
     const keys = [...new Set([...shared.keys(), ...dedicated.keys()])];
     const differ = keys.filter((k) => shared.get(k) !== dedicated.get(k)).sort();
     expect(Object.fromEntries(differ.map((k) => [k, dedicated.get(k)]))).toEqual({
-      PROJECT_MEMORY_PRESSURE_BYTES: "268435456",
-      PROJECT_SHARE_K: "1",
-      SSE_FEED_PROJECT_BYTES: "33554432",
+      CONTAINER_MEMORY_PRESSURE_BYTES: "268435456",
+      CONTAINER_SHARE_K: "1",
+      SSE_FEED_CONTAINER_BYTES: "33554432",
     });
     // bench/k2cost/points/ML.env's m-alone and l-alone: k = 1 and the memory
     // line at the shard's unabsorbed line.
     expect(src("bench/k2cost/points/ML.env")).toContain(
-      'SERVER_ENV_EXTRA="PROJECT_SHARE_K=1 PROJECT_MEMORY_PRESSURE_BYTES=268435456 $SERVER_ENV_EXTRA"',
+      'SERVER_ENV_EXTRA="CONTAINER_SHARE_K=1 CONTAINER_MEMORY_PRESSURE_BYTES=268435456 $SERVER_ENV_EXTRA"',
     );
     // The project's feed share is compute-1g.env's own, below the total as the
     // release posture requires (src/config/validation.rs).
     const layered = readProfiles(DEDICATED_PROFILES);
-    expect(layered.get("SSE_FEED_PROJECT_BYTES")).toBe(readProfiles([join(ROOT, "deploy", "profiles", "compute-1g.env")]).get("SSE_FEED_PROJECT_BYTES"));
+    expect(layered.get("SSE_FEED_CONTAINER_BYTES")).toBe(readProfiles([join(ROOT, "deploy", "profiles", "compute-1g.env")]).get("SSE_FEED_CONTAINER_BYTES"));
     expect(src("src/config/validation.rs")).toContain("if project >= global {");
   });
 
@@ -194,8 +194,8 @@ describe("the dedicated-cell profile", () => {
   });
 
   const breaks: [string, string, string][] = [
-    ["SSE_FEED_PROJECT_BYTES", "67108864", "profile SSE_FEED_PROJECT_BYTES=67108864: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = 67108864"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "268435457", "the project's memory line (268435457) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
+    ["SSE_FEED_CONTAINER_BYTES", "67108864", "profile SSE_FEED_CONTAINER_BYTES=67108864: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = 67108864"],
+    ["CONTAINER_MEMORY_PRESSURE_BYTES", "268435457", "the project's memory line (268435457) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
   ];
   test.each(breaks)("refuses %s=%s", (name, value, message) => {
     const env = readProfiles(DEDICATED_PROFILES);

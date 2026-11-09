@@ -78,7 +78,7 @@ not actioned.
 ## 2. The one real finding: shared-feed retention depth
 
 At hundreds of SHARED feeds in one project, the per-project retention
-backstop (`SSE_FEED_PROJECT_BYTES`, defaulted to global/4 = 4 MiB in
+backstop (`SSE_FEED_CONTAINER_BYTES`, defaulted to global/4 = 4 MiB in
 round 10) saturates; every over-cap publication clears that feed's
 ring and floors parked followers → typed lag-disconnect + resume
 churn. Zero loss (the resume contract holds exactly — one sweep ran
@@ -98,7 +98,7 @@ Causal chain proven by intervention at `500x2` (arm C):
 | `1250x2` deep retention | **0** | **35 ms** |
 
 **Recommendation (E4 closure):** raise the 1-GiB profile to
-`SSE_FEED_TOTAL_BYTES=67108864` and `SSE_FEED_PROJECT_BYTES=33554432`
+`SSE_FEED_TOTAL_BYTES=67108864` and `SSE_FEED_CONTAINER_BYTES=33554432`
 (the backstop stays meaningful for isolation but stops binding at
 realistic shared-feed counts). Retention is exactly accounted; the
 memory headroom exists (10,000 parked subscribers idle at 307 MB).

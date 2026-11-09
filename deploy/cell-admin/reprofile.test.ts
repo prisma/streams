@@ -79,10 +79,10 @@ for (const kind of STORES) {
       const before = readStateText(c.state);
       const recorded = release("--recorded-profile");
       const cases: [string, string][] = [
-        ["PROJECT_SHARE_K=4\nSHARED_CACHE_BYTES=1048576\n", "PROJECT_SHARE_K 8 -> 4"],
+        ["CONTAINER_SHARE_K=4\nSHARED_CACHE_BYTES=1048576\n", "CONTAINER_SHARE_K 8 -> 4"],
         ["SSE_MAX_CONNECTIONS=800\n", "SSE_MAX_CONNECTIONS 1200 -> 800"],
-        ["CELL_ENVELOPE_REQUESTS_PER_SEC=2000\nPROJECT_STORED_BYTES_DEFAULT=1\n",
-          "CELL_ENVELOPE_REQUESTS_PER_SEC 1411 -> 2000, PROJECT_STORED_BYTES_DEFAULT 0 -> 1"],
+        ["CELL_ENVELOPE_REQUESTS_PER_SEC=2000\nCONTAINER_STORED_BYTES_DEFAULT=1\n",
+          "CELL_ENVELOPE_REQUESTS_PER_SEC 1411 -> 2000, CONTAINER_STORED_BYTES_DEFAULT 0 -> 1"],
         ["MAX_REQUEST_BODY_BYTES=16777216\n", "MAX_REQUEST_BODY_BYTES 8388608 -> 16777216"],
         ["SEGMENT_TARGET_BYTES=1\n", "SEGMENT_TARGET_BYTES (unset) -> 1"],
       ];
@@ -92,9 +92,9 @@ for (const kind of STORES) {
           `cell-admin reprofile: the new profile changes ${offending}: only ${REPROFILE_KEYS.join(", ")} change ` +
             "on a cell's life; any other change needs a new cell"]);
       }
-      const removed = shipped("shared-cell.env").replace(/^PROJECT_SHARE_K=.*\n/m, "");
+      const removed = shipped("shared-cell.env").replace(/^CONTAINER_SHARE_K=.*\n/m, "");
       const r = await run("reprofile", "--state", c.state, ...recorded, ...release("--profile", { shared: removed }));
-      expect(r.err).toStartWith("cell-admin reprofile: the new profile changes PROJECT_SHARE_K 8 -> (unset): ");
+      expect(r.err).toStartWith("cell-admin reprofile: the new profile changes CONTAINER_SHARE_K 8 -> (unset): ");
       for (const value of ["0", "32MiB"]) {
         const bad = await run("reprofile", "--state", c.state, ...recorded,
           ...release("--profile", { extra: `SHARED_CACHE_BYTES=${value}\n` }));
@@ -140,7 +140,7 @@ describe("the keys reprofile takes", () => {
       }
     }
     cellSizing(new Recording(readProfiles(release("--profile").filter((_, i) => i % 2 === 1))));
-    expect(read.has("PROJECT_SHARE_K") && read.has("ADMIT_MAX_INFLIGHT") && read.has("ADMIT_RSS_SHED_MB")).toBe(true);
+    expect(read.has("CONTAINER_SHARE_K") && read.has("ADMIT_MAX_INFLIGHT") && read.has("ADMIT_RSS_SHED_MB")).toBe(true);
     expect(REPROFILE_KEYS.filter((k) => read.has(k))).toEqual([]);
     expect([...REPROFILE_KEYS]).toEqual(["SHARED_CACHE_BYTES", "TELEMETRY_CACHE_BYTES"]);
     for (const k of REPROFILE_KEYS) expect(readFileSync(join(import.meta.dir, "..", "..", "src", "config", "load.rs"), "utf8")

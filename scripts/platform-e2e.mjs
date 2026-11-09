@@ -98,7 +98,7 @@ const cellEnv = (cellId, dir, refreshSecs) => {
     WORKLOAD_TOKEN_FILE: join(dir, "workload.jwt"),
     STREAMS_RELEASE_POSTURE: "1",
     CELL_ID: cellId,
-    PROJECT_ID: "proj-deploy-e2e",
+    CONTAINER_ID: "proj-deploy-e2e",
     USAGE_STREAM_KEY: KEY_B64,
     OUTBOX_SWEEP_SECS: "2", // §15 item 7: reconciliation leg polls the rollup
     ROLLUP: "1",             // single-instance cells host their own rollup consumer

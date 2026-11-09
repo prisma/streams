@@ -46,7 +46,7 @@ HOUR = 3600
 # the tag tree also holds.
 PROFILES = {
     'compute-1g.env': 'TOKIO_WORKERS=2\n',
-    'shared-cell.env': '# the shared cell\nSTREAMS_RELEASE_POSTURE=1\nKEEP_AWAKE=1\nINITIAL_SHARDS=1\nPROJECT_SHARE_K=8\n',
+    'shared-cell.env': '# the shared cell\nSTREAMS_RELEASE_POSTURE=1\nKEEP_AWAKE=1\nINITIAL_SHARDS=1\nCONTAINER_SHARE_K=8\n',
     'fleet.env': 'FLEET_PREFIX=fleet/\n',
 }
 CELL_ENV = 'ce11' + '0' * 60
@@ -278,7 +278,7 @@ class RcCertify(unittest.TestCase):
                 ('envelope-1', 'envelope-manifest.json'): arm(
                     'envelope', ['WC_PMP'], profile=profile('shared-cell.env', 'staging.env'))},
             "sc0-1s: the profile's files lack the single-cell pins ['INITIAL_SHARDS=1', 'KEEP_AWAKE=1', "
-            "'STREAMS_RELEASE_POSTURE=1', 'PROJECT_SHARE_K=8']": {
+            "'STREAMS_RELEASE_POSTURE=1', 'CONTAINER_SHARE_K=8']": {
                 ('sc0-1s-1', 'sc0-1s-manifest.json'): arm(
                     'sc0-1s', ['idle-floor', 'rss-slope'], secs=72 * HOUR, profile=profile('compute-1g.env'))},
             'sc1: the profile sets FLEET_PREFIX (fleet.env): a fleet-pinned run': {

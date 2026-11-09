@@ -60,7 +60,7 @@ pub(crate) struct ProjectQuotas {
     /// page bytes after compression, page headers included (edge change
     /// #125's unit, the gauge behind a stream's `ownedStoredBytesNow`). 0
     /// means "not configured", and the cell gives such a project its
-    /// `PROJECT_STORED_BYTES_DEFAULT` (`auth::ceiling`), at any k.
+    /// `CONTAINER_STORED_BYTES_DEFAULT` (`auth::ceiling`), at any k.
     #[serde(default)]
     pub max_stored_bytes: u64,
     /// The project's request weight on a cell shared k ways (layout 6A

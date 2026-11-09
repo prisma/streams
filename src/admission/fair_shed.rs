@@ -5,7 +5,7 @@
 //!
 //! The blame signal is a project's share of the verified requests the cell
 //! was offered recently, against its request weight's share w/k on a cell
-//! shared k ways (`PROJECT_SHARE_K`, the divisor of every project's
+//! shared k ways (`CONTAINER_SHARE_K`, the divisor of every project's
 //! ceilings; w is 1 unless its policy sets a `request_weight`, layout 6A
 //! package 1). Each
 //! verified request is counted at project admission, admitted or refused by

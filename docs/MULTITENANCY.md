@@ -83,7 +83,7 @@
   feed's `quotas` carries `max_stored_bytes`, the stored bytes a project
   may own (`contracts/streams-platform/v1/container-policies.schema.json`
   stays v1: the field is additive and optional). A 0 or absent value
-  takes the cell's `PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no
+  takes the cell's `CONTAINER_STORED_BYTES_DEFAULT` at any k (default 0, no
   limit; the shipped profiles set 0 too since edge change #244, storage
   unlimited; they set 10 GiB before). Unknown quota keys still
   refuse the whole feed, so a binary before r9 refuses one carrying the
@@ -617,7 +617,7 @@ carriers address the deployment tenant (single-tenant posture; the
 capability wire gains the project in review item 3). Raw Durable
 Streams routes still address the deployment tenant — under enforce
 behind FLEET identity per §14.3 (r3): the raw surface is
-internal-only and the raw-surface principal question is CLOSED. PROJECT_ID must be explicitly non-default in
+internal-only and the raw-surface principal question is CLOSED. CONTAINER_ID must be explicitly non-default in
 shadow/enforce.
 
 ### 6.2 Prefix grants
@@ -1357,7 +1357,7 @@ bounds the stored bytes a project may own: its live segments' stored page
 bytes after compression, page headers included (the unit of a stream's
 usage `ownedStoredBytesNow`, edge change #125). It has no shared bound,
 so it is not divided by k: a 0 or absent value takes the cell's
-`PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no limit; the shipped
+`CONTAINER_STORED_BYTES_DEFAULT` at any k (default 0, no limit; the shipped
 profiles set 0 too since the owner's decision of 2026-11-03, edge change
 #244, storage unlimited, which replaced the 10 GiB of answer S1 of
 2026-10-12), and a value the feed sets stands, above the default too.
@@ -1561,7 +1561,7 @@ certified at Stage 8.)*
   `KeySource`/`PolicySource`/`GrantSource` traits when Stage 1 lands.
   Shadow mode observes every product bearer through the full customer
   pipeline — `/v1/debug/auth` reports counters + feed freshness.
-  Enforce boots once the deployment names an explicit `PROJECT_ID` and
+  Enforce boots once the deployment names an explicit `CONTAINER_ID` and
   the three `STREAMS_AUTH_*_FILE` feeds; the Stage-5b route-scope
   matrix is live.)*
 * [~] Publish credential-grant snapshots/deltas. *(Same: data-plane

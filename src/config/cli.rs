@@ -197,7 +197,7 @@ pub struct CliArgs {
     /// MULTITENANCY §7.2: off | shadow | enforce. Shadow verifies every
     /// product bearer through the customer pipeline and counts the
     /// outcome without touching responses. Shadow and enforce refuse to
-    /// start without an explicit PROJECT_ID and the three feed files below.
+    /// start without an explicit CONTAINER_ID and the three feed files below.
     #[arg(long, env = "STREAMS_AUTH_MODE", default_value = "off")]
     pub(crate) streams_auth_mode: String,
     #[arg(
@@ -273,7 +273,11 @@ pub struct CliArgs {
     pub(crate) max_record_payload_bytes: Option<usize>,
 
     /// Billing tenant boundary: the project.
-    #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]
+    #[arg(
+        long = "container-id",
+        env = "CONTAINER_ID",
+        default_value = "proj_local"
+    )]
     pub(crate) project_id: String,
 
     /// Telemetry cell identity (one `_usage`/`_ops_*` set per cell).
@@ -337,10 +341,18 @@ pub struct CliArgs {
 
     /// Round-13: per-project memory-pressure high watermark in bytes
     /// (0 = off; deploy/profiles/shared-cell.env sets one, pending certification).
-    #[arg(long, env = "PROJECT_MEMORY_PRESSURE_BYTES", default_value_t = 0)]
+    #[arg(
+        long = "container-memory-pressure-bytes",
+        env = "CONTAINER_MEMORY_PRESSURE_BYTES",
+        default_value_t = 0
+    )]
     pub(crate) project_memory_pressure_bytes: u64,
     /// Hysteresis release point as a percentage of the high watermark.
-    #[arg(long, env = "PROJECT_MEMORY_RELEASE_PCT", default_value_t = 75)]
+    #[arg(
+        long = "container-memory-release-pct",
+        env = "CONTAINER_MEMORY_RELEASE_PCT",
+        default_value_t = 75
+    )]
     pub(crate) project_memory_release_pct: u64,
     /// RSS shed threshold (MB): 429 writes while RSS exceeds this.
     /// Docker phase 1: without it a 1 GB cgroup OOM-kills the instance at
@@ -404,11 +416,11 @@ pub struct CliArgs {
     /// per-stream maps, MAX_UNABSORBED_BYTES_PER_INSTANCE) is at most
     /// bound / k, and a 0 or missing quota takes exactly that. Default 1,
     /// a dedicated cell: quotas pass unchanged. At least 1.
-    #[arg(long, env = "PROJECT_SHARE_K", default_value_t = 1,
+    #[arg(long = "container-share-k", env = "CONTAINER_SHARE_K", default_value_t = 1,
           value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) project_share_k: u64,
     /// The requests per second this cell was measured to carry, divided
-    /// by PROJECT_SHARE_K into each project's ceiling (0 = no shared bound).
+    /// by CONTAINER_SHARE_K into each project's ceiling (0 = no shared bound).
     #[arg(long, env = "CELL_ENVELOPE_REQUESTS_PER_SEC", default_value_t = 0)]
     pub(crate) cell_envelope_requests_per_sec: u64,
     /// The appended payload bytes per second it was measured to carry
@@ -420,9 +432,13 @@ pub struct CliArgs {
     #[arg(long, env = "CELL_ENVELOPE_READ_BYTES_PER_SEC", default_value_t = 0)]
     pub(crate) cell_envelope_read_bytes_per_sec: u64,
     /// The `max_stored_bytes` a project gets whose policy sets 0 or none,
-    /// at any PROJECT_SHARE_K (it is a default, not a shared bound ÷ k);
+    /// at any CONTAINER_SHARE_K (it is a default, not a shared bound ÷ k);
     /// a value the policy sets stands. Default 0: no stored-bytes limit.
-    #[arg(long, env = "PROJECT_STORED_BYTES_DEFAULT", default_value_t = 0)]
+    #[arg(
+        long = "container-stored-bytes-default",
+        env = "CONTAINER_STORED_BYTES_DEFAULT",
+        default_value_t = 0
+    )]
     pub(crate) project_stored_bytes_default: u64,
     /// The most projects this instance tracks at once, at about 500 B
     /// each: past it, once its idle entries are evicted, a first-seen
@@ -430,7 +446,7 @@ pub struct CliArgs {
     /// (~16 MiB). At most an eighth of the RSS shed line at 500 B each,
     /// ADMIT_RSS_SHED_MB x 1 MiB / 8 / 500 (131,072 at 500), and the
     /// default while the shed line is off; boot refuses a larger value.
-    #[arg(long, env = "PROJECT_TRACKER_MAX", default_value_t = 32_768,
+    #[arg(long = "container-tracker-max", env = "CONTAINER_TRACKER_MAX", default_value_t = 32_768,
           value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) project_tracker_max: u64,
 

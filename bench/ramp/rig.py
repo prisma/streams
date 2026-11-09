@@ -69,7 +69,7 @@ OFF_CERT = "rig-uncertified"
 SCALED = {
     "ADMIT_RSS_SHED_MB": 500, "SHARED_CACHE_BYTES": None, "TELEMETRY_CACHE_BYTES": None,
     "STORE_BULK_INFLIGHT_MAX_BYTES": None,
-    "MAX_UNABSORBED_BYTES_PER_INSTANCE": None, "PROJECT_MEMORY_PRESSURE_BYTES": None, "SSE_MAX_CONNECTIONS": None,
+    "MAX_UNABSORBED_BYTES_PER_INSTANCE": None, "CONTAINER_MEMORY_PRESSURE_BYTES": None, "SSE_MAX_CONNECTIONS": None,
 }
 PER_SHARD = ("HANDLE_MAX_RESIDENT", "TAIL_RING_BYTES")
 
@@ -185,7 +185,7 @@ class Posture:
                 "STREAMS_AUTH_KEYS_FILE=/feeds/keys.json", "STREAMS_AUTH_POLICY_FILE=/feeds/policies.json",
                 "STREAMS_AUTH_GRANTS_FILE=/feeds/grants.json",
                 # the cell's identity as tenants.sh admitted it
-                "PROJECT_ID=proj_ramp_deploy", "CELL_ID=ramp-cell",
+                "CONTAINER_ID=proj_ramp_deploy", "CELL_ID=ramp-cell",
                 f"USAGE_STREAM_KEY={base64.b64encode(os.urandom(32)).decode()}",
                 f"AUTH_TOKEN={self.bearer}",
             ]

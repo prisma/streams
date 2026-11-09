@@ -285,7 +285,7 @@ re-derive it from raw results. `profile` is the profile fence (deploy-q5
 triage B9, made under the lead's call 7): each file it names is, by its
 sha256, the tag tree's `deploy/profiles/<file>`, and rc-certify reads those
 files from the tag tree and requires the lines `INITIAL_SHARDS=1`,
-`KEEP_AWAKE=1`, `STREAMS_RELEASE_POSTURE=1` and `PROJECT_SHARE_K=8` and no
+`KEEP_AWAKE=1`, `STREAMS_RELEASE_POSTURE=1` and `CONTAINER_SHARE_K=8` and no
 `FLEET_PREFIX=` line, so a fleet-pinned or a hand-edited profile does not
 certify. Every field arm (all but Layer B) names `cell_env_sha256`, and
 they name one value: the field arms ran one cell. Of the harnesses that write these

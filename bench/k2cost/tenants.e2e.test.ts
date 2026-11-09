@@ -84,7 +84,7 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
     ...Object.fromEntries(readProfiles(DEFAULT_PROFILES)),
     STREAMS_AUTH_KEYS_FILE: join(feeds, "keys.json"), STREAMS_AUTH_POLICY_FILE: join(feeds, "policies.json"),
     STREAMS_AUTH_GRANTS_FILE: join(feeds, "grants.json"),
-    CELL_ID: "cell_e2e", PROJECT_ID: "proj_e2e_deploy",
+    CELL_ID: "cell_e2e", CONTAINER_ID: "proj_e2e_deploy",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"), AUTH_TOKEN: operator,
   };
   children.push(Bun.spawn([join(bin, "streams-slate"), "--listen", `127.0.0.1:${port}`, "--s3-endpoint", `http://127.0.0.1:${s3Port}`,

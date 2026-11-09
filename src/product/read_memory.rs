@@ -103,7 +103,7 @@ pub(super) const SHED_DISCARD_WAIT: std::time::Duration = std::time::Duration::f
 const SHARED_CELL_PAGE_BYTES: usize = 1 << 20;
 
 /// The query a product request is served with. On a shared cell
-/// (`PROJECT_SHARE_K` > 1) a records read or long-poll that names no
+/// (`CONTAINER_SHARE_K` > 1) a records read or long-poll that names no
 /// `maxBytes` is served as if it named the shared cell's default page,
 /// 1 MiB, so its reservation (`page_bytes`) and its page (`product_read`)
 /// both take it; every other request, and every request on a dedicated

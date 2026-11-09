@@ -171,8 +171,8 @@ mod config_validation_tests {
         validate_record_ceiling(&cell(64 * 1024 * 1024), true, Some(131_072)).unwrap();
         // Worst frame of a 131,072-byte record: 6 x 131,072 + 384 = 786,816.
         validate_record_ceiling(&cell(2 * 786_816), true, Some(131_072)).unwrap();
-        assert!(refusal(2 * 786_816 - 2).contains("exceeds SSE_FEED_PROJECT_BYTES=786815"));
-        assert!(refusal(0).contains("SSE_FEED_PROJECT_BYTES=0 admits shared subscribers"));
+        assert!(refusal(2 * 786_816 - 2).contains("exceeds SSE_FEED_CONTAINER_BYTES=786815"));
+        assert!(refusal(0).contains("SSE_FEED_CONTAINER_BYTES=0 admits shared subscribers"));
     }
 
     #[test]
@@ -676,7 +676,7 @@ mod validate_boundary_tests {
     }
 
     /// Edge #253 part 2: usage records no account, so production billing
-    /// needs its container (`PROJECT_ID`) and cell, and no `ACCOUNT_ID`.
+    /// needs its container (`CONTAINER_ID`) and cell, and no `ACCOUNT_ID`.
     #[test]
     fn required_billing_needs_no_account() {
         let checked = validate_with(
@@ -697,7 +697,7 @@ mod validate_boundary_tests {
 
     #[test]
     fn validation_rejects_invalid_project_id_and_reserved_tenant() {
-        rejects(|c| c.project_id = "bad id!".into(), &[], "PROJECT_ID");
+        rejects(|c| c.project_id = "bad id!".into(), &[], "CONTAINER_ID");
     }
 
     #[test]

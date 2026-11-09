@@ -113,7 +113,7 @@ export async function startCell(spec: CellSpec): Promise<LocalCell> {
     STREAMS_AUTH_POLICY_FILE: join(spec.feeds, "policies.json"),
     STREAMS_AUTH_GRANTS_FILE: join(spec.feeds, "grants.json"),
     CELL_ID: "cell_sc1",
-    PROJECT_ID: "proj_deploy",
+    CONTAINER_ID: "proj_deploy",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
     AUTH_TOKEN: spec.operator,
     ...spec.env,

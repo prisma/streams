@@ -314,7 +314,7 @@ feeds_env() { # the emulator's feed files
 }
 identity_env() { # the billing identity (cell-admin's init takes the same ids in tenants mode)
   echo "USAGE_STREAM_KEY=$(cat "$SECRETS/usage_key")"
-  echo "PROJECT_ID=$DEPLOY_PROJECT"
+  echo "CONTAINER_ID=$DEPLOY_PROJECT"
   echo "CELL_ID=$CELL"
 }
 k2_env() { # ordinal

@@ -94,7 +94,7 @@ async function boot(c: Cell, feeds: string): Promise<{ cell: string; operator: s
     STREAMS_AUTH_GRANTS_FILE: join(feeds, "grants.json"),
     STREAMS_AUTH_REFRESH_SECS: "1",
     CELL_ID: "cell_sc1",
-    PROJECT_ID: "proj_deploy",
+    CONTAINER_ID: "proj_deploy",
     USAGE_STREAM_KEY: randomBytes(32).toString("base64url"),
     AUTH_TOKEN: operator,
   };

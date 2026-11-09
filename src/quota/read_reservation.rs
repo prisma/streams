@@ -4,7 +4,7 @@
 //! (`ProjectAdmission::read_held`), which the memory-pressure estimate
 //! counts unweighted.
 //!
-//! A project with a memory line (`PROJECT_MEMORY_PRESSURE_BYTES`) may not
+//! A project with a memory line (`CONTAINER_MEMORY_PRESSURE_BYTES`) may not
 //! reserve past it: a reservation that would take the project's read
 //! bytes over the line does not fit while the project already holds read
 //! bytes, so one tenant's reads (64 concurrent 8 MiB pages, or bodies its

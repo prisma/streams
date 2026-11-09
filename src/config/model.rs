@@ -194,7 +194,7 @@ pub struct SseConfig {
     /// (`bootstrap::validate_release_capacity` refuses garbage outright;
     /// the warn-and-default above is only the lazy-reader contract).
     pub feed_total_bytes_raw: Option<String>,
-    /// SSE_FEED_PROJECT_BYTES, RAW string. The strict parse stays at the
+    /// SSE_FEED_CONTAINER_BYTES, RAW string. The strict parse stays at the
     /// use site (`sse::feed::configured_project_cap`) because release
     /// posture turns it into a hard boot error; default there = global/2.
     pub feed_project_bytes_raw: Option<String>,

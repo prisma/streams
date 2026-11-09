@@ -163,7 +163,7 @@ pub(super) fn cell_keys(fetched_at_unix: i64) -> crate::auth::JwksSnapshot {
     }
 }
 
-/// The divisor every fixture cell shares its bounds by (`PROJECT_SHARE_K`,
+/// The divisor every fixture cell shares its bounds by (`CONTAINER_SHARE_K`,
 /// the owner's default of 2026-10-07): a project's ceiling on each shared
 /// bound is the bound / 8.
 pub(super) const SHARE_K: usize = 8;

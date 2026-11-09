@@ -10,7 +10,7 @@ use super::fixture_http::engine_shutdown;
 use crate::project_policy::ProjectQuotas;
 use std::collections::HashMap;
 
-/// The cell's `PROJECT_STORED_BYTES_DEFAULT`: the quota of a project whose
+/// The cell's `CONTAINER_STORED_BYTES_DEFAULT`: the quota of a project whose
 /// feed sets none.
 const DEFAULT: u64 = 262_144;
 /// Q's quota, which its feed sets.
@@ -216,12 +216,12 @@ async fn freed(cell: &Cell, want: u64) {
     panic!("P's figure is {figure}, not {want}, after its delete");
 }
 
-/// The shipped shared-cell profile's `PROJECT_STORED_BYTES_DEFAULT`
+/// The shipped shared-cell profile's `CONTAINER_STORED_BYTES_DEFAULT`
 /// (`deploy/profiles/shared-cell.env`).
 fn shipped_stored_default() -> u64 {
     include_str!("../../../deploy/profiles/shared-cell.env")
         .lines()
-        .find_map(|line| line.strip_prefix("PROJECT_STORED_BYTES_DEFAULT="))
+        .find_map(|line| line.strip_prefix("CONTAINER_STORED_BYTES_DEFAULT="))
         .expect("the shared-cell profile sets a stored-bytes default")
         .parse()
         .expect("the stored-bytes default is a byte count")

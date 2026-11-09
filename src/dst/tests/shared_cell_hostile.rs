@@ -26,7 +26,7 @@ use crate::tenant::ProjectId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The owner's default quota divisor (PROJECT_SHARE_K, decision of
+/// The owner's default quota divisor (CONTAINER_SHARE_K, decision of
 /// 2026-10-07): a per-project ceiling is the shared bound divided by k.
 const K: usize = SHARE_K;
 /// The instance inflight bound these rigs set (`ADMIT_MAX_INFLIGHT`).
@@ -186,7 +186,7 @@ async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_con
 }
 
 /// A12 (L2): a policy naming the system project and one naming the
-/// deployment's own `PROJECT_ID` are dropped from the feed and counted (the
+/// deployment's own `CONTAINER_ID` are dropped from the feed and counted (the
 /// cell serves its 2 projects and reports 2 dropped): the deployment's token
 /// is refused as for a project the cell does not serve (`421 wrong_cell`).
 /// No workspace is reserved (edge #253 part 2).

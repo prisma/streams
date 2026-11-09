@@ -78,9 +78,9 @@ const instEnv = (name) => ({
   WORKLOAD_TOKEN_FILE: join(dirA, "workload.jwt"),
   CELL_ID: "cell-a",
   // The deployment's own project, never the certified one: a cell
-  // reserves its PROJECT_ID and answers that project's tokens
+  // reserves its CONTAINER_ID and answers that project's tokens
   // 421 wrong_cell (edge change #101, live since #130).
-  PROJECT_ID: DEPLOY_PROJECT,
+  CONTAINER_ID: DEPLOY_PROJECT,
   USAGE_STREAM_KEY: KEY_B64,
   AUTH_TOKEN: DEBUG_TOKEN,
   // Round-11.7: NO engine selection — the release binary defaults to

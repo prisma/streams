@@ -115,7 +115,7 @@ product surface), answering the question by measurement:
 
 - `provision.py` per run: teardown deletes the project; stale service
   ids in the project cache deploy as "Resource Not Found".
-- Enforce refuses `PROJECT_ID` defaults at boot (correct); the
+- Enforce refuses `CONTAINER_ID` defaults at boot (correct); the
   campaign env must set an explicit deployment project id.
 - `verify_server_live` gates every server deploy now — a crash-looping
   binary serves diagnostics on $PORT and looks deployed otherwise.

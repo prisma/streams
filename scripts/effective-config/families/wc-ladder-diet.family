@@ -8,8 +8,8 @@ note ${WC_*} defaults are used; ADMIT_RSS_SHED_MB=600 and SLATEDB_RT_THREADS=2 a
 note SOAK_RUN_ID / BIN_TAG are wc-<UTC timestamp>; a fixed stand-in is used.
 argv --listen 0.0.0.0:8080
 platform PORT=8080
-omit PROJECT_MEMORY_PRESSURE_BYTES only when WC_PMP is set (acceptance legs)
-omit PROJECT_MEMORY_RELEASE_PCT only when WC_PMP_RELEASE is set (acceptance legs)
+omit CONTAINER_MEMORY_PRESSURE_BYTES only when WC_PMP is set (acceptance legs)
+omit CONTAINER_MEMORY_RELEASE_PCT only when WC_PMP_RELEASE is set (acceptance legs)
 
 role gen
 env AWSBENCH_S3_KEY=bin/awsbench-wc-20260924T000000Z-x64
@@ -87,7 +87,7 @@ env MAX_RECORD_PAYLOAD_BYTES=131072
 env POOL_IDLE_SECS=4
 supervisor KEEP_AWAKE=1
 env CELL_ID=mt-cell-1
-env PROJECT_ID=proj-mt-deploy
+env CONTAINER_ID=proj-mt-deploy
 env SLATEDB_RT_THREADS=2
 env STREAMS_AUTH_MODE=enforce
 env STREAMS_AUTH_ISSUER=https://auth.prisma.io

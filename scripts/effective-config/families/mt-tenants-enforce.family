@@ -46,7 +46,7 @@ env TRIM_PER_OP=65536
 env POOL_IDLE_SECS=4
 supervisor KEEP_AWAKE=1
 env CELL_ID=mt-cell-1
-env PROJECT_ID=proj-mt-deploy
+env CONTAINER_ID=proj-mt-deploy
 env STREAMS_AUTH_MODE=off
 include deploy/profiles/compute-1g.env
 
@@ -110,7 +110,7 @@ env TRIM_PER_OP=65536
 env POOL_IDLE_SECS=4
 supervisor KEEP_AWAKE=1
 env CELL_ID=mt-cell-1
-env PROJECT_ID=proj-mt-deploy
+env CONTAINER_ID=proj-mt-deploy
 env STREAMS_AUTH_MODE=enforce
 env STREAMS_AUTH_ISSUER=https://auth.prisma.io
 env STREAMS_AUTH_KEYS_FILE=/tmp/feeds/keys.json

@@ -14,7 +14,7 @@ const PROFILES = ["profiles/compute-1g.env", "profiles/shared-cell.env"].map((pa
 const SCRATCH_LINES = [
   "CELL_STAGE=scratch",
   "CELL_ID=cell_e1",
-  "PROJECT_ID=proj_deploy",
+  "CONTAINER_ID=proj_deploy",
   "STREAMS_AUTH_ISSUER=https://auth.prisma.io",
   "PATH_PREFIX=cells/cell_e1",
   "REGION=eu-central-1",
@@ -113,7 +113,7 @@ describe("the child environment", () => {
     // auth mode, the cells file's bucket, the platform's operator token,
     // the entry's sha256 and the cells file's stage over the laced ones.
     expect(
-      ["SSE_FEED_PROJECT_BYTES", "STREAMS_AUTH_MODE", "SLATE_S3_BUCKET", "AUTH_TOKEN", "APP_BINARY_SHA256", "CELL_STAGE"].map(
+      ["SSE_FEED_CONTAINER_BYTES", "STREAMS_AUTH_MODE", "SLATE_S3_BUCKET", "AUTH_TOKEN", "APP_BINARY_SHA256", "CELL_STAGE"].map(
         (n) => env[n],
       ),
     ).toEqual(["8388608", "enforce", "cell-data", "operator-token-e1", SHA, "scratch"]);
@@ -180,18 +180,18 @@ describe("refusals", () => {
     ["KEEP_AWAKE", undefined, "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE", "0", "a shared cell needs KEEP_AWAKE=1"],
     ["KEEP_AWAKE_UNTIL_MS", "1767225600000", "profile sets KEEP_AWAKE_UNTIL_MS: a shared cell is kept awake for good"],
-    ["PROJECT_SHARE_K", "0", "profile PROJECT_SHARE_K=0 is not a positive integer"],
-    ["PROJECT_SHARE_K", undefined, "profile does not set PROJECT_SHARE_K"],
-    ["SSE_FEED_PROJECT_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
-    ["PROJECT_MEMORY_PRESSURE_BYTES", "33554433", "8 projects at their memory lines (268435464) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
+    ["CONTAINER_SHARE_K", "0", "profile CONTAINER_SHARE_K=0 is not a positive integer"],
+    ["CONTAINER_SHARE_K", undefined, "profile does not set CONTAINER_SHARE_K"],
+    ["SSE_FEED_CONTAINER_BYTES", "33554432", "needs SSE_FEED_TOTAL_BYTES / k = 8388608"],
+    ["CONTAINER_MEMORY_PRESSURE_BYTES", "43690667", "3 projects at their lines would fill the instance read memory (131072000)"],
+    ["CONTAINER_MEMORY_PRESSURE_BYTES", "33554433", "8 projects at their memory lines (268435464) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435456"],
     ["MAX_UNABSORBED_BYTES_PER_SHARD", "268435455", "8 projects at their memory lines (268435456) would pass the shard line MAX_UNABSORBED_BYTES_PER_SHARD=268435455"],
     ["MAX_UNABSORBED_BYTES_PER_SHARD", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_SHARD"],
     ["CELL_ENVELOPE_REQUESTS_PER_SEC", undefined, "profile does not set CELL_ENVELOPE_REQUESTS_PER_SEC"],
     ["MAX_UNABSORBED_BYTES_PER_INSTANCE", undefined, "profile does not set MAX_UNABSORBED_BYTES_PER_INSTANCE"],
     ["ADMIT_MAX_INFLIGHT", "5e2", "ADMIT_MAX_INFLIGHT=5e2 is not a positive integer"],
-    ["PROJECT_STORED_BYTES_DEFAULT", undefined, "profile does not set PROJECT_STORED_BYTES_DEFAULT"],
-    ["PROJECT_STORED_BYTES_DEFAULT", "-1", "profile PROJECT_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
+    ["CONTAINER_STORED_BYTES_DEFAULT", undefined, "profile does not set CONTAINER_STORED_BYTES_DEFAULT"],
+    ["CONTAINER_STORED_BYTES_DEFAULT", "-1", "profile CONTAINER_STORED_BYTES_DEFAULT=-1 is not a non-negative integer"],
   ];
   test.each(breaks)("a profile with %s=%s fails cell-admin's posture check", (name, value, message) => {
     const r = refusal({ profiles: profilesWith(name, value) });

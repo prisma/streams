@@ -177,13 +177,13 @@ fn validate_record_ceiling(
         .map_err(|m| anyhow::anyhow!("{m} (STREAMS_RELEASE_POSTURE=1 refuses the fallback)"))?;
     if project == 0 {
         anyhow::bail!(
-            "SSE_FEED_PROJECT_BYTES=0 admits shared subscribers and then disconnects \
+            "SSE_FEED_CONTAINER_BYTES=0 admits shared subscribers and then disconnects \
              them on the first publication — not permitted under release posture"
         );
     }
     if project >= global {
         anyhow::bail!(
-            "SSE_FEED_PROJECT_BYTES={project} >= SSE_FEED_TOTAL_BYTES={global}: one \
+            "SSE_FEED_CONTAINER_BYTES={project} >= SSE_FEED_TOTAL_BYTES={global}: one \
              project could consume the whole cell budget — the project backstop must \
              be strictly below the cell ceiling"
         );
@@ -191,7 +191,7 @@ fn validate_record_ceiling(
     if (worst as u64) > project {
         anyhow::bail!(
             "worst-case prepared record ({worst} bytes) exceeds \
-             SSE_FEED_PROJECT_BYTES={project}: a single legal record could never be \
+             SSE_FEED_CONTAINER_BYTES={project}: a single legal record could never be \
              retained by any project"
         );
     }
@@ -767,13 +767,13 @@ impl crate::config::ServerConfig {
     ) {
         let tenant = match crate::tenant::ProjectId::new(&self.cli.project_id) {
             Ok(t) if t.is_system() => {
-                f.err("PROJECT_ID may not be the reserved system project");
+                f.err("CONTAINER_ID may not be the reserved system project");
                 None
             }
             Ok(t) => Some(t),
             Err(e) => {
                 f.err(format!(
-                    "PROJECT_ID {:?} is invalid: {e}",
+                    "CONTAINER_ID {:?} is invalid: {e}",
                     self.cli.project_id
                 ));
                 None
@@ -856,7 +856,7 @@ impl crate::config::ServerConfig {
         }
         if self.cli.project_id == "proj_local" || self.cli.cell_id == "local" {
             f.err(
-                "BILLING_MODE=required needs explicit PROJECT_ID and CELL_ID \
+                "BILLING_MODE=required needs explicit CONTAINER_ID and CELL_ID \
                  — refusing to bill production traffic to the local \
                  placeholders",
             );
@@ -883,7 +883,7 @@ impl crate::config::ServerConfig {
             // real project's data is exactly the accident this refuses.
             if self.cli.project_id == "proj_local" {
                 f.err(format!(
-                    "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
+                    "STREAMS_AUTH_MODE={} requires an explicit non-default CONTAINER_ID",
                     self.cli.streams_auth_mode
                 ));
             }

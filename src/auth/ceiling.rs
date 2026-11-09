@@ -14,12 +14,12 @@
 //! so no ceiling applies and 0 keeps meaning "no project limit".
 //!
 //! The stored-bytes quota (`max_stored_bytes`) has no shared bound: a 0
-//! (or absent) feed value takes the cell's `PROJECT_STORED_BYTES_DEFAULT`
+//! (or absent) feed value takes the cell's `CONTAINER_STORED_BYTES_DEFAULT`
 //! at any k, and a value the feed sets stands, above the default too.
 //! The setting's own default, 0, leaves such a project without a limit.
 //!
 //! No customer project may take an identity the cell reserves: the system
-//! project and the deployment's `PROJECT_ID` (the raw surface's tenant,
+//! project and the deployment's `CONTAINER_ID` (the raw surface's tenant,
 //! open to fleet credentials). No workspace is reserved: usage records
 //! none, and the deployment has no account (edge #253). A policy naming
 //! one is dropped before publication, so the cell answers its tokens as
@@ -27,7 +27,7 @@
 //! dropped is reported (`/v1/debug/auth`, `policies.reservedDropped`).
 //!
 //! Boot installs the cell's ceiling from its settings (`of_config`):
-//! `PROJECT_SHARE_K`, the measured envelope (`CELL_ENVELOPE_*`), the
+//! `CONTAINER_SHARE_K`, the measured envelope (`CELL_ENVELOPE_*`), the
 //! instance bounds the server already enforces, and its deployment
 //! identity. It is applied once, where `AuthService` publishes a policy
 //! snapshot, so every reader of a published policy (token verification,
@@ -88,7 +88,7 @@ impl CellCeiling {
         Self::shared(1, SharedBounds::default())
     }
 
-    /// A cell shared `share_k` ways (`PROJECT_SHARE_K`) over `bounds`.
+    /// A cell shared `share_k` ways (`CONTAINER_SHARE_K`) over `bounds`.
     pub(crate) fn shared(share_k: u64, bounds: SharedBounds) -> Self {
         Self {
             share_k,
@@ -99,11 +99,11 @@ impl CellCeiling {
         }
     }
 
-    /// The cell `config` describes: shared `PROJECT_SHARE_K` ways over its
+    /// The cell `config` describes: shared `CONTAINER_SHARE_K` ways over its
     /// measured envelope and the instance bounds it enforces, with
     /// `subscriptions` the effective SSE cap (the descriptor limit may
     /// clamp the configured one), giving an unset stored-bytes quota
-    /// `PROJECT_STORED_BYTES_DEFAULT`, reserving `deployment`'s identities.
+    /// `CONTAINER_STORED_BYTES_DEFAULT`, reserving `deployment`'s identities.
     pub(crate) fn of_config(
         config: &ServerConfig,
         subscriptions: u64,
@@ -131,7 +131,7 @@ impl CellCeiling {
         self
     }
 
-    /// The same cell, also reserving its deployment's `PROJECT_ID`.
+    /// The same cell, also reserving its deployment's `CONTAINER_ID`.
     pub(crate) fn reserving(mut self, deployment: &DeploymentIdentity) -> Self {
         // mt-lint: allow(state-tenant-read): read only to refuse it — a policy naming the deployment tenant is dropped (#101); no request adopts this identity
         self.deployment_project = Some(deployment.deployment_tenant().clone());
@@ -418,7 +418,7 @@ mod tests {
     }
 
     /// A 0 or absent stored-bytes quota takes the cell's
-    /// `PROJECT_STORED_BYTES_DEFAULT` at any k, a dedicated cell's included,
+    /// `CONTAINER_STORED_BYTES_DEFAULT` at any k, a dedicated cell's included,
     /// and a value the feed sets stands, above the default too: the axis
     /// has no shared bound. A default of 0 keeps a 0 at 0, no limit.
     #[test]
@@ -472,7 +472,7 @@ mod tests {
     }
 
     /// L2: every cell drops a policy naming the system project, and a cell
-    /// that knows its deployment also drops one naming its `PROJECT_ID`. No
+    /// that knows its deployment also drops one naming its `CONTAINER_ID`. No
     /// workspace is reserved (edge #253 part 2: the deployment has no
     /// account). Each drop is counted; the rest publish at their effective
     /// quotas.
@@ -541,7 +541,7 @@ mod tests {
             fetched_at_unix: 0,
             feed_version: 1,
         });
-        assert_eq!(dropped, 1, "PROJECT_ID reserved, no workspace");
+        assert_eq!(dropped, 1, "CONTAINER_ID reserved, no workspace");
         let plain = ServerConfig::load(
             crate::config::CliArgs::deterministic(),
             &MapEnvironment::empty(),

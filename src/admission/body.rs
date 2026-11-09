@@ -5,7 +5,7 @@
 //! the returned guard at the queued-append transfer point, so the two
 //! charges never overlap.
 //!
-//! Under a project memory line (`PROJECT_MEMORY_PRESSURE_BYTES`), a chunk
+//! Under a project memory line (`CONTAINER_MEMORY_PRESSURE_BYTES`), a chunk
 //! that would take the project's estimated pressure past the line while
 //! the project holds other bytes refuses the body: uploads admitted
 //! together (each passed the write gate at the pressure before any of them

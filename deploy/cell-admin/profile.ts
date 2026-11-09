@@ -5,7 +5,7 @@
 // (src/auth/ceiling.rs, `CellCeiling::ceiling`): on a bounded axis the
 // ceiling is max(1, floor(bound / k)); an axis with no shared bound has
 // none. The stored-bytes quota has no bound and no ceiling: the profile's
-// PROJECT_STORED_BYTES_DEFAULT is what `admit` gives a project that sets
+// CONTAINER_STORED_BYTES_DEFAULT is what `admit` gives a project that sets
 // none, as the server gives it to a 0 (`CellCeiling::effective`); the
 // shipped profiles' 0 is no limit (edge change #244).
 import { createHash } from "node:crypto";
@@ -57,7 +57,7 @@ export interface CellSizing {
   bounds: Ceilings;
   ceilings: Ceilings;
   stored_default: number;
-  /// PROJECT_MEMORY_PRESSURE_BYTES, a unit project's memory line.
+  /// CONTAINER_MEMORY_PRESSURE_BYTES, a unit project's memory line.
   memory_line: number;
   /// The instance read memory: a quarter of ADMIT_RSS_SHED_MB.
   read_memory: number;
@@ -177,25 +177,25 @@ const READ_MEMORY_FILLERS = 4;
 /// does not apply.
 function checkShares(env: Map<string, string>, k: number): { memory_line: number; read_memory: number } {
   const feedTotal = positive(env, "SSE_FEED_TOTAL_BYTES");
-  const feedProject = positive(env, "SSE_FEED_PROJECT_BYTES");
+  const feedProject = positive(env, "SSE_FEED_CONTAINER_BYTES");
   if (k === 1 && feedProject >= feedTotal) {
     throw new AdminError(
-      `profile SSE_FEED_PROJECT_BYTES=${feedProject}: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = ${feedTotal}`,
+      `profile SSE_FEED_CONTAINER_BYTES=${feedProject}: a dedicated cell needs it below SSE_FEED_TOTAL_BYTES = ${feedTotal}`,
     );
   }
   if (k > 1 && feedProject !== Math.floor(feedTotal / k)) {
     throw new AdminError(
-      `profile SSE_FEED_PROJECT_BYTES=${feedProject}: a cell shared ${k} ways needs ` +
+      `profile SSE_FEED_CONTAINER_BYTES=${feedProject}: a cell shared ${k} ways needs ` +
         `SSE_FEED_TOTAL_BYTES / k = ${Math.floor(feedTotal / k)}`,
     );
   }
   // The instance read memory is a quarter of the RSS shed line
   // (src/admission/read_memory.rs, READ_MEMORY_SHARE_OF_SHED).
   const readMemory = Math.floor((positive(env, "ADMIT_RSS_SHED_MB") * 1024 * 1024) / 4);
-  const line = positive(env, "PROJECT_MEMORY_PRESSURE_BYTES");
+  const line = positive(env, "CONTAINER_MEMORY_PRESSURE_BYTES");
   if (k > 1 && (READ_MEMORY_FILLERS - 1) * line >= readMemory) {
     throw new AdminError(
-      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${READ_MEMORY_FILLERS - 1} projects at their lines ` +
+      `profile CONTAINER_MEMORY_PRESSURE_BYTES=${line}: ${READ_MEMORY_FILLERS - 1} projects at their lines ` +
         `would fill the instance read memory (${readMemory}); the owner accepted ${READ_MEMORY_FILLERS}`,
     );
   }
@@ -203,7 +203,7 @@ function checkShares(env: Map<string, string>, k: number): { memory_line: number
   if (k * line > shard) {
     const lines = k === 1 ? `the project's memory line (${line})` : `${k} projects at their memory lines (${k * line})`;
     throw new AdminError(
-      `profile PROJECT_MEMORY_PRESSURE_BYTES=${line}: ${lines} would pass the shard line ` +
+      `profile CONTAINER_MEMORY_PRESSURE_BYTES=${line}: ${lines} would pass the shard line ` +
         `MAX_UNABSORBED_BYTES_PER_SHARD=${shard}`,
     );
   }
@@ -215,7 +215,7 @@ function checkShares(env: Map<string, string>, k: number): { memory_line: number
 /// cell's are the bounds.
 export function cellSizing(env: Map<string, string>): CellSizing {
   checkPosture(env);
-  const k = positive(env, "PROJECT_SHARE_K");
+  const k = positive(env, "CONTAINER_SHARE_K");
   const memory = checkShares(env, k);
   const bounds: Ceilings = {
     requests_per_sec: positive(env, "CELL_ENVELOPE_REQUESTS_PER_SEC"),
@@ -233,7 +233,7 @@ export function cellSizing(env: Map<string, string>): CellSizing {
     share_k: k,
     bounds,
     ceilings,
-    stored_default: nonNegative(env, "PROJECT_STORED_BYTES_DEFAULT"),
+    stored_default: nonNegative(env, "CONTAINER_STORED_BYTES_DEFAULT"),
     ...memory,
     dedicated: k === 1,
   };

@@ -49,7 +49,7 @@ use crate::tenant::ProjectId;
 /// to track (never merging strangers into shared buckets) remains the
 /// fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation. It is the
-/// default an instance's PROJECT_TRACKER_MAX replaces (`tracker`).
+/// default an instance's CONTAINER_TRACKER_MAX replaces (`tracker`).
 pub(crate) const MAX_TRACKED_PROJECTS: usize = 32_768;
 
 /// A tracked project with no admission attempts for this long, and

@@ -36,7 +36,7 @@
 #      it certifies; the profile fence (triage B9): each profile file the
 #      manifest names is byte for byte the tag tree's deploy/profiles/<file>,
 #      their lines hold INITIAL_SHARDS=1, KEEP_AWAKE=1,
-#      STREAMS_RELEASE_POSTURE=1 and PROJECT_SHARE_K=8 and none sets
+#      STREAMS_RELEASE_POSTURE=1 and CONTAINER_SHARE_K=8 and none sets
 #      FLEET_PREFIX; every field arm (all but layer-b) names one and the
 #      same cell_env_sha256
 # then prints each fleet-only leg it waives (capacity campaign, handoff,
@@ -210,7 +210,7 @@ if secs < floor:
 # whose layered lines hold the single-cell pins and no FLEET_PREFIX (a
 # fleet-pinned run cannot certify a fleet-off RC). The lines are read from
 # the tag tree, not taken from the manifest's own `pins`.
-PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "PROJECT_SHARE_K=8")
+PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "CONTAINER_SHARE_K=8")
 prof = m.get("profile")
 if (not isinstance(prof, dict) or not isinstance(prof.get("files"), list) or not prof["files"]
         or not isinstance(prof.get("sha256"), dict)):

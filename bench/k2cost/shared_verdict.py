@@ -98,7 +98,7 @@ LOAD_MANIFEST = "bench/k2cost/tenants/layer-b.json"
 LOAD_TIME_SCALE = 1
 
 # The single-cell profile pins (triage B9's fence) and the harness trees.
-PROFILE_PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "PROJECT_SHARE_K=8")
+PROFILE_PINS = ("INITIAL_SHARDS=1", "KEEP_AWAKE=1", "STREAMS_RELEASE_POSTURE=1", "CONTAINER_SHARE_K=8")
 HARNESS_TREES = ("bench/k2cost", "deploy/composer", "deploy/app-server")
 # What runs from the rig's checkout (run-shared.sh's CHECKOUT_TREES): the
 # harness leg requires these to be the server commit's trees, clean.

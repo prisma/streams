@@ -103,7 +103,7 @@ each from a file (AGENTS.md §1; `bench/k2cost/field/README.md`, "Rules").
 | Memory profile | every line of `deploy/profiles/compute-1g.env`, verbatim | the 1 GiB survival posture; deploy scripts pass each line as `--env` |
 | Topology | `PATH_PREFIX`, `INITIAL_SHARDS`, `INSTANCE_NAME=streams-<i>`; fleet only: `FLEET_PREFIX`, `FLEET_MAX`, `FLEET_MIN`, `FLEET_PEER_DOMAINS=prisma.build` | §1.3 |
 | Debug access | `AUTH_TOKEN` (the deployment bearer; it gates every `/v1/debug` route) | `bench/k2cost/README.md`, "Auth and debug access" |
-| Billing | `BILLING_MODE=required`, `USAGE_STREAM_KEY`, `PROJECT_ID`, `CELL_ID`; `ROLLUP=1` on `streams-1` only | `bench/k2cost/field/README.md`, "The server environment" |
+| Billing | `BILLING_MODE=required`, `USAGE_STREAM_KEY`, `CONTAINER_ID`, `CELL_ID`; `ROLLUP=1` on `streams-1` only | `bench/k2cost/field/README.md`, "The server environment" |
 | Auth | whatever the fleet already runs (`STREAMS_AUTH_MODE=enforce` with feeds; fleet auth static or workload) | unchanged by this guide |
 
 For the cell shape (§2.2, test ST-1) add every line of
@@ -375,7 +375,7 @@ its `points/ML.env` row), each on a fresh single instance:
   carries M's weights, request 2 and bytes 6). M's cost is its marginal
   over `s-base`, `pack-s-mux-0048.json` alone, run the same day.
 - (b) `l-alone` is k2gen's phases on a dedicated cell
-  (`PROJECT_SHARE_K=1 PROJECT_MEMORY_PRESSURE_BYTES=268435456`, one
+  (`CONTAINER_SHARE_K=1 CONTAINER_MEMORY_PRESSURE_BYTES=268435456`, one
   project): the load, then one walk of everything it wrote (the day's walk).
 
 ```bash

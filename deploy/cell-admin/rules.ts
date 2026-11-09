@@ -168,7 +168,7 @@ export function checkSizing(state: CellState, env: Map<string, string>): CellSiz
 /// cell ceiling reads it as "no limit". Append records/s, without a bound,
 /// keeps the value given, 0 (no project limit) when absent, as the server
 /// does. Stored bytes, without a bound either, take any value given and
-/// `storedDefault` (the profile's PROJECT_STORED_BYTES_DEFAULT, from
+/// `storedDefault` (the profile's CONTAINER_STORED_BYTES_DEFAULT, from
 /// checkSizing or cellSizing) when absent, written explicitly as the
 /// ceilings are.
 export function admittedQuotas(
