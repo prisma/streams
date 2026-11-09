@@ -2776,3 +2776,22 @@ wait's tails. Three readers still answer the old way:
   fingerprints cover its signature) keeps its `String` error, so a closed
   engine met while it reads an ancestor answers 500. Return
   `StorageFailure`, with the owner's row refresh for that contract.
+
+## 17. Follow-ups from edge change #260 (2026-11-09)
+
+The fleet count's hysteresis (#260) is ratified; its field acceptance,
+package 2's D ramp on a rig that applies both directions at its poll, has
+not run (EDGE-260-RATIFICATION.md §5).
+
+- **Queue and live-wait responses toward the fleet's load.** A member's
+  `rps` (the rate of `admission.fleet_ops`) counts successful answers from
+  the raw `/v1/stream/{name}` entry and the product `/v1/streams/{*name}`
+  entry only (`AdmissionController::note_fleet_response`). The queue
+  routes (`product::queues::routes()`) and the `live:wait` routes
+  (`product::live_wait::routes()`) are separate routers merged beside them
+  in `src/http.rs` and call nothing, so a queue-heavy cell reads a low
+  `rps`, and the planner's `rps >= 5` gates keep a loaded queue member's
+  ack and store-read p50 and its CPU out of the plan. One small behaviour:
+  count their successful answers too (red first, a queue DST like
+  `a_product_surface_request_counts_toward_the_fleets_load`), an operator
+  edge line.
