@@ -364,7 +364,7 @@ async fn pass(state: &AppState, me: &str, pacing: &mut Pacing) {
     let Some(read) = FleetRead::read(state, me).await else {
         return pacing.idle();
     };
-    let Some((prefix, to)) = read.plan(state.shards.prefixes(), me, threshold) else {
+    let Some((prefix, to)) = read.plan(&state.shards.prefixes(), me, threshold) else {
         return pacing.nothing_to_move(now);
     };
     if !pacing.due(now, read.newest_override_age_ms()) {

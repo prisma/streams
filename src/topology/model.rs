@@ -45,6 +45,10 @@ pub(crate) struct Topology {
 /// its ordered prefixes, the list `registry::shard_for_hash` matches a hash against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ShardSet {
+    /// The topology's version, carried for the directory's snapshot. It is stored once, as
+    /// `Topology::version`, and filled in as the topology decodes.
+    #[serde(skip)]
+    pub version: u64,
     /// Complete binary prefix code over the stream-hash bit space, in order. "" = one shard
     /// covering everything.
     pub shards: Vec<String>,
@@ -54,6 +58,22 @@ pub(crate) struct ShardSet {
 }
 
 impl std::ops::Deref for ShardSet {
+    type Target = [String];
+    fn deref(&self) -> &[String] {
+        &self.shards
+    }
+}
+
+/// The shard directory's view of the topology (S4-DESIGN §3.2): a shard set and the ETag of
+/// the stored object it came from, `None` until a revalidation read one. It reads as its
+/// ordered prefixes.
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub shards: ShardSet,
+    pub etag: Option<String>,
+}
+
+impl std::ops::Deref for Snapshot {
     type Target = [String];
     fn deref(&self) -> &[String] {
         &self.shards
@@ -80,6 +100,7 @@ impl ShardSet {
             leaves.insert(prefix.clone(), home);
         }
         Self {
+            version: 1,
             next_home: u32::try_from(shards.len()).unwrap_or(u32::MAX),
             shards,
             homes,
@@ -140,6 +161,7 @@ impl TryFrom<Unchecked> for Topology {
     /// serves that prefix, and `next_home` is past every home.
     fn try_from(t: Unchecked) -> Result<Self, String> {
         let set = ShardSet {
+            version: t.version,
             shards: t.shards,
             homes: t.homes,
             leaves: t.leaves,

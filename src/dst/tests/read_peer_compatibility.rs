@@ -181,7 +181,7 @@ async fn o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback() {
         .state
         .ownership
         .set_ring_active(vec!["inst-a".into(), "inst-b".into()]);
-    for prefix in reader.state.shards.prefixes() {
+    for prefix in reader.state.shards.prefixes().iter() {
         reader.state.ownership.set_override(prefix, "inst-a");
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

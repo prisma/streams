@@ -159,6 +159,11 @@ OWNERS = (
           'dst_tests::topology_scaling:: '
           '--skip=post_split_throughput_scales'),
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),
+    # The cell's versioned shard topology (S4-DESIGN §3): its stored map, the directory's
+    # snapshot of it and the revalidation that installs a newer one.
+    owner('topology_mod', 'src/topology.rs', 'topology::'),
+    owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
+    owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
     owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),

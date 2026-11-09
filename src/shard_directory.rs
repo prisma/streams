@@ -58,6 +58,8 @@ pub(crate) enum RetirementReason {
     FleetEviction,
     /// The billing sweep is releasing an engine it opened.
     SweepEviction,
+    /// A newer topology no longer has the shard's prefix as a leaf (S4-DESIGN §3.2).
+    Split,
     /// The runtime (or a test rig) is going away. Production shutdown
     /// closes engines through the supervisor today; the rigs retire
     /// explicitly, which is the same protocol.
@@ -80,6 +82,7 @@ impl RetirementReason {
             RetirementReason::OwnershipMoved => "ownership moved",
             RetirementReason::FleetEviction => "fleet eviction",
             RetirementReason::SweepEviction => "sweep eviction",
+            RetirementReason::Split => "split",
             RetirementReason::Shutdown => "shutdown",
             RetirementReason::IndexRepair => "index repair",
         }
@@ -119,7 +122,8 @@ pub(crate) struct ShardDirectory {
 }
 
 struct DirInner {
-    prefixes: Vec<String>,
+    /// The topology as this instance routes by, swapped whole (`install`).
+    topology: RwLock<Arc<crate::topology::model::Snapshot>>,
     /// Serving map. Created HERE, together with the gate that inserts
     /// into it (PR 6.1-B): no constructor can give the directory and its
     /// gate different maps.
@@ -195,7 +199,10 @@ impl ShardDirectory {
         timing: OpenTiming,
         opener: impl FnOnce(ShardCloseNotifier) -> OpenFn,
     ) -> Self {
-        let prefixes = shards.into().shards;
+        let topology = RwLock::new(Arc::new(crate::topology::model::Snapshot {
+            shards: shards.into(),
+            etag: None,
+        }));
         let inner = Arc::new_cyclic(|weak: &Weak<DirInner>| {
             let shards: crate::sharddir::ServingMap = Arc::new(RwLock::new(HashMap::new()));
             let notifier = ShardCloseNotifier {
@@ -203,7 +210,7 @@ impl ShardDirectory {
             };
             let gate = OpenGate::new(shards.clone(), opener(notifier), timing.open_deadline);
             DirInner {
-                prefixes,
+                topology,
                 shards,
                 supersession: Arc::new(Supersession::new(gate.clone())),
                 gate,
@@ -247,14 +254,51 @@ impl ShardDirectory {
         self.inner.gate.clone()
     }
 
-    /// The topology's shard prefixes (layout-4 bit prefixes).
-    pub(crate) fn prefixes(&self) -> &[String] {
-        &self.inner.prefixes
+    /// The topology this instance routes by: its shard prefixes, homes and version, and the
+    /// ETag it was read under. A later `install` swaps it whole; a holder keeps its own.
+    pub(crate) fn prefixes(&self) -> Arc<crate::topology::model::Snapshot> {
+        // A poisoned lock still holds a whole snapshot: the swap is one assignment.
+        let held = self.inner.topology.read();
+        held.unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The prefix a route hash lands in.
     pub(crate) fn prefix_for(&self, hash: &[u8; 16]) -> String {
-        crate::registry::shard_for_hash(&self.inner.prefixes, hash)
+        crate::registry::shard_for_hash(&self.prefixes(), hash)
+    }
+
+    /// Install `shards`, read under `etag`, unless it is older than the snapshot held (a
+    /// version never goes back). The engines of prefixes that are no longer leaves are
+    /// retired (`RetirementReason::Split`). Returns whether it installed.
+    pub(crate) fn install(
+        &self,
+        shards: crate::topology::model::ShardSet,
+        etag: Option<String>,
+    ) -> bool {
+        let gone: Vec<String> = {
+            let mut held = self
+                .inner
+                .topology
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if shards.version < held.shards.version {
+                return false;
+            }
+            let gone = held
+                .shards
+                .leaves
+                .keys()
+                .filter(|p| !shards.leaves.contains_key(*p))
+                .cloned()
+                .collect();
+            *held = Arc::new(crate::topology::model::Snapshot { shards, etag });
+            gone
+        };
+        for prefix in gone {
+            self.retire(&prefix, RetirementReason::Split, |_, _| true);
+        }
+        true
     }
 
     /// Whether the fleet loop has published a ring, of any size: this
@@ -724,7 +768,7 @@ mod directory_tests {
             let h = hash_in(&dir, prefix);
             assert_eq!(
                 dir.prefix_for(&h),
-                crate::registry::shard_for_hash(dir.prefixes(), &h)
+                crate::registry::shard_for_hash(&dir.prefixes(), &h)
             );
         }
     }

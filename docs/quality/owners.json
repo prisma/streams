@@ -67,6 +67,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::run",
+      "path": "src/topology/revalidate.rs",
+      "reason": "The topology revalidation task selects between supervised cancellation and its tick period (S4-DESIGN §3.2); compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::Inner::begin_drain",
       "path": "src/tasks/drain.rs",
       "reason": "The drain loop selects between supervised cancellation (a critical failure stops the runtime at once) and its budget-bounded drain; compiler checks expansion.",

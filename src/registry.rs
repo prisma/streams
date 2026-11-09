@@ -1231,6 +1231,36 @@ pub(crate) type Topology = crate::topology::model::Topology;
 
 const TOPOLOGY_PATH: &str = "topology.json";
 
+impl Registry {
+    /// The stored topology and its ETag, unless it still has `etag` (`None`: unchanged). A
+    /// topology that does not decode is an error, as at boot.
+    pub(crate) async fn topology(
+        &self,
+        etag: Option<&str>,
+    ) -> Result<Option<(Topology, Option<String>)>, object_store::Error> {
+        let opts = object_store::GetOptions {
+            if_none_match: etag.map(str::to_string),
+            ..Default::default()
+        };
+        let got = match self
+            .store
+            .get_opts(&ObjPath::from(TOPOLOGY_PATH), opts)
+            .await
+        {
+            Ok(got) => got,
+            Err(object_store::Error::NotModified { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let etag = got.meta.e_tag.clone();
+        let raw = got.bytes().await?;
+        let topology = serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
+            store: "registry",
+            source: format!("corrupt topology object: {e}").into(),
+        })?;
+        Ok(Some((topology, etag)))
+    }
+}
+
 #[expect(
     clippy::expect_used,
     reason = "load_or_init_topology; the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced"

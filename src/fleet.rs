@@ -391,6 +391,8 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     state.fleet.standing().mark_progress();
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
     count_balance::start(state.clone(), cfg.instance.clone(), tasks);
+    let (registry, shards) = (state.registry.clone(), state.shards.clone());
+    crate::topology::revalidate::start(registry, shards, planning::TICK_PERIOD, tasks);
     let (drained, instance) = (state.clone(), cfg.instance.clone());
     tasks.set_stop_preface(drain::SUPERVISED, move || {
         Box::pin(drain::run(drained, instance))

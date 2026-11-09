@@ -34,11 +34,11 @@ impl Departure {
     /// prevent. A release the runtime chose says nothing about the store.
     fn is_evidence(self) -> bool {
         use RetirementReason::{
-            FleetEviction, IndexRepair, OwnershipMoved, Shutdown, SweepEviction,
+            FleetEviction, IndexRepair, OwnershipMoved, Shutdown, Split, SweepEviction,
         };
         match self {
             Departure::Died | Departure::Retired(OwnershipMoved | FleetEviction) => true,
-            Departure::Retired(SweepEviction | Shutdown | IndexRepair) => false,
+            Departure::Retired(SweepEviction | Shutdown | IndexRepair | Split) => false,
         }
     }
 }

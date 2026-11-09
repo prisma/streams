@@ -65,7 +65,7 @@ async fn instance(store: Arc<dyn object_store::ObjectStore>, name: &str, n: u64)
 fn ring(rig: &HttpRig, members: &[&str]) {
     let sref = rig.state.deployment.raw_adapter_sref(NAME);
     let route = crate::crypto::RouteHash::for_stream(&sref).0;
-    let home = crate::registry::shard_for_hash(rig.state.shards.prefixes(), &route);
+    let home = crate::registry::shard_for_hash(&rig.state.shards.prefixes(), &route);
     let other = if home == "0" { "1" } else { "0" };
     let ownership = &rig.state.ownership;
     ownership.set_ring_active(members.iter().map(|m| (*m).to_owned()).collect());
@@ -214,7 +214,7 @@ async fn live_owners(state: &crate::http::AppState) -> Vec<String> {
     routes
         .iter()
         .map(|route| {
-            let prefix = crate::registry::shard_for_hash(state.shards.prefixes(), route);
+            let prefix = crate::registry::shard_for_hash(&state.shards.prefixes(), route);
             state.ownership.effective_owner(&prefix).unwrap_or_default()
         })
         .collect()
