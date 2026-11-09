@@ -124,6 +124,8 @@ pub(crate) struct ShardDirectory {
 struct DirInner {
     /// The topology as this instance routes by, swapped whole (`install`).
     topology: RwLock<Arc<crate::topology::model::Snapshot>>,
+    /// One on-demand topology revalidation at a time (`forward::catch_up`).
+    revalidation: tokio::sync::Mutex<()>,
     /// Serving map. Created HERE, together with the gate that inserts
     /// into it (PR 6.1-B): no constructor can give the directory and its
     /// gate different maps.
@@ -212,6 +214,7 @@ impl ShardDirectory {
             let gate = OpenGate::new(shards.clone(), opener(notifier), timing.open_deadline);
             DirInner {
                 topology,
+                revalidation: tokio::sync::Mutex::new(()),
                 shards,
                 supersession: Arc::new(Supersession::new(gate.clone())),
                 gate,
@@ -262,6 +265,11 @@ impl ShardDirectory {
         let held = self.inner.topology.read();
         held.unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// The lock that coalesces on-demand revalidations to one read in flight.
+    pub(crate) fn revalidation(&self) -> &tokio::sync::Mutex<()> {
+        &self.inner.revalidation
     }
 
     /// The prefix a route hash lands in.

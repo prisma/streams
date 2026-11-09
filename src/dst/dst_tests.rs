@@ -131,6 +131,8 @@ mod fork_debt;
 #[path = "tests/fork_lifecycle.rs"]
 mod fork_lifecycle;
 
+#[path = "tests/forward_hops.rs"]
+mod forward_hops;
 #[path = "tests/forward_to_owner.rs"]
 mod forward_to_owner;
 

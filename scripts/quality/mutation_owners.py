@@ -231,7 +231,7 @@ OWNERS = (
     owner('http_serve_http2_bounds', 'src/http/serve/http2_bounds.rs', 'http::serve::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery:: dst_tests::reads_engine_closed::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
-    owner('http_forward', 'src/http/forward.rs', 'http::forward:: dst_tests::forward_to_owner:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
+    owner('http_forward', 'src/http/forward.rs', 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),
     owner('record', 'src/shard/record.rs', 'shard::'),

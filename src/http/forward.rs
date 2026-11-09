@@ -13,11 +13,21 @@
 //!   routes of an instance whose peer table is not empty ([`engaged`]); a
 //!   standalone cell has none, so its requests reach their handlers as they
 //!   arrived, at the cost of one read of the empty table.
-//! - **One hop.** The forwarded request carries `Streams-Forwarded`, and an
-//!   instance never forwards a request that carries it: a second owner
-//!   bounce is answered with its `409`, so ownership churn cannot build a
-//!   relay cycle. A client that sends the header itself only opts out of
-//!   forwarding.
+//! - **At most two hops, each to a newer topology** (S4-DESIGN §3.4, edge
+//!   change #250). The forwarded request carries `Streams-Forwarded: v=<n>`,
+//!   the forwarder's topology version. An instance forwards a forwarded
+//!   request once more only if its own version is strictly greater than `n`
+//!   (a split reached the first owner before it reached the forwarder), and
+//!   marks that forward `last`; it never forwards a `last` one. So a bounce
+//!   between equal topologies is answered with its `409`, and ownership churn
+//!   cannot build a relay cycle. A request whose header is anything else (a
+//!   client's own, or a bare legacy value) is never forwarded: a client that
+//!   sends the header itself still only opts out of forwarding.
+//! - **A newer topology is learnt where it is seen.** Every `409
+//!   not_ring_owner` carries `Streams-Topology-Version`. A forwarded request
+//!   whose `v` exceeds this instance's version, and an owner's `409` whose
+//!   version does, make this instance revalidate its topology first,
+//!   coalesced to one read in flight.
 //! - **The body is not buffered here.** The handler reads the request
 //!   body through [`Deferred`], which takes it at the handler's first read.
 //!   A handler that answers `409` without reading it leaves it in place,
@@ -72,6 +82,62 @@ pub(super) const FORWARDED: &str = "streams-forwarded";
 
 /// Names the owner that served a forwarded request.
 const FORWARDED_TO: &str = "streams-forwarded-to";
+
+/// The answering instance's topology version, on every `409 not_ring_owner`.
+pub(super) const TOPOLOGY_VERSION: &str = "streams-topology-version";
+
+/// A forward's hop as its header names it: the forwarder's topology version,
+/// and whether it is the last hop. `None` for any other value: a client's
+/// own header, or a bare legacy one.
+fn hop(headers: &HeaderMap) -> Option<(u64, bool)> {
+    let value = headers.get(FORWARDED)?.to_str().ok()?;
+    let (version, last) = match value.split_once(';') {
+        Some((version, "last" | " last")) => (version, true),
+        Some(_) => return None,
+        None => (value, false),
+    };
+    Some((version.strip_prefix("v=")?.parse().ok()?, last))
+}
+
+/// The header of a forward this instance sends at `version`: the last hop
+/// when it forwards a forwarded request.
+fn forwarded_value(version: u64, last: bool) -> String {
+    if last {
+        format!("v={version}; last")
+    } else {
+        format!("v={version}")
+    }
+}
+
+/// Revalidate this instance's topology if `seen` is newer than its own:
+/// one read in flight, and none once a read already brought `seen`.
+async fn catch_up(state: &AppState, seen: u64) {
+    if seen <= state.shards.prefixes().shards.version {
+        return;
+    }
+    let _one = state.shards.revalidation().lock().await;
+    if seen <= state.shards.prefixes().shards.version {
+        return;
+    }
+    let now = state.runtime.clock.monotonic();
+    if let Err(e) = crate::topology::revalidate::once(&state.registry, &state.shards, now).await {
+        tracing::debug!("topology revalidation on a newer version {seen}: {e}");
+    }
+}
+
+/// `answer` with this instance's topology version, if it is a `409
+/// not_ring_owner` (it names the owner to replay to) that carries none yet.
+fn with_version(state: &AppState, mut answer: Response) -> Response {
+    let refusal = answer.status() == StatusCode::CONFLICT
+        && answer.headers().contains_key("streams-replay-to");
+    if refusal && !answer.headers().contains_key(TOPOLOGY_VERSION) {
+        let version = state.shards.prefixes().shards.version;
+        answer
+            .headers_mut()
+            .insert(TOPOLOGY_VERSION, HeaderValue::from(version));
+    }
+    answer
+}
 
 /// The most body bytes a request keeps for a forward once its handler has
 /// read them: 64 KiB, sharing the handler's bytes; at most 256 MiB at the
@@ -143,9 +209,20 @@ pub(super) async fn to_owner(
     request: Request,
     next: Next,
 ) -> Response {
-    if !engaged(&state.peer, &request) {
+    if let Some((seen, _)) = hop(request.headers()) {
+        catch_up(&state, seen).await;
+    }
+    let answer = serve(&state, request, next).await;
+    with_version(&state, answer)
+}
+
+/// Serve `request` here, or forward it to its owner (see [`to_owner`]).
+async fn serve(state: &AppState, request: Request, next: Next) -> Response {
+    let version = state.shards.prefixes().shards.version;
+    if !engaged(&state.peer, &request, version) {
         return next.run(request).await;
     }
+    let last = hop(request.headers()).is_some();
     let (parts, body) = request.into_parts();
     let (method, uri, headers) = (
         parts.method.clone(),
@@ -160,7 +237,7 @@ pub(super) async fn to_owner(
     if answer.status() != StatusCode::CONFLICT {
         return answer;
     }
-    let Some((owner, base)) = super::replay_peer_url(&state, &answer) else {
+    let Some((owner, base)) = super::replay_peer_url(state, &answer) else {
         return answer;
     };
     let Some(body) = lock(&slot).replay() else {
@@ -175,19 +252,27 @@ pub(super) async fn to_owner(
         headers,
         body,
     };
-    forward(&state, held, (&owner, &base), answer).await
+    let answer = forward(state, held, (&owner, &base), last, answer).await;
+    if answer.status() == StatusCode::CONFLICT {
+        let seen = answer.headers().get(TOPOLOGY_VERSION);
+        if let Some(seen) = seen.and_then(|v| v.to_str().ok()?.parse().ok()) {
+            catch_up(state, seen).await;
+        }
+    }
+    answer
 }
 
 /// Whether the layer takes part in serving `request`: a request on a stream
 /// route (`/v1/stream*`; the multiplexed wait answers each subscription
-/// itself and is never forwarded), not forwarded already, on an instance
-/// the fleet has given peers. A fleet-off cell, which has none, passes
-/// every request to its handler untouched: no copies of its head, no
-/// deferred body, no kept frames.
-fn engaged(peers: &crate::peer::PeerClient, request: &Request) -> bool {
-    request.uri().path().starts_with("/v1/stream")
-        && !request.headers().contains_key(FORWARDED)
-        && peers.has_peers()
+/// itself and is never forwarded), on an instance the fleet has given
+/// peers, and either not forwarded already or forwarded once by an instance
+/// whose topology `version` is older than this one's. A fleet-off cell,
+/// which has none, passes every request to its handler untouched: no copies
+/// of its head, no deferred body, no kept frames.
+fn engaged(peers: &crate::peer::PeerClient, request: &Request, version: u64) -> bool {
+    let unforwarded = !request.headers().contains_key(FORWARDED);
+    let behind = matches!(hop(request.headers()), Some((seen, false)) if seen < version);
+    request.uri().path().starts_with("/v1/stream") && (unforwarded || behind) && peers.has_peers()
 }
 
 fn lock(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
@@ -249,6 +334,7 @@ async fn forward(
     state: &AppState,
     held: Held,
     (owner, base): (&str, &str),
+    last: bool,
     refused: Response,
 ) -> Response {
     let Some(client) = state.peer.forward_client() else {
@@ -262,13 +348,15 @@ async fn forward(
         .path_and_query()
         .map_or("/", |target| target.as_str());
     let mut request = client.request(held.method, format!("{base}{target}"));
+    // The incoming forward's own header is replaced by this hop's.
     for (name, value) in &held.headers {
-        if !hop_by_hop(name) {
+        if !hop_by_hop(name) && name.as_str() != FORWARDED {
             request = request.header(name, value);
         }
     }
+    let version = state.shards.prefixes().shards.version;
     let request = request
-        .header(FORWARDED, state.origin_marker.as_str())
+        .header(FORWARDED, forwarded_value(version, last))
         .body(reqwest::Body::wrap_stream(held.body.into_data_stream()));
     match tokio::time::timeout(bound, request.send()).await {
         Ok(Ok(answer)) => relayed(answer, owner),
@@ -410,7 +498,7 @@ mod tests {
         let engaging = |peers: &crate::peer::PeerClient| -> Vec<bool> {
             targets
                 .iter()
-                .map(|(target, forwarded)| engaged(peers, &request(target, *forwarded)))
+                .map(|(target, forwarded)| engaged(peers, &request(target, *forwarded), 1))
                 .collect()
         };
         let peers = crate::peer::PeerClient::new(None, None);

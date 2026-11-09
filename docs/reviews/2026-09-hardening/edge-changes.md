@@ -5345,6 +5345,34 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** RATIFIED by Fable 5.1 on 2026-11-09 under the owner's delegation, EDGE-260-RATIFICATION.md (four text amendments, applied here). The field acceptance (package 2's D ramp) has not run; it stays under the owner's performance hold.
 - **Check against commit:** written with the change. `dst::dst_tests::fleet_controller::an_unreadable_router_report_defers_only_the_desired_publication` changed its driver from in-flight to utilization (a peer at three cores) because in-flight now counts only after 30 s, past its 12 s bound; what it pins, the deferral, is unchanged. The replay's shrinks land at 732 s and 1,034 s, not the review's hand-derived 782 s and 1,082 s: the window is blind from 432 s after the grow at 430 s, so the below-timer starts then.
 
+### #250 (this record's commit) — A request through a split reaches its owner in at most two hops, each to a newer topology, and every 409 `not_ring_owner` names the answering instance's topology version
+
+- **Program item:** S4 (shard split), S4-DESIGN rev 2.1 §3.4, edge E2. Ratified with receiver-side revalidation (S4-REVIEW rev 2; the lead reserved #250 for it on 2026-11-08).
+- **Surface:** both (raw and product stream routes, through `src/http/forward.rs`).
+- **Endpoint:** every `/v1/stream*` route the forward layer serves (#235).
+- **Condition:** a fleet cell whose instances' topologies differ: a split published and seen by some instances before others.
+- **Before:**
+  - a forwarded request carried `Streams-Forwarded: <instance marker>` and was never forwarded again;
+  - a 409 `not_ring_owner` named no topology.
+  So a request that reached a split's parent's old owner through a stale forwarder got that owner's 409, and the client replayed it.
+- **After:**
+  - **The forward's header** is `Streams-Forwarded: v=<n>`, the forwarder's topology version.
+  - **A second hop:** the receiver forwards it once more, marked `v=<m>; last`, only if its own version `m` is strictly greater than `n`. It never forwards a `last` request. So there are at most two hops, each to a newer topology, and no cycle.
+  - **A client's own header** still opts out: any value that is not a peer's `v=<n>`, a bare legacy one included, is never forwarded.
+  - **The version on refusals:** every 409 with `Streams-Replay-To` carries `Streams-Topology-Version: <n>`, the answering instance's version. A relayed owner's 409 keeps the owner's value.
+  - **Revalidation:** a received forward, or an owner's 409, naming a newer version than this instance's makes it revalidate its topology first, coalesced to one read in flight (`ShardDirectory::revalidation`).
+- **Retry semantics:** unchanged. A request is served or refused once, and a refused one is replayed by the client as before. The second hop removes one such replay through a split.
+- **Who is affected:** fleet cells during and after a split. Before a split every instance is at version 1, so a forward takes one hop and the 409s carry `Streams-Topology-Version: 1`.
+- **Pinning tests:** `dst::dst_tests::forward_hops`, all new and red on s4-split 9454feb7b:
+  - `a_request_through_a_split_takes_two_hops_to_its_owner`: A at 1, B at 2, C owns. The append lands at C, answered 204 with `Streams-Forwarded-To: inst-b`. Red: `left: (409, Some("inst-b"))`.
+  - `between_equal_topologies_one_hop_answers_the_owners_409_with_its_version`: `(409, Some("inst-c"), Some("1"))`. Red: the version is `None`.
+  - `the_second_hop_is_never_forwarded_again`: C at 3, knowing A's URL, answers its 409, `(409, Some("inst-a"), Some("3"))`. Red: the version is `None`.
+  - `a_forward_from_a_newer_topology_makes_its_receiver_revalidate`: B ends at version 2. Red: 1.
+  - Unchanged and green: `dst::dst_tests::forward_to_owner` and `http::forward` (20 tests).
+- **Risk reason:** low. A new response header on an existing refusal, and a second forward only between instances whose topologies differ. Before any split there is no behaviour change beyond the header.
+- **Status:** ratified with the design (E2); this record states the shipped form.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low

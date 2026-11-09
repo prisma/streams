@@ -147,6 +147,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::forward_hops",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The forward's second hop and the topology version it carries (edge change #250): two hops through a split, one between equal topologies with the 409's version, never a third, and revalidation on a newer forward; the compiler and the DST suite exercise the module.",
+      "syntax": "path = \"tests/forward_hops.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::read_batch",
       "path": "tools/quality-invariants/src/application.rs",
       "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
