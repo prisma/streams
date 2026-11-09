@@ -15,6 +15,12 @@
 //! - `'M' ‖ h` (the staged usage version) is put on every billed group and deleted when the ledger
 //!   acknowledges through the durable version: the sealer's open marks its members dirty, so the
 //!   drain re-emits only them.
+//!
+//! The only full scan is the repair (`repair_indexes`), run by the next open, before the committer
+//! exists, when the log carries the repair marker `'X'` (an operator's request, edge #245, or a
+//! stream load that found an index fault) or when the open finds a `'W'` member whose tail is gone
+//! or sealed. Run before the committer, it cannot race one: no index row can be written between
+//! its read and its write.
 use futures_util::{StreamExt, TryStreamExt};
 use slatedb::Db;
 use slatedb::config::WriteOptions;
@@ -97,6 +103,148 @@ pub(crate) async fn dirty_members(db: &Db) -> Result<Vec<([u8; 16], u64)>, slate
         .collect())
 }
 
+/// The repair marker's key.
+pub(crate) fn repair_key() -> Vec<u8> {
+    index_key(crate::keyspace::tag::REPAIR, &[])
+}
+
+/// Marks the log for an index repair at its next open.
+pub(crate) async fn mark_for_repair(db: &Db) -> Result<(), slatedb::Error> {
+    db.put(&repair_key(), b"").await.map(|_| ())
+}
+
+/// What a repair changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Repair {
+    pub(crate) unsealed_added: u64,
+    pub(crate) unsealed_removed: u64,
+    pub(crate) dirty_set: u64,
+    pub(crate) dirty_removed: u64,
+}
+
+/// One index write of a repair: the key, and its value (`None`: a delete).
+type IndexWrite = (Vec<u8>, Option<Vec<u8>>);
+
+/// The index writes a repair stages in one batch.
+const REPAIR_BATCH: usize = 1024;
+
+/// Recomputes both indexes from every stream tail (S3a §4.1) and writes the difference, in batches
+/// of `REPAIR_BATCH`, deleting the repair marker in the last: `'W'` names exactly the tails with
+/// unsealed pages, `'M'` every billed tail at its usage version (an acknowledged one is re-emitted
+/// once, which the rollup deduplicates), and no row names a stream without a tail. A tail that does
+/// not decode is left out (its stream fails alone when loaded).
+pub(crate) async fn repair_indexes(db: &Db) -> Result<Repair, slatedb::Error> {
+    let mut tails = std::collections::BTreeMap::new();
+    let mut rows = db.scan(..).await?;
+    while let Some(row) = rows.next().await? {
+        let Some(hash) = crate::keyspace::tail_hash(&row.key) else {
+            continue;
+        };
+        if let Ok(tail) = stored_tail(&row.value) {
+            let version = tail.usage.as_ref().map(|u| u.usage_version);
+            tails.insert(hash, (tail.absorbed < tail.next, version));
+        }
+    }
+    let unsealed: std::collections::BTreeSet<_> = unsealed_members(db).await?.into_iter().collect();
+    let dirty: std::collections::BTreeMap<_, _> = dirty_members(db).await?.into_iter().collect();
+    let mut repair = Repair::default();
+    let mut ops: Vec<IndexWrite> = Vec::new();
+    for (hash, (held, version)) in &tails {
+        if *held && !unsealed.contains(hash) {
+            ops.push((unsealed_key(hash), Some(Vec::new())));
+            repair.unsealed_added += 1;
+        }
+        if let Some(v) = version.filter(|v| dirty.get(hash) != Some(v)) {
+            ops.push((dirty_key(hash), Some(v.to_be_bytes().to_vec())));
+            repair.dirty_set += 1;
+        }
+    }
+    for hash in &unsealed {
+        if !tails.get(hash).is_some_and(|(held, _)| *held) {
+            ops.push((unsealed_key(hash), None));
+            repair.unsealed_removed += 1;
+        }
+    }
+    for hash in dirty.keys().filter(|h| !tails.contains_key(*h)) {
+        ops.push((dirty_key(hash), None));
+        repair.dirty_removed += 1;
+    }
+    ops.push((repair_key(), None));
+    for chunk in ops.chunks(REPAIR_BATCH) {
+        let mut batch = slatedb::WriteBatch::new();
+        for (key, value) in chunk {
+            match value {
+                Some(v) => batch.put(key, v),
+                None => batch.delete(key),
+            }
+        }
+        db.write(batch).await?;
+    }
+    Ok(repair)
+}
+
+/// The unabsorbed bytes over the `'W'` members' tails, and whether a member's tail is gone or
+/// sealed (a stale index row, which only a repair fixes).
+async fn unsealed_bytes(db: &Db) -> anyhow::Result<(u64, bool)> {
+    let members = unsealed_members(db).await?;
+    let bytes: Vec<Option<u64>> = futures_util::stream::iter(members)
+        .map(|hash| async move {
+            let raw = db.get(&super::tail_key(&hash)).await?;
+            Ok::<_, slatedb::Error>(match raw.as_deref().map(stored_tail) {
+                Some(Ok(tail)) if tail.absorbed < tail.next => Some(tail.unabsorbed_bytes),
+                Some(Err(e)) => {
+                    tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
+                    Some(0)
+                }
+                Some(Ok(_)) | None => None,
+            })
+        })
+        .buffer_unordered(TAIL_GETS)
+        .try_collect()
+        .await?;
+    let stale = bytes.iter().any(Option::is_none);
+    let total = bytes
+        .iter()
+        .flatten()
+        .try_fold(0u64, |sum, b| sum.checked_add(*b));
+    let total = total.ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
+    Ok((total, stale))
+}
+
+impl super::ShardEngine {
+    /// A stream load's check that the unsealed index names a stream it found holding unsealed pages
+    /// (read from the load's own snapshot, so the tail and the row are of one moment).
+    pub(super) async fn check_unsealed_index(
+        &self,
+        snapshot: &slatedb::DbSnapshot,
+        hash: &[u8; 16],
+    ) -> Result<(), slatedb::Error> {
+        if snapshot.get(unsealed_key(hash)).await?.is_none() {
+            self.note_index_fault(hash).await;
+        }
+        Ok(())
+    }
+
+    /// A stream load found unsealed pages the unsealed index does not name: counted, logged, and
+    /// the log marked for a repair at its next open. The pages stay durable in the stream's pending
+    /// row; the committer holds the stream at its next append, and the repair restores the row.
+    async fn note_index_fault(&self, hash: &[u8; 16]) {
+        self.layout
+            .seal
+            .counters
+            .index_faults
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            shard = %self.prefix,
+            stream = %crate::crypto::hex(&hash[..4]),
+            "a stream holds unsealed pages its unsealed index does not name; the next open repairs the indexes"
+        );
+        if let Err(error) = mark_for_repair(&self.db).await {
+            tracing::warn!(shard = %self.prefix, %error, "the repair marker was not written");
+        }
+    }
+}
+
 /// The tail gets the open runs at once (S4-REVIEW #11): a busy shard's thousands of `'W'` members
 /// at a cold store's 25-40 ms each would take minutes one by one.
 const TAIL_GETS: usize = 64;
@@ -157,24 +305,23 @@ pub(super) async fn recorded_home(db: &Db) -> Result<Option<u32>, slatedb::Error
 /// decode, or is gone, is left out and logged (its stream fails alone when loaded); a store error
 /// fails the open.
 pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
-    let members = unsealed_members(db).await?;
-    let bytes: Vec<u64> = futures_util::stream::iter(members)
-        .map(|hash| async move {
-            let raw = db.get(&super::tail_key(&hash)).await?;
-            Ok::<_, slatedb::Error>(match raw.as_deref().map(stored_tail) {
-                Some(Ok(tail)) => tail.unabsorbed_bytes,
-                Some(Err(e)) => {
-                    tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
-                    0
-                }
-                None => 0,
-            })
-        })
-        .buffer_unordered(TAIL_GETS)
-        .try_collect()
-        .await?;
-    let total = bytes.iter().try_fold(0u64, |sum, b| sum.checked_add(*b));
-    let total = total.ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
+    let marked = db.get(&repair_key()).await?.is_some();
+    if marked {
+        let repair = repair_indexes(db).await?;
+        tracing::warn!(
+            ?repair,
+            "open repaired the shard's indexes: the log carried the repair marker"
+        );
+    }
+    let (mut total, stale) = unsealed_bytes(db).await?;
+    if stale && !marked {
+        let repair = repair_indexes(db).await?;
+        tracing::warn!(
+            ?repair,
+            "open repaired the shard's indexes: an unsealed-index member's tail is gone or sealed"
+        );
+        total = unsealed_bytes(db).await?.0;
+    }
     let now = now_ms();
     Ok(ShardMaintenance {
         version: 1,

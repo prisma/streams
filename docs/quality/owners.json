@@ -498,6 +498,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::repair_indexes",
+      "path": "src/operator.rs",
+      "reason": "The operator index-repair route's three JSON answers (edge change #245): 404 shard_not_open_here, 503 repair_marker_unwritten, 202 {prefix, repair: next_open}; serde macro output is compiled and the layout 8 DST asserts the 202 body exactly and the 404 status.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",
       "path": "src/dst/tests/queue_product.rs",

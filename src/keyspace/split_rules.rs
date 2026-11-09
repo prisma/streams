@@ -14,7 +14,7 @@ pub(crate) enum SplitRule {
     /// Both children take the row as it is, and every reader keeps only its range's entries (`'K'`
     /// and `'I'`: both index the parent's objects; K-SPLIT-DECISION-2026-11-09).
     CopyToBoth,
-    /// Neither child takes it (`'G'`, `'L'`, `'E'`, `'C'`).
+    /// Neither child takes it (`'G'`, `'L'`, `'X'`, `'E'`, `'C'`).
     Drop,
     /// The child whose range holds the hash right after the tag takes it (`'H'`, `'U'`, `'W'`,
     /// `'M'`, `'D'`).
@@ -38,7 +38,7 @@ pub(crate) fn split_rule(t: u8) -> Option<SplitRule> {
     Some(match t {
         tag::DIRECTORY | tag::POINTER => CopyToBoth,
         tag::REFCOUNT | tag::ORPHAN => Recompute,
-        tag::GARBAGE | tag::CURSOR | b'E' | b'C' => Drop,
+        tag::GARBAGE | tag::CURSOR | tag::REPAIR | b'E' | b'C' => Drop,
         tag::HEAD | tag::USAGE_DEBT | tag::UNSEALED | tag::USAGE_DIRTY | b'D' => ByHash,
         tag::ROSTER | b'Z' => ByTrailingHash,
         tag::IDENTITY => WrittenFresh,

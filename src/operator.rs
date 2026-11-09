@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -44,6 +44,54 @@ fn operator_gate(
         )
             .into_response(),
     )
+}
+
+/// The operator surface's routes, every one behind `operator_gate`.
+pub(crate) fn routes() -> axum::Router<Arc<AppState>> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/operator", get(page))
+        .route("/operator/data.json", get(data))
+        .route("/operator/runbook", get(runbook))
+        .route(
+            "/operator/shards/{prefix}/repair-indexes",
+            post(repair_indexes),
+        )
+}
+
+/// `POST /operator/shards/{prefix}/repair-indexes` (edge change #245; `root` names the root shard):
+/// marks the shard's log for an index repair and retires its engine on this instance, so the next
+/// touch reopens it and that one open recomputes the unsealed and usage-dirty indexes from every
+/// tail before it serves (S3a §4.1). 202 `{prefix, repair: "next_open"}`; 404
+/// `shard_not_open_here` when this instance has no engine open for the shard; 503
+/// `repair_marker_unwritten` when the marker's write fails (nothing retired).
+pub(crate) async fn repair_indexes(
+    State(state): State<Arc<AppState>>,
+    Path(prefix): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use axum::http::StatusCode;
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
+    let shard = if prefix == "root" {
+        String::new()
+    } else {
+        prefix.clone()
+    };
+    let open = state.shards.engines_by_prefix();
+    let Some((_, engine)) = open.into_iter().find(|(p, _)| *p == shard) else {
+        let body = json!({"error": "shard_not_open_here", "prefix": prefix});
+        return (StatusCode::NOT_FOUND, axum::Json(body)).into_response();
+    };
+    if let Err(error) = crate::shard::open_index::mark_for_repair(&engine.db).await {
+        let body = json!({"error": "repair_marker_unwritten", "message": error.to_string()});
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response();
+    }
+    let reason = crate::shard_directory::RetirementReason::IndexRepair;
+    state.shards.retire(&shard, reason, |_, _| true);
+    let body = json!({"prefix": prefix, "repair": "next_open"});
+    (StatusCode::ACCEPTED, axum::Json(body)).into_response()
 }
 
 pub(crate) async fn page(

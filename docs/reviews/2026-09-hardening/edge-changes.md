@@ -5056,6 +5056,30 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified with conditions by Fable 5.1 on 2026-11-04 under the owner's delegation of 2026-11-03 (weight 8 KiB provisional on the Linux release calibration, moved up to the measured figure if higher; the clean-handle cap sized with it). 2c holds, 2d passed on Linux 2026-11-06: A 356, Bt 373, B offset-0 457 reported. Ratified by the owner on 2026-11-06, with LIMITS.md's "Reads and memory" paragraph.
 - **Check against commit:** written with the change.
 
+### #245 (this record's commit) — An operator can ask for a shard's open indexes to be repaired: the route retires the shard's engine on this instance, and the next open pays one full tail scan before it serves
+
+- **Program item:** package 4a (S3a, layout 8), commit 7r: the repair of the unsealed (`'W'`) and usage-dirty (`'M'`) indexes that an ordinary open reads instead of every tail (S3a-DESIGN §4.1, §7). Design option (A), decided by the lead under the owner's delegation for #149's fast mode (RULES.md, 2026-11-09).
+- **Surface:** operator-debug.
+- **Endpoint:** `POST /operator/shards/{prefix}/repair-indexes` (new; `root` names the root shard, whose prefix is empty), behind `operator_gate` (the deployment bearer, SR-5). `GET /v1/debug/timings`' per-shard `seal` gains `index_faults`. Owners: `src/operator.rs` (`routes`, `repair_indexes`), `src/shard/open_index.rs` (`mark_for_repair`, `repair_indexes`, `load_or_rebuild_maintenance`, `check_unsealed_index`), `src/shard_directory.rs` (`RetirementReason::IndexRepair`).
+- **Condition:** an operator calls the route; or, with no call, a shard's open finds the repair marker (`FF×16 ‖ 'X'`, written by the route or by a stream load that found an index fault) or a `'W'` member whose tail is gone or sealed.
+- **Before:** no such route. Under layouts 6 and 7 every open read every stream tail twice (the maintenance ledger, then the sealer's hold and the dirty marks), so there was no index to repair; layout 8 before this commit had the indexes and no repair.
+- **After:**
+  - The route answers 401 `operator bearer required` without the bearer; 404 `{"error":"shard_not_open_here","prefix"}` when this instance has no engine open for the shard (nothing written); 503 `{"error":"repair_marker_unwritten","message"}` when the marker's write fails (nothing retired); otherwise it writes the marker, **retires the shard's engine on this instance** (reason `index repair`, not evidence, so the base holdoff of 3 s applies) and answers 202 `{"prefix","repair":"next_open"}`.
+  - Requests to the shard in the retirement and its holdoff are answered as during any retirement (the shard reopens at the next touch after the holdoff).
+  - **The next open pays one full tail scan** before it serves: it recomputes both indexes from every tail, writes the difference in batches of 1,024 and deletes the marker last, then rebuilds the ledger from the repaired `'W'`. Only that open is slowed; an open with no marker and no stale member reads the indexes alone. A marked open that fails before the last batch leaves the marker, and the next open repairs again.
+  - Each repairing open logs one `warn` naming its trigger and the counts (`unsealed_added`, `unsealed_removed`, `dirty_set`, `dirty_removed`). A repaired `'M'` puts every billed tail at its usage version, so the drain re-emits each such segment once; the rollup deduplicates it, so no total changes.
+  - A stream load that finds unsealed pages its `'W'` row does not name counts `seal.index_faults`, logs a `warn` and writes the marker; the stream is served as before (its pages stay durable in its pending row, and the committer holds it at its next append). The engine is not retired: the repair waits for the shard's next open, or for the operator's call.
+- **Retry semantics:** 202 is not idempotent in effect (each call retires the engine again); 404 is final for this instance (call the instance that owns the shard); 503 is retryable.
+- **Who is affected:** operators of layout 8 cells. Clients of the shard see one retirement (the holdoff, then the reopen) and one slower open; no response body or status on a data route changes.
+- **Pinning tests:**
+  - src/dst/tests/layout8_ranges.rs::the_operator_route_repairs_a_shards_indexes_at_its_next_open (one stream's `'W'` row deleted: `zz` answers 404 and retires nothing; `root` answers 202 `{"prefix":"root","repair":"next_open"}` and retires the engine; the next touch after the holdoff answers 204, the marker is gone and the row restored). Red with the marked open's repair off: `that open cleared the marker left: Some(b"") right: None`.
+  - src/shard/open_index/tests.rs::an_open_repairs_the_indexes_the_marker_asks_for (red: `left: 0 right: 300`, the ledger) and an_open_repairs_a_stale_unsealed_member (red: `left: [[1…],[2…]] right: [[3…]]`).
+  - src/shard/seal/lifecycle_tests.rs::a_stream_load_that_finds_an_index_fault_marks_the_log_for_repair (red: `left: 0 right: 1`, `index_faults`) and a_repair_at_the_open_cannot_delete_a_row_written_after_its_read (structural: the repair runs before the committer exists).
+- **Risk reason:** low. Operator-only and bearer-gated; its client effect is one retirement and one slower open of one shard, the cost the operator asks for. The scan's cost is the readiness measurement's (a meas-* leg after the push, its figure in #149's evidence).
+- **Departure recorded:** S3a-DESIGN §4.1 said the repair runs through the committer and never gates readiness; it runs at the open, before the committer, and gates that one open (S3a-DESIGN §4.1, "Repair").
+- **Status:** awaiting ratification (the lead, under the owner's delegation).
+- **Check against commit:** written with the change.
+
 ## Discrepancies
 
 One record has verified=false: its commit did not match the recorded text.

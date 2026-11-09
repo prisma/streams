@@ -33,10 +33,12 @@ impl Departure {
     /// young; rapid open-then-die cycles ARE the storm the gate exists to
     /// prevent. A release the runtime chose says nothing about the store.
     fn is_evidence(self) -> bool {
-        use RetirementReason::{FleetEviction, OwnershipMoved, Shutdown, SweepEviction};
+        use RetirementReason::{
+            FleetEviction, IndexRepair, OwnershipMoved, Shutdown, SweepEviction,
+        };
         match self {
             Departure::Died | Departure::Retired(OwnershipMoved | FleetEviction) => true,
-            Departure::Retired(SweepEviction | Shutdown) => false,
+            Departure::Retired(SweepEviction | Shutdown | IndexRepair) => false,
         }
     }
 }

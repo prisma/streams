@@ -289,6 +289,80 @@ async fn the_unsealed_index_follows_appends_and_seals() {
     rig.engine.begin_close();
 }
 
+/// A stream load that finds unsealed pages the unsealed index does not name counts an index fault
+/// and marks the log for repair (S3a §4.1); the next open repairs the index, and its ledger then
+/// holds the stream's bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_stream_load_that_finds_an_index_fault_marks_the_log_for_repair() {
+    let mut rig = rig("index-fault", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0xFA17);
+    let hash = hashes(&mut rng, 1)[0];
+    append(&rig.engine, hash, vec![random_bytes(&mut rng, 500)]).await;
+    settle(&rig.engine).await;
+    let index = crate::shard::open_index::unsealed_key(&hash);
+    rig.engine.db.delete(&index).await.unwrap();
+    rig = reopen(rig).await;
+    assert_eq!(
+        rig.engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        0,
+        "the lost row hid it"
+    );
+    let handle = rig.engine.stream_handle(hash).await.unwrap();
+    let bytes = handle.state.lock().unwrap().durable.unabsorbed_bytes;
+    drop(handle);
+    let faults = rig
+        .engine
+        .layout
+        .seal
+        .counters
+        .index_faults
+        .load(Ordering::Relaxed);
+    assert_eq!(faults, 1);
+    let marker = crate::shard::open_index::repair_key();
+    assert!(
+        rig.engine.db.get(&marker).await.unwrap().is_some(),
+        "the load marked the log"
+    );
+    rig = reopen(rig).await;
+    assert!(
+        rig.engine.db.get(&index).await.unwrap().is_some(),
+        "the open repaired the row"
+    );
+    assert_eq!(rig.engine.db.get(&marker).await.unwrap(), None);
+    assert_eq!(
+        rig.engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        bytes
+    );
+    rig.engine.begin_close();
+}
+
+/// A repair runs in the open before the engine exists, so no index row is written between its
+/// read of the tails and its write: a stream that gains unsealed pages after the repairing open
+/// keeps the row its append put, and the repaired stream keeps its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_repair_at_the_open_cannot_delete_a_row_written_after_its_read() {
+    let mut rig = rig("repair-order", manual(), Duration::from_millis(2)).await;
+    let mut rng = StdRng::seed_from_u64(0x0DE2);
+    let streams = hashes(&mut rng, 2);
+    append(&rig.engine, streams[0], vec![random_bytes(&mut rng, 500)]).await;
+    settle(&rig.engine).await;
+    crate::shard::open_index::mark_for_repair(&rig.engine.db)
+        .await
+        .unwrap();
+    rig = reopen(rig).await;
+    append(&rig.engine, streams[1], vec![random_bytes(&mut rng, 500)]).await;
+    settle(&rig.engine).await;
+    rig = reopen(rig).await;
+    let mut members = crate::shard::open_index::unsealed_members(&rig.engine.db)
+        .await
+        .unwrap();
+    members.sort_unstable();
+    let mut want = streams.clone();
+    want.sort_unstable();
+    assert_eq!(members, want);
+    rig.engine.begin_close();
+}
+
 /// **A handle load racing a seal reads one state.** A load parked after it
 /// read a stream's tail while a seal takes the stream's only page: the load
 /// still sees a tail and a pending row of one moment, before the seal or

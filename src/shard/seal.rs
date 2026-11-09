@@ -246,6 +246,9 @@ pub(crate) struct SealCounters {
     /// Streams the open skipped because their tail or pending row does not
     /// decode (each fails alone when loaded).
     pub(crate) corrupt_streams: AtomicU64,
+    /// Stream loads that found unsealed pages the unsealed index does not name (each marks the log
+    /// for a repair at its next open, S3a §4.1).
+    pub(crate) index_faults: AtomicU64,
     pub(crate) sealed_reads: AtomicU64,
     pub(crate) sealed_gets: AtomicU64,
     /// Chunks a keyed read skipped by their key summary, without a GET.
@@ -282,6 +285,7 @@ impl SealCounters {
             "open_failures": n(&self.open_failures),
             "snapshot_gaps": n(&self.snapshot_gaps),
             "corrupt_streams": n(&self.corrupt_streams),
+            "index_faults": n(&self.index_faults),
             "sealed_reads": n(&self.sealed_reads),
             "sealed_gets": n(&self.sealed_gets),
             "summary_skips": n(&self.summary_skips),

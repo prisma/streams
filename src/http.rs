@@ -1058,9 +1058,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // (`operator_gate`, SR-5). The payload stays restricted to
         // operational metadata — never stream names, tenant identifiers,
         // tokens, keys, or signed URLs.
-        .route("/operator", get(crate::operator::page))
-        .route("/operator/data.json", get(crate::operator::data))
-        .route("/operator/runbook", get(crate::operator::runbook))
+        .merge(crate::operator::routes())
         .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
         .route(
             "/v1/streams",

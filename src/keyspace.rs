@@ -108,6 +108,8 @@ pub(crate) mod tag {
     pub(crate) const UNSEALED: u8 = b'W';
     /// The usage-dirty index: a stream whose usage the ledger has not acknowledged (S3a §4.1).
     pub(crate) const USAGE_DIRTY: u8 = b'M';
+    /// The repair marker: the next open recomputes `'W'` and `'M'` from every tail.
+    pub(crate) const REPAIR: u8 = b'X';
 }
 
 /// The home of the shard at `prefix` (S3a-DESIGN §3.1): a static topology's shards are its
@@ -180,7 +182,7 @@ mod tests {
     /// Every sentinel tag of layout 8 (S3a-DESIGN rev 3 §2.4), the reserved ones included: the seal's
     /// and the gc's (`tag`), and those whose writers land later in 4a, in S3b, S4 and S6. The usage
     /// month finals' `'V'` is not one: they live in their stream's own range (`finals_row`).
-    pub(crate) const SENTINEL_TAGS: [u8; 18] = [
+    pub(crate) const SENTINEL_TAGS: [u8; 19] = [
         super::tag::DIRECTORY,
         super::tag::REFCOUNT,
         super::tag::POINTER,
@@ -193,6 +195,7 @@ mod tests {
         super::tag::IDENTITY,
         super::tag::UNSEALED,
         super::tag::USAGE_DIRTY,
+        super::tag::REPAIR,
         b'D', // queue debt index (reserved for #150)
         b'Z', // queue trim hints (S3b)
         b'N', // queue-state gauges (S3b)

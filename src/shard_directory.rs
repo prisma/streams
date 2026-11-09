@@ -69,6 +69,9 @@ pub(crate) enum RetirementReason {
         )
     )]
     Shutdown,
+    /// An operator asked for the shard's open indexes to be repaired: the next open recomputes
+    /// them from every tail (edge change #245).
+    IndexRepair,
 }
 
 impl RetirementReason {
@@ -78,6 +81,7 @@ impl RetirementReason {
             RetirementReason::FleetEviction => "fleet eviction",
             RetirementReason::SweepEviction => "sweep eviction",
             RetirementReason::Shutdown => "shutdown",
+            RetirementReason::IndexRepair => "index repair",
         }
     }
 }

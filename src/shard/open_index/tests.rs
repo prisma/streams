@@ -161,3 +161,76 @@ fn the_index_triggers_follow_base_and_staged_tails() {
     assert!(!dirty_cleared(7, Some(8)));
     assert!(dirty_cleared(8, Some(8)) && dirty_cleared(9, Some(8)) && dirty_cleared(0, None));
 }
+
+/// The rows of a seeded log for the repair tests: `unsealed` tails holding `bytes` unsealed bytes,
+/// a billed tail at `version`, and the index rows given.
+async fn seeded(path: &str, rows: &[(Vec<u8>, Vec<u8>)]) -> slatedb::Db {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    seed(&store, path, rows).await;
+    crate::keyspace::db_builder(path, store)
+        .build()
+        .await
+        .unwrap()
+}
+
+fn tail(absorbed: u64, next: u64, bytes: u64, version: Option<u64>) -> Vec<u8> {
+    crate::shard::encode_tail(&crate::shard::TailFields {
+        absorbed,
+        next,
+        unabsorbed_bytes: bytes,
+        usage: version.map(|v| crate::billing::stored_meta::UsageCounters {
+            usage_version: v,
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// An open of a log carrying the repair marker recomputes both indexes from every tail (S3a §4.1):
+/// the unsealed stream gains its 'W' row, the billed one its 'M' row at its version, a dirty row
+/// with no tail goes, and so does the marker. Without the marker the same log's open reads only
+/// the index: the missing rows stay missing and the ledger has no bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_open_repairs_the_indexes_the_marker_asks_for() {
+    let (unsealed, billed, gone) = ([1; 16], [2; 16], [3; 16]);
+    let mut rows = vec![
+        (crate::shard::tail_key(&unsealed), tail(4, 10, 300, None)),
+        (crate::shard::tail_key(&billed), tail(5, 5, 0, Some(5))),
+        (super::dirty_key(&gone), 9u64.to_be_bytes().to_vec()),
+    ];
+    let plain = seeded("repair-plain", &rows).await;
+    let ledger = super::load_or_rebuild_maintenance(&plain).await.unwrap();
+    assert_eq!(
+        ledger.unabsorbed_frame_bytes, 0,
+        "an ordinary open scans no tail"
+    );
+    assert!(super::unsealed_members(&plain).await.unwrap().is_empty());
+    rows.push((super::repair_key(), Vec::new()));
+    let marked = seeded("repair-marked", &rows).await;
+    let ledger = super::load_or_rebuild_maintenance(&marked).await.unwrap();
+    assert_eq!(ledger.unabsorbed_frame_bytes, 300);
+    assert_eq!(super::unsealed_members(&marked).await.unwrap(), [unsealed]);
+    assert_eq!(super::dirty_members(&marked).await.unwrap(), [(billed, 5)]);
+    assert_eq!(
+        marked.get(&super::repair_key()).await.unwrap(),
+        None,
+        "the marker goes"
+    );
+}
+
+/// An open that finds an unsealed-index member whose tail is sealed or gone repairs both
+/// indexes before it serves: the stale rows go and the unindexed unsealed stream gains its row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_open_repairs_a_stale_unsealed_member() {
+    let (sealed, gone, missing) = ([1; 16], [2; 16], [3; 16]);
+    let rows = [
+        (crate::shard::tail_key(&sealed), tail(10, 10, 0, None)),
+        (super::unsealed_key(&sealed), Vec::new()),
+        (super::unsealed_key(&gone), Vec::new()),
+        (crate::shard::tail_key(&missing), tail(0, 3, 70, None)),
+    ];
+    let db = seeded("repair-stale", &rows).await;
+    let ledger = super::load_or_rebuild_maintenance(&db).await.unwrap();
+    assert_eq!(super::unsealed_members(&db).await.unwrap(), [missing]);
+    assert_eq!(ledger.unabsorbed_frame_bytes, 70);
+}

@@ -9856,6 +9856,17 @@
     "scenarios": []
   },
   {
+    "name": "the_operator_route_repairs_a_shards_indexes_at_its_next_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "57e8fe6538ee6635f85af7eab079dd58feb98803f669ff67247cb818640c60ee",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/layout8_ranges.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_page_route_types_its_refusal_and_the_public_route_keeps_its_envelope",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

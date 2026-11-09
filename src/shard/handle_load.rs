@@ -35,6 +35,7 @@ impl ShardEngine {
             let pending = if native_queue || tail.absorbed == tail.next {
                 PendingPages::default()
             } else {
+                self.check_unsealed_index(&snapshot, hash).await?;
                 let raw = snapshot.get(pending_key(hash)).await?.unwrap_or_default();
                 PendingPages::tiled(&raw, tail.absorbed, tail.next).map_err(slatedb::Error::data)?
             };

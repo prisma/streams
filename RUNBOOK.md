@@ -870,6 +870,16 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   shard's number in the topology) in its own identity row, and a log of
   another layout or home fails its open ("this cell must be recreated"):
   recreate the cell the same way, on a fresh `PATH_PREFIX` or bucket.
+- **Index repair** (layout 8): an open reads the shard's unsealed and
+  usage-dirty indexes, not every tail. When `/v1/debug/timings` shows a
+  shard's `seal.index_faults` above 0, or the indexes are suspect, call
+  `POST /operator/shards/{prefix}/repair-indexes` (`root` for the root
+  shard) on the instance that owns it, with the deployment bearer. It
+  retires that shard's engine (the shard answers as in any retirement for
+  the 3 s holdoff), and the next open pays one full tail scan before it
+  serves; a `warn` line names the counts it fixed. 404
+  `shard_not_open_here` means another instance owns it. A load fault or a
+  stale index row also repairs at the shard's next open without the call.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 

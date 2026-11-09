@@ -189,3 +189,60 @@ async fn every_key_family_lies_in_its_range_and_the_indexes_are_exact() {
     );
     engine_shutdown(&state).await;
 }
+
+/// The operator's index repair (edge change #245): on a shard this instance has open, the route
+/// marks the log and retires the engine (202); the next touch reopens the shard and that open
+/// repairs and clears the marker; a shard it has not open is 404 `shard_not_open_here`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_operator_route_repairs_a_shards_indexes_at_its_next_open() {
+    let options = HttpRigOptions {
+        prefixes: vec![String::new()],
+        ..Default::default()
+    };
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    let (state, addr) = (rig.state.clone(), rig.addr);
+    raw_put(addr, "l8-repair", &[JSON], b"").await;
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/l8-repair", &[JSON], ROW).await;
+    assert_eq!(st, 204);
+    let desc = stored(&state, &state.deployment.raw_adapter_sref("l8-repair")).await;
+    let index = crate::shard::open_index::unsealed_key(&desc.storage_hash());
+    // A lost index row: the stream holds an unsealed page its 'W' row no longer names.
+    state.shards.engines()[0].db.delete(&index).await.unwrap();
+    let route = "/operator/shards/zz/repair-indexes";
+    let (st, _, body) = hreq(addr, "POST", route, &[], b"").await;
+    assert_eq!(st, 404, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(state.shards.engines().len(), 1);
+    let route = "/operator/shards/root/repair-indexes";
+    let (st, _, body) = hreq(addr, "POST", route, &[], b"").await;
+    assert_eq!(st, 202, "{}", String::from_utf8_lossy(&body));
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v, json!({"prefix": "root", "repair": "next_open"}));
+    assert!(
+        state.shards.engines().is_empty(),
+        "the route retired the engine"
+    );
+    // The next touch reopens the shard once the retirement's holdoff (3 s) has passed.
+    let mut status = 0;
+    for _ in 0..100 {
+        status = hreq(addr, "POST", "/v1/stream/l8-repair", &[JSON], ROW)
+            .await
+            .0;
+        if status == 204 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, 204, "the next touch reopens the shard");
+    let after = state.shards.engines();
+    let marker = crate::shard::open_index::repair_key();
+    assert_eq!(
+        after[0].db.get(&marker).await.unwrap(),
+        None,
+        "that open cleared the marker"
+    );
+    assert!(
+        after[0].db.get(&index).await.unwrap().is_some(),
+        "and restored the row"
+    );
+    engine_shutdown(&state).await;
+}
