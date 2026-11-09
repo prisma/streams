@@ -271,6 +271,22 @@ pub(super) async fn auth_rig(
     Arc<crate::http::AppState>,
     std::net::SocketAddr,
 ) {
+    auth_rig_with(rig_policy(project, 1, 1), creds, staleness).await
+}
+
+/// `auth_rig` whose first policy is `first` (its kind, quotas and
+/// versions), the credentials of its container.
+pub(super) async fn auth_rig_with(
+    first: crate::project_policy::ProjectPolicy,
+    creds: &[&str],
+    staleness: Option<i64>,
+) -> (
+    std::sync::Arc<crate::auth::AuthService>,
+    Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+) {
+    let project = first.project_id.as_str().to_string();
+    let project = project.as_str();
     let now = crate::shard::now_ms() / 1000;
     let svc = std::sync::Arc::new(
         crate::auth::AuthService::new(
@@ -294,7 +310,7 @@ pub(super) async fn auth_rig(
         feed_version: 1,
     })
     .unwrap();
-    rig_publish_policy(&svc, rig_policy(project, 1, 1), 1).unwrap();
+    rig_publish_policy(&svc, first, 1).unwrap();
     let cs: Vec<_> = creds
         .iter()
         .map(|c| (*c, crate::project_policy::CredentialStatus::Active, 1u64))

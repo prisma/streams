@@ -459,6 +459,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::single_stream",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Edge #253 commit 3b-3a: a container at max_streams 1 holds one stream or queue, named default, over real HTTP rigs: any other name is refused 409 container_single_stream, so no dead-letter stream exists beside it; a stream's default is recreated at once and a queue's waits for its cleanup; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/single_stream.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::weighted_shares",
       "path": "src/dst/dst_tests.rs",
       "reason": "Weighted per-project shares over real HTTP rigs (layout 6A package 1, DESIGN-6A section 4.2): a weighted project's ceilings beside unit projects', fair shedding by weighted share, the weighted memory line, and a mixed cell of stream and queue tenants under pressure, each asserted on the wire answers and the stored records; compiler and the full DST suite exercise the module.",

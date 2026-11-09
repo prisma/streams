@@ -18,7 +18,30 @@ impl From<CreationError> for ProductCreateError {
 }
 /// Edge #253: a create makes a stream or a queue, and a container's kind
 /// (the verified policy's, none without one) takes only its own; no
-/// stream create makes a queue's descriptor.
+/// stream create makes a queue's descriptor; and while the container's
+/// `max_streams` is 1 its one stream or queue is named `default`.
+fn create_refusal(
+    makes: ContainerKind,
+    sref: &crate::tenant::TenantStreamRef,
+    content_type: &str,
+    principal: Option<&crate::auth::RequestPrincipal>,
+) -> Option<CreationError> {
+    if let Some(refusal) = kind_refusal(makes, content_type, principal) {
+        return Some(refusal);
+    }
+    let single = principal.is_some_and(|p| p.quotas.max_streams == 1);
+    (single && sref.name().as_str() != SINGLE_NAME).then(|| {
+        CreationError::new(
+            CreationFailure::Conflict,
+            "container_single_stream",
+            "while its max_streams is 1 this container holds one stream or queue, named default",
+        )
+    })
+}
+
+/// The one name a single-stream container creates.
+pub(crate) const SINGLE_NAME: &str = "default";
+
 fn kind_refusal(
     makes: ContainerKind,
     content_type: &str,
@@ -62,7 +85,9 @@ impl CreationService {
         cfg: ProductCreateConfig,
         principal: Option<&crate::auth::RequestPrincipal>,
     ) -> Result<(bool, StreamDesc), ProductCreateError> {
-        if let Some(refusal) = kind_refusal(ContainerKind::Streams, &cfg.content_type, principal) {
+        if let Some(refusal) =
+            create_refusal(ContainerKind::Streams, &sref, &cfg.content_type, principal)
+        {
             return Err(refusal.into());
         }
         self.create_of_kind(sref, key, cfg, principal).await
@@ -76,7 +101,9 @@ impl CreationService {
         cfg: ProductCreateConfig,
         principal: Option<&crate::auth::RequestPrincipal>,
     ) -> Result<(bool, StreamDesc), ProductCreateError> {
-        if let Some(refusal) = kind_refusal(ContainerKind::Queues, &cfg.content_type, principal) {
+        if let Some(refusal) =
+            create_refusal(ContainerKind::Queues, &sref, &cfg.content_type, principal)
+        {
             return Err(refusal.into());
         }
         self.create_of_kind(sref, key, cfg, principal).await

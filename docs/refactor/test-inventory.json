@@ -2900,6 +2900,28 @@
     "scenarios": []
   },
   {
+    "name": "a_single_queue_container_holds_only_its_default_queue_and_waits_for_its_cleanup",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7d35bfa7d2a766ed9ac2bf28bec593fdca283b4efdfbe6993e35cffdbd476d7c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/single_stream.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_single_stream_container_holds_only_its_default_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "eac2e57cb1bc104affd44103baa474a9efae2ed9c2302e0d6bb1d33a0b7f408a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/single_stream.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_soft_deleted_source_is_never_replaced_and_keeps_billing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

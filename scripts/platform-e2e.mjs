@@ -436,9 +436,11 @@ await sfetch(`${emuBase}/admin/containers/proj-q`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ quotas: { max_streams: 2 } }),
 });
+// 2, not 1: at max_streams 1 a container holds only `default` (edge #253,
+// 409 container_single_stream), which would answer before the quota.
 await sfetch(`${emuBase}/admin/containers/proj-b`, {
   method: "POST", headers: { "content-type": "application/json" },
-  body: JSON.stringify({ quotas: { max_streams: 1 } }),
+  body: JSON.stringify({ quotas: { max_streams: 2 } }),
 });
 const credQ = await mkCred("proj-q", "quota probe");
 const tokQ = await j(await exchange(credQ.body.secret));
@@ -451,10 +453,12 @@ check("cell A admits creates up to the feed-delivered max_streams",
   (q1 === 200 || q1 === 201) && (q2 === 200 || q2 === 201), `q1=${q1} q2=${q2}`);
 check("cell A refuses the create beyond max_streams (429)", q3 === 429, `status ${q3}`);
 // cell B seeded from its real catalog: proj-b already holds one alive
-// stream, so a cap of 1 refuses the next create — enforced on a
-// DIFFERENT instance than proj-q's, at the same moment.
+// stream, so a cap of 2 admits one more and refuses the next — enforced
+// on a DIFFERENT instance than proj-q's, at the same moment.
+const bSecond = await streamCreateRaw(gwBase, "b/second", tokBQ.body.accessToken);
 const bOverflow = await streamCreateRaw(gwBase, "b/overflow", tokBQ.body.accessToken);
-check("cell B independently refuses beyond ITS feed-delivered cap (seeded from the catalog)", bOverflow === 429, `status ${bOverflow}`);
+check("cell B independently refuses beyond ITS feed-delivered cap (seeded from the catalog)",
+  (bSecond === 200 || bSecond === 201) && bOverflow === 429, `second ${bSecond} overflow ${bOverflow}`);
 
 // ---- §15 item 7: billing reconciliation through the usage surface ---------
 // proj-b appended one record earlier (usage names the container alone,

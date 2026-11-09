@@ -307,6 +307,9 @@ mod shared_cell_lifecycle;
 #[path = "tests/shared_cell_scale.rs"]
 mod shared_cell_scale;
 
+#[path = "tests/single_stream.rs"]
+mod single_stream;
+
 #[path = "tests/sse_delivery.rs"]
 mod sse_delivery;
 
