@@ -153,8 +153,8 @@ impl ShardEngine {
     /// serve, if it holds a row (`'R'`, `'I'` or `'E'`) of an ancestor home
     /// without its reference list under that home's root. A list's absence
     /// cannot be healed by a late PUT (a sweep may have decided on it), so
-    /// S4's open-path fence answers with its 409 after a topology refresh.
-    #[cfg(test)]
+    /// S4's open-path fence (`topology::fence::hold_until_served`) fails the
+    /// open with it.
     pub(crate) async fn lineage_refusal(&self) -> Result<Option<String>, GcError> {
         let mut homes = BTreeSet::new();
         let tags = [
@@ -184,7 +184,6 @@ impl ShardEngine {
 
     /// The distinct homes the sentinel rows of `tag` name (`tag ‖ home BE ‖
     /// …`): one seek per home, not one read per row.
-    #[cfg(test)]
     async fn homes_under(&self, tag: u8) -> Result<BTreeSet<u32>, GcError> {
         let db = |e: slatedb::Error| GcError::Store(e.to_string());
         let prefix = crate::spill::runindex::sentinel_prefix(tag);

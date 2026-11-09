@@ -158,7 +158,10 @@ pub(crate) fn log_path(snapshot: Option<&Snapshot>, prefix: &str) -> String {
 /// Re-read the fence every [`RECHECK`] until it lets `engine` serve, its collection passes off
 /// meanwhile, and recover a lapsed split as its claimant (see the module); past [`FENCE_WAIT`],
 /// close it and fail the open.
-async fn hold_until_served(engine: &ShardEngine, snapshot: &SnapshotFn) -> anyhow::Result<()> {
+pub(crate) async fn hold_until_served(
+    engine: &ShardEngine,
+    snapshot: &SnapshotFn,
+) -> anyhow::Result<()> {
     let gate = &engine.gc_state().gate;
     let started = Instant::now();
     let clock = crate::runtime::SystemClock::default();
@@ -180,8 +183,22 @@ async fn hold_until_served(engine: &ShardEngine, snapshot: &SnapshotFn) -> anyho
             None => Verdict::Hold,
         };
         if verdict == Verdict::Serve {
-            gate.set_collection_off(false);
-            return Ok(());
+            // S6 §3.3 (L5): a shard holding an ancestor's rows without its reference list there
+            // must not serve, and nothing heals it, so the open fails at once.
+            match engine.lineage_refusal().await {
+                Ok(None) => {
+                    gate.set_collection_off(false);
+                    return Ok(());
+                }
+                Ok(Some(reason)) => {
+                    engine.begin_close();
+                    tracing::error!(shard = %engine.prefix, "lineage_list_missing: {reason}");
+                    anyhow::bail!("lineage_list_missing: {reason}");
+                }
+                Err(error) => {
+                    tracing::warn!(shard = %engine.prefix, "the open's lineage check could not read: {error}");
+                }
+            }
         }
         gate.set_collection_off(true);
         if started.elapsed() >= FENCE_WAIT {

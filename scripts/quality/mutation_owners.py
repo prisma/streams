@@ -166,7 +166,7 @@ OWNERS = (
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
     owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence:: dst_tests::fleet_topology::'),
-    owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence::'),
+    owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: shard::seal::gc::lineage_tests::the_open_path_fence'),
     owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
     owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k::'),

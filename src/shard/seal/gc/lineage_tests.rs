@@ -205,3 +205,43 @@ async fn a_shard_holding_an_ancestors_rows_without_its_list_refuses_to_serve() {
     );
     rig.engine.begin_close();
 }
+
+/// The open-path fence fails an open whose shard holds an ancestor's rows
+/// without its reference list, naming the home, and serves it once the list
+/// exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_open_path_fence_fails_a_shard_whose_ancestor_list_is_missing() {
+    use crate::topology::model::{ShardSet, Snapshot};
+    use std::sync::Arc;
+    let rig = gc_rig("lineage-fence").await;
+    row(&rig, crate::spill::directory::REFCOUNT_TAG, 7, 1).await;
+    let snapshot: crate::topology::fence::SnapshotFn = Arc::new(|| {
+        Some(Arc::new(Snapshot {
+            shards: ShardSet {
+                version: 1,
+                shards: Vec::new(),
+                homes: std::collections::BTreeMap::new(),
+                leaves: std::collections::BTreeMap::new(),
+                next_home: 0,
+            },
+            etag: None,
+            installed_at: None,
+        }))
+    });
+    let held = crate::topology::fence::hold_until_served(&rig.engine, &snapshot).await;
+    let error = held.expect_err("refused").to_string();
+    assert!(
+        error.contains("lineage_list_missing") && error.contains("home 7"),
+        "{error}"
+    );
+
+    let rig = gc_rig("lineage-fence-ok").await;
+    row(&rig, crate::spill::directory::REFCOUNT_TAG, 7, 1).await;
+    let list = lineage::reference_list_path(&rig.engine.object_root(7), rig.engine.home());
+    put(&rig, list, lineage::encode(&[])).await;
+    crate::topology::fence::hold_until_served(&rig.engine, &snapshot)
+        .await
+        .expect("served");
+    assert!(!rig.engine.gc_state().gate.collection_off());
+    rig.engine.begin_close();
+}
