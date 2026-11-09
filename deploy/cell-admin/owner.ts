@@ -22,7 +22,7 @@ import { type AllowEntry, type Allowlist, Conflict, type StateStore } from "./st
 import { openStore, publishNote } from "./stores";
 
 /// Suspend (the cell answers the project's requests 403
-/// project_not_active, and the issuer mints it no token) or resume.
+/// container_not_active, and the issuer mints it no token) or resume.
 async function setStatus(f: Flags, io: Io, status: "active" | "suspended"): Promise<void> {
   const store = await openStore(f);
   const project = f.must("project");

@@ -57,8 +57,8 @@ pub(super) async fn prepare(
         if src_raw.project_id() != sref.project_id() {
             return Err(CreationError::new(
                 CreationFailure::Invalid,
-                "fork_project_mismatch",
-                "fork source and child must belong to the same project",
+                "fork_container_mismatch",
+                "fork source and child must belong to the same container",
             ));
         }
         let src_name = src_raw.name().as_str().to_string();

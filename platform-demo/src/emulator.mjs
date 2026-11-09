@@ -340,7 +340,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         accessToken: mintCustomer(m[1], cred),
         tokenType: "Bearer", expiresIn: 600,
-        projectId: cred.project_id, endpoint: null,
+        containerId: cred.project_id, endpoint: null,
       });
     }
     // Feeds (HTTP form; the file projection is the primary transport)
@@ -486,7 +486,7 @@ const server = http.createServer(async (req, res) => {
 
 function publicCred(id, c) {
   return {
-    id, projectId: c.project_id, displayName: c.display,
+    id, containerId: c.project_id, displayName: c.display,
     scopes: c.scopes.split(" "), streamPrefixes: c.prefixes,
     grantVersion: c.grant_version, status: c.status,
     valueHint: c.hint, createdAt: c.created_at, lastUsedAt: c.last_used,

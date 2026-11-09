@@ -75,22 +75,26 @@ async fn over_the_shed_line_the_project_over_its_share_is_refused_before_its_nei
             "the compliant project, round {n}"
         );
         let flood = append(&cell, 0, FLOOD + n).await;
-        assert_eq!(flood, refused("project_memory_pressure", "2"), "round {n}");
+        assert_eq!(
+            flood,
+            refused("container_memory_pressure", "2"),
+            "round {n}"
+        );
     }
     let read = cell.call(0, "GET", "/v1/streams/orders/records", b"").await;
     assert_eq!(
         (read.0, error_code(&read.2)),
-        (429, Some("project_memory_pressure".into()))
+        (429, Some("container_memory_pressure".into()))
     );
     let create = cell.call(0, "PUT", "/v1/streams/more", CREATE).await;
     assert_eq!(
         (create.0, error_code(&create.2)),
-        (429, Some("project_memory_pressure".into()))
+        (429, Some("container_memory_pressure".into()))
     );
     let listing = cell.call(0, "GET", "/v1/streams", b"").await;
     assert_eq!(
         (listing.0, error_code(&listing.2)),
-        (429, Some("project_memory_pressure".into()))
+        (429, Some("container_memory_pressure".into()))
     );
     // The absorber's reservation adds to the pressure (tens of MiB while a
     // gather runs), so the leg stays 65 MiB inside the hard line; the exact
@@ -109,7 +113,7 @@ async fn over_the_shed_line_the_project_over_its_share_is_refused_before_its_nei
     );
     assert_eq!(
         append(&cell, 0, 99).await,
-        refused("project_memory_pressure", "2")
+        refused("container_memory_pressure", "2")
     );
     assert_eq!(
         admission.snapshot().shed.blamed,

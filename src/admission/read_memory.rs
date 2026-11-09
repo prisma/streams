@@ -59,7 +59,7 @@ pub(crate) const READ_INITIAL_RESERVE: u64 = 256 << 10;
 
 /// How long a read waits for room under its project's line and in the
 /// instance's read memory before it is refused (429
-/// `project_memory_pressure` or 503 `read_memory_busy`, both retryable).
+/// `container_memory_pressure` or 503 `read_memory_busy`, both retryable).
 pub(crate) const READ_MEMORY_WAIT: Duration = Duration::from_secs(2);
 
 /// A held body is served in frames of at most this many bytes, so it ends,

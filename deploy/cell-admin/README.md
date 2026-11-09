@@ -192,7 +192,7 @@ A compromised key, in this order:
 | `offboard --project P --cell-url URL --key-file K` | Second run: for a suspended project, waits until the canary answers 200 at its witness version or a later one (each probe minted at the version the state holds then) and sets the project active for its drain (publish that bundle too; on an `s3://` state the cell's wrapper polls it); then checks the cell serves the revocation, deletes every stream (listing pages of twice the project's `requests_per_sec`, each deleted before the next is listed, and waiting out a `Retry-After` of up to 120 s: the operator's token draws on the project's own buckets), re-walks the catalog until a walk at least `--settle-secs` (default 60) after that check lists nothing, then omits the project. Publish the bundle. Exit 3 means "publish, wait, run again"; the walk is bounded by `--max-walks` (default 10), and a suspended project's two waits by `--wait-secs` each (default 120; 0 asks once) |
 | `list [--json]` | Shows the cell, its ceilings, and each project's phase, quotas and credentials. Holds no secrets |
 | `bundle` | Rewrites the bundle at a newer `feed_version`, for example after a crash between the state and the bundle |
-| `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 project_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
+| `suspend --project P` / `resume --project P` | Publishes the project `suspended` (the cell answers its requests `403 container_not_active`; the issuer mints it no token) or `active` again, at a newer `project_policy_version`. Only an active (not offboarding) project |
 | `quota --project P --quota field=value...` | Sets some of an active project's quotas, each at most its ceiling as in `admit` (`max_stored_bytes` has none), keeping the others, at a newer `project_policy_version` |
 | `credential --project P --pepper-file F --out FILE` | Adds a customer credential with a secret (at most 10 live per project; `revoke` retires one): the secret, `prisma_streams_<credential id>.<32 random bytes, base64url>`, goes once to a new file of mode 0600 (written beside it before the change commits, so a directory it cannot write refuses first, and moved into place once the commit lands, even when the bundle then fails to publish; when the store fails the commit itself, a timeout or a 5xx that may have landed, it stays where it was written and the refusal names it and the credential: if `list --json` holds the credential, move the file to FILE and run `bundle`, else delete it and run again); the state keeps only HMAC-SHA-256 of it under the newest pepper (`v<N>:<base64>[,v<N-1>:<base64>]`, read from a mode-0600 file), the pepper's version and the secret's last 6 characters, exactly as the issuer stores the credentials it makes. Also `--scopes`, `--prefix` and `--name`; `--hidden` only for the canary's credentials (the watch's) |
 | `revoke --project P --credential C` | Revokes one credential of P for good, a leaked or a rogue one, at a newer `grant_version`: within 5 s the issuer exchanges its secret no more, and once the cell holds the bundle (about 45 s after the publish) it answers the credential's tokens `403 credential_not_active`. C must be P's customer credential, active and not omitted: never an operator credential (offboarding's) nor the canary's catalog-read credential, while the canary's other hidden credentials (the watch's) may be revoked. It cuts one secret without suspending or offboarding the project; `credential` makes its replacement |
@@ -399,7 +399,7 @@ reached the cell; the canary, another project, can.
    customer credential of the project is revoked or omitted; the job
    audits it, `project.resume`). The cell's
    answer to a token minted before the revocation turns from `403
-   project_not_active` to `403 credential_not_active`. Publish the
+   container_not_active` to `403 credential_not_active`. Publish the
    bundle; the run's proof waits for it the same way, then it drains and
    omits the project as for any other.
 
@@ -428,7 +428,7 @@ Conditions:
   needs a feed-contract change.
 
 The issuer's delete still refuses a suspended project `409
-project_not_active`: the owner looks before an abusive project's data
+container_not_active`: the owner looks before an abusive project's data
 goes, and offboards it with `cell-admin offboard`.
 
 ## Watch

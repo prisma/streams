@@ -145,8 +145,8 @@ heartbeat also carries what the tiny-stream ramp exhausted while CPU stayed
 low:
 - **Refusals** since its previous beat, and how many beats in a row
   counted one (`refusals`, `refusal_beats`). Counted: reads refused for read
-  memory (429 `project_memory_pressure`, 503 `read_memory_busy`), projects
-  the tracker refused (503 `project_tracker_capacity`), and admission's
+  memory (429 `container_memory_pressure`, 503 `read_memory_busy`), projects
+  the tracker refused (503 `container_tracker_capacity`), and admission's
   in-flight, RSS and survival sheds. A quota, per-stream, wedged-shard or
   fair shed is not counted: another instance would not relieve it. The
   publisher counts the streak, so a peer reading one beat in three judges it

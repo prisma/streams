@@ -179,7 +179,7 @@ impl QueueService {
     /// never the claim's budget, so a claim holds memory only for what it
     /// returns. Without room after the reservation's wait every lease of the
     /// claim is released with its attempt given back and the claim is
-    /// refused: 429 `project_memory_pressure` at its project's line, 503
+    /// refused: 429 `container_memory_pressure` at its project's line, 503
     /// `read_memory_busy` for the instance's read memory, both retryable
     /// after 1 s.
     async fn reserve_leased(
@@ -355,8 +355,8 @@ fn memory_refused(refusal: crate::admission::read_memory::ReadRefusal) -> QueueF
     let failure = match refusal {
         ReadRefusal::Project => fail(
             FailureClass::Exhausted,
-            "project_memory_pressure",
-            "the project's estimated memory pressure is over its per-project backstop; retry",
+            "container_memory_pressure",
+            "the container's estimated memory pressure is over its per-container backstop; retry",
         ),
         ReadRefusal::Instance => fail(
             FailureClass::Unavailable,

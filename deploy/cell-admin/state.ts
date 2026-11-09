@@ -68,7 +68,7 @@ export interface ProjectRecord {
   workspace_id: string;
   phase: Phase;
   /// Published as the policy entry's status; `suspended` makes the cell
-  /// answer the project's requests 403 project_not_active.
+  /// answer the project's requests 403 container_not_active.
   status: "active" | "suspended";
   project_policy_version: number;
   ownership_version: number;

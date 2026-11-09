@@ -79,7 +79,7 @@ class World:
             "victim": {"role": "victim", "count": 1, "totals": {"requests": 100}, "refusals": {"typed": {}, "untyped": {}, "transport": 0},
                        "periods": {"solo": {"append_p99_ms": 8.0, "read_p99_ms": 9.0}, "noisy": {"append_p99_ms": 20.0, "read_p99_ms": 24.0}}},
             "h1": {"role": "hostile", "count": 7, "totals": {"requests": 100_000},
-                   "refusals": {"typed": {"429:project_rate_limit": 50_000}, "untyped": {"503": 10}, "transport": 0}},
+                   "refusals": {"typed": {"429:container_rate_limit": 50_000}, "untyped": {"503": 10}, "transport": 0}},
             "h9": {"role": "hostile", "count": 1, "totals": {"requests": 10}, "refusals": {"typed": {}, "untyped": {}, "transport": 0}},
             "h9b": {"role": "hostile", "count": 1, "totals": {"requests": 10}, "refusals": {"typed": {}, "untyped": {}, "transport": 0}},
         }
@@ -240,7 +240,7 @@ class LayerB(unittest.TestCase):
                                                "recorded no stream it created (600 projects), so there is no quiet name to time"}), "H11t"),
             # A leg of the old shape (a used name's timings) is not a quiet arm.
             "fresh-vs-never timings in H11t's place": (lambda w: w.h11t.update(used_ms=w.h11t.pop("quiet_ms")), "H11t"),
-            "a refused compliant tenant": (lambda w: w.classes["app"]["refusals"]["typed"].update({"429:project_rate_limit": 1}), "compliant-refusals"),
+            "a refused compliant tenant": (lambda w: w.classes["app"]["refusals"]["typed"].update({"429:container_rate_limit": 1}), "compliant-refusals"),
             "a victim transport failure": (lambda w: w.classes["victim"]["refusals"].update(transport=1), "compliant-refusals"),
             "hostile untyped answers just over 0.5%": (lambda w: w.classes["h1"]["refusals"]["untyped"].update({"503": 501}), "hostile-typed"),
             "a victim read p99 over 2 x solo and 25 ms": (lambda w: w.classes["victim"]["periods"]["noisy"].update(read_p99_ms=25.5), "victim-p99"),
@@ -310,10 +310,10 @@ class LayerB(unittest.TestCase):
         w.ledgers["proj_0500"]["totals"]["outcome_unknown_records"] = 3
         w.usage["proj_0500"]["meters"]["ingestRecords"] = 100
         w.audit["proj_0500"]["resolution"] = {
-            "unknown_records": 3, "committed_records": 0, "reasons": {"429 project_rate_limit": 2, "404 stream_not_found": 1},
+            "unknown_records": 3, "committed_records": 0, "reasons": {"429 container_rate_limit": 2, "404 stream_not_found": 1},
             "unresolved": [{"stream": "a", "reason": "x"}, {"stream": "b", "reason": "x"}, {"stream": "c", "reason": "y"}]}
         v = self.w.judge()["bars"]["billing: usage = ledger for every project"]["value"]
-        self.assertEqual(v["by_reason"], {"404 stream_not_found": 1, "429 project_rate_limit": 2})
+        self.assertEqual(v["by_reason"], {"404 stream_not_found": 1, "429 container_rate_limit": 2})
         self.assertLess(json.dumps(v, sort_keys=True).index('"by_reason"'), json.dumps(v, sort_keys=True).index('"examples"'))
         w.audit["proj_0500"].pop("resolution")
         v = self.w.judge()["bars"]["billing: usage = ledger for every project"]["value"]
@@ -326,8 +326,8 @@ class LayerB(unittest.TestCase):
         # cause class ahead of "failed" and gives each project's first detail.
         bar = "leaks: every producing project's audit passes"
         w = self.w
-        w.audit["proj_0010"]["prefixes"]["t/"].update(ok=False, error="audit t/00000: 51 failed reads, last 429 project_rate_limit", causes=[
-            {"cause": "read_failed 429 project_rate_limit", "detail": "audit t/00000: 51 failed reads, last 429 project_rate_limit"}])
+        w.audit["proj_0010"]["prefixes"]["t/"].update(ok=False, error="audit t/00000: 51 failed reads, last 429 container_rate_limit", causes=[
+            {"cause": "read_failed 429 container_rate_limit", "detail": "audit t/00000: 51 failed reads, last 429 container_rate_limit"}])
         w.audit["proj_0020"]["prefixes"]["t/"].update(ok=False, causes=[
             {"cause": "unexpected_records", "detail": "3 (t/00001: record 4: abc starts no unread request)"},
             {"cause": "record_count", "detail": "read 9 + missing 0 != expected 8"}])
@@ -335,7 +335,7 @@ class LayerB(unittest.TestCase):
         m = w.judge()
         self.assertEqual(self.failing(m), ["leaks"])
         v = m["bars"][bar]["value"]
-        self.assertEqual(v["by_cause"], {"read_failed 429 project_rate_limit": 1, "record_count": 1, "unexpected_records": 1,
+        self.assertEqual(v["by_cause"], {"read_failed 429 container_rate_limit": 1, "record_count": 1, "unexpected_records": 1,
                                          "unrecorded": 1})
         self.assertEqual(v["failed"], ["proj_0010", "proj_0020", "proj_0030"])
         self.assertEqual(v["detail"]["proj_0020"], "unexpected_records: 3 (t/00001: record 4: abc starts no unread request)")

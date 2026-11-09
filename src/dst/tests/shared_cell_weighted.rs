@@ -149,7 +149,7 @@ async fn a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class() {
             served(),
             "over the line, round {round}"
         );
-        flooder_refused(&cell, "project_memory_pressure", "over the line").await;
+        flooder_refused(&cell, "container_memory_pressure", "over the line").await;
     }
     admission.record_rss_mb(0);
     admission.set_max_inflight(CAP);
@@ -297,7 +297,7 @@ async fn every_project_on_a_weighted_cell_holds_its_own_weighted_ceilings() {
             .await;
             match (status, code.as_deref()) {
                 (200, None) => n += 1,
-                (429, Some("project_rate_limit")) => break,
+                (429, Some("container_rate_limit")) => break,
                 other => panic!("project {i}: {other:?}"),
             }
         }

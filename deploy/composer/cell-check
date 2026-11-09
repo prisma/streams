@@ -154,7 +154,7 @@ async function identity(cell: Cell, want: Want): Promise<void> {
 }
 
 async function ingested(cell: Cell, project: string): Promise<number> {
-  const path = `/v1/projects/${encodeURIComponent(project)}/usage`;
+  const path = `/v1/containers/${encodeURIComponent(project)}/usage`;
   const usage = json(await expectStatus(await ask(cell, "GET", path, cell.canary), [200], `GET ${path}`), path);
   if (typeof usage?.ingestPayloadBytes !== "number") throw new NotYet(`${path} carries no ingestPayloadBytes`);
   return usage.ingestPayloadBytes;
@@ -214,8 +214,8 @@ async function wanted(stage: string, dir: string, f: ReturnType<typeof parseFlag
   if (!bundle) throw new AdminError(`cell ${cellId} has no published bundle (${store.bundlePath})`);
   const project = canaryProjectId(state.cell.cell_id);
   const claims = claimsOf(canary);
-  if (claims.project_id !== project || claims.cell_id !== state.cell.cell_id) {
-    throw new AdminError(`the canary token is for project ${claims.project_id} on ${claims.cell_id}, not ${project} on ${state.cell.cell_id}`);
+  if (claims.container_id !== project || claims.cell_id !== state.cell.cell_id) {
+    throw new AdminError(`the canary token is for container ${claims.container_id} on ${claims.cell_id}, not ${project} on ${state.cell.cell_id}`);
   }
   return {
     commit: release.commit,

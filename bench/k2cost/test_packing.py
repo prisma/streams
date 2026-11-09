@@ -59,7 +59,7 @@ def pack_run(root: str, name: str, tenants: int = 10, refused: int = 0, audit_ok
              "append_p50_ms": 3, "connected": 0, "inflight": 2} for e in range(10, 80, 10)]
     jsonl_write(os.path.join(run, "tenants", "windows.jsonl"), wins)
     with open(os.path.join(run, "tenants", "classes.json"), "w") as f:
-        json.dump({"s": {"refusals": {"typed": {"429:project_rate_limit": refused} if refused else {}, "untyped": {},
+        json.dump({"s": {"refusals": {"typed": {"429:container_rate_limit": refused} if refused else {}, "untyped": {},
                                       "transport": 0}}}, f)
     with open(os.path.join(run, "tenants", "usage.json"), "w") as f:
         json.dump({"projects": {f"p{i}": {"settled": True, "meters": {"ingestPayloadBytes": 600}}

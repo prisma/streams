@@ -346,7 +346,7 @@ Watermark for legs A1–A6: 48 MiB; decisive pair A1b/A6b: 40 MiB
 
 **A1b, every criterion:** the noisy project engaged once (no
 flapping), latched at 41,937,034 bytes against a 41,943,040
-watermark, and owned all 72,249 typed `project_memory_pressure`
+watermark, and owned all 72,249 typed `container_memory_pressure`
 refusals. First engage preceded the first global RSS shed by 728 s.
 Victims: zero project-memory refusals, zero global RSS refusals,
 zero lag cuts, zero reconnects, complete acked tails, append p99

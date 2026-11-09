@@ -1,9 +1,9 @@
+internal-target	src/application/read_remote.rs	"streams-internal-container",
 internal-target	src/application/read_remote.rs	"streams-internal-epoch",
 internal-target	src/application/read_remote.rs	"streams-internal-identity",
-internal-target	src/application/read_remote.rs	"streams-internal-project",
 internal-target	src/application/read_remote.rs	("streams-internal-seg", self.seg_id.to_string()),
 internal-target	src/http.rs	.get("streams-internal-identity")
-internal-target	src/product.rs	.get("streams-internal-project")
+internal-target	src/product.rs	.get("streams-internal-container")
 internal-target	src/product.rs	h("streams-internal-epoch"),
 internal-target	src/product.rs	h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
 internal-target	src/product.rs	let matches = h("streams-internal-identity")

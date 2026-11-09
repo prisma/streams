@@ -236,7 +236,7 @@ export class Exchange {
     const notActive = inactive(cred, id, nowSecs);
     if (notActive !== null) return result("credential_not_active", refuse(403, "credential_not_active", notActive));
     const projectNot = projectInactive(state, cred);
-    if (projectNot !== null) return result("project_not_active", refuse(403, "project_not_active", projectNot));
+    if (projectNot !== null) return result("container_not_active", refuse(403, "container_not_active", projectNot));
     if (!this.cache.fresh()) {
       return result("issuer_unavailable", unavailable("the issuer cannot see the cell's current state; retry shortly"));
     }
@@ -256,7 +256,7 @@ export class Exchange {
       accessToken: signJwt(this.cfg.signingKey, claims),
       tokenType: "Bearer",
       expiresIn: Number(claims.exp) - nowSecs,
-      projectId: cred.project_id,
+      containerId: cred.project_id,
       cellId: state.cell.cell_id,
       endpoint: this.cfg.cellOrigin,
     }));

@@ -184,7 +184,7 @@ async fn at_rest<T: PartialEq + Copy>(probe: impl Fn() -> T) -> T {
 /// gate at pressure 0, then send 6 MiB each of 8 MiB declared under a
 /// line of 8 MiB. Each chunk that would take the project past the line
 /// while it holds the others' bytes refuses its upload (429
-/// `project_memory_pressure`), so the project's buffered bodies stay at
+/// `container_memory_pressure`), so the project's buffered bodies stay at
 /// the line, plus the chunks in flight. Before: nothing refused a body
 /// past the line, and the project held 25,165,824 body bytes (in
 /// production, 64 uploads of 32 MiB: 2 GiB on a 1 GiB instance).
@@ -218,7 +218,7 @@ async fn concurrent_uploads_share_their_projects_memory_line() {
     }
     drop(uploads);
     let refused = answers.iter().flatten().count();
-    let refusal = Some((429, Some("project_memory_pressure".to_string())));
+    let refusal = Some((429, Some("container_memory_pressure".to_string())));
     assert!(
         buffered <= PAGE_BUDGET + MIB
             && refused >= 2
@@ -635,7 +635,7 @@ async fn a_parked_pull_of_a_project_in_read_debt_does_not_walk_again() {
 /// which is then lowered to what it holds and 64 KiB, less than a read's
 /// initial reservation (256 KiB, edge #240). Pass: the listing is refused
 /// as the read is (429
-/// `project_memory_pressure`, `Retry-After: 1`), and once the unread page
+/// `container_memory_pressure`, `Retry-After: 1`), and once the unread page
 /// is released it lists all 61 streams, in two pages since a page counts
 /// its descriptors decoded (about 98 KB each here), and leaves nothing
 /// held.
@@ -664,7 +664,7 @@ async fn a_catalog_page_is_held_to_its_projects_memory_line_as_a_read_is() {
     let started = Instant::now();
     let listed = refusal(cell.call(0, "GET", "/v1/streams?limit=1000", b"").await);
     let took = started.elapsed();
-    let pressure = Some("project_memory_pressure".to_string());
+    let pressure = Some("container_memory_pressure".to_string());
     assert_eq!(
         read,
         (429, pressure, Some("1".to_string())),

@@ -639,7 +639,7 @@ async fn first_chunk_claimed(bytes: u64) -> Result<(), RangeReadError> {
 /// waits for its room as admission does (`admission::park::claim_read_until`)
 /// and, refused, fails the read as the store being unavailable, which the
 /// request answers with the refusal (503 `read_memory_busy` or 429
-/// `project_memory_pressure`); every later chunk is claimed without waiting
+/// `container_memory_pressure`); every later chunk is claimed without waiting
 /// (`claim_read`) and the plan ends before the first the hold cannot grow
 /// to cover, so the page ends there (tuning P1 item 2, edge #240). The
 /// decoded page is claimed again as it is admitted (`application::read_decode`).

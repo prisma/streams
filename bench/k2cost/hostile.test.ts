@@ -300,13 +300,13 @@ test("a probe pair the cell refused for load is unjudged and replaced by a fresh
   // with no code and one 429 whose code is not a load refusal.
   const { out } = await runManifest(m, "probeload", (ids) => {
     cell.refuse(ids.ghost0!, 1, 503, "read_memory_busy");
-    cell.refuse(ids.ghost1!, 1, 429, "project_rate_limit");
+    cell.refuse(ids.ghost1!, 1, 429, "container_rate_limit");
     cell.refuse(ids.ghost2!, 1, 503, null);
     cell.refuse(ids.ghost3!, 1, 429, "stream_limit");
   });
   const p = json(join(out, "legs", "probes-0.json"));
   expect([p.pairs, p.first_contacts, p.available, p.differences, p.put]).toEqual([20, 20, 40, { name: 2, usage: 0 }, { "201": 20 }]);
-  expect(p.unjudged).toEqual({ pairs: 2, held: 2, never: 0, classes: { "name 429:project_rate_limit vs 404:stream_not_found": 1, "name 503:read_memory_busy vs 404:stream_not_found": 1 } });
+  expect(p.unjudged).toEqual({ pairs: 2, held: 2, never: 0, classes: { "name 429:container_rate_limit vs 404:stream_not_found": 1, "name 503:read_memory_busy vs 404:stream_not_found": 1 } });
   expect(p.difference_classes).toEqual({ "name 429:stream_limit vs 404:stream_not_found": 1, "name 503:- vs 404:stream_not_found": 1 });
 }, 30_000);
 
@@ -386,7 +386,7 @@ test("H9b's readers by answer: a refusal with a code is typed; an untyped one, a
     const { out, ids } = await runManifest(stall(name), name, (ids) => setTimeout(() => cell.refuse(ids.stall0!, 1, status, code), 800));
     return h9bAnswers(json(join(out, "projects", ids.stall0!, "phase-2.ledger.json")));
   };
-  expect(await answers("h9btyped", 429, "project_rate_limit")).toEqual({ readers: 3, whole: 2, typed: { "429:project_rate_limit": 1 }, other: {} });
+  expect(await answers("h9btyped", 429, "container_rate_limit")).toEqual({ readers: 3, whole: 2, typed: { "429:container_rate_limit": 1 }, other: {} });
   expect(await answers("h9buntyped", 503, null)).toEqual({ readers: 3, whole: 2, typed: {}, other: { "503": 1 } });
   // A body the server ended early, no answer at all, and a 429 whose body
   // never came (so no code was read).

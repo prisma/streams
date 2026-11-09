@@ -690,7 +690,7 @@ async fn enforce_mode_gates_the_product_surface() {
     let auth_susp = ("authorization", t_susp.as_str());
     let (st, _, b) = preq(addr, "PUT", "/v1/streams/offs", &[ekey, auth_susp], body).await;
     assert_eq!(st, 403);
-    assert_eq!(code(&b), "project_not_active");
+    assert_eq!(code(&b), "container_not_active");
 
     // Placement: a VALID token for a project served elsewhere gets 421
     // with the contract's header — never 401 (clients must not refresh
@@ -723,7 +723,7 @@ async fn enforce_mode_gates_the_product_surface() {
     let (st, _, b) = preq(
         addr,
         "GET",
-        "/v1/projects/proj-test/usage",
+        "/v1/containers/proj-test/usage",
         &[auth_read],
         b"",
     )
@@ -733,13 +733,13 @@ async fn enforce_mode_gates_the_product_surface() {
     let (st, _, b) = preq(
         addr,
         "GET",
-        "/v1/projects/proj-other/usage",
+        "/v1/containers/proj-other/usage",
         &[auth_full],
         b"",
     )
     .await;
     assert_eq!(st, 404);
-    assert_eq!(code(&b), "unknown_project");
+    assert_eq!(code(&b), "unknown_container");
 
     // §15 exemption survives enforce: a watch-wait request carrying a
     // capability is judged by the CAPABILITY (here: a forged one, so

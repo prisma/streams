@@ -1,5 +1,5 @@
 //! The multiplexed wait (layout 6A package 2, `POST
-//! /v1/projects/{p}/live:wait`): one long-poll answers whichever of a
+//! /v1/containers/{p}/live:wait`): one long-poll answers whichever of a
 //! client's tails, group pulls and watches is ready, with exactly what the
 //! per-stream routes would deliver. It answers every subscription from
 //! `now` at once with a pinned cursor; wakes on exactly the stream that
@@ -43,7 +43,7 @@ async fn live_wait(
     let (st, _, b) = preq(
         addr,
         "POST",
-        &format!("/v1/projects/{project}/live:wait"),
+        &format!("/v1/containers/{project}/live:wait"),
         extra,
         body.to_string().as_bytes(),
     )
@@ -597,7 +597,7 @@ async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_re
     let (st, answer, _) = live_wait(addr, "proj-other".into(), &as_a, &body).await;
     assert_eq!(
         (st, &answer["error"]["code"]),
-        (404, &json!("unknown_project"))
+        (404, &json!("unknown_container"))
     );
     engine_shutdown(&state).await;
 }

@@ -26,7 +26,7 @@
 //                                   the run and over each manifest period
 //   projects/<id>/phase-<i>.ledger.json   k2gen's ledger for each phase
 //   projects/<id>/ledger.json       the project's totals and refusals
-// `usage` reads every project's meters (GET /v1/projects/{p}/usage) after
+// `usage` reads every project's meters (GET /v1/containers/{p}/usage) after
 // the drain until they settle and writes usage.json; `audit` reads every
 // project's produced streams back against its produce ledgers and writes
 // audit.json. Run usage before audit: the audit's reads are metered too.
@@ -511,7 +511,7 @@ export async function usage(plan: Plan, base: string, tokenMap: string, out: str
     let last: { status: number; body: Record<string, unknown> | null } = { status: 0, body: null };
     for (;;) {
       polls++;
-      const r = await http.call("GET", `/v1/projects/${encodeURIComponent(p.id)}/usage`);
+      const r = await http.call("GET", `/v1/containers/${encodeURIComponent(p.id)}/usage`);
       let body: Record<string, unknown> | null = null;
       try {
         body = JSON.parse(new TextDecoder().decode(r.body));

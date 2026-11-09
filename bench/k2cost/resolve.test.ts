@@ -86,12 +86,12 @@ const FAST = (budgetMs: number): ReadBack => ({ budgetMs, delayMs: () => 1 });
 
 test("the read-back outlasts a cell that refuses it for load, and pages a stream of thousands of records through the cell's default 1 MiB pages", async () => {
   // 60 refusals up front (past the old 50-failure cap), one more between pages.
-  const refusals: Array<[number, string]> = Array.from({ length: 60 }, (_, i) => (i % 2 ? [503, "read_memory_busy"] : [429, "project_rate_limit"]));
+  const refusals: Array<[number, string]> = Array.from({ length: 60 }, (_, i) => (i % 2 ? [503, "read_memory_busy"] : [429, "container_rate_limit"]));
   const { http, seen } = cell(3000, refusals, [[503, "read_memory_busy"]]);
   const r = await resolve(http, ledger(2900, 100), new Map(), FAST(30_000));
   expect(r).toEqual({
     streams: 1, unknown_records: 100, committed_records: 100, unresolved: [], reasons: {},
-    retried: { "429 project_rate_limit": 30, "503 read_memory_busy": 31 },
+    retried: { "429 container_rate_limit": 30, "503 read_memory_busy": 31 },
   });
   // ~3 MB of records is 3 default pages (a cursor each); 61 refusals were asked again.
   expect([seen.reads, seen.pages, seen.cursors.length]).toEqual([64, 3, 3]);
@@ -99,12 +99,12 @@ test("the read-back outlasts a cell that refuses it for load, and pages a stream
 }, 30_000);
 
 test("a stream refused past the budget is unresolved, with its reason class counted; one that is truly gone or forbidden is not retried", async () => {
-  const always: Array<[number, string]> = Array.from({ length: 10_000 }, () => [429, "project_rate_limit"]);
+  const always: Array<[number, string]> = Array.from({ length: 10_000 }, () => [429, "container_rate_limit"]);
   const a = cell(10, always);
   const ra = await resolve(a.http, ledger(5, 5), new Map(), FAST(150));
   expect(ra!.unresolved).toHaveLength(1);
-  expect(ra!.unresolved[0]!.reason).toMatch(/^\d+ failed reads over 0\.\ds, last 429 project_rate_limit$/);
-  expect([ra!.committed_records, ra!.reasons]).toEqual([0, { "429 project_rate_limit": 1 }]);
+  expect(ra!.unresolved[0]!.reason).toMatch(/^\d+ failed reads over 0\.\ds, last 429 container_rate_limit$/);
+  expect([ra!.committed_records, ra!.reasons]).toEqual([0, { "429 container_rate_limit": 1 }]);
   expect(a.seen.reads).toBeGreaterThan(5);
   const f = cell(10, [[403, "forbidden"], [403, "forbidden"]]);
   const rf = await resolve(f.http, ledger(5, 5), new Map(), FAST(60_000));
@@ -119,7 +119,7 @@ test("a failed read's detail carries the server's message when it says more than
   const body = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
   const r500 = { status: 500, headers: null, ms: 1, body: body({ error: { code: "internal", message: "storage: manifest read failed" } }) };
   expect(failureDetail(r500)).toBe("500 internal: storage: manifest read failed");
-  const r429 = { status: 429, headers: null, ms: 1, body: body({ error: { code: "project_rate_limit", message: "project_rate_limit" } }) };
-  expect(failureDetail(r429)).toBe("429 project_rate_limit");
+  const r429 = { status: 429, headers: null, ms: 1, body: body({ error: { code: "container_rate_limit", message: "container_rate_limit" } }) };
+  expect(failureDetail(r429)).toBe("429 container_rate_limit");
   expect(failureDetail({ status: 0, headers: null, ms: 1, body: new Uint8Array(), error: "timeout: x" })).toBe("transport timeout");
 });

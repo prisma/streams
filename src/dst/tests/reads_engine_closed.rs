@@ -279,7 +279,7 @@ async fn a_product_read_whose_engines_sealer_is_gone_is_temporarily_unavailable(
 /// POSTs a live wait for `subs` on the rig's own project.
 async fn live_wait(state: &State, addr: SocketAddr, body: Value) -> Reply {
     let project = state.deployment.deployment_tenant().as_str().to_string();
-    let path = format!("/v1/projects/{project}/live:wait");
+    let path = format!("/v1/containers/{project}/live:wait");
     preq(addr, "POST", &path, &[], body.to_string().as_bytes()).await
 }
 

@@ -402,7 +402,7 @@ produce span (`results-ml`, program notes); price ST-3's L the same way.
 | Stored bytes | s3lite `live_bytes`; on Tigris a bucket census | bucket, hourly |
 | CPU seconds | wrapper `cpu sample:` lines, or heartbeat `cpu_pct` (fleet) | instance |
 | RSS | `/v1/debug/load` `rss_mb` | instance |
-| Meters (revenue) | `GET /v1/projects/{p}/usage` on the `ROLLUP=1` instance after the drain (`tenants.ts usage`) | tenant |
+| Meters (revenue) | `GET /v1/containers/{p}/usage` on the `ROLLUP=1` instance after the drain (`tenants.ts usage`) | tenant |
 | Correctness | `tenants.ts audit` (every produced stream read back against its ledger) | tenant |
 | Ownership | `/operator/data.json` `local.ring_active`; `fleet/overrides.json` | fleet |
 | Forwarding | `Streams-Forwarded-To` answers; `503 forward_failed` count | fleet |

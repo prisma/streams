@@ -24,7 +24,7 @@ export interface Resolution {
   committed_records: number;
   unresolved: Array<{ stream: string; reason: string }>;
   /** The unresolved streams counted per reason class ("429
-   * project_rate_limit", "404 stream_not_found", "bytes stream", ...). */
+   * container_rate_limit", "404 stream_not_found", "bytes stream", ...). */
   reasons: Record<string, number>;
   /** The reads the cell refused or failed and the read-back asked again,
    * per class: what the resolutions that succeeded had to outlast. */

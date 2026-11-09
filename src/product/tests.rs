@@ -349,7 +349,7 @@ async fn every_auth_refusal_keeps_its_response() {
     );
     const WRONG_CELL: (StatusCode, &str) = (
         StatusCode::MISDIRECTED_REQUEST,
-        "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)",
+        "this cell does not serve the container; re-resolve the container's endpoint (the credential itself is fine)",
     );
     let denied = |message| (StatusCode::FORBIDDEN, message);
     let rows = [
@@ -369,7 +369,7 @@ async fn every_auth_refusal_keeps_its_response() {
         (E::EmptyPrefixArray, UNVERIFIED),
         (
             E::ProjectNotActive(ProjectStatus::Suspended),
-            denied("the project is not active"),
+            denied("the container is not active"),
         ),
         (E::OwnershipVersionMismatch, UNVERIFIED),
         (E::CredentialUnknown, UNVERIFIED),
@@ -482,7 +482,7 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
         (W::PolicyStale(p()), "503 policy_stale true - - -"),
         (
             W::ProjectInactive(p()),
-            "403 project_not_active false - - project_not_active:proj-w",
+            "403 container_not_active false - - container_not_active:proj-w",
         ),
         (
             W::Quota(
@@ -491,27 +491,27 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
                     retry_after_secs: 7,
                 },
             ),
-            "429 project_rate_limit true 7 - project_rate_limit:proj-w",
+            "429 container_rate_limit true 7 - container_rate_limit:proj-w",
         ),
         (
             W::Quota(p(), Q::Concurrency),
-            "429 project_concurrency_limit true - - project_concurrency_limit:proj-w",
+            "429 container_concurrency_limit true - - container_concurrency_limit:proj-w",
         ),
         (
             W::Quota(p(), Q::TrackerCapacity),
-            "503 project_tracker_capacity true - - project_tracker_capacity:proj-w",
+            "503 container_tracker_capacity true - - container_tracker_capacity:proj-w",
         ),
         (
             W::Quota(p(), Q::StreamLimit),
-            "429 stream_limit false - - project_stream_limit:proj-w",
+            "429 stream_limit false - - container_stream_limit:proj-w",
         ),
         (
             W::Quota(p(), Q::QueuedBytes),
-            "429 queued_bytes true - - project_queued_bytes:proj-w",
+            "429 queued_bytes true - - container_queued_bytes:proj-w",
         ),
         (
             W::Quota(p(), Q::MemoryPressure),
-            "429 project_memory_pressure true 1 - project_memory_pressure:proj-w",
+            "429 container_memory_pressure true 1 - container_memory_pressure:proj-w",
         ),
         (
             W::Quota(
@@ -521,7 +521,7 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
                     stored: 2,
                 },
             ),
-            "429 stored_bytes_limit false - - project_stored_bytes:proj-w",
+            "429 stored_bytes_limit false - - container_stored_bytes:proj-w",
         ),
         (
             W::LookupBusy,

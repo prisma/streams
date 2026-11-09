@@ -29,7 +29,7 @@ export function projectView(cfg: IssuerConfig, state: CellState, id: string, p: 
 export function credentialView(id: string, c: CredentialRecord) {
   return {
     id,
-    projectId: c.project_id,
+    containerId: c.project_id,
     displayName: c.display_name ?? id,
     scopes: c.scopes.split(" "),
     streamPrefixes: c.stream_prefixes ? [...c.stream_prefixes] : null,

@@ -88,7 +88,7 @@ test("a fetch failure is replayed at the same sequence before later operations a
 });
 
 // One producer id's server, refusing in the product's order: a cell that
-// no longer serves the project (421, before the product handler), a sealed
+// no longer serves the container (421, before the product handler), a sealed
 // collection (refuse_if_sealed) and a quota before the core, then
 // decide_producer's stale epoch (403) before its duplicate check, which
 // keeps the last sequence and its request: that sequence again with another
@@ -156,7 +156,7 @@ const RESEND =
   "the server answers duplicate: true if it was written and writes it once if not; a different value sent " +
   "first is refused 409 producer_sequence_reused if it was written";
 const MOVED =
-  "send the same value on the same routing key through this producer id on a client for the project's new " +
+  "send the same value on the same routing key through this producer id on a client for the container's new " +
   "endpoint, before any other value on that key: the server answers duplicate: true if it was written and " +
   "writes it once if not; a client made by connect keeps this producer's epoch and sequence there, while one " +
   "made with new StreamsClient({ url }) starts them at 0 unless your state store carries them over";
@@ -172,7 +172,7 @@ for (const row of [
     status: 409, code: "sealed", attempts: 2, delays: [1000], recovery: SEALED },
   { label: "a quota refuses every replay", autoClaim: true, between: quota,
     status: 429, code: "rate_limited", attempts: 4, delays: [1000, 0, 0], recovery: RESEND },
-  { label: "the cell no longer serves the project", autoClaim: true, between: server => { server.wrongCell = true; },
+  { label: "the cell no longer serves the container", autoClaim: true, between: server => { server.wrongCell = true; },
     status: 421, code: "wrong_cell", attempts: 2, delays: [1000], recovery: MOVED },
 ]) {
   test(`a replay refused after a lost answer (${row.label}) is an unknown outcome, stored once`, async () => {

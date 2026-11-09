@@ -100,7 +100,7 @@ describe("GET /v1/admin/metrics", () => {
       gate_n_max: 50,
       profile_ok: true,
       exchanges: {
-        issued: 2, invalid_request: 0, invalid_credential: 1, credential_not_active: 0, project_not_active: 0,
+        issued: 2, invalid_request: 0, invalid_credential: 1, credential_not_active: 0, container_not_active: 0,
         rate_limited: 0, issuer_unavailable: 0,
       },
       rate_limit_refusals: {

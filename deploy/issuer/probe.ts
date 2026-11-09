@@ -15,7 +15,7 @@
 // ready, a project stays ready without another while its policy is
 // unchanged: after a resume, or any other change of its policy (a
 // quota), it is probed again. The cell refuses a resumed project 403
-// project_not_active until it takes the resume, and nothing else tells
+// container_not_active until it takes the resume, and nothing else tells
 // the issuer whether a project was suspended since its last probe.
 //
 // The same probe acknowledges a credential's last change (B3.4, D2): a

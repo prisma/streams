@@ -87,8 +87,8 @@ pub(crate) struct Heartbeat {
     pub out_inflight_peak: i64,
     /// Refusals more instances could relieve since the previous beat (item
     /// 6, #149): reads refused for read memory (429
-    /// `project_memory_pressure`, 503 `read_memory_busy`), projects the
-    /// tracker refused (503 `project_tracker_capacity`), and admission's
+    /// `container_memory_pressure`, 503 `read_memory_busy`), projects the
+    /// tracker refused (503 `container_tracker_capacity`), and admission's
     /// in-flight, RSS and survival sheds. A quota, per-stream, wedged-shard
     /// or fair shed is not one: another instance would not relieve it. The
     /// resources the tiny-stream ramp exhausted while CPU stayed low.

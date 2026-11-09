@@ -162,7 +162,7 @@ impl Controller {
                 if done {
                     self.ops.emit(crate::ops::OpsEvent::new("split_committed", format!("split/{epoch}/{seg_id}"))
                         .stream(&name, &epoch)
-                        .fields(serde_json::json!({"segId":seg_id,"splitAt":split_at,"projectId":name.project_id().as_str()})));
+                        .fields(serde_json::json!({"segId":seg_id,"splitAt":split_at,"containerId":name.project_id().as_str()})));
                 }
                 done
             }
@@ -229,7 +229,7 @@ impl Controller {
                 )
                 .stream(&desc.sref(), &desc.stream_epoch)
                 .fields(
-                    serde_json::json!({"a":a,"b":b,"projectId":desc.sref().project_id().as_str()}),
+                    serde_json::json!({"a":a,"b":b,"containerId":desc.sref().project_id().as_str()}),
                 ),
             );
         }

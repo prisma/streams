@@ -109,7 +109,7 @@ async fn suspend(cell: &mut Cell, t: usize) {
     let got = refusal(cell, &cell.bearers[t]).await;
     assert_eq!(
         got,
-        (403, Some("project_not_active".into())),
+        (403, Some("container_not_active".into())),
         "{}",
         project(t)
     );

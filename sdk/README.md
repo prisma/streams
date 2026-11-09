@@ -20,7 +20,7 @@ it.
 ## Quickstart
 
 1. From the **Streams (beta)** link in Prisma Console, sign in on the
-   Streams beta page, create a project and a credential. Copy the
+   Streams beta page, create a container and a credential. Copy the
    credential now; it is shown once. Keep the whole credential
    (`prisma_streams_<id>.<secret>`) in a server-side secret store as
    `PRISMA_STREAMS_CREDENTIAL`, and never ship it to a browser.
@@ -70,7 +70,7 @@ or a loopback host, because the exchange carries the credential itself:
 anything else is refused before any request (`CredentialExchangeError`
 `insecure_issuer`) unless you pass `allowInsecureIssuer: true` (a
 development issuer on a private network, say). The client's base URL is the
-issuer's `endpoint` and its project is the credential's. An explicit `url`
+issuer's `endpoint` and its container is the credential's. An explicit `url`
 wins, and the client then never follows the issuer's `endpoint`; an issuer
 that names no endpoint needs one (`endpoint_required`). An issuer's
 `endpoint` must be `https:` or a loopback host (`localhost`, `*.localhost`,
@@ -93,10 +93,10 @@ token cache from the first exchange):
 import { StreamsClient, prismaStreamsCredential } from "@prisma/streams";
 
 const credential = prismaStreamsCredential(process.env.PRISMA_STREAMS_CREDENTIAL!, { issuerUrl });
-const first = await credential.exchange(); // { accessToken, expiresIn, projectId, endpoint }
+const first = await credential.exchange(); // { accessToken, expiresIn, containerId, endpoint }
 const client = new StreamsClient({
   url: first.endpoint ?? url,
-  project: first.projectId,
+  container: first.containerId,
   tokenProvider: credential.tokenProvider, // { token, expiresAt }: refreshed before it expires
 });
 ```
@@ -107,7 +107,7 @@ replayed on its `Retry-After` and a transport failure after 1, 2 and 4 s,
 within four attempts. Any other refusal rejects at once with
 `CredentialExchangeError`, whose `code` is the issuer's: `401`
 `invalid_credential`, `403` `credential_not_active` or
-`project_not_active`, `429` `rate_limited` and `503` `issuer_unavailable`
+`container_not_active`, `429` `rate_limited` and `503` `issuer_unavailable`
 (both `retryable`), or `exchange_failed` when the answer names no code. A
 success without a token is `invalid_exchange_response`. A credential that
 is not `prisma_streams_<id>.<secret>` in printable characters without
@@ -175,8 +175,8 @@ at most 1,024 characters, and a producer id or a token may not be empty.
 Each refusal has `status` 0 and `retryable: false`, and neither its message
 nor its fields show the value.
 
-A client with a `project` and a token waits for all its subscriptions
-through one multiplexed long-poll (`POST /v1/projects/{project}/live:wait`):
+A client with a `container` and a token waits for all its subscriptions
+through one multiplexed long-poll (`POST /v1/containers/{container}/live:wait`):
 every `subscribe()` past its catch-up, every consumer iterator and every
 watch subscription share one connection, and each iterator still receives
 exactly its own records, messages or events. A subscription takes part in
@@ -247,7 +247,7 @@ In plain words:
   other error ends them, and so does a consumer loop's failed settlement.
 
 `WrongCellError` is never retried at the current endpoint, including the
-503 fallback form. Resolve the project's new endpoint and create a client
+503 fallback form. Resolve the container's new endpoint and create a client
 for it; refreshing a valid credential cannot fix routing. Ordinary transient
 429/503 responses retry with bounded, abort-aware backoff unless the server
 explicitly marks the error permanent; a plain append's 503 retries only when
@@ -308,7 +308,7 @@ is refreshed only after a `401`, as before.
 ## Producer state ownership
 
 Use one `Producer` instance as the exclusive owner of each producer scope
-(endpoint, project, stream, producer ID, routing key), backed by durable
+(endpoint, container, stream, producer ID, routing key), backed by durable
 state in production. Appends, batches, final seals, epoch bumps and automatic
 reclaims share that instance's per-key queue. Independent routing keys can
 progress concurrently. A state store is not a cross-process lock; coordinate
@@ -354,7 +354,7 @@ message names the recovery, by `cause`:
   are sent first and meet the same answer. A `producer_sequence_reused`
   there tells you the record was written: send the same value (answered
   `duplicate: true`, which moves the sequence on), then the refused one
-  again. After a `421`, send it through a client for the project's new
+  again. After a `421`, send it through a client for the container's new
   endpoint (see "Errors and retries"): a client made by `connect` keys the
   producer's state on the issuer URL, so the producer there keeps its
   epoch and sequence; a client made with `new StreamsClient({ url })` keys
@@ -478,45 +478,45 @@ collection's key. The link is checked when the consumer is configured.
 
 ## Usage
 
-The beta is metered, not charged: the service counts what each project
+The beta is metered, not charged: the service counts what each container
 ingests, reads and stores, and you can read the meter. `await
-client.usage()` reads the project's metered usage for the current UTC
+client.usage()` reads the container's metered usage for the current UTC
 month, `client.usage({ month: "2026-09" })` for another (`YYYY-MM`; a
-malformed month is `400` `invalid_month`). It needs the client's `project`
+malformed month is `400` `invalid_month`). It needs the client's `container`
 (`connect` sets it) and a credential with the `streams.usage.read` scope,
 which a credential has by default, and no stream-prefix restriction: a
 prefix-restricted credential is refused `403` `prefix_denied`, since the
-totals cover every stream of the project. The figures trail an
+totals cover every stream of the container. The figures trail an
 acknowledged write by about 10 s and a read by about 20 s.
 
 ## Limits
 
-The beta's limits (per project and per request) are listed at
+The beta's limits (per container and per request) are listed at
 `<the beta's limits page, published with the beta>`.
 
 Plan your request rate against the free tier's 10 requests a second per
-project. Every request counts one: an append (an `appendMany` of up to
+container. Every request counts one: an append (an `appendMany` of up to
 10,000 records is one request), a read, a consumer pull, a settlement, a
-subscription's or a watch's long poll, a create. A project quiet for 5 s
+subscription's or a watch's long poll, a create. A container quiet for 5 s
 can send 50 requests at once, and then 10 a second. An append that is
 read as it arrives costs 1, plus 2 for each consumer group (its pull and
 its settlement), plus 1 for each subscription waiting on the stream, all
-within a few tens of milliseconds. Keep the project's average near 5
+within a few tens of milliseconds. Keep the container's average near 5
 requests a second: there one or two consumer groups are rarely if ever
 refused (one group stays clear up to about 7 a second; a third group at
 5 meets about one refusal an hour, which the SDK replays). 10 a
 second is a ceiling, not a working rate: a producer whose appends arrive
 at random around an average of 10 a second has some refused even after
 the SDK's replays, so batch records with `appendMany` rather than
-appending them one at a time. A refusal is `429` `project_rate_limit`
+appending them one at a time. A refusal is `429` `container_rate_limit`
 with `Retry-After`; the SDK replays it three times, each wait capped at
 5 s, about 15 s in all (see "Errors and retries"). Creates, deletes,
 seals and stream listings also pay for the registry work they do, from
 a second budget at the same rate (a create costs 11, a listing of 100
 streams about 110), and are refused while it is in debt: at 10 a second
-a project creates about one stream every 1.1 s. A burst is admitted at
+a container creates about one stream every 1.1 s. A burst is admitted at
 once and paid for afterwards, so 50 concurrent creates leave the
-project's next create, delete, seal or listing refused for about 54 s,
+container's next create, delete, seal or listing refused for about 54 s,
 longer than the SDK replays; create streams one at a time (the SDK
 replays the short waits between them) or ahead of when you need them.
 

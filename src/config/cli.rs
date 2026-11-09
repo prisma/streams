@@ -426,7 +426,7 @@ pub struct CliArgs {
     pub(crate) project_stored_bytes_default: u64,
     /// The most projects this instance tracks at once, at about 500 B
     /// each: past it, once its idle entries are evicted, a first-seen
-    /// project is refused 503 `project_tracker_capacity`. Default 32,768
+    /// project is refused 503 `container_tracker_capacity`. Default 32,768
     /// (~16 MiB). At most an eighth of the RSS shed line at 500 B each,
     /// ADMIT_RSS_SHED_MB x 1 MiB / 8 / 500 (131,072 at 500), and the
     /// default while the shed line is off; boot refuses a larger value.

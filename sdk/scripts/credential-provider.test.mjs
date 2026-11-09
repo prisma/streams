@@ -344,7 +344,7 @@ clocked("a { token } without a usable expiresAt is refreshed only after a 401", 
 const { prismaStreamsCredential, CredentialExchangeError, StreamsError, StreamsTransportError } = sdk;
 const CREDENTIAL = "prisma_streams_cred1.s3cr3t-value";
 const ISSUER = "https://issuer.example";
-const EXCHANGED = { accessToken: "jwt-1", tokenType: "Bearer", expiresIn: 3600, projectId: "proj-1", endpoint: "https://cell.example" };
+const EXCHANGED = { accessToken: "jwt-1", tokenType: "Bearer", expiresIn: 3600, containerId: "proj-1", endpoint: "https://cell.example" };
 
 const json = (body, status = 200, headers = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -383,7 +383,7 @@ clocked("the exchange is one POST of the whole credential to the issuer's /v1/to
   const provider = prismaStreamsCredential(CREDENTIAL, { issuerUrl: `${ISSUER}/`, fetch });
   assert.equal(provider.last, undefined);
   const exchanged = await provider.exchange();
-  assert.deepEqual(exchanged, { accessToken: "jwt-1", expiresIn: 3600, projectId: "proj-1", endpoint: "https://cell.example" });
+  assert.deepEqual(exchanged, { accessToken: "jwt-1", expiresIn: 3600, containerId: "proj-1", endpoint: "https://cell.example" });
   assert.deepEqual(provider.last, exchanged);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://issuer.example/v1/token/streams");
@@ -425,7 +425,7 @@ clocked("a 401 invalid_credential rejects at once as CredentialExchangeError, ca
   assert.ok(!JSON.stringify({ ...error, message: error.message, stack: error.stack }).includes("s3cr3t"));
 });
 
-for (const code of ["credential_not_active", "project_not_active"]) {
+for (const code of ["credential_not_active", "container_not_active"]) {
   clocked(`a 403 ${code} rejects at once with its code`, async () => {
     const { fetch, requests } = issuer(envelope(403, code, false));
     const error = await rejection(prismaStreamsCredential(CREDENTIAL, { issuerUrl: ISSUER, fetch }).exchange());
@@ -454,8 +454,8 @@ clocked("the emulator's { error: text } becomes code exchange_failed with that t
   assert.deepEqual([gateway.status, gateway.code, gateway.message, gateway.retryable], [502, "exchange_failed", "HTTP 502", false]);
 });
 
-clocked("an answer without accessToken, expiresIn or projectId rejects as invalid_exchange_response", async () => {
-  const { fetch } = issuer(json({ ...EXCHANGED, accessToken: undefined }), json({ ...EXCHANGED, expiresIn: "3600" }), json({ ...EXCHANGED, projectId: "" }), new Response("not json"));
+clocked("an answer without accessToken, expiresIn or containerId rejects as invalid_exchange_response", async () => {
+  const { fetch } = issuer(json({ ...EXCHANGED, accessToken: undefined }), json({ ...EXCHANGED, expiresIn: "3600" }), json({ ...EXCHANGED, containerId: "" }), new Response("not json"));
   const provider = prismaStreamsCredential(CREDENTIAL, { issuerUrl: ISSUER, fetch });
   for (let i = 0; i < 4; i++) {
     const error = await rejection(provider.exchange());
@@ -602,7 +602,7 @@ class ScopeLog extends MemoryProducerStateStore {
   async load(scope) { this.scopes.push(scope); return super.load(scope); }
 }
 
-clocked("connect exchanges once, serves the issuer's endpoint with its token, and keys producer state on the issuer URL and the credential's project", async () => {
+clocked("connect exchanges once, serves the issuer's endpoint with its token, and keys producer state on the issuer URL and the credential's container", async () => {
   const p = platform({ endpoint: "https://cell.example/" });
   const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: `${ISSUER}/`, fetch: p.fetch });
   assert.equal(p.issued.length, 1);
@@ -615,7 +615,7 @@ clocked("connect exchanges once, serves the issuer's endpoint with its token, an
     ["GET", "https://cell.example/v1/streams/orders", "Bearer jwt-1"],
     ["POST", "https://cell.example/v1/streams/orders/records", "Bearer jwt-1"],
   ]);
-  assert.deepEqual(state.scopes[0], { stream: "orders", producerId: "checkout", routingKey: "", project: "proj-1", endpoint: ISSUER });
+  assert.deepEqual(state.scopes[0], { stream: "orders", producerId: "checkout", routingKey: "", container: "proj-1", endpoint: ISSUER });
 });
 
 clocked("an explicit url is the base whatever the issuer's endpoint, and an issuer without endpoint needs one", async () => {
@@ -831,11 +831,11 @@ test("generateEncryptionKey encodes the bytes WebCrypto fills, URL-safe and with
 
 // ---- client.usage ---------------------------------------------------------
 
-const PROJECT_USAGE = { projectId: "proj 1", month: "2026-10", ingestPayloadBytes: 10, effective: { storageByteSeconds: "0" } };
+const PROJECT_USAGE = { containerId: "proj 1", month: "2026-10", ingestPayloadBytes: 10, effective: { storageByteSeconds: "0" } };
 
 function usageClient(answers, options = {}) {
   const sent = [];
-  const client = new StreamsClient({ url: "https://cell.example", token: "tok", project: "proj 1", ...options, fetch: async (url, init) => {
+  const client = new StreamsClient({ url: "https://cell.example", token: "tok", container: "proj 1", ...options, fetch: async (url, init) => {
     sent.push({ url: String(url), method: init.method, headers: { ...init.headers } });
     const answer = answers[sent.length - 1];
     return answer ? answer() : json(PROJECT_USAGE);
@@ -843,22 +843,22 @@ function usageClient(answers, options = {}) {
   return { client, sent };
 }
 
-test("usage reads the project's usage, for a month when one is given, without the stream key", async () => {
+test("usage reads the container's usage, for a month when one is given, without the stream key", async () => {
   const { client, sent } = usageClient([]);
   assert.deepEqual(await client.usage(), PROJECT_USAGE);
   assert.deepEqual(await client.usage({ month: "2026-09" }), PROJECT_USAGE);
   assert.deepEqual(sent.map(s => [s.method, s.url]), [
-    ["GET", "https://cell.example/v1/projects/proj%201/usage"],
-    ["GET", "https://cell.example/v1/projects/proj%201/usage?month=2026-09"],
+    ["GET", "https://cell.example/v1/containers/proj%201/usage"],
+    ["GET", "https://cell.example/v1/containers/proj%201/usage?month=2026-09"],
   ]);
   assert.deepEqual(sent[0].headers, { authorization: "Bearer tok" });
 });
 
-test("usage needs the client's project and sends nothing without it", async () => {
-  const { client, sent } = usageClient([], { project: undefined });
+test("usage needs the client's container and sends nothing without it", async () => {
+  const { client, sent } = usageClient([], { container: undefined });
   const error = await rejection(client.usage());
   assert.ok(error instanceof StreamsError);
-  assert.deepEqual([error.status, error.code, sent.length], [400, "project_required", 0]);
+  assert.deepEqual([error.status, error.code, sent.length], [400, "container_required", 0]);
 });
 
 test("a prefix-restricted credential's 403 prefix_denied and a 400 invalid_month surface as the server's StreamsError", async () => {
@@ -874,11 +874,11 @@ test("a prefix-restricted credential's 403 prefix_denied and a 400 invalid_month
   assert.equal(sent.length, 2);
 });
 
-clocked("a connected client reads its credential's project's usage", async () => {
+clocked("a connected client reads its credential's container's usage", async () => {
   const p = platform({});
   const client = await StreamsClient.connect({ credential: CREDENTIAL, issuerUrl: ISSUER, fetch: p.fetch });
   await client.usage({ month: "2026-10" });
   assert.deepEqual(p.served.map(c => [c.url, c.headers.authorization]), [
-    ["https://cell.example/v1/projects/proj-1/usage?month=2026-10", "Bearer jwt-1"],
+    ["https://cell.example/v1/containers/proj-1/usage?month=2026-10", "Bearer jwt-1"],
   ]);
 });

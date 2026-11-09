@@ -52,7 +52,7 @@ async fn victim_turn(cell: &Cell, victim: usize) -> ((u16, Option<String>), u16)
 /// ceiling, 16 long-polls, against an instance bound of 64 (112 in all,
 /// below the survival line at four times the bound). Each must hold
 /// exactly its ceiling, bound / k = 8, with every other attempt refused
-/// as its own typed `project_concurrency_limit`, and the victim, the k-th
+/// as its own typed `container_concurrency_limit`, and the victim, the k-th
 /// tenant, is admitted to append and read. The plan's "k + 1 tenants at
 /// their ceilings" cannot leave room at ceiling = bound / k, so the crowd
 /// is k - 1 (step 1 notes).
@@ -91,7 +91,7 @@ async fn a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted() {
             let typed = (*st, code.as_deref());
             assert_eq!(
                 typed,
-                (429, Some("project_concurrency_limit")),
+                (429, Some("container_concurrency_limit")),
                 "{}",
                 project(i)
             );
@@ -171,7 +171,7 @@ async fn a_crowd_without_subscription_quotas_holds_exactly_its_share_of_live_con
         assert_eq!(open, 16 / K, "{} subscribed", project(i));
         for (st, code) in answers.iter().filter(|(st, _)| *st != 200) {
             let typed = (*st, code.as_deref());
-            let want = (429, Some("project_concurrency_limit"));
+            let want = (429, Some("container_concurrency_limit"));
             assert_eq!(typed, want, "{}", project(i));
         }
     }
@@ -569,7 +569,7 @@ async fn an_anonymous_denial_flood_never_drops_the_victims_denial() {
         assert_eq!(st, 401);
     })
     .await;
-    let probe = format!("/v1/projects/{}/usage", project(1));
+    let probe = format!("/v1/containers/{}/usage", project(1));
     assert_eq!(cell.call(0, "GET", &probe, b"").await.0, 404);
     let events = journal(&cell.state).await;
     let mine = events
@@ -779,7 +779,7 @@ async fn a_create_pays_for_its_registry_writes() {
         answers.push((st, error_code(&b), headers.get("retry-after").cloned()));
     }
     let created = (201, None, None);
-    let spent = Some("project_rate_limit".to_string());
+    let spent = Some("container_rate_limit".to_string());
     let refused = (429, spent, Some("1".to_string()));
     let shown = format!("creates weighing {weight} at {weight} requests a second");
     assert_eq!(
@@ -858,7 +858,7 @@ async fn a_listing_pays_for_the_descriptors_it_reads() {
     let retry = headers
         .get("retry-after")
         .and_then(|s| s.parse::<u64>().ok());
-    let spent = Some("project_rate_limit".to_string());
+    let spent = Some("container_rate_limit".to_string());
     assert_eq!(
         (status, error_code(&body)),
         (429, spent),

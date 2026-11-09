@@ -136,10 +136,10 @@ maybe("the tiny Layer B manifest runs clean on the real binary: oracle, meters, 
   expect(h9.bursts.length).toBeGreaterThan(0);
   // Every H9b reader read its stalled body whole or was refused with a
   // code. H9b runs at the k ceilings: a reader admitted after another's
-  // page put the project in read debt is refused 429 project_rate_limit
+  // page put the project in read debt is refused 429 container_rate_limit
   // (one of 8 in one of the round-4 lane's two runs), and one that finds
   // the project's read memory full waits and may then be refused 429
-  // project_memory_pressure. The first reader admitted meets neither, so
+  // container_memory_pressure. The first reader admitted meets neither, so
   // at least one holds a stalled body.
   const stalled = h9bAnswers(h9bPhase);
   const typed = Object.values(stalled.typed).reduce((a, n) => a + n, 0);

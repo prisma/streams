@@ -594,7 +594,7 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
     let (status, msg, retryable) = match refusal {
         R::WrongCell => (
             StatusCode::MISDIRECTED_REQUEST,
-            "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)",
+            "this cell does not serve the container; re-resolve the container's endpoint (the credential itself is fine)",
             false,
         ),
         R::FeedStale => (
@@ -602,7 +602,7 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
             "this cell's authorization data is stale; retry",
             true,
         ),
-        R::Denied(D::Project) => (StatusCode::FORBIDDEN, "the project is not active", false),
+        R::Denied(D::Project) => (StatusCode::FORBIDDEN, "the container is not active", false),
         R::Denied(D::Credential) => (StatusCode::FORBIDDEN, "the credential is not active", false),
         R::Denied(D::Scope) => (
             StatusCode::FORBIDDEN,
@@ -805,8 +805,8 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
         crate::quota::QuotaRefusal::Rate { retry_after_secs } => {
             let mut r = perr(
                 StatusCode::TOO_MANY_REQUESTS,
-                "project_rate_limit",
-                "the project's rate quota is exhausted; retry",
+                "container_rate_limit",
+                "the container's rate quota is exhausted; retry",
                 None,
                 true,
             );
@@ -817,23 +817,23 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
         }
         crate::quota::QuotaRefusal::Concurrency => perr(
             StatusCode::TOO_MANY_REQUESTS,
-            "project_concurrency_limit",
-            "too many inflight requests for this project; retry",
+            "container_concurrency_limit",
+            "too many inflight requests for this container; retry",
             None,
             true,
         ),
         crate::quota::QuotaRefusal::TrackerCapacity => perr(
             StatusCode::SERVICE_UNAVAILABLE,
-            "project_tracker_capacity",
-            "this instance cannot track additional projects right now; retry",
+            "container_tracker_capacity",
+            "this instance cannot track additional containers right now; retry",
             None,
             true,
         ),
         crate::quota::QuotaRefusal::MemoryPressure => {
             let mut r = perr(
                 StatusCode::TOO_MANY_REQUESTS,
-                "project_memory_pressure",
-                "the project's estimated memory pressure is over its per-project backstop; retry",
+                "container_memory_pressure",
+                "the container's estimated memory pressure is over its per-container backstop; retry",
                 None,
                 true,
             );
@@ -845,13 +845,13 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
     crate::audit::tag(
         resp,
         match refusal {
-            crate::quota::QuotaRefusal::Rate { .. } => "project_rate_limit",
-            crate::quota::QuotaRefusal::Concurrency => "project_concurrency_limit",
-            crate::quota::QuotaRefusal::TrackerCapacity => "project_tracker_capacity",
-            crate::quota::QuotaRefusal::StreamLimit => "project_stream_limit",
-            crate::quota::QuotaRefusal::QueuedBytes => "project_queued_bytes",
-            crate::quota::QuotaRefusal::MemoryPressure => "project_memory_pressure",
-            crate::quota::QuotaRefusal::StoredBytes { .. } => "project_stored_bytes",
+            crate::quota::QuotaRefusal::Rate { .. } => "container_rate_limit",
+            crate::quota::QuotaRefusal::Concurrency => "container_concurrency_limit",
+            crate::quota::QuotaRefusal::TrackerCapacity => "container_tracker_capacity",
+            crate::quota::QuotaRefusal::StreamLimit => "container_stream_limit",
+            crate::quota::QuotaRefusal::QueuedBytes => "container_queued_bytes",
+            crate::quota::QuotaRefusal::MemoryPressure => "container_memory_pressure",
+            crate::quota::QuotaRefusal::StoredBytes { .. } => "container_stored_bytes",
         },
     )
 }
@@ -2701,7 +2701,7 @@ pub(crate) fn internal_sref(
 ) -> Result<crate::tenant::TenantStreamRef, Response> {
     let invalid = |why: &str| perr(StatusCode::BAD_REQUEST, "invalid_target", why, None, false);
     let raw = headers
-        .get("streams-internal-project")
+        .get("streams-internal-container")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| invalid("internal requests must carry the project header"))?;
     let project =
@@ -2772,7 +2772,7 @@ pub(crate) fn verify_internal_target(
     // project this is a pure corruption check — but it stays, because
     // a silent project swap here would be a cross-tenant bind.
     if let Some(p) = headers
-        .get("streams-internal-project")
+        .get("streams-internal-container")
         .and_then(|v| v.to_str().ok())
         && p != desc.project_id.as_str()
     {
@@ -3639,12 +3639,12 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
             crate::audit::tag(
                 perr(
                     StatusCode::FORBIDDEN,
-                    "project_not_active",
-                    "the project is not active",
+                    "container_not_active",
+                    "the container is not active",
                     None,
                     false,
                 ),
-                "project_not_active",
+                "container_not_active",
             ),
             &project,
         ),

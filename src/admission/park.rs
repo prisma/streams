@@ -343,7 +343,7 @@ pub(crate) async fn claim_read_until(claim: Claim, bytes: u64) -> bool {
 
 /// Why the served request's read was refused its first sealed chunk, if it
 /// was: its failure answers that refusal (503 `read_memory_busy` or 429
-/// `project_memory_pressure`) rather than a storage failure.
+/// `container_memory_pressure`) rather than a storage failure.
 pub(crate) fn read_refused() -> Option<ReadRefusal> {
     REQUEST
         .try_with(|request| request.refused.get().copied())

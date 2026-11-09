@@ -99,11 +99,11 @@ function placementRefusal(e: unknown, w: string, cap: number): Refusal {
 function deleteRefusal(state: CellState, w: string, id: string): Refusal | null {
   const p = ownProject(state, w, id);
   if (p === undefined) return new Refusal(404, "not_found", `workspace ${w} has no Streams project ${id}`);
-  if (p.phase !== "active") return new Refusal(409, "project_not_active", `project ${id} is already being deleted`);
+  if (p.phase !== "active") return new Refusal(409, "container_not_active", `project ${id} is already being deleted`);
   // The owner looks before an abusive project's data goes: only
   // `cell-admin offboard` takes a suspended project (its canary witness).
   if (p.status !== "active") {
-    return new Refusal(409, "project_not_active",
+    return new Refusal(409, "container_not_active",
       `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`);
   }
   return null;

@@ -34,7 +34,7 @@ Subcommands (run-local.sh drives all of them):
             <run>/store-<label>.json (each server's /v1/debug/store, and
             its /v1/debug/timings pump and tail-ring counters per shard).
   usage     the product meters after the drain: polls
-            GET /v1/projects/{project}/usage on the rollup instance until
+            GET /v1/containers/{project}/usage on the rollup instance until
             it settles, then writes <run>/usage.json (plus every server's
             full /v1/debug/usage).
   posture   <run>/posture.json: the binaries run (path, sha256), the
@@ -580,7 +580,7 @@ def stream_usage(args) -> dict:
 
 def cmd_usage(args) -> int:
     expect = expected_meters(args.run)
-    url = f"{args.rollup.rstrip('/')}/v1/projects/{args.project}/usage"
+    url = f"{args.rollup.rstrip('/')}/v1/containers/{args.project}/usage"
     deadline = time.time() + args.max_wait_secs
     prev = None
     polls = 0

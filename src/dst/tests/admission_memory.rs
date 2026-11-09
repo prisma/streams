@@ -375,7 +375,7 @@ async fn pm_enforce_rig(
 
 /// Round-13 memory-pressure backstop on the wire: a project over its
 /// per-project pressure watermark gets the typed, retryable 429
-/// `project_memory_pressure` on NEW appends ONLY — reads continue,
+/// `container_memory_pressure` on NEW appends ONLY — reads continue,
 /// the refusal is project-scoped, and dropping below the release
 /// point restores appends (hysteresis pinned at the unit level).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
@@ -426,7 +426,7 @@ async fn project_memory_pressure_throttles_new_appends_only() {
     .await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "project_memory_pressure");
+    assert_eq!(v["error"]["code"], "container_memory_pressure");
     assert_eq!(v["error"]["retryable"], true);
     assert_eq!(h.get("retry-after").map(String::as_str), Some("1"));
 
@@ -571,7 +571,7 @@ async fn touch_tiny(
 /// 1,000 are admitted with the latch clear and the modelled pressure
 /// exactly 1,000 x (8,192 + f). Its first refused write is stream k + 1,
 /// k = floor(line / (8,192 + f)) + 1 the first count whose pressure passes
-/// the line: 429 `project_memory_pressure`, `retry-after: 1`. The model
+/// the line: 429 `container_memory_pressure`, `retry-after: 1`. The model
 /// reports version 3 at a weight of 8,192.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_dirty_tiny_stream_is_charged_eight_kib_above_its_frames() {
@@ -614,7 +614,7 @@ async fn a_dirty_tiny_stream_is_charged_eight_kib_above_its_frames() {
         k + 1,
         429,
         Some("1".to_string()),
-        "project_memory_pressure".into(),
+        "container_memory_pressure".into(),
     );
     assert_eq!(got, want, "f = {f}");
     let model = crate::quota::pressure_model_json();

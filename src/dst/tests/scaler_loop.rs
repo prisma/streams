@@ -167,7 +167,7 @@ async fn the_loop_splits_a_hot_segment_at_its_load_weighted_median() {
             format!("split/{epoch}/0"),
             Some("proj-test".to_owned()),
             Some(epoch.to_owned()),
-            serde_json::json!({"segId": 0, "splitAt": SPLIT_AT, "projectId": "proj-test"}),
+            serde_json::json!({"segId": 0, "splitAt": SPLIT_AT, "containerId": "proj-test"}),
         )
     );
     assert_split_published(state, &sref, epoch).await;

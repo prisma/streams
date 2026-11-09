@@ -38,7 +38,7 @@ function fakeRelease(root: string, stage = "production", cellId = "cell_sc1"): s
 const jwt = (claims: object) =>
   ["{}", JSON.stringify(claims), "sig"].map((p) => Buffer.from(p).toString("base64url")).join(".");
 
-async function rig(identity: Partial<Identity> = {}, claims: object = { project_id: CANARY, cell_id: "cell_sc1" }) {
+async function rig(identity: Partial<Identity> = {}, claims: object = { container_id: CANARY, cell_id: "cell_sc1" }) {
   const c = await initCell();
   const v = readBundle(c.state).policies.feed_version;
   const bearer = `bearer-${Math.random().toString(36).slice(2)}`;
@@ -71,7 +71,7 @@ describe("cell-check", () => {
       `cell-check: production at ${r.cell.url} must run ${SHA} (${COMMIT}) and serve feeds ${r.v}/${r.v}`,
       "CELL_CHECK_PASS production: identity, feeds and the canary round trip",
     ]);
-    const usage = `GET /v1/projects/${CANARY}/usage`;
+    const usage = `GET /v1/containers/${CANARY}/usage`;
     expect(r.cell.requests).toEqual([
       "GET /health",
       "GET /v1/debug/load",
@@ -157,10 +157,10 @@ describe("cell-check", () => {
   }, 60_000);
 
   test("refuses a canary token of another project, and a state of another cell, before it asks the cell anything", async () => {
-    const r = await rig({}, { project_id: "proj_customer", cell_id: "cell_sc1" });
+    const r = await rig({}, { container_id: "proj_customer", cell_id: "cell_sc1" });
     expect(await check(r.args)).toEqual({
       code: 1, out: "",
-      err: `cell-check: the canary token is for project proj_customer on cell_sc1, not ${CANARY} on cell_sc1\n`,
+      err: `cell-check: the canary token is for container proj_customer on cell_sc1, not ${CANARY} on cell_sc1\n`,
     });
     const s = await rig();
     const args = [...s.args];

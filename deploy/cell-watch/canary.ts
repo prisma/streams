@@ -25,7 +25,7 @@
 //                                    then the GET again. A create weighs
 //                                    11 on the project's 5 requests/s
 //                                    store budget, and another create is
-//                                    refused 429 project_rate_limit while
+//                                    refused 429 container_rate_limit while
 //                                    it is in debt (edge record #143), so
 //                                    a watch that starts beside a running
 //                                    one (a deploy's overlap) or after it

@@ -11,9 +11,9 @@
 //   offset at byte 37, audit.ts cursorOffset).
 // - GET …/records, :long-poll, :sse, consumers (PUT, :pull, :settle; a
 //   pull with nothing to lease waits up to its waitMs for an append),
-//   POST /v1/projects/{p}/live:wait (tails from `now` pinned at once, else
+//   POST /v1/containers/{p}/live:wait (tails from `now` pinned at once, else
 //   the first ready tail pages and group leases, waiting up to waitMs for
-//   an append), GET /v1/streams (catalog), DELETE, GET /v1/projects/{p}/usage (meters
+//   an append), GET /v1/streams (catalog), DELETE, GET /v1/containers/{p}/usage (meters
 //   counted the way the generators count them) and the watch capability
 //   path (403 `watch_unauthorized`; each request recorded in `watches`,
 //   `watchHold` holds every one that arrives while it is set, and
@@ -257,9 +257,9 @@ export class FakeCell {
       }
       return refusal.code ? error(refusal.status, refusal.code) : new Response("upstream gone", { status: refusal.status });
     }
-    const live = /^\/v1\/projects\/([^/]+)\/live:wait$/.exec(path);
-    if (live) return live[1] === project ? this.liveWait(project, req) : error(404, "unknown_project");
-    const usage = /^\/v1\/projects\/([^/]+)\/usage$/.exec(path);
+    const live = /^\/v1\/containers\/([^/]+)\/live:wait$/.exec(path);
+    if (live) return live[1] === project ? this.liveWait(project, req) : error(404, "unknown_container");
+    const usage = /^\/v1\/containers\/([^/]+)\/usage$/.exec(path);
     if (usage) return usage[1] === project ? json(200, { ...this.meter(project) }) : error(403, "forbidden");
     const ns = this.ns(project);
     if (path === "/v1/streams" && req.method === "GET") {

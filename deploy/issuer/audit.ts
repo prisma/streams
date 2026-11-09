@@ -47,7 +47,7 @@ export type ExchangeOutcome =
   | "invalid_request"
   | "invalid_credential"
   | "credential_not_active"
-  | "project_not_active"
+  | "container_not_active"
   | "rate_limited"
   | "issuer_unavailable";
 
@@ -85,7 +85,7 @@ export class Audit {
     invalid_request: 0,
     invalid_credential: 0,
     credential_not_active: 0,
-    project_not_active: 0,
+    container_not_active: 0,
     rate_limited: 0,
     issuer_unavailable: 0,
   };

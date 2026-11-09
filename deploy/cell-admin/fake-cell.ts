@@ -29,7 +29,7 @@ export class FakeCell {
   now: () => number = () => Date.now();
   /// Phase B's store bucket (P1 (b′)), per project, when set: a listing
   /// of N streams weighs N + 10 and a delete 11, debited after it is
-  /// served; both are refused 429 project_rate_limit while the level is
+  /// served; both are refused 429 container_rate_limit while the level is
   /// below 0, with Retry-After from the debt. The level refills at
   /// `perSec` on the cell's clock and holds at most one second of it.
   storeOps?: { perSec: number };
@@ -75,10 +75,10 @@ export class FakeCell {
     const policy = (this.live.policies.containers as any[]).find((p) => p.container_id === claims.container_id);
     if (!policy) return this.reply(421, "wrong_cell");
     if (claims.generation !== policy.generation) return this.reply(401, "ownership_version_mismatch");
-    if (policy.status !== "active") return this.reply(403, "project_not_active");
+    if (policy.status !== "active") return this.reply(403, "container_not_active");
     const cred = (this.live.grants.credentials as any[]).find((c) => c.credential_id === claims.credential_id);
     if (!cred) return this.reply(401, "credential_unknown");
-    if (cred.container_id !== claims.container_id) return this.reply(401, "credential_project_mismatch");
+    if (cred.container_id !== claims.container_id) return this.reply(401, "credential_container_mismatch");
     if (cred.status !== "active") return this.reply(403, "credential_not_active");
     if (cred.expires_at !== null && cred.expires_at <= Math.floor(this.now() / 1000)) {
       return this.reply(401, "credential_expired");
@@ -118,12 +118,12 @@ export class FakeCell {
     if (who instanceof Response) return who;
     if (this.rateLimitNext > 0) {
       this.rateLimitNext -= 1;
-      return this.reply(429, "project_rate_limit", undefined, { "retry-after": "0" });
+      return this.reply(429, "container_rate_limit", undefined, { "retry-after": "0" });
     }
     const store = this.storeLevel(who.project);
     if (store && store.level < 0) {
       const wait = Math.max(1, Math.ceil(-store.level / this.storeOps!.perSec));
-      return this.reply(429, "project_rate_limit", undefined, { "retry-after": String(wait) });
+      return this.reply(429, "container_rate_limit", undefined, { "retry-after": String(wait) });
     }
     const { response, weight } = this.serve(req, url, who.project);
     if (store) store.level -= weight;

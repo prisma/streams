@@ -323,7 +323,7 @@ answer; pre-auth keeps only catastrophic survival accounting).
 `PROJECT_MEMORY_PRESSURE_BYTES`, release below
 `PROJECT_MEMORY_RELEASE_PCT`% of it. While engaged, new appends
 (product and raw adapter) receive a typed, project-audited refusal —
-`429` body error `project_memory_pressure`, `Retry-After: 1` —
+`429` body error `container_memory_pressure`, `Retry-After: 1` —
 lossless by construction (the record was never accepted). Existing
 subscriptions, reads, and retention are untouched. One ops event per
 engage and per release (never per refusal). A project with any

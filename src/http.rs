@@ -1064,7 +1064,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/streams/{*name}", aliased(any(product_entry_axum)))
         .route(
-            "/v1/projects/{project}/usage",
+            "/v1/containers/{container}/usage",
             axum::routing::get(project_usage_axum).options(product_preflight),
         )
         .route(
@@ -1514,7 +1514,7 @@ async fn billing_readiness_axum(
     .into_response()
 }
 
-/// GET /v1/projects/{project}/usage (round-22 doc item D3): project-
+/// GET /v1/containers/{container}/usage (round-22 doc item D3): project-
 /// level usage, bearer-gated like the per-stream endpoint.
 async fn project_usage_axum(
     State(state): State<Arc<AppState>>,

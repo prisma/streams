@@ -1,4 +1,4 @@
-//! `POST /v1/projects/{project}/live:wait`: the multiplexed wait (layout 6A
+//! `POST /v1/containers/{container}/live:wait`: the multiplexed wait (layout 6A
 //! package 2, docs/refactor/WIRE-MATRIX.md §2.24). One long-poll carries
 //! every tail, consumer-group pull and watch a client waits on, so a client
 //! waiting on twenty streams holds one connection, one place in the live
@@ -61,7 +61,7 @@ mod wire;
 
 /// The route's path, for the router and for the admission controller's
 /// data-plane test.
-const PATH: &str = "/v1/projects/{project}/live:wait";
+const PATH: &str = "/v1/containers/{container}/live:wait";
 /// The largest body a request may send: 256 subscriptions of about 1 KiB.
 const MAX_BODY: usize = 256 << 10;
 
@@ -77,7 +77,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 pub(crate) fn data_plane(path: &str) -> bool {
     path.starts_with("/v1/stream")
         || path
-            .strip_prefix("/v1/projects/")
+            .strip_prefix("/v1/containers/")
             .is_some_and(|rest| rest.ends_with("/live:wait"))
 }
 
@@ -134,12 +134,12 @@ async fn admitted(state: &Arc<AppState>, project: String, req: axum::extract::Re
             crate::audit::tag(
                 perr(
                     StatusCode::NOT_FOUND,
-                    "unknown_project",
-                    "the path does not name this request's project",
+                    "unknown_container",
+                    "the path does not name this request's container",
                     None,
                     false,
                 ),
-                "unknown_project",
+                "unknown_container",
             ),
             &tenant,
         );
@@ -802,10 +802,10 @@ fn stream_key(
 mod tests {
     #[test]
     fn the_route_is_data_plane_and_nothing_else_under_projects_is() {
-        assert!(super::data_plane("/v1/projects/p1/live:wait"));
+        assert!(super::data_plane("/v1/containers/p1/live:wait"));
         assert!(super::data_plane("/v1/streams/a"));
         assert!(super::data_plane("/v1/stream/a"));
-        assert!(!super::data_plane("/v1/projects/p1/usage"));
+        assert!(!super::data_plane("/v1/containers/p1/usage"));
         assert!(!super::data_plane("/v1/queues/q"));
     }
 }

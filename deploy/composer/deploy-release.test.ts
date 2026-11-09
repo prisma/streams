@@ -100,7 +100,7 @@ async function world(): Promise<World> {
   writeFileSync(tokenFile, api.token, { mode: 0o600 });
   const c = await initCell();
   const v = readBundle(c.state).policies.feed_version;
-  const canary = ["{}", JSON.stringify({ project_id: CANARY, cell_id: "cell_sc1" }), "s"]
+  const canary = ["{}", JSON.stringify({ container_id: CANARY, cell_id: "cell_sc1" }), "s"]
     .map((p) => Buffer.from(p).toString("base64url"))
     .join(".");
   const cell = new FakeStreamsCell({ commit: "none", sha: "none", policies: v, grants: v }, "operator-bearer", canary, CANARY);

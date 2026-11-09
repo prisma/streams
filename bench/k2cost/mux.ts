@@ -1,5 +1,5 @@
 // mux: a tenant's whole read side through ONE multiplexed wait (layout 6A
-// package 2, `POST /v1/projects/{p}/live:wait`): a tail on every stream and
+// package 2, `POST /v1/containers/{p}/live:wait`): a tail on every stream and
 // a consumer group on the first --group-streams of them, in one long-poll
 // loop, as an SDK client with `liveMux` waits. It replaces a `tail` phase
 // plus a `group` phase of the same tenant (profile S: 20 tails, a group on
@@ -79,7 +79,7 @@ export async function mux(ctx: Ctx, signal: AbortSignal): Promise<Record<string,
   const spec = produceSpec(o, false);
   const prod = spec ? new Producer(ctx, spec) : null;
   const produced = prod?.run(signal);
-  const path = `/v1/projects/${encodeURIComponent(project)}/live:wait`;
+  const path = `/v1/containers/${encodeURIComponent(project)}/live:wait`;
   meter.connect(1);
   try {
     while (!signal.aborted) {

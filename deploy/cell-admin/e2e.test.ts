@@ -223,7 +223,7 @@ maybe("a suspended project is offboarded through the canary witness on the real 
   expect((await run("suspend", "--state", c.state, "--project", "proj_a")).code).toBe(0);
   publish(c.state, feeds);
   await until("the suspension to reach the cell", 30, async () =>
-    (await catalogAnswer(cell, token)) === "403 project_not_active" ? true : undefined);
+    (await catalogAnswer(cell, token)) === "403 container_not_active" ? true : undefined);
 
   // The first run revokes the credentials while the project stays
   // suspended, and moves the canary's catalog-read credential.
@@ -246,7 +246,7 @@ maybe("a suspended project is offboarded through the canary witness on the real 
   // in a bundle of its own: the cell holds the revocation, beside the
   // suspension, before it can see that bundle.
   await until("the run to resume proj_a", 60, async () => (statusIn(c.state, "proj_a") === "active" ? true : undefined));
-  expect([await canaryAnswer(), await catalogAnswer(cell, token)]).toEqual(["200", "403 project_not_active"]);
+  expect([await canaryAnswer(), await catalogAnswer(cell, token)]).toEqual(["200", "403 container_not_active"]);
   // Then the cell refuses the same token as revoked.
   publish(c.state, feeds);
   await until("the resume to reach the cell", 30, async () =>

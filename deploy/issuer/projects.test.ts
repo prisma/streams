@@ -66,7 +66,7 @@ describe("creating a project", () => {
     });
     expect(body.endpoint).toBe(CELL_ORIGIN);
     expect(body.credential).toEqual({
-      id: cid, projectId: id, displayName: "default", scopes: [...CUSTOMER_SCOPES], streamPrefixes: null, grantVersion: 1,
+      id: cid, containerId: id, displayName: "default", scopes: [...CUSTOMER_SCOPES], streamPrefixes: null, grantVersion: 1,
       status: "active", valueHint: raw.slice(-6), createdAt: state.credentials[cid].created_at, expiresAt: null, createdBy: by,
     });
     // The state: the project and its credential, the secret's hash only.
@@ -90,7 +90,7 @@ describe("creating a project", () => {
     const minted = await m.issuer.fetch(new Request("https://issuer.example.com/v1/token/streams", {
       method: "POST", headers: { authorization: `StreamsCredential ${body.secret}` },
     }));
-    expect([minted.status, (await minted.json()).projectId]).toEqual([200, id]);
+    expect([minted.status, (await minted.json()).containerId]).toEqual([200, id]);
     expect(managementAudits(cell)).toEqual([{
       kind: "management", at: new Date(m.clock.t).toISOString(), cell_id: CELL,
       actor: { user_id: "usr_ws_a", email: "owner@ws_a.example.com", workspace_id: "ws_a" },
@@ -500,7 +500,7 @@ describe("a project's readiness", () => {
     ]);
     expect(statuses()).toEqual([200]);
     // The cell takes the suspension, then the owner resumes the project:
-    // not ready while the cell refuses it 403 project_not_active, ready
+    // not ready while the cell refuses it 403 container_not_active, ready
     // once it takes the resume.
     fake.publish(readBundle(cell.state));
     await admin(cell, "resume", "--project", id);
@@ -628,7 +628,7 @@ describe("deleting a project", () => {
     await admin(cell, "suspend", "--project", id);
     await m.cache.refresh();
     expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
-      409, refusal("project_not_active", `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`),
+      409, refusal("container_not_active", `project ${id} is suspended: the Streams beta's operator resumes it before it can be deleted`),
     ]);
     await admin(cell, "resume", "--project", id);
     await m.cache.refresh();
@@ -637,7 +637,7 @@ describe("deleting a project", () => {
     ]);
     expect((await m.send("DELETE", `${PROJECTS}/${id}`, a, {})).status).toBe(202);
     expect(await answer(await m.send("DELETE", `${PROJECTS}/${id}`, a))).toEqual([
-      409, refusal("project_not_active", `project ${id} is already being deleted`),
+      409, refusal("container_not_active", `project ${id} is already being deleted`),
     ]);
     expect(await answer(await m.send("DELETE", `${PROJECTS}/sp_other`, a))).toEqual([
       404, refusal("not_found", "workspace ws_a has no Streams project sp_other"),

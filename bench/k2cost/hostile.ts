@@ -387,7 +387,7 @@ export async function cost(ctx: Ctx, signal: AbortSignal): Promise<Record<string
       else if (kind === "create") {
         r = await ctx.http.call("PUT", `/v1/streams/${encName(`x/${ctx.seed}-${i}`)}`, { body: '{"format":{"kind":"json"}}', contentType: "application/json" });
       } else if (kind === "missing") r = await ctx.http.call("GET", `/v1/streams/${encName(`never/${ctx.seed}-${i}`)}/records?cursor=beginning`);
-      else r = await ctx.http.call("GET", `/v1/projects/${encodeURIComponent(`${ctx.owner?.project ?? "p"}_other`)}/usage`);
+      else r = await ctx.http.call("GET", `/v1/containers/${encodeURIComponent(`${ctx.owner?.project ?? "p"}_other`)}/usage`);
       bump(answers[kind]!, answer(r));
     };
     const p = send().finally(() => inflight.delete(p));
@@ -548,13 +548,13 @@ export const h11tFresh = (env: RunEnv, leg: LegSpec, signal: AbortSignal) => tim
 
 /** The answers a cell gives a request it refuses for load, before it
  * looks at the name or project the request names: the project's request
- * rate or store budget (429 project_rate_limit), its read memory line
- * (429 project_memory_pressure), the instance's read memory (503
+ * rate or store budget (429 container_rate_limit), its read memory line
+ * (429 container_memory_pressure), the instance's read memory (503
  * read_memory_busy) and the pre-auth survival bound (503 overloaded). A
  * probe pair with one of them on either side tells nothing about the name;
  * any other answer, a 503 or 429 without one of these codes included, is
  * judged. */
-const PROBE_LOAD_REFUSALS = new Set(["429:project_rate_limit", "429:project_memory_pressure", "503:read_memory_busy", "503:overloaded"]);
+const PROBE_LOAD_REFUSALS = new Set(["429:container_rate_limit", "429:container_memory_pressure", "503:read_memory_busy", "503:overloaded"]);
 const loadRefused = (r: Resp): boolean => PROBE_LOAD_REFUSALS.has(answer(r));
 
 const VOLATILE = /^(date|content-length|x-streams-.*|.*request-id.*|traceparent|server-timing)$/;
@@ -628,8 +628,8 @@ export async function probes(env: RunEnv, leg: LegSpec, signal: AbortSignal): Pr
         const r1 = await http.call("GET", `/v1/streams/${encName(name)}/records?cursor=beginning`);
         const r2 = await http.call("GET", `/v1/streams/${encName(never)}/records?cursor=beginning`);
         const ghost = `proj_never_${env.plan.manifest.name.replaceAll("-", "_")}_${i}`;
-        const u1 = await http.call("GET", `/v1/projects/${encodeURIComponent(b.id)}/usage`);
-        const u2 = await http.call("GET", `/v1/projects/${encodeURIComponent(ghost)}/usage`);
+        const u1 = await http.call("GET", `/v1/containers/${encodeURIComponent(b.id)}/usage`);
+        const u2 = await http.call("GET", `/v1/containers/${encodeURIComponent(ghost)}/usage`);
         const sides: Array<[string, Resp, Resp]> = [["name", r1, r2], ["usage", u1, u2]];
         if ([r1, r2, u1, u2].some(loadRefused)) {
           unjudged.pairs++;

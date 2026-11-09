@@ -47,7 +47,7 @@ describe("a project's credentials", () => {
     const state = cellState(cell);
     const by = { userId: "usr_ws_a", email: "owner@ws_a.example.com" };
     expect(body.credential).toEqual({
-      id: cid, projectId: id, displayName: "ci", scopes: ["streams.records.read", "streams.catalog.read"],
+      id: cid, containerId: id, displayName: "ci", scopes: ["streams.records.read", "streams.catalog.read"],
       streamPrefixes: ["orders"], grantVersion: 1, status: "active", valueHint: raw.slice(-6),
       createdAt: state.credentials[cid].created_at, expiresAt, createdBy: by,
     });
@@ -198,7 +198,7 @@ describe("a project's credentials", () => {
     expect(cellState(cell).feed_version).toBe(before);
   });
 
-  test("answers 404 for a project that is not the workspace's, and 409 project_not_active for one being deleted", async () => {
+  test("answers 404 for a project that is not the workspace's, and 409 container_not_active for one being deleted", async () => {
     const { cell, m, a, id, path } = await withProject();
     await customerSecret(cell, "sp_other");
     await m.cache.refresh();
@@ -210,7 +210,7 @@ describe("a project's credentials", () => {
     await admin(cell, "offboard", "--project", id);
     await m.cache.refresh();
     expect(await answer(await m.send("POST", path, a, {}))).toEqual([
-      409, refusal("project_not_active", `project ${id} is being deleted`),
+      409, refusal("container_not_active", `project ${id} is being deleted`),
     ]);
     // The listing still answers: every credential revoked.
     const listed = (await (await m.get(path, a)).json()).credentials;

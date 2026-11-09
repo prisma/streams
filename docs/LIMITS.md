@@ -140,11 +140,11 @@ binds before either on a shared cell.
 
 | Cap | Answer | Retry |
 |---|---|---|
-| A project's request rate or byte rate | `429 project_rate_limit` | `Retry-After`: the seconds until the bucket has the request's tokens |
-| A project's requests in flight, or its live subscriptions | `429 project_concurrency_limit` | retryable |
+| A project's request rate or byte rate | `429 container_rate_limit` | `Retry-After`: the seconds until the bucket has the request's tokens |
+| A project's requests in flight, or its live subscriptions | `429 container_concurrency_limit` | retryable |
 | A project's streams | `429 stream_limit` | not retryable until a stream is deleted |
 | A project's queued appended bytes | `429 queued_bytes` | retryable, once in-flight appends decide |
-| A project's memory line | `429 project_memory_pressure` | `Retry-After: 1` |
+| A project's memory line | `429 container_memory_pressure` | `Retry-After: 1` |
 | A stream's buckets, or its concurrent appends | product `429 rate_limited` (raw `limit_requests_per_sec`, `limit_records_per_sec`, `limit_bytes_per_sec`, `stream_overloaded`) | `Retry-After` when the server gives one: the bucket's computed wait, or 1 |
 | The cell's memory or in-flight shed | `429 rate_limited` | `Retry-After: 2` (memory) or `1` (in flight) |
 | A queue past its `maxQueuedBytes` | `429 queue_full` | retryable |

@@ -114,7 +114,7 @@ for (const kind of STORES) {
         fake.publish(bundle);
         const old = signJwt(loadSigningKey(c.key), customerClaims(before, cred, 300, "test"));
         const res = await fetch(`${fake.url}/v1/streams?limit=1`, { headers: { authorization: `Bearer ${old}` } });
-        expect([res.status, (await res.json()).error.code]).toEqual([403, "project_not_active"]);
+        expect([res.status, (await res.json()).error.code]).toEqual([403, "container_not_active"]);
       });
 
       test("the second run sets a suspended project active only once the canary answers 200 at its witness version, then proves, drains and omits it; no bundle holds an active customer credential beside an active policy", async () => {

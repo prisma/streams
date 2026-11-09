@@ -424,7 +424,7 @@ async fn books_are_exact_per_container() {
 /// neighbour's usage path.
 async fn usage_matches_the_ledger(cell: &Cell, ledger: &Ledger, i: usize) {
     let v = cell
-        .json(i, "GET", &format!("/v1/projects/{}/usage", project(i)))
+        .json(i, "GET", &format!("/v1/containers/{}/usage", project(i)))
         .await;
     let (records, bytes) = ledger.totals(i);
     let got = (
@@ -446,12 +446,12 @@ async fn usage_matches_the_ledger(cell: &Cell, ledger: &Ledger, i: usize) {
     assert_eq!(got, want, "{} usage: {v}", project(i));
     let neighbour = project((i + 1) % cell.projects);
     let (st, _, b) = cell
-        .call(i, "GET", &format!("/v1/projects/{neighbour}/usage"), b"")
+        .call(i, "GET", &format!("/v1/containers/{neighbour}/usage"), b"")
         .await;
     let v: Value = serde_json::from_slice(&b).unwrap_or_default();
     assert_eq!(
         (st, v["error"]["code"].as_str()),
-        (404, Some("unknown_project")),
+        (404, Some("unknown_container")),
         "{} probing {neighbour}: {v}",
         project(i)
     );
@@ -508,12 +508,12 @@ fn roomy() -> ProjectQuotas {
 
 /// The typed refusal each hostile field answers with.
 const REFUSAL: [&str; 8] = [
-    "project_rate_limit",
-    "project_rate_limit",
-    "project_rate_limit",
-    "project_rate_limit",
-    "project_concurrency_limit",
-    "project_concurrency_limit",
+    "container_rate_limit",
+    "container_rate_limit",
+    "container_rate_limit",
+    "container_rate_limit",
+    "container_concurrency_limit",
+    "container_concurrency_limit",
     "stream_limit",
     "queued_bytes",
 ];

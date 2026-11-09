@@ -253,7 +253,7 @@ export class FakeIssuer {
       accessToken: CANARY_TOKEN,
       tokenType: "Bearer",
       expiresIn: this.expiresIn,
-      projectId: "sp_canary_cell_sc1",
+      containerId: "sp_canary_cell_sc1",
       cellId: "cell_sc1",
       endpoint: this.endpoint,
     });

@@ -32,7 +32,7 @@ impl InternalTarget {
     pub(crate) fn headers(&self) -> [(&'static str, String); 4] {
         [
             (
-                "streams-internal-project",
+                "streams-internal-container",
                 self.project_id.as_str().to_string(),
             ),
             (

@@ -1,5 +1,5 @@
 /**
- * The client's multiplexed wait (`POST /v1/projects/{p}/live:wait`, layout
+ * The client's multiplexed wait (`POST /v1/containers/{p}/live:wait`, layout
  * 6A package 2): every `subscribe()` tail, consumer iterator and watch
  * subscription of one client waits through one long-poll, not one each.
  *

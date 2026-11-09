@@ -1,7 +1,7 @@
 //! The project tracker's size is the instance's `PROJECT_TRACKER_MAX`
 //! (tuning item 3b): an instance booted with a larger tracker admits more
 //! distinct projects than the default 32,768 before it refuses one
-//! `project_tracker_capacity`.
+//! `container_tracker_capacity`.
 
 use super::fixture_http::{HttpRigOptions, http_rig_build};
 use super::fixture_runtime::RigRuntime;
@@ -24,7 +24,7 @@ fn principal(i: usize) -> crate::auth::RequestPrincipal {
 /// Booted with `PROJECT_TRACKER_MAX=65536`, project admission tracks
 /// 40,000 distinct projects at once, each still holding its admission:
 /// every one is admitted and the tracker holds exactly 40,000 entries.
-/// At the default, project 32,769 was refused `project_tracker_capacity`.
+/// At the default, project 32,769 was refused `container_tracker_capacity`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_larger_tracker_admits_more_projects_than_the_default() {
     let options = HttpRigOptions {

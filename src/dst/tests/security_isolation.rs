@@ -451,8 +451,8 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
     );
     assert!(b_ok >= 1, "B's in-quota fraction still lands: {b_ok}");
     assert!(
-        b_codes.iter().all(|c| c.starts_with("project_")),
-        "refusals are project-scoped: {b_codes:?}"
+        b_codes.iter().all(|c| c.starts_with("container_")),
+        "refusals are container-scoped: {b_codes:?}"
     );
     // (b) ...and NOT ONE compliant request was refused or failed.
     assert!(

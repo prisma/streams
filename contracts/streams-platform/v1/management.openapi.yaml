@@ -102,12 +102,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [accessToken, tokenType, expiresIn, projectId]
+                required: [accessToken, tokenType, expiresIn, containerId]
                 properties:
                   accessToken: { type: string }
                   tokenType: { type: string, const: Bearer }
                   expiresIn: { type: integer }
-                  projectId: { type: string }
+                  containerId: { type: string }
                   endpoint:
                     type: [string, "null"]
                     description: Stable gateway endpoint; direct cell endpoints are not customer contract (§6.3).
@@ -180,10 +180,10 @@ components:
   schemas:
     Credential:
       type: object
-      required: [id, projectId, displayName, scopes, grantVersion, status, valueHint, createdAt]
+      required: [id, containerId, displayName, scopes, grantVersion, status, valueHint, createdAt]
       properties:
         id: { type: string }
-        projectId: { type: string }
+        containerId: { type: string }
         displayName: { type: string }
         scopes: { type: array, items: { type: string } }
         streamPrefixes: { type: [array, "null"], items: { type: string } }

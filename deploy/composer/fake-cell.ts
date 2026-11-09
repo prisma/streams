@@ -35,7 +35,7 @@ export class FakeStreamsCell {
   /// product's `429 stream_limit`, which is not retryable.
   maxStreams = Number.POSITIVE_INFINITY;
   /// The next request of this "METHOD path" answers the product's
-  /// retryable `429 project_rate_limit` with Retry-After 1, once.
+  /// retryable `429 container_rate_limit` with Retry-After 1, once.
   rateLimitOnce?: string;
   streams = new Map<string, { key: string; records: unknown[] }>();
   ingest = 0;
@@ -109,14 +109,14 @@ export class FakeStreamsCell {
       this.rateLimitOnce = undefined;
       return this.json(
         429,
-        { error: { code: "project_rate_limit", message: "the project's rate quota is exhausted; retry", retryable: true } },
+        { error: { code: "container_rate_limit", message: "the project's rate quota is exhausted; retry", retryable: true } },
         { "retry-after": "1" },
       );
     }
-    if (url.pathname === `/v1/projects/${this.project}/usage` && req.method === "GET") {
+    if (url.pathname === `/v1/containers/${this.project}/usage` && req.method === "GET") {
       const lagging = this.lagLeft > 0;
       if (lagging) this.lagLeft -= 1;
-      return this.json(200, { projectId: this.project, ingestPayloadBytes: lagging ? 0 : this.ingest });
+      return this.json(200, { containerId: this.project, ingestPayloadBytes: lagging ? 0 : this.ingest });
     }
     const m = url.pathname.match(/^\/v1\/streams\/([^/]+)(\/records)?$/);
     if (!m) return this.refuse(404, "not_found");

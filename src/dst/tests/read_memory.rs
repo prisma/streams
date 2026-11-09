@@ -206,7 +206,7 @@ async fn at_baseline(cell: &Cell, i: usize) -> (u64, u64) {
 /// its `/v1/debug/load` row (each dimension but its read bytes and parked
 /// waits, and its latch's engage and shed counts; no row while the
 /// estimate is 0 and the latch is clear), its read bytes and the
-/// instance's parked waits. A 429 `project_memory_pressure` names its
+/// instance's parked waits. A 429 `container_memory_pressure` names its
 /// cause here: the latch counts an engage, a read reservation refused at
 /// the line counts a shed, a body refused while it is buffered counts
 /// neither.
@@ -285,7 +285,7 @@ async fn a_page_is_held_until_its_client_reads_it_or_leaves() {
 }
 
 /// A project whose bodies hold its memory line waits for its own memory
-/// and is refused its next read after 2 s (429 `project_memory_pressure`,
+/// and is refused its next read after 2 s (429 `container_memory_pressure`,
 /// retryable), while its neighbour reads at once; a read waiting when one
 /// of its unread pages is released is admitted then. With the line at three
 /// pages and 64 KiB, a project's third unread page still fits and its
@@ -316,7 +316,7 @@ async fn a_project_at_its_memory_line_waits_and_is_refused_and_its_neighbour_is_
             refusal["error"]["code"].as_str(),
             headers.get("retry-after").map(String::as_str)
         ),
-        (429, Some("project_memory_pressure"), Some("1")),
+        (429, Some("container_memory_pressure"), Some("1")),
         "the fourth read"
     );
     assert!(waited >= Duration::from_secs(2), "refused after {waited:?}");
@@ -626,7 +626,7 @@ async fn a_woken_long_poll_without_room_ends_its_wait_as_a_timeout_holding_its_c
 /// review C1): with project 0's line at two coverages and room for the
 /// pulls' bodies, two never-read pulls pass admission and are held after
 /// their coverage read (`PullBeforeReceive`), a third waits 2 s and is
-/// refused 429 `project_memory_pressure`, and once the two render their
+/// refused 429 `container_memory_pressure`, and once the two render their
 /// batches project 0 holds them inside its line and project 1 reads at
 /// once.
 /// Before: every pull passed admission at pressure 0 (eight together held
@@ -676,7 +676,7 @@ async fn a_projects_pulls_reserve_their_coverage_inside_its_line_and_its_neighbo
     crate::failpoints::release_pull_before_receive(Q);
     let refused = (
         429,
-        Some("project_memory_pressure".into()),
+        Some("container_memory_pressure".into()),
         Some("1".into()),
     );
     assert_eq!(
@@ -791,7 +791,7 @@ async fn a_woken_pull_without_room_for_its_coverage_answers_empty_and_leases_not
 /// coverage and 64 KiB, a pull's 23-byte body is buffered, its coverage
 /// fits and it leases its message at once. Before: the body was buffered
 /// beside the pull's own 4 MiB reservation and refused 429
-/// `project_memory_pressure` at once, no shed counted.
+/// `container_memory_pressure` at once, no shed counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_pulls_own_coverage_reservation_never_refuses_its_body() {
     let cell = open_cell(CellSpec::open(1)).await;

@@ -32,7 +32,7 @@ Updated: 2026-08-07 (post round-22 boundary review).
 | Corrections: full dimensions + `correction_id`/version/source event/created-at; applied exactly once; materialized sums on month rows AND name/project aggregates; immutable per-correction artifacts | DONE (round-22 item 8) | `UsageCorrection`, `push_correction` |
 | Artifact publication verifies AlreadyExists CONTENT; mismatch = standing alarm, row stays pending | DONE (round-22 item 8) | `publish_artifacts`, `ARTIFACT_MISMATCHES` |
 | Usage API: per-stream month/current with provisional storage, historical incarnations, effective totals + correction list | DONE | `product_usage` |
-| `GET /v1/projects/{project}/usage` (aggregate + correction sums + effective) | DONE (round-22 D3) | `project_usage` |
+| `GET /v1/containers/{project}/usage` (aggregate + correction sums + effective) | DONE (round-22 D3) | `project_usage` |
 | Tenancy: ONE PROJECT PER CELL is the deployment contract; required mode refuses placeholders; per-request principals named as the shared-cell precondition | DECIDED + documented (round-22 item 1) | design doc §artifacts/tenancy; src/main.rs gate |
 | `BILLING_MODE=required` readiness: sync spool open (verified readable) + sync rollup-DB open on the rollup owner BEFORE serving; `/health` 503 until ready; no memory-only fallback | DONE (round-22 items 2b/10) | src/main.rs, `health_axum`, `drain_once` |
 | Billing-readiness surface (`GET /operator/billing.json`: ready, spool depth/quarantine, drain recency, rollup cursor age, oldest-unclosed month, pending/mismatched artifacts, walk counters, open alerts) | DONE (round-22 item 10) | `billing_readiness_axum` |

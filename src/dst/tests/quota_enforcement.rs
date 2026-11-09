@@ -7,7 +7,7 @@ use super::fixture_storage::{mem, skey};
 /// MT Stage 6a (§17.3): the server-side project admission backstop on
 /// the wire. A verified project with `requests_per_sec: 2` in the
 /// CURRENT policy gets its burst of 50 (the owner's round-5 call 1) and
-/// then 429 `project_rate_limit` with a Retry-After — that project alone
+/// then 429 `container_rate_limit` with a Retry-After — that project alone
 /// (the exact count and bucket isolation are pinned at the unit level).
 #[expect(
     clippy::too_many_lines,
@@ -136,7 +136,7 @@ async fn project_rate_quota_backstop_answers_429() {
     let (st, h, b) = past_the_burst(addr, "/v1/streams/qb", &[ekey, auth], 49, 2).await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "project_rate_limit");
+    assert_eq!(v["error"]["code"], "container_rate_limit");
     assert_eq!(v["error"]["retryable"], true);
     assert!(
         h.get("retry-after").and_then(|s| s.parse::<u64>().ok()) >= Some(1),
@@ -305,7 +305,7 @@ async fn volume_quotas_meter_appends_and_reads() {
     )
     .await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
-    assert_eq!(code(&b), "project_rate_limit");
+    assert_eq!(code(&b), "container_rate_limit");
     // A refused batch consumed nothing: one single record still fits.
     let (st, _, b) = preq(
         addr,
@@ -326,7 +326,7 @@ async fn volume_quotas_meter_appends_and_reads() {
     )
     .await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
-    assert_eq!(code(&b), "project_rate_limit");
+    assert_eq!(code(&b), "container_rate_limit");
 
     // Read volume is POST-HOC: the first read serves (no debt yet) and
     // its response — larger than the 64 B/s budget — leaves the bucket
@@ -336,7 +336,7 @@ async fn volume_quotas_meter_appends_and_reads() {
     assert!(b.len() > 8, "response must exceed the budget: {}", b.len());
     let (st, _, b) = preq(addr, "GET", "/v1/streams/vq/records", &[ekey, auth], b"").await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
-    assert_eq!(code(&b), "project_rate_limit");
+    assert_eq!(code(&b), "container_rate_limit");
     engine_shutdown(&state).await;
 }
 

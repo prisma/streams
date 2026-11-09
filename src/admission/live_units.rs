@@ -1,7 +1,7 @@
 //! Subscription units (layout 6A package 2, REVIEW-6A F15's memory line):
 //! what the streams a multiplexed wait watches may hold on the instance.
 //!
-//! A multiplexed wait (`POST /v1/projects/{p}/live:wait`) takes ONE place
+//! A multiplexed wait (`POST /v1/containers/{p}/live:wait`) takes ONE place
 //! in the live-connection pool and its project's share of it however many
 //! streams it watches, so the pool stays the socket and CPU boundary it
 //! is. What grows with the streams it watches is memory: each watched

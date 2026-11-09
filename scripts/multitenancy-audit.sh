@@ -28,7 +28,7 @@
 #   tenant-fallback    deployment-global tenant identity (env
 #                      PROJECT_ID, the proj_local default); gone by Stage 7
 #   internal-target    internal RPC identity headers; Stage 4 adds the
-#                      project dimension (streams-internal-project)
+#                      project dimension (streams-internal-container)
 #
 # Fingerprint = category \t file \t normalized-source-text. Line
 # numbers are deliberately absent. A fingerprint changes when its line
@@ -91,7 +91,7 @@ collect() {
       scan global-name-maps 'HashMap<String' "${map_sources[@]}"
     fi
     scan tenant-fallback '(proj_local|"PROJECT_ID")' "${SOURCES[@]}"
-    scan internal-target 'streams-internal-(epoch|seg|identity|project)' "${SOURCES[@]}"
+    scan internal-target 'streams-internal-(epoch|seg|identity|container)' "${SOURCES[@]}"
   } | LC_ALL=C sort -u
 }
 

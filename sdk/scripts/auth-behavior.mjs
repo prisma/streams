@@ -7,8 +7,8 @@
 //      the typed WrongCellError and NEVER burns a token refresh —
 //      refreshing a valid credential at the wrong cell is the exact
 //      client behavior the contract forbids.
-//   4. Producer state scopes carry project + endpoint, so one shared
-//      durable store never mixes epochs across projects/deployments.
+//   4. Producer state scopes carry container + endpoint, so one shared
+//      durable store never mixes epochs across containers/deployments.
 //
 // Run: node sdk/scripts/auth-behavior.mjs   (requires a built dist/)
 import { StreamsClient, WrongCellError } from "../dist/index.js";
@@ -38,7 +38,7 @@ function stubFetch(script) {
   ]);
   const client = new StreamsClient({
     url: "https://cell-a.example",
-    project: "proj-a",
+    container: "proj-a",
     tokenProvider: async () => {
       fetches += 1;
       return `tok-${fetches}`;
@@ -94,7 +94,7 @@ function stubFetch(script) {
   assert.equal(calls.length, 1, "wrong_cell must not be replayed here");
 }
 
-// ---- 4. producer scope carries project + endpoint --------------------
+// ---- 4. producer scope carries container + endpoint --------------------
 {
   const seen = [];
   const store = {
@@ -111,7 +111,7 @@ function stubFetch(script) {
   const { f } = stubFetch([ok]);
   const client = new StreamsClient({
     url: "https://cell-a.example",
-    project: "proj-a",
+    container: "proj-a",
     token: "t",
     fetch: f,
   });
@@ -120,7 +120,7 @@ function stubFetch(script) {
     .producer("p1", { state: store });
   await producer.append({ n: 1 }).catch(() => {});
   assert.ok(seen.length >= 1, "state store consulted");
-  assert.equal(seen[0].project, "proj-a");
+  assert.equal(seen[0].container, "proj-a");
   assert.equal(seen[0].endpoint, "https://cell-a.example");
   assert.equal(seen[0].stream, "orders");
 }

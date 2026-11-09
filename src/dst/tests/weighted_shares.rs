@@ -70,7 +70,7 @@ async fn a_weighted_project_appends_at_its_weighted_ceiling_beside_a_unit_projec
     let weighted = burst(&cell, 0, 10).await;
     assert_eq!(weighted, vec![(200, None); 10], "M's 1.2 MB second");
     let unit = burst(&cell, 1, 3).await;
-    let refused = (429, Some("project_rate_limit".to_string()));
+    let refused = (429, Some("container_rate_limit".to_string()));
     assert_eq!(
         unit,
         vec![(200, None), (200, None), refused],
@@ -121,7 +121,7 @@ async fn over_the_shed_line_blame_follows_the_weighted_share() {
     let admission = &cell.state.admission;
     admission.set_rss_shed_mb(LINE_MB);
     admission.record_rss_mb(LINE_MB + 1);
-    let blamed = (429, Some("project_memory_pressure".to_string()));
+    let blamed = (429, Some("container_memory_pressure".to_string()));
     for round in 0..5 {
         assert_eq!(
             append(&cell, 0).await,
@@ -189,7 +189,7 @@ async fn a_weighted_projects_memory_line_scales_leaving_two_unit_lines_beside_it
         hold(&cell, 0, 40 * MIB).await,
         hold(&cell, 1, 40 * MIB).await,
     ];
-    let pressure = (429, Some("project_memory_pressure".to_string()));
+    let pressure = (429, Some("container_memory_pressure".to_string()));
     let page = "/v1/streams/orders/records?maxBytes=8388608";
     let read = async |i| {
         let (status, _, b) = cell.call(i, "GET", page, b"").await;

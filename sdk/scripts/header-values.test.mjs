@@ -37,7 +37,7 @@ async function cell() {
       }
       res.setHeader("content-type", "application/json");
       res.end(req.url.startsWith("/v1/token/")
-        ? '{"accessToken":"jwt","expiresIn":600,"projectId":"p","endpoint":null}'
+        ? '{"accessToken":"jwt","expiresIn":600,"containerId":"p","endpoint":null}'
         : '{"cursor":"c","count":1,"duplicate":false,"sealed":false}');
     });
   });
@@ -320,7 +320,7 @@ test("an issuer's access token a header cannot carry fails connect before any re
   const c = await cell();
   try {
     const issuer = (input, init) => input.endsWith("/v1/token/streams")
-      ? Promise.resolve(new Response(JSON.stringify({ accessToken: `jwt\n${SECRET}`, expiresIn: 600, projectId: "p", endpoint: null })))
+      ? Promise.resolve(new Response(JSON.stringify({ accessToken: `jwt\n${SECRET}`, expiresIn: 600, containerId: "p", endpoint: null })))
       : c.fetch(input, init);
     const connected = await outcome(() => StreamsClient.connect({
       credential: "prisma_streams_abc.def", issuerUrl: c.url, url: c.url, fetch: issuer,

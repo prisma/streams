@@ -578,7 +578,7 @@ must match bins.json, or the deploy fails after writing deploy.json.
 - **No platform usage export** was found in the management API, so awake
   time is the heartbeat integral (or, for KEEP_AWAKE, deploy to teardown),
   not the platform's billing record.
-- **Revenue meters** (`GET /v1/projects/{project}/usage` on the `ROLLUP=1`
+- **Revenue meters** (`GET /v1/containers/{project}/usage` on the `ROLLUP=1`
   instance after the drain) are not read by these tools yet: use
   `bench/k2cost/scrape.py usage` with the cell's generator header file
   (`runs/<run>/<cell>/secrets/gen-<k>-headers.txt`) before teardown.

@@ -82,14 +82,14 @@ edge change #173.
 
 | Limit | Value | What happens at the limit |
 |---|---|---|
-| Requests per second | 176 at the ceiling; **10** for a project created through self-serve, unless its workspace's allow-list entry names another rate | `429 project_rate_limit`, `Retry-After` |
-| Appended bytes per second | 257,500 | `429 project_rate_limit`, `Retry-After` |
-| Read bytes per second | 3,750,000 | `429 project_rate_limit`, `Retry-After` |
-| Requests in flight at once | 64 | `429 project_concurrency_limit` |
-| Live subscriptions (SSE) | 150 | `429 project_concurrency_limit` |
+| Requests per second | 176 at the ceiling; **10** for a project created through self-serve, unless its workspace's allow-list entry names another rate | `429 container_rate_limit`, `Retry-After` |
+| Appended bytes per second | 257,500 | `429 container_rate_limit`, `Retry-After` |
+| Read bytes per second | 3,750,000 | `429 container_rate_limit`, `Retry-After` |
+| Requests in flight at once | 64 | `429 container_concurrency_limit` |
+| Live subscriptions (SSE) | 150 | `429 container_concurrency_limit` |
 | Streams | 8,192 | `429 stream_limit`, not retryable |
 | Appended bytes queued, not yet stored | 64 MiB | `429 queued_bytes` |
-| Memory a project's requests hold | 32 MiB | `429 project_memory_pressure`, `Retry-After: 1` |
+| Memory a project's requests hold | 32 MiB | `429 container_memory_pressure`, `Retry-After: 1` |
 | Stored bytes | unlimited (edge change #244); the operator may set a project a cap as a cost guard | where a cap is set: `429 stored_bytes_limit`, not retryable |
 
 Notes:
@@ -110,7 +110,7 @@ Notes:
   plus one per stream it scans. Every create weighs 11, a project's first
   after a deploy or restart included: the count of its streams the server
   makes then is not charged to it. While that budget is in debt, creates,
-  deletes, seals and listings are refused `429 project_rate_limit` with a
+  deletes, seals and listings are refused `429 container_rate_limit` with a
   `Retry-After` of the seconds until the debt clears. Appends and reads
   are never refused by it. At 10 requests a second, a project creates one
   stream and then one every 1.1 s, and one listing of 100 streams holds
@@ -128,7 +128,7 @@ Notes:
   rate, as a pull that delivers pays for its batch. At 3,750,000 bytes a
   second that is about one empty pull a second over 3 MiB of leased
   records. While the project is in debt, its pulls, reads and scans are
-  refused `429 project_rate_limit` with a `Retry-After` of the seconds
+  refused `429 container_rate_limit` with a `Retry-After` of the seconds
   until the debt clears, and a pull waiting with `waitMs` does not look
   again until the debt clears: new records reach it later, or it answers
   `{"messages": []}` at its deadline. Pull with a `max` that takes what
@@ -137,7 +137,7 @@ Notes:
 - **A heavy project is shed first.** When the server is over its memory
   line, a project that sent more than 1/8 of the requests the server
   received in the last 5-10 s (counting its requests its own limits
-  refused) gets `429 project_memory_pressure`,
+  refused) gets `429 container_memory_pressure`,
   `Retry-After: 2`, on every request until the server is back under the
   line. Other projects' appends are still served, unless memory reaches
   an eighth over the line or no project sends more than its share; then
@@ -161,7 +161,7 @@ Notes:
   are admitted again within 10-20 s. Reads, creates, deletes, seals and
   consumers are never refused on it, so a project at its limit can always
   delete to get under. Project usage
-  (`GET /v1/projects/{project}/usage`) states the figure as
+  (`GET /v1/containers/{project}/usage`) states the figure as
   `ownedStoredBytesNow`. Source: edge change #158;
   `src/quota/stored.rs`, `src/quota/append_charge.rs`.
 
@@ -209,10 +209,10 @@ is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
 
 | Code | When | `retryable` | `Retry-After` |
 |---|---|---|---|
-| `project_rate_limit` | The project's request rate, append or read byte rate, or storage-work budget is spent | true | yes |
-| `project_concurrency_limit` | 64 requests in flight, or 150 live subscriptions | true | no |
+| `container_rate_limit` | The project's request rate, append or read byte rate, or storage-work budget is spent | true | yes |
+| `container_concurrency_limit` | 64 requests in flight, or 150 live subscriptions | true | no |
 | `queued_bytes` | 64 MiB of the project's appends wait to be stored | true | no |
-| `project_memory_pressure` | The project's requests hold 32 MiB (`Retry-After: 1`); or the server is over its memory line and the project sends more than its share of the server's requests (`Retry-After: 2`) | true | 1 or 2 |
+| `container_memory_pressure` | The project's requests hold 32 MiB (`Retry-After: 1`); or the server is over its memory line and the project sends more than its share of the server's requests (`Retry-After: 2`) | true | 1 or 2 |
 | `rate_limited` | The server or the stream is at capacity | true | when the server gives one |
 | `stream_limit` | The project holds its maximum number of streams | false | no |
 | `stored_bytes_limit` | The project stores its stored-bytes limit; `details` `{dimension, limit, stored}` | false | no |
@@ -227,7 +227,7 @@ is `docs/refactor/WIRE-MATRIX.md` §0 and §2.
 | `temporarily_unavailable` | Storage could not be read for this request, or the stream's shard is opening (a deploy or a restart) | true | 1 |
 | `maintenance_backpressure` | The stream's storage maintenance is behind | true | when given |
 | `shard_l0_backpressure` | An append or a queue send while the stream's or queue's storage shard waits for compaction to catch up; reads, claims and settles are served | true | 2 |
-| `project_tracker_capacity` | The server tracks too many projects at once | true | no |
+| `container_tracker_capacity` | The server tracks too many projects at once | true | no |
 | `policy_stale`, `grants_stale`, `keys_stale` | The server's copy of the access policy is too old | true | 1 |
 | `outcome_unknown` | A plain append was in flight when its shard moved (a deploy or a restart): it may or may not have been written | **false** | 1 |
 

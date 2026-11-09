@@ -919,7 +919,7 @@ async fn every_answer_is_marked_as_this_servers() {
 /// served, and held in its project's read bytes and the instance's read
 /// memory until its body ends (`product::debit_read_bytes`). At 1 B/s a page
 /// of P bytes takes the full 1 B bucket to P - 1 B of debt: the project's
-/// next read is refused 429 `project_rate_limit`, retryable after P - 1 s
+/// next read is refused 429 `container_rate_limit`, retryable after P - 1 s
 /// (less any whole second the test took since the page).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_served_page_is_debited_and_held_until_its_body_ends() {
@@ -963,7 +963,7 @@ async fn a_served_page_is_debited_and_held_until_its_body_ends() {
     let error = &serde_json::from_slice::<serde_json::Value>(&refused).unwrap()["error"];
     assert_eq!(
         (status, error["code"].as_str(), error["retryable"].as_bool()),
-        (429, Some("project_rate_limit"), Some(true))
+        (429, Some("container_rate_limit"), Some(true))
     );
     let retry: u64 = headers["retry-after"].parse().unwrap();
     assert!(

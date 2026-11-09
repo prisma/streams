@@ -48,10 +48,10 @@ pub(super) fn judge(state: &AppState, principal: Option<&RequestPrincipal>) {
 /// The request's body, buffered whole up to the request-body limit and
 /// charged to its project while the guard is held, or the refusal to
 /// answer: before the body, a blamed project's, a write (`POST`) of a
-/// project over its memory line (429 `project_memory_pressure`, as an
+/// project over its memory line (429 `container_memory_pressure`, as an
 /// append's) or a send or settle the RSS write gate sheds (`rss_shed`),
 /// each with the body read and dropped first; while buffering,
-/// 429 `project_memory_pressure` when the body would take its project past
+/// 429 `container_memory_pressure` when the body would take its project past
 /// the line, or 413 `too_large`; once buffered, a send or settle the
 /// in-flight write gate refuses (`inflight_refused`).
 pub(super) async fn body(

@@ -41,7 +41,7 @@ export interface StreamsClientOptions {
   token?: string;
   /**
    * Source of short-lived bearer tokens (MULTITENANCY §5: one
-   * credential per project, tokens expire). Called lazily on the
+   * credential per container, tokens expire). Called lazily on the
    * first authenticated request and again after a `401` — never on
    * `wrong_cell`, which by contract is `421`/`503` precisely so a
    * valid credential is not refreshed at the wrong cell. A token
@@ -51,11 +51,11 @@ export interface StreamsClientOptions {
    */
   tokenProvider?: () => string | TokenWithExpiry | Promise<string | TokenWithExpiry>;
   /**
-   * The stream's project id. Required for minting watch-observation
+   * The stream's container id. Required for minting watch-observation
    * capabilities (the capability is bound to
-   * project + stream + epoch + watch + key + method + expiry).
+   * container + stream + epoch + watch + key + method + expiry).
    */
-  project?: string;
+  container?: string;
   fetch?: typeof fetch;
   /**
    * `transport` (default `true`): a request whose `fetch` fails is sent
@@ -77,8 +77,8 @@ export interface StreamsClientOptions {
    * `true` (the default): every `subscribe()` tail past its catch-up,
    * consumer iterator (`messages()`) and watch subscription of this client
    * waits through ONE multiplexed long-poll (`POST
-   * /v1/projects/{project}/live:wait`) instead of one long-poll each, when
-   * the client knows its `project` and has a token. A cell without that
+   * /v1/containers/{container}/live:wait`) instead of one long-poll each, when
+   * the client knows its `container` and has a token. A cell without that
    * route answers `404`, and the client then waits per stream for the rest
    * of its life, as it does with `false`. `deliver: "applied"` tails always
    * wait per stream.
@@ -135,11 +135,11 @@ export interface StreamMetadata {
   watches?: WatchDefinition[];
 }
 
-/** A project's metered usage for one UTC month (`GET
- * /v1/projects/{project}/usage`): the ingest, read and storage counters,
+/** A container's metered usage for one UTC month (`GET
+ * /v1/containers/{container}/usage`): the ingest, read and storage counters,
  * corrections and effective totals the server reports beside these. */
-export interface ProjectUsage {
-  projectId: string;
+export interface ContainerUsage {
+  containerId: string;
   /** `YYYY-MM`. */
   month: string;
   [counter: string]: unknown;
@@ -296,9 +296,9 @@ export interface ProducerScope {
   stream: string;
   producerId: string;
   routingKey: string;
-  /** The stream's project ("" when the client sets none). One durable
-   * state store shared across projects must not mix their epochs. */
-  project: string;
+  /** The stream's container ("" when the client sets none). One durable
+   * state store shared across containers must not mix their epochs. */
+  container: string;
   /** The service base URL — two deployments with the same stream name
    * are different producers. For a client made by `connect`, the
    * issuer URL, which stays the same when the service's URL changes. */
@@ -325,7 +325,7 @@ export class MemoryProducerStateStore implements ProducerStateStore {
     // may contain any byte, so a separator can be ambiguous, and
     // literal control bytes do not belong in source.
     return (
-      `${s.endpoint.length}:${s.endpoint}|${s.project.length}:${s.project}|` +
+      `${s.endpoint.length}:${s.endpoint}|${s.container.length}:${s.container}|` +
       `${s.stream.length}:${s.stream}|${s.producerId.length}:${s.producerId}|${s.routingKey}`
     );
   }
@@ -393,8 +393,8 @@ export class StreamsError extends Error {
 
 /**
  * MULTITENANCY §8.1: a valid token presented to a cell that does not
- * serve its project. Not an authentication failure — refreshing the
- * credential cannot help. Re-resolve the project's endpoint (token
+ * serve its container. Not an authentication failure — refreshing the
+ * credential cannot help. Re-resolve the container's endpoint (token
  * exchange / gateway) and retry there.
  */
 export class WrongCellError extends StreamsError {
@@ -455,7 +455,7 @@ function refusedReplayRecovery(cause: unknown): string {
   }
   if (cause instanceof WrongCellError) {
     return "send the same value on the same routing key through this producer " +
-      "id on a client for the project's new endpoint, before any other value " +
+      "id on a client for the container's new endpoint, before any other value " +
       `on that key: ${SETTLES}; a client made by connect keeps this producer's ` +
       "epoch and sequence there, while one made with new StreamsClient({ url }) " +
       "starts them at 0 unless your state store carries them over";
@@ -546,7 +546,7 @@ export class ProducerSequenceReusedError extends StreamsError {
  * The issuer refused the credential exchange, or answered it with
  * something that is not a token. `code` is the issuer's: `401`
  * `invalid_credential`, `403` `credential_not_active` or
- * `project_not_active`, `429` `rate_limited`, `503` `issuer_unavailable`
+ * `container_not_active`, `429` `rate_limited`, `503` `issuer_unavailable`
  * (the last two `retryable`); `exchange_failed` when the answer names no
  * code, `invalid_exchange_response` for a `2xx` without a token, and
  * `invalid_credential_format` (`status` 0) for a credential that is not
@@ -594,7 +594,7 @@ interface Ctx {
   token?: string;
   tokenProvider?: () => string | TokenWithExpiry | Promise<string | TokenWithExpiry>;
   tokens?: TokenCache;
-  project?: string;
+  container?: string;
   fetch: typeof fetch;
   /** StreamsClientOptions.retry.transport. */
   transportRetry: boolean;
@@ -800,7 +800,7 @@ const statedRetryable = new WeakSet<StreamsError>();
 async function errorFrom(res: Response): Promise<StreamsError> {
   if (res.status === 421 || productHeader(res, "error-code") === "wrong_cell") {
     const error = new WrongCellError(res.status,
-      "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)");
+      "this cell does not serve the container; re-resolve the container's endpoint (the credential itself is fine)");
     // Header-only routing failures need no body read. Release even an
     // unending body before handing endpoint resolution back to the caller.
     try { await res.body?.cancel(); } catch (cause) { error.cause = cause; }
@@ -842,8 +842,8 @@ async function errorFrom(res: Response): Promise<StreamsError> {
     return new WrongCellError(
       res.status,
       message === `HTTP ${res.status}`
-        ? "this cell does not serve the project; re-resolve the " +
-          "project's endpoint (the credential itself is fine)"
+        ? "this cell does not serve the container; re-resolve the " +
+          "container's endpoint (the credential itself is fine)"
         : message,
     );
   }
@@ -1023,10 +1023,10 @@ async function reconnectAfter(backoffMs: number, signal?: AbortSignal): Promise<
 }
 
 /** The client's multiplexed wait, or `undefined` where its subscriptions
- * wait per stream: switched off, no project or no token to address it with,
+ * wait per stream: switched off, no container or no token to address it with,
  * or a cell that answered it has none. */
 function liveMux(ctx: Ctx): LiveMux | undefined {
-  if (ctx.mux === null || !ctx.project || (ctx.token === undefined && !ctx.tokenProvider)) {
+  if (ctx.mux === null || !ctx.container || (ctx.token === undefined && !ctx.tokenProvider)) {
     return undefined;
   }
   ctx.mux ??= new LiveMux({
@@ -1034,7 +1034,7 @@ function liveMux(ctx: Ctx): LiveMux | undefined {
       const res = await req(
         ctx,
         "POST",
-        `/v1/projects/${encodeURIComponent(ctx.project ?? "")}/live:wait`,
+        `/v1/containers/${encodeURIComponent(ctx.container ?? "")}/live:wait`,
         { "content-type": "application/json" },
         body,
         signal,
@@ -1177,7 +1177,7 @@ async function req<R = Response>(
 }
 
 // ---------------------------------------------------------------------
-// Credentials (MULTITENANCY §3.2: a project credential is exchanged at
+// Credentials (MULTITENANCY §3.2: a container credential is exchanged at
 // the issuer for short-lived bearer tokens)
 
 /** The issuer's answer to a credential exchange. */
@@ -1185,8 +1185,8 @@ export interface CredentialExchange {
   accessToken: string;
   /** The access token's lifetime in seconds. */
   expiresIn: number;
-  projectId: string;
-  /** The service's base URL for the project, or `null` when the issuer
+  containerId: string;
+  /** The service's base URL for the container, or `null` when the issuer
    * names none. */
   endpoint: string | null;
 }
@@ -1223,19 +1223,19 @@ async function exchangeError(res: Response): Promise<StreamsError> {
 
 function exchangeFrom(status: number, body: unknown): CredentialExchange {
   const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
-  const { accessToken, expiresIn, projectId, endpoint } = b;
+  const { accessToken, expiresIn, containerId, endpoint } = b;
   if (
     typeof accessToken !== "string" || accessToken === "" ||
     typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0 ||
-    typeof projectId !== "string" || projectId === ""
+    typeof containerId !== "string" || containerId === ""
   ) {
     throw new CredentialExchangeError(status, "invalid_exchange_response",
-      "the issuer's answer lacks an accessToken, an expiresIn or a projectId", false);
+      "the issuer's answer lacks an accessToken, an expiresIn or a containerId", false);
   }
   return {
     accessToken,
     expiresIn,
-    projectId,
+    containerId,
     endpoint: typeof endpoint === "string" && endpoint !== "" ? endpoint : null,
   };
 }
@@ -1339,7 +1339,7 @@ function exchangedToken(exchanged: CredentialExchange): TokenWithExpiry {
 }
 
 export interface ConnectOptions {
-  /** The project credential, `prisma_streams_<id>.<secret>`. */
+  /** The container credential, `prisma_streams_<id>.<secret>`. */
   credential: string;
   /** The token issuer's base URL. */
   issuerUrl: string;
@@ -1394,7 +1394,7 @@ export class StreamsClient {
   constructor(options: StreamsClientOptions) {
     this.ctx = {
       base: options.url.replace(/\/$/, ""),
-      project: options.project,
+      container: options.container,
       // An absent or empty token sends no Authorization header.
       token: options.token == null || options.token === "" ? undefined : presentedToken(options.token),
       tokenProvider: options.tokenProvider,
@@ -1405,10 +1405,10 @@ export class StreamsClient {
   }
 
   /**
-   * A client for the project a credential belongs to, from one credential
+   * A client for the container a credential belongs to, from one credential
    * exchange: the base URL is `url` when given, else the issuer's
    * `endpoint` (`https:` or a loopback host unless
-   * `allowInsecureEndpoint`); the project is the credential's. Tokens are
+   * `allowInsecureEndpoint`); the container is the credential's. Tokens are
    * exchanged again before they expire and after a `401`; when an
    * exchange names a new endpoint and no `url` was given, the client
    * moves there: every request made after the exchange returns goes to
@@ -1429,7 +1429,7 @@ export class StreamsClient {
     const follow = options.url === undefined;
     const client: StreamsClient = new StreamsClient({
       url: options.url ?? issuedEndpoint(first.endpoint, allowInsecure),
-      project: first.projectId,
+      container: first.containerId,
       fetch: options.fetch,
       retry: options.retry,
       liveMux: options.liveMux,
@@ -1497,18 +1497,18 @@ export class StreamsClient {
   }
 
   /**
-   * The project's metered usage, for the current month or `month`
-   * (`YYYY-MM`). Needs the client's `project` and a credential with the
+   * The container's metered usage, for the current month or `month`
+   * (`YYYY-MM`). Needs the client's `container` and a credential with the
    * `streams.usage.read` scope and no stream-prefix restriction (a
    * restricted one is refused `403` `prefix_denied`). The figures trail
    * writes by about 10 s and reads by about 20 s.
    */
-  async usage(options?: { month?: string }): Promise<ProjectUsage> {
-    if (!this.ctx.project) {
+  async usage(options?: { month?: string }): Promise<ContainerUsage> {
+    if (!this.ctx.container) {
       throw new StreamsError(
         400,
-        "project_required",
-        "project usage is read per project; set StreamsClientOptions.project",
+        "container_required",
+        "container usage is read per container; set StreamsClientOptions.container",
         false,
       );
     }
@@ -1518,10 +1518,10 @@ export class StreamsClient {
     const res = await req(
       this.ctx,
       "GET",
-      `/v1/projects/${encodeURIComponent(this.ctx.project)}/usage${query}`,
+      `/v1/containers/${encodeURIComponent(this.ctx.container)}/usage${query}`,
       {},
     );
-    return (await res.json()) as ProjectUsage;
+    return (await res.json()) as ContainerUsage;
   }
 }
 
@@ -1925,11 +1925,11 @@ export class Stream<T = unknown> {
       );
     }
     const keyHex = await deriveWatchKey(name, def.fields, values);
-    if (!this.ctx.project) {
+    if (!this.ctx.container) {
       throw new StreamsError(
         400,
-        "project_required",
-        "watch capabilities are project-bound; set StreamsClientOptions.project",
+        "container_required",
+        "watch capabilities are container-bound; set StreamsClientOptions.container",
         false,
       );
     }
@@ -2110,7 +2110,7 @@ export class Producer<T> {
       stream: this.streamName,
       producerId: this.id,
       routingKey,
-      project: this.ctx.project ?? "",
+      container: this.ctx.container ?? "",
       endpoint: this.ctx.scopeEndpoint ?? this.ctx.base,
     };
   }
@@ -2574,7 +2574,7 @@ function encodeCapabilityInput(components: (Uint8Array | string)[]): Uint8Array 
 async function watchCapability(
   encryptionKeyB64: string,
   epochHex: string,
-  project: string,
+  container: string,
   streamName: string,
   watchName: string,
   watchKeyHex: string,
@@ -2587,7 +2587,7 @@ async function watchCapability(
   new DataView(expBytes.buffer).setBigInt64(0, BigInt(expiresUnix), false);
   const input = encodeCapabilityInput([
     "watch-capability-v1",
-    project,
+    container,
     streamName,
     epochHex,
     watchName,
@@ -2603,11 +2603,11 @@ async function watchCapability(
     ["sign"],
   );
   const out = new Uint8Array(await (await subtle()).sign("HMAC", mac, ab(input)));
-  // Wire v2: the capability CARRIES the project so the server resolves
-  // which project's same-named stream it targets before any lookup.
-  // The signature input has always bound the project, so a swapped
+  // Wire v2: the capability CARRIES the container so the server resolves
+  // which container's same-named stream it targets before any lookup.
+  // The signature input has always bound the container, so a swapped
   // prefix cannot verify.
-  return `${project}.${expiresUnix}.${toHex(out.subarray(0, 16))}`;
+  return `${container}.${expiresUnix}.${toHex(out.subarray(0, 16))}`;
 }
 
 // ---------------------------------------------------------------------
@@ -2643,7 +2643,7 @@ export class Watch {
 
   /**
    * Mint a fresh observation capability for this key: bound to
-   * project + stream + epoch + watch + key + GET + expiry, valid for
+   * container + stream + epoch + watch + key + GET + expiry, valid for
    * at most 5 minutes (server-enforced). It grants observation of
    * this one key and nothing else — no decryption, append, consumer
    * or management rights.
@@ -2653,7 +2653,7 @@ export class Watch {
     return watchCapability(
       this.encryptionKey,
       this.epochHex,
-      this.ctx.project!,
+      this.ctx.container!,
       this.stream.name,
       this.name,
       this.key,

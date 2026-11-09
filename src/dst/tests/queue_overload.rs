@@ -95,9 +95,13 @@ async fn over_the_shed_line_the_queue_project_over_its_share_is_refused_before_i
     for n in 0..ROUNDS {
         assert_eq!(send(&cell, 1, n).await, SENT, "compliant, round {n}");
         let flood = send(&cell, 0, FLOOD + n).await;
-        assert_eq!(flood, refused("project_memory_pressure", "2"), "round {n}");
+        assert_eq!(
+            flood,
+            refused("container_memory_pressure", "2"),
+            "round {n}"
+        );
     }
-    every_route_refused(&cell, "project_memory_pressure", "2").await;
+    every_route_refused(&cell, "container_memory_pressure", "2").await;
     assert_eq!(
         admission.snapshot().shed.blamed,
         u64::try_from(ROUNDS + 3).unwrap(),
@@ -206,7 +210,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
     ];
     for (method, path, body) in writes {
         let answer = ask(&cell, 0, method, path, body).await;
-        assert_eq!(answer, refused("project_memory_pressure", "1"), "{path}");
+        assert_eq!(answer, refused("container_memory_pressure", "1"), "{path}");
     }
     assert_eq!(queued(&cell, 0).await, 1, "its reads are served");
     // The latch holds until the pressure is below its release point (75%
@@ -222,7 +226,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
         let answer = ask(&cell, 0, "POST", path, body).await;
         assert_eq!(
             answer,
-            refused("project_memory_pressure", "1"),
+            refused("container_memory_pressure", "1"),
             "latched: {path}"
         );
     }
@@ -231,7 +235,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
     let large = format!("{{\"body\":\"{}\"}}", "x".repeat(60 * 1024));
     adm.retained_sse_add(200 * 1024);
     let held = ask(&cell, 0, "POST", "/v1/queues/jobs/messages", &large).await;
-    assert_eq!(held, refused("project_memory_pressure", "1"), "the body");
+    assert_eq!(held, refused("container_memory_pressure", "1"), "the body");
     adm.retained_sse_sub(200 * 1024);
     let alone = ask(&cell, 0, "POST", "/v1/queues/jobs/messages", &large).await;
     assert_eq!(alone, SENT, "a body alone is buffered whole");
@@ -255,7 +259,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
         })
         .collect();
     let denial = |route: &str| {
-        let code = "project_memory_pressure".to_string();
+        let code = "container_memory_pressure".to_string();
         (code, project(0), route.to_string(), "POST".to_string())
     };
     assert_eq!(

@@ -950,7 +950,7 @@ async fn r05_typed_fork_keeps_source_and_child_in_one_project() {
         .await;
     let error = result.err().expect("cross-project fork must be refused");
     assert_eq!(error.kind, CreationFailure::Invalid);
-    assert_eq!(error.code, "fork_project_mismatch");
+    assert_eq!(error.code, "fork_container_mismatch");
     assert!(state.registry.get(&foreign_child).await.unwrap().is_none());
     let source_before = state.registry.get(&source).await.unwrap().unwrap();
     assert!(source_before.fork_children.is_empty());

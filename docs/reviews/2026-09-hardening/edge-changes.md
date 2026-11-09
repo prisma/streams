@@ -431,7 +431,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Risk reason:** high: a request that used to succeed can fail permanently. It is narrow: only servers that set no ceiling, which excludes production and every release-posture deployment; and accepting such a record was unsafe for shared feeds, because a record whose prepared frame (up to 6 x its size) exceeds the 1 MiB ring disconnects every subscriber of the feed at once. RATIFIED by the owner on 2026-09-30.
 - **Check against commit:** written with the change.
 
-### #253 (5263d590b + 6c7ac12c9 part 1; this commit part 2; part 3 pending) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
+### #253 (5263d590b + 6c7ac12c9 part 1; fe94f96b2 part 2; part 3 in commits) — The data plane's tenant is a container, and the workspace leaves the server, tokens and access rules
 
 - **Program item:** millions of containers per Streams cell, design rev 3, stage 0 (`~/.streams-k2/analysis/mproj/MILLIONS-OF-PROJECTS-DESIGN.md` §10). The validation is `CONTAINER-VALIDATION.md`, and the plan for the account removal is `ACCOUNT-REMOVAL-PLAN.md`.
 - **Owner decision (2026-11-08, verbatim):** "This sounds exactly right! Let's use the term Container rather than Project. Please validate that this will work. You have my approval for this change in the edge." The model, verbatim: "a user is part of a Workspace, they create a project, and inside that project, they can create Postgres databases, as well as Streams and Queue containers. Initially, I think we are going to expose these as having only a single queue or Stream in them - perhaps called `default` [...] I don't think we will ever want a single container to hold both Streams and Queues."
@@ -441,10 +441,11 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **One record, three parts (the lead, 2026-11-08):** the owner approved #253 as one change, so it keeps one number. Each part's commit says "Edge change #253 (part N of 3)", and each part amends **Landed in** and **Status**.
 - **Landed in:**
   1. Part 1, 5263d590b (the record's first commit) and its test 6c7ac12c9: usage records no workspace or account.
-  2. Part 2, this commit: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
+  2. Part 2, fe94f96b2: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
   3. Part 3, in commits:
-     - 3a-1, this commit: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
-     - Pending: 3a-2 (paths, codes, JSON keys, env, header, SDK), 3a-3 (issuer and cell-admin), 3b (kind and single-name refusals), 3c (internal names and docs).
+     - 3a-1, ff4b54bae: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
+     - 3a-2a, this commit: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
+     - Pending: 3a-2b (env names), 3a-3 (issuer and cell-admin), 3b (kind and single-name refusals), 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
   - From part 2's commit on:
@@ -456,7 +457,13 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - the policy feed is `{feed_version, containers: [{container_id, cell_id, policy_version, generation, status, quotas}]}` and grants name `container_id`; a feed entry naming `workspace_id`, and the old key `projects`, are refused (unknown field);
     - a customer token carries `container_id` and `generation`, and no `workspace_id`; a token of the old shape does not verify;
     - `403 workspace_mismatch` and the status `transfer_pending` no longer exist, and a policy may change at any `generation` without a workspace check.
-  - Until 3a-2: every path, error code, JSON key, env name and SDK option still says project.
+  - From 3a-2a's commit on:
+    - the routes are `GET /v1/containers/{container}/usage` and `POST /v1/containers/{container}/live:wait`; the old paths answer 404;
+    - the codes are `container_rate_limit`, `container_concurrency_limit`, `container_memory_pressure`, `container_tracker_capacity`, `container_not_active`, `unknown_container`, `container_missing`, `credential_container_mismatch` and `fork_container_mismatch`, with the same status and `Retry-After`, and their messages say "container" (the `wrong_cell` text too: "this cell does not serve the container; re-resolve the container's endpoint (the credential itself is fine)"); the audit tags of the stream, queued-bytes and stored-bytes refusals are `container_*` too;
+    - usage answers, the issuer's exchange answer and credential views carry `containerId`, and `_ops_events`' split and merge fields name `containerId`;
+    - the internal header is `streams-internal-container`;
+    - the SDK: option `container`, `ContainerUsage`, `ProducerScope.container`, `container_required`, and `WrongCellError`'s text.
+  - Until 3a-2b: the env names still say `PROJECT_*`. Until 3a-3: the issuer's own routes are `/v1/projects/{project}/streams/credentials…` and its codes say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.
 - **Endpoint:**

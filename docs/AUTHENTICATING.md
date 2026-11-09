@@ -71,7 +71,7 @@ A success is `200`:
   "accessToken": "<a JWT>",
   "tokenType": "Bearer",
   "expiresIn": 3540,
-  "projectId": "sp_...",
+  "containerId": "sp_...",
   "cellId": "...",
   "endpoint": "https://<the cell's origin>"
 }
@@ -127,7 +127,7 @@ Every refusal is JSON, `{"error": {"code": "...", "message": "..."}}`.
 | 400 | `invalid_request` | the body is not one the exchange takes, or the credential grants none of `requestedScopes` | no: fix the request |
 | 401 | `invalid_credential` | the header is malformed, or the credential is unknown or its secret wrong | no: the same secret cannot succeed. Copy the credential again, or make a new one |
 | 403 | `credential_not_active` | the credential is revoked or past its expiry | no: use another credential |
-| 403 | `project_not_active` | the project is suspended, or being deleted | no, until the beta's operator resumes it |
+| 403 | `container_not_active` | the project is suspended, or being deleted | no, until the beta's operator resumes it |
 | 429 | `rate_limited` | too many exchanges for this credential, for this issuer, or failed ones for this credential id | yes, after `Retry-After` seconds |
 | 503 | `issuer_unavailable` | the issuer cannot mint right now (it cannot see the cell's current state, or a key change is in progress) | yes, after `Retry-After` (5 s) |
 
@@ -146,9 +146,9 @@ a line break pasted into it, say) and `insecure_issuer` (above).
 |---|---|---|---|
 | 401 | e.g. `expired`, `kid_unknown`, `grant_version_mismatch` | the token is expired, malformed, signed under a key the cell no longer holds, or minted before the credential's last change | exchange again once, then retry (the SDK does) |
 | 403 | `credential_not_active` | the credential was revoked | no |
-| 403 | `project_not_active` | the project is suspended or being deleted | no |
+| 403 | `container_not_active` | the project is suspended or being deleted | no |
 | 403 | `missing_scope`, `prefix_denied` | the credential does not grant this operation, or this stream | no |
-| 421 | `wrong_cell` | this cell does not serve the project | exchange again and use the new `endpoint` (the credential is fine) |
+| 421 | `wrong_cell` | this cell does not serve the container | exchange again and use the new `endpoint` (the credential is fine) |
 | 503 | `policy_stale`, `grants_stale`, `keys_stale` | the cell cannot confirm the credential's current state | yes, after `Retry-After` (1 s) |
 
 Source: `deploy/issuer/exchange.ts`, `sdk/src/index.ts`
@@ -173,7 +173,7 @@ day.
 
 **Deleting the project** revokes all of its credentials at once and then
 deletes every stream; it cannot be undone. A project the beta's operator
-suspends is refused (`403 project_not_active`) until it is resumed.
+suspends is refused (`403 container_not_active`) until it is resumed.
 
 If a credential leaks, revoke it first and replace it second.
 

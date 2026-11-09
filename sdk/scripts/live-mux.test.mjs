@@ -6,7 +6,7 @@ import { StreamsClient, StreamsError } from "../dist/index.js";
 
 // The multiplexed wait (layout 6A package 2): a client's subscribe() tails,
 // consumer iterators and watch subscriptions wait through ONE
-// `POST /v1/projects/{p}/live:wait` at a time; a cell without the route
+// `POST /v1/containers/{p}/live:wait` at a time; a cell without the route
 // (404) or a stream it refuses there (`not_owner`) is waited on per stream.
 const KEY = "A".repeat(43);
 
@@ -24,7 +24,7 @@ async function cell({ onWait, waitStatus } = {}) {
     const url = new URL(req.url, "http://cell");
     requests.push({ method: req.method, path: url.pathname, query: url.search, body });
     res.setHeader("content-type", "application/json");
-    if (url.pathname === "/v1/projects/p1/live:wait") {
+    if (url.pathname === "/v1/containers/p1/live:wait") {
       if (waitStatus) {
         res.writeHead(waitStatus);
         return res.end(JSON.stringify({ error: { code: "unknown_route", message: "no", retryable: false } }));
@@ -68,7 +68,7 @@ async function cell({ onWait, waitStatus } = {}) {
     requests,
     waits,
     maxOpen: () => maxOpen,
-    client: (options = {}) => new StreamsClient({ url, project: "p1", token: "t", ...options }),
+    client: (options = {}) => new StreamsClient({ url, container: "p1", token: "t", ...options }),
     close() {
       server.closeAllConnections();
       server.close();
@@ -126,7 +126,7 @@ test("a cell without the route answers 404 and every tail waits per stream", asy
   const controller = new AbortController();
   const it = client.stream("solo", { encryptionKey: KEY }).subscribe({ signal: controller.signal })[Symbol.asyncIterator]();
   assert.deepEqual(await it.next(), { done: false, value: { perStream: "/v1/streams/solo/records:long-poll" } });
-  assert.equal(c.requests.filter((r) => r.path === "/v1/projects/p1/live:wait").length, 1, "asked once");
+  assert.equal(c.requests.filter((r) => r.path === "/v1/containers/p1/live:wait").length, 1, "asked once");
   controller.abort();
   c.close();
 });

@@ -533,7 +533,7 @@ test("an append answered 408 that the server wrote is resolved by read-back: the
 test("the audit asks again for a cell that rate-limits its reads, as it does a hostile project's own streams, and names why an audit fails", async () => {
   // The h2/h7 shape: a hostile project at a read quota, whose streams hold
   // records the cell wrote and answered 408 (outcome unknown), read back
-  // while the cell refuses its reads (429 project_rate_limit, past the old
+  // while the cell refuses its reads (429 container_rate_limit, past the old
   // 50 failed reads a stream).
   const m: Manifest = {
     name: "ratelimited", seed: 14, duration: 2.5, classes: [
@@ -556,13 +556,13 @@ test("the audit asks again for a cell that rate-limits its reads, as it does a h
   const audited = async (rb: ReadBack) => ((await auditAll(plan, cell.base, mapFile, out, new Opts(new Map()), rb)).projects as Record<string, any>)[p.id].prefixes["t/"];
   const fast = (budgetMs: number): ReadBack => ({ budgetMs, delayMs: () => 1 });
   // 104 refusals across the two streams: each stream is refused past 50.
-  cell.refuse(p.id, 104, 429, "project_rate_limit", 0);
+  cell.refuse(p.id, 104, 429, "container_rate_limit", 0);
   const a = await audited(fast(30_000));
   expect([a.ok, a.error ?? null, a.causes, a.read_records, a.blocks_missing]).toEqual([true, null, [], produced.acked_records + 3, 0]);
   // A cell that refuses for longer than the budget fails the audit, and says why.
-  cell.refuse(p.id, 100_000, 429, "project_rate_limit", 0);
+  cell.refuse(p.id, 100_000, 429, "container_rate_limit", 0);
   const b = await audited(fast(100));
-  expect([b.ok, b.causes]).toEqual([false, [{ cause: "read_failed 429 project_rate_limit", detail: expect.stringMatching(/^audit t\/0000\d: \d+ failed reads over 0\.\ds, last 429 project_rate_limit$/) }]]);
+  expect([b.ok, b.causes]).toEqual([false, [{ cause: "read_failed 429 container_rate_limit", detail: expect.stringMatching(/^audit t\/0000\d: \d+ failed reads over 0\.\ds, last 429 container_rate_limit$/) }]]);
   cell.refusals.delete(p.id);
   // An unexpected record is named with its count, and still fails (and
   // the read count no longer equals the replay's).

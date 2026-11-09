@@ -568,18 +568,18 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     // project, the retired divergent rig string "proj_test", and a
     // grammatically invalid ID all get the SAME not-found answer — the
     // response distinguishes neither foreignness nor grammar.
-    let (st, _, body) = preq(addr, "GET", "/v1/projects/proj-test/usage", &key, b"").await;
+    let (st, _, body) = preq(addr, "GET", "/v1/containers/proj-test/usage", &key, b"").await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
     let pv: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(pv["projectId"], "proj-test");
+    assert_eq!(pv["containerId"], "proj-test");
     assert_eq!(pv["ingestRecords"], 2);
     assert_eq!(pv["ingestPayloadBytes"], 2 * p1.len() as u64);
     for foreign in ["proj-other", "proj_test", "pr..j"] {
-        let path = format!("/v1/projects/{foreign}/usage");
+        let path = format!("/v1/containers/{foreign}/usage");
         let (st, _, body) = preq(addr, "GET", &path, &key, b"").await;
         assert_eq!(st, 404, "{foreign}: {}", String::from_utf8_lossy(&body));
         let e: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(e["error"]["code"], "unknown_project", "{foreign}");
+        assert_eq!(e["error"]["code"], "unknown_container", "{foreign}");
     }
 
     // The ledger itself never appears in its own books (§8.4).

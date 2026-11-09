@@ -180,7 +180,7 @@ pub(crate) enum Verdict {
 
 impl InstanceLoad {
     /// The tracker refused to track a project (503
-    /// `project_tracker_capacity`).
+    /// `container_tracker_capacity`).
     pub(crate) fn note_tracker_refusal(&self) {
         self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }

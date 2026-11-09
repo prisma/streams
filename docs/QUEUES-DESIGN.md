@@ -324,7 +324,7 @@ deadline** (§6.3: an untaken `A` entry's is `retentionEnd`; an `R` entry's is
 its cycle's), until `max` or `maxBytes`
 (by metadata `bytes`; default 1 MiB, at most 8 MiB; one message always
 allowed); reserve read memory for exactly that total (429
-`project_memory_pressure` if refused); lease exactly that set (row `leased`,
+`container_memory_pressure` if refused); lease exactly that set (row `leased`,
 `attempts += 1`, `leaseGen += 1`, deadline, `L` entry, `open += 1` for newly
 taken messages, `C` advanced; `lastUsefulClaimAt = t` when at least one
 message was leased). The committer runs a shard's operations one at a
@@ -352,7 +352,7 @@ and its project's share, out of the in-flight write gate's active count
 bytes in the instance's read memory and its project's read bytes before it
 reads them, waiting up to 2 s for room; without room it releases its leases
 with their attempts given back and answers 503 `read_memory_busy` or 429
-`project_memory_pressure`, retryable after 1 s (#195). Its answer holds its
+`container_memory_pressure`, retryable after 1 s (#195). Its answer holds its
 rendered size until the body ends.
 
 ### 6.2 Settle

@@ -182,7 +182,7 @@ check("exchange succeeds for the active credential", tok1.status === 200 && !!to
 await sleep(1500); // feeds refresh (1s cadence on A/B)
 const { StreamsClient, CredentialExchangeError } = await import("../sdk/dist/index.js");
 const client = new StreamsClient({
-  url: gwBase, project: "proj-e2e",
+  url: gwBase, container: "proj-e2e",
   tokenProvider: async () => (await (await exchange(CURRENT_SECRET)).json()).accessToken,
 });
 let stream;
@@ -202,15 +202,15 @@ try {
 
 // The multiplexed wait (layout 6A package 2, edge changes #200/#203)
 // through the gateway: subscribe() waits through POST
-// /v1/projects/{p}/live:wait once its catch-up is done, and an append
+// /v1/containers/{p}/live:wait once its catch-up is done, and an append
 // reaches it; a path naming another project is refused before routing.
 try {
   let muxCalls = 0;
   const muxClient = new StreamsClient({
-    url: gwBase, project: "proj-e2e",
+    url: gwBase, container: "proj-e2e",
     tokenProvider: async () => (await (await exchange(CURRENT_SECRET)).json()).accessToken,
     fetch: (url, init) => {
-      if (String(url).endsWith("/v1/projects/proj-e2e/live:wait")) muxCalls++;
+      if (String(url).endsWith("/v1/containers/proj-e2e/live:wait")) muxCalls++;
       return fetch(url, init);
     },
   });
@@ -226,7 +226,7 @@ try {
   check("subscribe through the multiplexed wait delivers an append", got?.value?.src === "mux" && muxCalls >= 1,
     `${JSON.stringify(got)} live:wait calls ${muxCalls}`);
   const token = (await (await exchange(CURRENT_SECRET)).json()).accessToken;
-  const forged = await sfetch(`${gwBase}/v1/projects/proj-other/live:wait`, {
+  const forged = await sfetch(`${gwBase}/v1/containers/proj-other/live:wait`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ subs: [{ id: "t", kind: "tail", stream: "e2e/orders", key: KEY_B64, cursor: "now" }] }),
   });
@@ -254,8 +254,8 @@ try {
   check("connect: create + append + read through gateway", page.records.length === 2 && page.records[0]?.src === "connect",
     JSON.stringify(page.records));
   check("connect exchanged once", connectExchanges === 1, `exchanges ${connectExchanges}`);
-  check("connect: project is proj-e2e, producer state keyed on the issuer",
-    scopes[0]?.project === "proj-e2e" && scopes[0]?.endpoint === emuBase, JSON.stringify(scopes[0] ?? null));
+  check("connect: container is proj-e2e, producer state keyed on the issuer",
+    scopes[0]?.container === "proj-e2e" && scopes[0]?.endpoint === emuBase, JSON.stringify(scopes[0] ?? null));
 } catch (e) {
   check("connect: create + append + read through gateway", false, String(e));
 }
@@ -312,8 +312,8 @@ check("same stream name on two projects/cells stays isolated",
 const wrongCell = await readRecords(aBase, "e2e/orders", tokB.body.accessToken);
 check("direct call to the wrong cell answers 421 wrong_cell", wrongCell.status === 421, `status ${wrongCell.status}`);
 check("same token through the gateway routes to its cell", (await readRecords(gwBase, "e2e/orders", tokB.body.accessToken)).status === 200);
-const forged = await j(await sfetch(`${gwBase}/v1/projects/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokB.body.accessToken}` } }));
-check("forged path project refused BEFORE routing", forged.status === 403 && forged.body.error === "forged_project", `status ${forged.status}`);
+const forged = await j(await sfetch(`${gwBase}/v1/containers/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokB.body.accessToken}` } }));
+check("forged path project refused BEFORE routing", forged.status === 403 && forged.body.error === "forged_container", `status ${forged.status}`);
 check("unverified request never selects a cell", (await sfetch(`${gwBase}/v1/streams/e2e/orders/records`, { headers: { authorization: "Bearer not.a.jwt" } })).status === 401);
 
 // ---- JWKS lifecycle: unknown-kid nudge + permanent retirement -------------
@@ -468,7 +468,7 @@ await sleep(1500);
 let usage = null;
 let lastProbe = "";
 for (let i = 0; i < 15; i++) {
-  const r = await sfetch(`${gwBase}/v1/projects/proj-b/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
+  const r = await sfetch(`${gwBase}/v1/containers/proj-b/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
   const text = await r.text().catch(() => "");
   lastProbe = `status ${r.status} body ${text.slice(0, 300)}`;
   if (r.status === 200) {
@@ -478,9 +478,9 @@ for (let i = 0; i < 15; i++) {
   await sleep(1500);
 }
 check("usage rollup reconciles the project's ingest (billing surface)",
-  usage !== null && usage.projectId === "proj-b" && !("accountId" in usage),
+  usage !== null && usage.containerId === "proj-b" && !("accountId" in usage),
   lastProbe);
-const foreignUsage = await sfetch(`${bBase}/v1/projects/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
+const foreignUsage = await sfetch(`${bBase}/v1/containers/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
 check("foreign-project usage probe answers 404 (no grammar oracle)", foreignUsage.status === 404, `status ${foreignUsage.status}`);
 
 // ---- Operation-scoped workload identity -----------------------------------

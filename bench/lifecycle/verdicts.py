@@ -650,7 +650,7 @@ def authorized(status: int) -> bool:
 #: (src/auth.rs AuthError::kind, answered 403 by product.rs
 #: auth_failure_response): cell-admin's offboard revokes the credentials,
 #: a suspension deactivates the project.
-REVOKED_CODES = ("credential_not_active", "project_not_active")
+REVOKED_CODES = ("credential_not_active", "container_not_active")
 
 
 def revoked(answer: dict, codes=REVOKED_CODES) -> bool:

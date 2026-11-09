@@ -18,7 +18,7 @@ fn usage_unavailable(error: &dyn std::fmt::Display) -> Response {
 }
 
 impl crate::auth::RequestPrincipal {
-    /// Project usage totals (`GET /v1/projects/{project}/usage`) answer for
+    /// Project usage totals (`GET /v1/containers/{project}/usage`) answer for
     /// every stream of the project, so they need `streams.usage.read` AND an
     /// unrestricted effective stream grant: a credential limited to some
     /// names could otherwise subtract its own streams' usage from the total
@@ -235,7 +235,7 @@ pub(super) async fn product_usage(
         "provisional"
     };
     json_ok(&json!({
-        "projectId": id.container_id,
+        "containerId": id.container_id,
         "streamId": id.stream_id,
         "streamName": id.stream_name,
         "month": month,
@@ -286,7 +286,7 @@ pub(super) async fn product_usage(
     }))
 }
 
-/// GET /v1/projects/{project}/usage[?month=YYYY-MM] (round-22 doc
+/// GET /v1/containers/{project}/usage[?month=YYYY-MM] (round-22 doc
 /// item D3): the project-level rollup answer — aggregate totals,
 /// correction sums, and effective values, plus the bytes the project
 /// stores now as admission's stored cap reads them (stored-cap B4;
@@ -322,12 +322,12 @@ pub(crate) async fn project_usage(
             crate::audit::tag(
                 perr(
                     StatusCode::NOT_FOUND,
-                    "unknown_project",
-                    "the path does not name this request's project",
+                    "unknown_container",
+                    "the path does not name this request's container",
                     None,
                     false,
                 ),
-                "unknown_project",
+                "unknown_container",
             ),
             authority,
         );
@@ -354,7 +354,7 @@ pub(crate) async fn project_usage(
     };
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
     json_ok(&json!({
-        "projectId": project,
+        "containerId": project,
         "month": month,
         "ingestPayloadBytes": agg.ingest_bytes,
         "ingestRecords": agg.ingest_records,

@@ -49,7 +49,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     // tenant (proj-test) — using proj-test as project A made this a
     // deployment+foreign proof, which masked the drain reconciler's
     // deployment-ref lookup bug.
-    for (proj, cred) in [("proj-inva", "c_a"), ("proj-b", "c_b")] {
+    for (proj, cred) in [("proj-a", "c_a"), ("proj-b", "c_b")] {
         let pid = crate::tenant::ProjectId::new(proj).unwrap();
         projects.insert(
             pid.clone(),
@@ -133,7 +133,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("c_a", "proj-inva"));
+    let ta = format!("Bearer {}", mint("c_a", "proj-a"));
     let tb = format!("Bearer {}", mint("c_b", "proj-b"));
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let auth_a = ("authorization", ta.as_str());
@@ -191,7 +191,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         (2 * pa.len()) as u64,
         "A bytes: {va}"
     );
-    assert_eq!(va["projectId"], "proj-inva", "{va}");
+    assert_eq!(va["containerId"], "proj-a", "{va}");
     let (st, _, b) = preq(
         addr,
         "GET",
@@ -208,15 +208,15 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         (3 * pb.len()) as u64,
         "B bytes: {vb}"
     );
-    assert_eq!(vb["projectId"], "proj-b", "{vb}");
+    assert_eq!(vb["containerId"], "proj-b", "{vb}");
 
     // Project-level rollups agree, each under its own path+principal.
-    let (st, _, b) = preq(addr, "GET", "/v1/projects/proj-inva/usage", &[auth_a], b"").await;
+    let (st, _, b) = preq(addr, "GET", "/v1/containers/proj-a/usage", &[auth_a], b"").await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     let pva: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(pva["ingestRecords"], 2, "{pva}");
     assert_eq!(pva.get("accountId"), None, "no workspace in usage: {pva}");
-    let (st, _, b) = preq(addr, "GET", "/v1/projects/proj-b/usage", &[auth_b], b"").await;
+    let (st, _, b) = preq(addr, "GET", "/v1/containers/proj-b/usage", &[auth_b], b"").await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     let pvb: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(pvb["ingestRecords"], 3, "{pvb}");

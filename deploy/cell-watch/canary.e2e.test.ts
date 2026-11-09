@@ -117,7 +117,7 @@ maybe("the canary exchanges at the real issuer and appends and reads back on the
     new Canary({ cellOrigin, issuerOrigin, credential, cellId: "cell_sc1", timeoutMs: TIMEOUT_MS, ...more }, Date.now,
       () => `e2e-${++n}`);
   // The canary project takes 5 requests a second with one second's burst
-  // (429 project_rate_limit beyond): the watch makes at most five a round,
+  // (429 container_rate_limit beyond): the watch makes at most five a round,
   // a round a minute; here a pause of 1.5 s stands for the minute.
   const pause = () => Bun.sleep(1_500);
   // At boot the billing sweep's probe holds the cell's one shard off for a

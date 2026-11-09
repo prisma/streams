@@ -402,7 +402,7 @@ mod tests {
         let targets = [
             ("/v1/stream/s", false),
             ("/v1/streams/a/records", false),
-            ("/v1/projects/p/live:wait", false),
+            ("/v1/containers/p/live:wait", false),
             ("/v1/stream/s", true),
             ("/v1/queues/q/messages", false),
             ("/health", false),

@@ -267,7 +267,7 @@ function unread(name: string): StreamCheck {
 }
 
 /** A stream the audit could not read; `cls` is the class of the last
- * answer ("429 project_rate_limit", "transport timeout", ...). */
+ * answer ("429 container_rate_limit", "transport timeout", ...). */
 export class AuditReadError extends Error {
   constructor(name: string, reason: string, readonly cls: string) {
     super(`audit ${name}: ${reason}`);

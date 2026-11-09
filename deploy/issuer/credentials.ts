@@ -25,7 +25,7 @@
 // (every scope, no prefix and no expiry by default) and checks, in order,
 // each refusal audited: the body (400 invalid_request); the project's 20
 // creates or rotations a day (429 rate_limited); the project not being
-// deleted (409 project_not_active); its 10 live credentials (409
+// deleted (409 container_not_active); its 10 live credentials (409
 // credential_limit). One compare-and-swap adds the credential at
 // grant_version 1 with a new 32-byte secret, of which the state keeps
 // only the HMAC under the newest pepper; the bundle is published. 201
@@ -142,7 +142,7 @@ function revokeRefusal(state: CellState, project: string, id: string): Refusal |
 /// Why `project` takes no new credential on `state`, or null.
 function createRefusal(state: CellState, project: string): Refusal | null {
   if (state.projects[project]?.phase !== "active") {
-    return new Refusal(409, "project_not_active", `project ${project} is being deleted`);
+    return new Refusal(409, "container_not_active", `project ${project} is being deleted`);
   }
   const live = projectCredentials(state, project).filter(([, c]) => c.status === "active").length;
   if (live >= MAX_LIVE_CREDENTIALS) {

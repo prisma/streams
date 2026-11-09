@@ -1305,9 +1305,9 @@ Acquire project capacity before reading the request body.
 Reject only the offending project:
 
 ```text
-429 project_rate_limit
-429 project_concurrency_limit
-503 project_tracker_capacity
+429 container_rate_limit
+429 container_concurrency_limit
+503 container_tracker_capacity
 ```
 
 Never merge unrelated projects into one overflow token bucket.
@@ -1395,7 +1395,7 @@ from the project's **store budget**, a second bucket at its
 floor on its debt (a cap would bound the debt by one request's work
 instead of the rate). While the
 store budget is in debt, the project's creates (recreates and forks
-included), deletes and seals answer `429 project_rate_limit` with the
+included), deletes and seals answer `429 container_rate_limit` with the
 whole seconds until it is not; every other request only pays into it,
 and the request bucket still charges every request exactly 1. A
 PUT or COPY is weighed by how it ended, once it answers, as a GET is.
@@ -1446,7 +1446,7 @@ Start with:
 
 Add weighted deficit round-robin inside shard committers only if noisy-neighbor testing proves that projects within limits can still starve each other.
 
-**Fair shedding over the RSS line** (public-beta Layer B, lead decision of 2026-10-20; edge change #184; `src/admission/fair_shed.rs`). On a cell shared k ways each verified request is counted at project admission, admitted or refused by its project's quotas, in its project's and the cell's offered requests of the last 5-10 s (one window in the project's tracker entry, one for the instance; no scan, no new map). Over the RSS shed line a project carrying more than 1/k of them is refused `429 project_memory_pressure` on every request, while an append of any other project passes the RSS gate up to the line x 9/8 (562 MB at the default 500, inside the platform's ~750 MB kill line; x 5/4 before #184's amendment). Past that hard line, or when no project is over its share (a flood spread over many projects), every append is shed as before. A dedicated cell (k = 1) is unchanged. The in-flight write cap (`ADMIT_MAX_INFLIGHT`) applies the same verdict (edge change #185): at the cap a blamed project's requests are refused `429 rate_limited`, the gate's own code, and a spared append passes up to the cap x 5/4.
+**Fair shedding over the RSS line** (public-beta Layer B, lead decision of 2026-10-20; edge change #184; `src/admission/fair_shed.rs`). On a cell shared k ways each verified request is counted at project admission, admitted or refused by its project's quotas, in its project's and the cell's offered requests of the last 5-10 s (one window in the project's tracker entry, one for the instance; no scan, no new map). Over the RSS shed line a project carrying more than 1/k of them is refused `429 container_memory_pressure` on every request, while an append of any other project passes the RSS gate up to the line x 9/8 (562 MB at the default 500, inside the platform's ~750 MB kill line; x 5/4 before #184's amendment). Past that hard line, or when no project is over its share (a flood spread over many projects), every append is shed as before. A dedicated cell (k = 1) is unchanged. The in-flight write cap (`ADMIT_MAX_INFLIGHT`) applies the same verdict (edge change #185): at the cap a blamed project's requests are refused `429 rate_limited`, the gate's own code, and a spared append passes up to the cap x 5/4.
 
 ---
 
@@ -1523,7 +1523,7 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
   `AppState.tenant` — the parallel `project_id: String` field is
   deleted.)*
 * [x] Convert internal RPC targets. *(Stage 4a:
-  `streams-internal-project` on the wire; receivers rebuild registry
+  `streams-internal-container` on the wire; receivers rebuild registry
   identity from the header and verify it against the descriptor.)*
 * [x] Implement same-project fork/DLQ checks. *(Review item 4: the
   DLQ compound rule is complete — source consumer authorization at the
@@ -1568,7 +1568,7 @@ certified at Stage 8.)*
   done via `STREAMS_AUTH_GRANTS_FILE`; platform feed pending.)*
 * [x] Implement suspension. *(Data-plane: a non-`Active` `ProjectStatus`
   in the policy feed fails closed at authorization — 403
-  `project_not_active` in enforce, counted in shadow. The transfer/
+  `container_not_active` in enforce, counted in shadow. The transfer/
   deletion sagas that DRIVE status changes remain platform-side below.)*
 * [ ] Implement transfer protocol.
 * [ ] Implement project deletion saga.
@@ -1583,8 +1583,8 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 * [ ] Implement gateway quota affinity.
 * [ ] Add workspace/project rate limits.
 * [x] Add server-side project concurrency. *(6a: src/quota.rs —
-  per-project request-rate bucket (429 `project_rate_limit` +
-  Retry-After) and inflight ceiling (429 `project_concurrency_limit`),
+  per-project request-rate bucket (429 `container_rate_limit` +
+  Retry-After) and inflight ceiling (429 `container_concurrency_limit`),
   acquired in the product wrapper after the enforce gate and BEFORE
   body buffering, quotas read from the CURRENT policy snapshot.)*
 * [x] Remove overflow coupling. *(Projects never share a bucket; a
@@ -1595,7 +1595,7 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   not just its active window: a 10,000-tenant rotation at 20 first-seen
   projects/s demands 20/s x 300s = 6,000 un-evictable entries, which
   the old 4,096 cap shed at 19%; over the cap, NEW projects get 503
-  `project_tracker_capacity`, tracked ones are untouched.)*
+  `container_tracker_capacity`, tracked ones are untouched.)*
 * [x] Run noisy-neighbor campaigns. *(Mechanism level DONE, unblocked
   by Stage 5d: two projects on one enforce cell, a hostile flood
   (tight quotas, 300 flat-out appends) runs CONCURRENTLY with a paced

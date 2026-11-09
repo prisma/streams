@@ -16,20 +16,20 @@
 //! before it leases (`PULL_COVERAGE_BYTES`), once its body is buffered, so
 //! its own reservation never weighs on its own body (landing call C1); its
 //! batch replaces the reservation when it renders. Its project's memory
-//! line makes it wait, then refuses it (429 `project_memory_pressure`, as
+//! line makes it wait, then refuses it (429 `container_memory_pressure`, as
 //! a write's); the instance's read memory makes it wait, then refuses it
 //! (503 `read_memory_busy`). Both are retryable after 1 s.
 //!
 //! Over the RSS shed line on a cell shared k ways, every request of a
 //! project sending more than 1/k of the cell's recently offered requests
-//! is refused first, 429 `project_memory_pressure` with `Retry-After: 2`
+//! is refused first, 429 `container_memory_pressure` with `Retry-After: 2`
 //! (fair shedding, `admission::fair_shed`): here for a request without a
 //! body, in `body` before a body is read, and at the catalog's admission.
 //!
 //! A request that writes the registry (a create, recreate or fork, a
 //! delete, a seal) is refused while its project's store budget is in debt
 //! (public-beta phase B step 14(b), owner question Q1, decided (b') on
-//! 2026-10-12): 429 `project_rate_limit` with the seconds until it is not, as
+//! 2026-10-12): 429 `container_rate_limit` with the seconds until it is not, as
 //! the request-rate bucket answers. Every other route only pays into the
 //! budget (`quota::parked`).
 //!
@@ -151,7 +151,7 @@ impl AppState {
     /// `project`'s catalog page, read once what it may hold is reserved in
     /// the project's read bytes and the instance's read memory, as a page
     /// read reserves; the hold is the request's until it answers. `Err` is
-    /// the refusal to answer: 429 `project_memory_pressure` or 503
+    /// the refusal to answer: 429 `container_memory_pressure` or 503
     /// `read_memory_busy` after the reservation's wait, or 500 `internal`
     /// when the page fails.
     pub(crate) async fn catalog_page_reserved(
@@ -264,7 +264,7 @@ fn writes_registry(method: &Method, path: &str) -> bool {
     )
 }
 
-/// 429 `project_rate_limit`, tagged with the project, while its store
+/// 429 `container_rate_limit`, tagged with the project, while its store
 /// budget is in debt; `None` without a verified project.
 fn store_budget_refusal(
     state: &AppState,
@@ -301,7 +301,7 @@ async fn reserve(
     }
 }
 
-/// 429 `project_memory_pressure`, retryable, tagged with the project.
+/// 429 `container_memory_pressure`, retryable, tagged with the project.
 pub(super) fn memory_pressure(project: Option<&ProjectId>) -> Response {
     let refusal = quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure);
     match project {
@@ -374,7 +374,7 @@ async fn shed_before_body(
 
 /// Fair shedding (`admission::fair_shed`): a request of a project over its
 /// share of the cell's requests is refused, tagged with the project, over
-/// the RSS shed line 429 `project_memory_pressure`, retryable after 2 s as
+/// the RSS shed line 429 `container_memory_pressure`, retryable after 2 s as
 /// the shed's appends are, and at the in-flight cap the gate's own 429
 /// `rate_limited`, retryable after 1 s.
 pub(super) fn blamed_refusal(
@@ -384,8 +384,8 @@ pub(super) fn blamed_refusal(
     let project = &principal?.project_id;
     let (code, message, retry) = match state.admission.shed_blamed()? {
         WriteRefusal::MemoryPressure => (
-            "project_memory_pressure",
-            "the instance is over its memory line and this project carries more than its share of the cell's load; retry",
+            "container_memory_pressure",
+            "the instance is over its memory line and this container carries more than its share of the cell's load; retry",
             "2",
         ),
         WriteRefusal::Overloaded => (
@@ -405,7 +405,7 @@ pub(super) fn blamed_refusal(
 }
 
 /// A body that was not buffered: 413 `body_too_large` past the body
-/// limit, as before, and 429 `project_memory_pressure` (retryable after
+/// limit, as before, and 429 `container_memory_pressure` (retryable after
 /// 1 s, as a read's) when it would have taken its project past the line.
 fn body_refusal(refusal: BodyRefusal, principal: Option<&RequestPrincipal>) -> Response {
     match refusal {
@@ -455,7 +455,7 @@ fn page_bytes(method: &Method, path: &str, query: &str) -> Option<u64> {
 /// The answer to a read whose first sealed chunk found no room after its
 /// wait (`admission::park::read_refused`), as admission answers a read
 /// whose reservation found none: 503 `read_memory_busy` or 429
-/// `project_memory_pressure`, both `retry-after: 1`.
+/// `container_memory_pressure`, both `retry-after: 1`.
 pub(crate) fn refusal_response(refusal: ReadRefusal) -> Response {
     match refusal {
         ReadRefusal::Instance => read_memory_busy(),

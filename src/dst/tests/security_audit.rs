@@ -508,7 +508,7 @@ async fn a_weighted_projects_refusals_are_journaled_to_it_alone() {
             answered.push((st, error_code(&b)));
         }
     }
-    let refused = (429, Some("project_rate_limit".to_string()));
+    let refused = (429, Some("container_rate_limit".to_string()));
     for (i, first) in [(0, 10), (1, 2)] {
         let a = &answers[i];
         assert_eq!(

@@ -273,7 +273,7 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     stream_with(addr, &full, "b/secret", 3).await;
     roll_up(&state).await;
 
-    let totals = format!("/v1/projects/{}/usage", PROJECT);
+    let totals = format!("/v1/containers/{}/usage", PROJECT);
     let (st, body) = usage(addr, &pfx, &totals).await;
     assert_eq!(
         (st, &body["error"]["code"]),
@@ -304,7 +304,7 @@ async fn a_signed_month_is_refused_on_both_usage_routes() {
     stream_with(addr, &full, "a/mine", 0).await;
     let routes = [
         "/v1/streams/a/mine/usage",
-        &format!("/v1/projects/{}/usage", PROJECT),
+        &format!("/v1/containers/{}/usage", PROJECT),
     ];
     for route in routes {
         for month in ["2026-+9", "+026-09", "-026-09", "2026-13"] {

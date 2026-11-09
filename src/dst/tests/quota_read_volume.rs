@@ -74,7 +74,7 @@ async fn scan_pages_draw_on_the_read_byte_quota() {
         text(&b)
     );
     assert!(
-        text(&b).contains("project_rate_limit"),
+        text(&b).contains("container_rate_limit"),
         "typed code: {}",
         text(&b)
     );
@@ -165,7 +165,7 @@ async fn consumer_pulls_draw_on_the_read_byte_quota() {
         text(&b)
     );
     assert!(
-        text(&b).contains("project_rate_limit"),
+        text(&b).contains("container_rate_limit"),
         "typed code: {}",
         text(&b)
     );

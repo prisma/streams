@@ -92,7 +92,7 @@ async fn owned(cell: &Cell, i: usize, names: &[&str]) -> (Vec<u64>, u64) {
             .await;
         streams.push(usage["ownedStoredBytesNow"].as_u64().unwrap());
     }
-    let path = format!("/v1/projects/{}/usage", project(i));
+    let path = format!("/v1/containers/{}/usage", project(i));
     let usage = cell.json(i, "GET", &path).await;
     (streams, usage["ownedStoredBytesNow"].as_u64().unwrap())
 }

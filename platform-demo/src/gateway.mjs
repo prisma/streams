@@ -10,7 +10,7 @@
 //   * the JWT is VERIFIED (signature, iss, aud, exp/nbf) BEFORE any
 //     routing decision — an unverified request never selects a cell;
 //   * the routing project comes from the VERIFIED claims, never from
-//     the URL — a forged path project is refused, so a caller cannot
+//     the URL — a forged path container is refused, so a caller cannot
 //     aim someone else's cell;
 //   * placement is resolved from the control plane's authoritative
 //     map, not from the token's cell_id claim;
@@ -83,7 +83,7 @@ async function verifyBearer(header) {
   if (claims.iss !== ISS || claims.aud !== "prisma-streams-data") return null;
   if (typeof claims.exp !== "number" || claims.exp + SKEW < now) return null;
   if (typeof claims.nbf === "number" && claims.nbf - SKEW > now) return null;
-  if (typeof claims.project_id !== "string") return null;
+  if (typeof claims.container_id !== "string") return null;
   return claims;
 }
 
@@ -121,11 +121,11 @@ const server = http.createServer(async (req, res) => {
     const claims = await verifyBearer(req.headers.authorization);
     if (!claims) return refuse(res, 401, "invalid or missing token");
     // The URL never overrides the verified identity (§14.5: forged
-    // project_id cannot select a cell).
-    const pathProject = /^\/v1\/projects\/([^/]+)\//.exec(req.url)?.[1];
-    if (pathProject && pathProject !== claims.project_id) return refuse(res, 403, "forged_project");
+    // container_id cannot select a cell).
+    const pathContainer = /^\/v1\/containers\/([^/]+)\//.exec(req.url)?.[1];
+    if (pathContainer && pathContainer !== claims.container_id) return refuse(res, 403, "forged_container");
     const pl = await resolvePlacement();
-    const entry = pl.projects[claims.project_id];
+    const entry = pl.projects[claims.container_id];
     const base = entry && cellBases.get(entry.cell_id);
     if (!base) return refuse(res, 403, "no active placement");
 
@@ -136,7 +136,7 @@ const server = http.createServer(async (req, res) => {
     if (upRes.statusCode === 421) {
       upRes.resume(); // discard; placement may have moved under us
       const fresh = await resolvePlacement(true);
-      const moved = fresh.projects[claims.project_id];
+      const moved = fresh.projects[claims.container_id];
       const newBase = moved && cellBases.get(moved.cell_id);
       if (newBase && newBase !== base) {
         upRes = await forward(req, res, newBase, body);

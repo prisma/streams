@@ -88,13 +88,13 @@ fn only_a_post_or_a_put_carries_a_body() {
 
 /// A read whose first sealed chunk was refused after its wait answers as
 /// admission does: the instance's refusal 503 `read_memory_busy`, the
-/// project's 429 `project_memory_pressure`, both `retry-after: 1`.
+/// project's 429 `container_memory_pressure`, both `retry-after: 1`.
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_refused_first_chunk_answers_as_admission_does() {
     use crate::admission::read_memory::ReadRefusal;
     for (refusal, status, code) in [
         (ReadRefusal::Instance, 503u16, "read_memory_busy"),
-        (ReadRefusal::Project, 429, "project_memory_pressure"),
+        (ReadRefusal::Project, 429, "container_memory_pressure"),
     ] {
         let response = super::refusal_response(refusal);
         assert_eq!(response.status().as_u16(), status, "{refusal:?}");

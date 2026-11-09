@@ -64,8 +64,8 @@ describe("the exchange", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect([...res.headers.keys()].filter((h) => h.startsWith("access-control-"))).toEqual([]);
     const body = await res.json();
-    expect(Object.keys(body)).toEqual(["accessToken", "tokenType", "expiresIn", "projectId", "cellId", "endpoint"]);
-    expect([body.tokenType, body.expiresIn, body.projectId, body.cellId, body.endpoint]).toEqual([
+    expect(Object.keys(body)).toEqual(["accessToken", "tokenType", "expiresIn", "containerId", "cellId", "endpoint"]);
+    expect([body.tokenType, body.expiresIn, body.containerId, body.cellId, body.endpoint]).toEqual([
       "Bearer", 3540, "sp_a", CELL, CELL_ORIGIN,
     ]);
     const { header, claims } = decodeJwt(body.accessToken);
@@ -176,7 +176,7 @@ describe("the exchange", () => {
       403, refusal("credential_not_active", `credential ${id} is revoked`),
     ]);
     expect(await answer(await post(issuer, other))).toEqual([
-      403, refusal("project_not_active", "project sp_b is suspended"),
+      403, refusal("container_not_active", "project sp_b is suspended"),
     ]);
     expect((await run("resume", "--state", cell.state, "--project", "sp_b")).code).toBe(0);
     await cache.refresh();
@@ -242,7 +242,7 @@ describe("the exchange", () => {
     writeStateText(cell.state, JSON.stringify(state));
     await cache.refresh();
     expect(await answer(await post(issuer, secret))).toEqual([
-      403, refusal("project_not_active", "project sp_a is being deleted"),
+      403, refusal("container_not_active", "project sp_a is being deleted"),
     ]);
   });
 
@@ -284,7 +284,7 @@ describe("the exchange", () => {
     expect(made.code).toBe(0);
     const { issuer } = await issuerFor(cell);
     const body = await (await post(issuer, readFileSync(out, "utf8").trim())).json();
-    expect([body.projectId, decodeJwt(body.accessToken).claims.scope]).toEqual([
+    expect([body.containerId, decodeJwt(body.accessToken).claims.scope]).toEqual([
       "sp_canary_cell_sc1", "streams.records.append streams.records.read",
     ]);
   });

@@ -45,7 +45,7 @@ function serve(call) {
 // server's success; every other request is served at once.
 function fixture({ match = () => true, answers = [], options = {} } = {}) {
   const calls = [], matched = [];
-  const client = new StreamsClient({ url: "https://cell.example", project: "proj", ...options, fetch: async (url, init) => {
+  const client = new StreamsClient({ url: "https://cell.example", container: "proj", ...options, fetch: async (url, init) => {
     const call = { url: String(url), method: init.method, headers: { ...init.headers }, body: init.body, signal: init.signal };
     calls.push(call);
     if (!match(call)) return serve(call);

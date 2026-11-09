@@ -41,7 +41,7 @@ Modes
   drop          DELETE each of --streams N streams of --prefix (--parallel P); gone counts as dropped
   churn         lifecycles: --count N --size-kib S --end delete|ttl:SECS [--rate L/s | --concurrency C]
   subs          --count N idle subscribers over the streams: --via sse|long-poll --connect-rate 20
-  mux           one multiplexed wait (POST /v1/projects/{p}/live:wait) carrying a tail on every stream
+  mux           one multiplexed wait (POST /v1/containers/{p}/live:wait) carrying a tail on every stream
                 and a group on the first --group-streams N: --project P (tenants: the project's)
                 --wait-ms 25000 --group NAME --pull N --settle every|none --visibility-ms 30000
   audit         read --streams back in full and check them record for record and offset for offset

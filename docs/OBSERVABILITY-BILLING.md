@@ -640,7 +640,7 @@ It is the invoice/audit artifact. The live dashboard reads the rollup DB; histor
 ```http
 GET /v1/streams/{name}/usage?month=YYYY-MM
 GET /v1/streams/{name}/usage/current
-GET /v1/projects/{project}/usage?month=YYYY-MM
+GET /v1/containers/{project}/usage?month=YYYY-MM
 ```
 
 Authorization uses the container's bearer context. The customer encryption key is not required because usage is control-plane metadata, not record content.
@@ -649,7 +649,7 @@ Authorization uses the container's bearer context. The customer encryption key i
 
 ```json
 {
-  "projectId": "p_123",
+  "containerId": "p_123",
   "streamId": "01J...",
   "streamName": "orders",
   "month": "2026-08",
