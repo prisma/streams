@@ -234,3 +234,15 @@ async fn an_open_repairs_a_stale_unsealed_member() {
     assert_eq!(super::unsealed_members(&db).await.unwrap(), [missing]);
     assert_eq!(ledger.unabsorbed_frame_bytes, 70);
 }
+
+/// The open indexes' keys and the repair marker's, byte for byte (S3a §2.4): the sentinel, the
+/// tag, then the stream's hash ('W', 'M') or nothing ('X').
+#[test]
+fn the_index_and_marker_keys_are_pinned() {
+    let hash = [0x07; 16];
+    let sentinel = [0xFF; 16];
+    let key = |tag: &[u8], rest: &[u8]| [sentinel.as_slice(), tag, rest].concat();
+    assert_eq!(super::unsealed_key(&hash), key(b"W", &hash));
+    assert_eq!(super::dirty_key(&hash), key(b"M", &hash));
+    assert_eq!(super::repair_key(), key(b"X", &[]));
+}
