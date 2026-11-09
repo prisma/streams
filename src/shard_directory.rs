@@ -190,11 +190,12 @@ impl ShardDirectory {
     /// `opener` receives the close notifier it must wire into every
     /// engine it produces; it captures nothing else of the runtime.
     pub(crate) fn new(
-        prefixes: Vec<String>,
+        shards: impl Into<crate::topology::model::ShardSet>,
         ownership: crate::ownership::OwnershipService,
         timing: OpenTiming,
         opener: impl FnOnce(ShardCloseNotifier) -> OpenFn,
     ) -> Self {
+        let prefixes = shards.into().shards;
         let inner = Arc::new_cyclic(|weak: &Weak<DirInner>| {
             let shards: crate::sharddir::ServingMap = Arc::new(RwLock::new(HashMap::new()));
             let notifier = ShardCloseNotifier {

@@ -19,6 +19,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::tests::a_new_cells_topology_names_each_shards_home",
+      "path": "src/topology/model.rs",
+      "reason": "A new cell's exact stored home record, which the test compares topology.json against (S4-DESIGN §3.1); serde macro output is compiled and asserted by the test.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::macro(proptest)",
       "path": "src/application/read_batch/tests.rs",
       "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",

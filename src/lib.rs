@@ -86,6 +86,7 @@ mod tenant;
 mod test_alloc;
 #[cfg(test)]
 mod test_rt;
+mod topology;
 mod touch;
 mod touch_keys;
 mod usage;

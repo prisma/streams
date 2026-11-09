@@ -1226,26 +1226,8 @@ fn catalog_error(message: &str) -> object_store::Error {
 
 // ---- shard topology ----
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Topology {
-    pub version: u64,
-    /// Complete binary prefix code over the stream-hash bit space. "" = one
-    /// shard covering everything.
-    pub shards: Vec<String>,
-    /// The request-body ceiling this namespace was created with.
-    ///
-    /// R23-2: the absorber sizes its worst-frame reservation from the
-    /// CURRENT process setting, so a deployment that lowers
-    /// MAX_REQUEST_BODY_BYTES on a namespace already holding a large
-    /// unabsorbed record would under-reserve for it — reintroducing
-    /// exactly the under-reservation the process-wide budget exists to
-    /// prevent. Recording it here lets startup refuse the mismatch.
-    ///
-    /// `None` on topologies written before this field existed; those
-    /// namespaces were created at the 32 MiB protocol pin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_request_body_bytes: Option<usize>,
-}
+/// The cell's shard topology (`topology::model`), named here for the registry's readers.
+pub(crate) type Topology = crate::topology::model::Topology;
 
 const TOPOLOGY_PATH: &str = "topology.json";
 
@@ -1253,20 +1235,11 @@ const TOPOLOGY_PATH: &str = "topology.json";
     clippy::expect_used,
     reason = "load_or_init_topology; the value serializes to JSON from plain fields with string keys, so encoding it cannot fail; a fallible encode would report a storage error for a value the registry itself produced"
 )]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "load_or_init_topology; the initial shard count is a small power of two whose log2 is exact and non-negative; a checked conversion would only restate the power of two"
-)]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "load_or_init_topology; the initial shard count is a small power of two whose log2 is non-negative; a checked conversion would only restate the power of two"
-)]
 pub(crate) async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
     initial_shards: crate::config::validation::InitialShards,
     body_ceiling: usize,
 ) -> Result<Topology, object_store::Error> {
-    let initial_shards = initial_shards.get();
     let path = ObjPath::from(TOPOLOGY_PATH);
     match store.get(&path).await {
         Ok(r) => {
@@ -1282,21 +1255,7 @@ pub(crate) async fn load_or_init_topology(
         Err(object_store::Error::NotFound { .. }) => {}
         Err(e) => return Err(e),
     }
-    // PR 3.2.1: nonzero power-of-two is proven by the InitialShards
-    // type; no assertion is repeated here.
-    let bits = (initial_shards as f64).log2() as usize;
-    let shards: Vec<String> = if bits == 0 {
-        vec![String::new()]
-    } else {
-        (0..initial_shards)
-            .map(|i| format!("{:0width$b}", i, width = bits))
-            .collect()
-    };
-    let topo = Topology {
-        version: 1,
-        shards,
-        max_request_body_bytes: Some(body_ceiling),
-    };
+    let topo = initial_shards.topology(body_ceiling);
     let raw = serde_json::to_vec(&topo).expect("topology json");
     match store
         .put_opts(
