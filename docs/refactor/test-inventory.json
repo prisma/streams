@@ -1569,6 +1569,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_of_two_children_serves_both_streams_with_the_parents_counts",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "94898a5c99e1a92fa5cead86d43f1b7e1637f41f0e487a47b8b6b3bd67a1bb26",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_the_segment_map_refuses_keeps_its_intent_pending",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
