@@ -2475,6 +2475,16 @@
           }
         },
         {
+          "id": "TLA-016/nc-remainder-keeps-index",
+          "role": "negative-control",
+          "spec": "verification/tla/spill/MC_SealSpill.tla",
+          "config": "verification/tla/spill/MC_SealSpill_nc_remainder_keeps_index.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "W_IndexMatchesPending"
+          }
+        },
+        {
           "id": "TLA-016/witness-SealDurable",
           "role": "witness",
           "spec": "verification/tla/spill/MC_SealSpill.tla",

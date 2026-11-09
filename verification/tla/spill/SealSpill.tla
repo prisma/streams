@@ -36,7 +36,11 @@
 (*                                                                         *)
 (* A crash keeps the durable prefix; the restart (seal/open.rs,            *)
 (* handle_load.rs) rebuilds the directory from the durable 'K' rows and    *)
-(* loads each stream's tail and pending row.                               *)
+(* loads the tail and pending row of each stream the unsealed index 'W'    *)
+(* names (layout 8, S3a §4.1): no tail scan.  Every group stages a        *)
+(* stream's 'W' row from its base (applied) and staged tails alone         *)
+(* (open_index::unsealed_op): a put when the stream gains unsealed pages,  *)
+(* a delete when it loses its last; W_IndexMatchesPending is invariant W.  *)
 (*                                                                         *)
 (* F2 needs SlateDB's memtable-flush retention (flush.rs, uploader.rs):    *)
 (* entries above the boundary are all kept; at or below it, merge operands *)
@@ -50,7 +54,7 @@
 (* Records are one-record pages [o, e]: offset o appended by incarnation e *)
 (* (the crash count), so an offset re-used after a crash is a different    *)
 (* record.  Mutation points (MC_SealSpill.tla): RemainderBase (F1),        *)
-(* FlushBoundary (F2).                                                     *)
+(* FlushBoundary (F2), RemainderIndexOp ('W').                             *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -78,6 +82,11 @@ NoTail == [has |-> FALSE, a |-> 0, n |-> 0]
 MkTail(a, n) == [has |-> TRUE, a |-> a, n |-> n]
 \* A pending-row write in a group.
 NoOp == [t |-> "none", pg |-> <<>>]
+\* A group's 'W' op for a stream, from its base and staged tails
+\* (open_index::unsealed_op).
+WOp(b, st) == IF b.a = b.n /\ st.a < st.n THEN "put"
+              ELSE IF b.a < b.n /\ st.a = st.n THEN "del"
+              ELSE "none"
 \* The pages of `pg` at or above offset u (PendingPages::from).
 From(pg, u) == SelectSeq(pg, LAMBDA p : p.o >= u)
 Below(pg, u) == SelectSeq(pg, LAMBDA p : p.o < u)
@@ -125,6 +134,15 @@ FoldS(w, s, i) ==
                        [] OTHER               -> p.row]
 
 Fold(w) == [s \in Streams |-> FoldS(w, s, Len(w))]
+
+\* The unsealed index of a group prefix: the stream's last 'W' op.
+RECURSIVE FoldWS(_, _, _)
+FoldWS(w, s, i) ==
+    IF i = 0 THEN FALSE
+    ELSE CASE w[i].wi[s] = "put" -> TRUE
+           [] w[i].wi[s] = "del" -> FALSE
+           [] OTHER              -> FoldWS(w, s, i - 1)
+FoldW(w) == [s \in Streams |-> FoldWS(w, s, Len(w))]
 KRows(w) == UNION {w[i].k : i \in 1..Len(w)}
 Durable == SubSeq(wal, 1, dur)
 
@@ -143,6 +161,10 @@ RemainderBase(s, w) == From(pend[s], w.u)
 \* The retention boundary of a memtable flush: the frozen memtable's last
 \* sequence (slatedb/slatedb#2208), not the WAL's durable progress.
 FlushBoundary == Len(wal)
+
+\* The 'W' op the seal's remainder commit stages for a sealed stream
+\* (finalize.rs stage_index_rows on the seal's group).
+RemainderIndexOp(b, st) == WOp(b, st)
 
 -----------------------------------------------------------------------------
 (* SlateDB's memtable flush: the pages of stream s it writes to the L0,     *)
@@ -180,6 +202,8 @@ AppendRec(s) ==
     /\ LET p == [o |-> app[s].n, e |-> inc]
            g == [tl |-> [t \in Streams |-> IF t = s THEN MkTail(app[s].a, app[s].n + 1) ELSE NoTail],
                  pd |-> [t \in Streams |-> IF t = s THEN [t |-> "merge", pg |-> <<p>>] ELSE NoOp],
+                 wi |-> [t \in Streams |-> IF t = s THEN WOp(app[s], [a |-> app[s].a, n |-> app[s].n + 1])
+                                           ELSE "none"],
                  k  |-> {},
                  ap |-> [t \in Streams |-> IF t = s THEN <<p>> ELSE <<>>]]
        IN /\ wal' = Append(wal, g)
@@ -288,6 +312,11 @@ Commit(A) ==
                                  THEN IF rem[t] = <<>> THEN [t |-> "del", pg |-> <<>>]
                                       ELSE [t |-> "put", pg |-> rem[t]]
                                  ELSE NoOp],
+                       wi |-> [t \in Streams |->
+                                 IF t \in SealedSet
+                                 THEN RemainderIndexOp(app[t], [a |-> WinOf(t).u,
+                                                                n |-> app[t].n + Len(own[t])])
+                                 ELSE "none"],
                        k  |-> Entries(sl),
                        ap |-> own]
              IN /\ wal' = Append(wal, g)
@@ -338,8 +367,8 @@ Deadline ==
                    refused>>
 
 (* A crash and the restart: the durable prefix survives; the directory is  *)
-(* rebuilt from its 'K' rows and each stream loads its tail and pending    *)
-(* row (only a stream with absorbed < next reads the row).                 *)
+(* rebuilt from its 'K' rows and each stream the durable 'W' rows name     *)
+(* loads its tail and pending row: the held set comes from 'W' alone.      *)
 CrashRestart ==
     /\ cnt.crash < MaxCrashes
     /\ LET w2 == Durable
@@ -348,7 +377,7 @@ CrashRestart ==
           /\ pub' = dur
           /\ app' = [s \in Streams |-> [a |-> F[s].a, n |-> F[s].n]]
           /\ dtl' = [s \in Streams |-> [a |-> F[s].a, n |-> F[s].n]]
-          /\ pend' = [s \in Streams |-> IF F[s].a < F[s].n THEN F[s].row ELSE <<>>]
+          /\ pend' = [s \in Streams |-> IF FoldW(w2)[s] THEN F[s].row ELSE <<>>]
           /\ dir' = KRows(w2)
     /\ inc' = inc + 1
     /\ sl' = Idle
@@ -429,6 +458,14 @@ MemoryDirectoryCovers ==
         o < app[s].a => Cardinality(Covering(dir, s, o)) = 1
     /\ \A c \in dir : c.l < app[c.s].a \/ (sl.ph = "pub" /\ c.id = sl.id)
     /\ \A c \in dir : Cardinality(ObjOf(c)) = 1
+
+\* (W) The unsealed index names exactly the streams whose pending row holds
+\* a page, after every applied group (so after every restart too: every
+\* durable prefix was once the applied sequence).
+W_IndexMatchesPending ==
+    LET F == Fold(wal)
+        W == FoldW(wal)
+    IN \A s \in Streams : W[s] = (F[s].row # <<>>)
 
 \* (F2) A seal's own forced flush writes no page that seal sealed to an L0.
 F2_SealFlushLeavesNoSealedPage ==

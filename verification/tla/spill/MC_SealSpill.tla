@@ -19,4 +19,9 @@ MutRemainderFromSnapshot(s, w) == w.rem
 \* so a flush that overtakes the WAL keeps the operands a not yet durable
 \* remainder put shadows.
 MutDurableBoundary == dur
+
+\* NC remainder keeps the index (S3a §4.1, §7): the seal's remainder commit
+\* never deletes a stream's 'W' row, so a stream the seal emptied stays in
+\* the unsealed index.
+MutRemainderKeepsIndex(b, st) == IF WOp(b, st) = "del" THEN "none" ELSE WOp(b, st)
 =============================================================================
