@@ -420,7 +420,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
         limits: crate::topology::policy_loop::limits(&state.config),
         appends_ceiling: state.config.cli.shard_appends_ceiling,
         rss_shed_mb: cfg.rss_shed_mb,
-        split: crate::topology::policy_loop::split_unavailable(),
+        split: crate::topology::policy_loop::split_entry(state.shards.clone()),
     };
     crate::topology::policy_loop::start(cell, crate::topology::policy_loop::PERIOD, tasks);
     let (drained, instance) = (state.clone(), cfg.instance.clone());

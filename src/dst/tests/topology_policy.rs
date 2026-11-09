@@ -95,11 +95,15 @@ fn leaves(state: &crate::http::AppState) -> Vec<String> {
 async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops() {
     let fleet = seeded().await;
     destination(&fleet).await;
-    let (rig, asked) = policy_rig(fleet, |cli| {
-        // One instance in the ring: the cell's leaves are all this one's.
-        cli.fleet_max = 1;
-        lines(cli);
-    })
+    let (rig, asked) = policy_rig(
+        fleet,
+        |cli| {
+            // One instance in the ring: the cell's leaves are all this one's.
+            cli.fleet_max = 1;
+            lines(cli);
+        },
+        split_double,
+    )
     .await;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -125,19 +129,27 @@ async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops()
     engine_shutdown(&rig.state).await;
 }
 
-/// The policy's lines for a rig: a second's sustain and cooldown, and 7 appends a second as the
-/// split line, so 20 a second is over it on one leaf and on two, and under it on each of four.
+/// The policy's lines for a rig: a second's cooldown, and 7 appends a second as the split line,
+/// so 20 a second is over it on one leaf and on two, and under it on each of four. The fleet's own
+/// policy loop, which splits through S4's entry, holds its sustains past any test, so only the
+/// test's loop (`policy_rig`, its sustain one second) decides.
 fn lines(cli: &mut crate::config::CliArgs) {
-    cli.shard_split_sustain_secs = 1;
+    cli.shard_split_sustain_secs = 1_000_000;
+    cli.shard_emergency_sustain_secs = 1_000_000;
     cli.shard_topology_cooldown_secs = 1;
     cli.shard_appends_ceiling = 10;
 }
 
 /// A one-shard cell run by `streams-1` with its fleet on `fleet`, and the policy's loop on it
 /// every 200 ms through the split entry's double, whose asked splits it returns.
+/// How a rig's policy loop splits: the double, or S4's split itself, each recording the splits
+/// it was asked for.
+type Entry = fn(&Arc<crate::http::AppState>, Arc<Mutex<Vec<String>>>) -> SplitFn;
+
 async fn policy_rig(
     fleet: Arc<dyn ObjectStore>,
     cli: fn(&mut crate::config::CliArgs),
+    entry: Entry,
 ) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
     let rig = http_rig_build(
         mem(),
@@ -162,10 +174,13 @@ async fn policy_rig(
         shards: rig.state.shards.clone(),
         ownership: rig.state.ownership.clone(),
         store: rig.state.data_store.clone(),
-        limits: crate::topology::policy_loop::limits(&rig.state.config),
+        limits: crate::topology::policy::Limits {
+            split_sustain_ms: 1_000,
+            ..crate::topology::policy_loop::limits(&rig.state.config)
+        },
         appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
         rss_shed_mb: 0,
-        split: split_double(&rig.state, asked.clone()),
+        split: entry(&rig.state, asked.clone()),
     };
     crate::topology::policy_loop::start(cell, Duration::from_millis(200), &rig.tasks);
     (rig, asked)
@@ -215,7 +230,7 @@ async fn beat_until(
 )]
 async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_beats() {
     let fleet = seeded().await;
-    let (rig, asked) = policy_rig(fleet.clone(), lines).await;
+    let (rig, asked) = policy_rig(fleet.clone(), lines, split_double).await;
     let stop = Arc::new(AtomicBool::new(false));
     let generator = tokio::spawn(load(rig.addr, 20, stop.clone()));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -316,10 +331,14 @@ async fn a_live_intent_holds_the_split_until_it_is_terminal() {
     use crate::topology::intent::State;
     let fleet = seeded().await;
     destination(&fleet).await;
-    let (rig, asked) = policy_rig(fleet.clone(), |cli| {
-        cli.fleet_max = 1;
-        lines(cli);
-    })
+    let (rig, asked) = policy_rig(
+        fleet.clone(),
+        |cli| {
+            cli.fleet_max = 1;
+            lines(cli);
+        },
+        split_double,
+    )
     .await;
     write_intent(&rig.state.data_store, State::Preparing).await;
     let stop = Arc::new(AtomicBool::new(false));
@@ -339,6 +358,103 @@ async fn a_live_intent_holds_the_split_until_it_is_terminal() {
     stop.store(true, Ordering::Relaxed);
     generator.await.unwrap();
     assert_eq!(asked.lock().unwrap().first().map(String::as_str), Some(""));
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// S4's split behind the seam, recording each split that published.
+fn real_split(state: &Arc<crate::http::AppState>, asked: Arc<Mutex<Vec<String>>>) -> SplitFn {
+    let entry = crate::topology::policy_loop::split_entry(state.shards.clone());
+    Arc::new(move |prefix: String| {
+        let (entry, asked) = (entry.clone(), asked.clone());
+        Box::pin(async move {
+            let published = entry(prefix.clone()).await;
+            if published.is_ok() {
+                asked.lock().unwrap().push(prefix);
+            }
+            published
+        })
+    })
+}
+
+/// The records of `name`, read back.
+async fn records(addr: std::net::SocketAddr, name: &str) -> serde_json::Value {
+    let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap_or_default()
+}
+
+/// The policy's split goes through S4's split end to end: a one-shard cell over the line splits
+/// once into its two halves, and every stream written before the split reads back the same
+/// records from the child that holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
+)]
+async fn the_policys_split_through_s4_keeps_every_stream_whole() {
+    let fleet = seeded().await;
+    destination(&fleet).await;
+    let (rig, asked) = policy_rig(
+        fleet.clone(),
+        |cli| {
+            cli.fleet_max = 1;
+            lines(cli);
+        },
+        real_split,
+    )
+    .await;
+    // The cell's stored topology, as boot leaves it: the one S4's split publishes over.
+    let topology = crate::topology::model::Topology {
+        version: 1,
+        shards: rig.state.shards.prefixes().shards.clone(),
+        last_op: None,
+        max_request_body_bytes: None,
+    };
+    let raw = serde_json::to_vec(&topology).unwrap();
+    rig.state
+        .data_store
+        .put(&Path::from("topology.json"), raw.into())
+        .await
+        .unwrap();
+    let json = [("content-type", "application/json")];
+    let mut kept = Vec::new();
+    for i in 0..12 {
+        let path = format!("/v1/stream/keep-{i}");
+        hreq(rig.addr, "PUT", &path, &json, b"").await;
+        for n in 0..3 {
+            let body = format!(r#"[{{"stream":{i},"n":{n}}}]"#);
+            let (status, _, _) = hreq(rig.addr, "POST", &path, &json, body.as_bytes()).await;
+            assert_eq!(status, 204, "append to keep-{i}");
+        }
+        kept.push((
+            format!("keep-{i}"),
+            records(rig.addr, &format!("keep-{i}")).await,
+        ));
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let generator = tokio::spawn(load(rig.addr, 20, stop.clone()));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while leaves(&rig.state).len() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    generator.await.unwrap();
+    assert_eq!(
+        leaves(&rig.state),
+        ["0", "1"],
+        "asked {:?}",
+        asked.lock().unwrap()
+    );
+    assert_eq!(*asked.lock().unwrap(), [""]);
+    for (name, before) in &kept {
+        assert_eq!(
+            &records(rig.addr, name).await,
+            before,
+            "{name} after the split"
+        );
+    }
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;

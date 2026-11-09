@@ -21,8 +21,9 @@ pub(crate) const INSTANCE_FULL: &str = "instance_full";
 /// The policy's cadence.
 pub(crate) const PERIOD: Duration = Duration::from_secs(10);
 
-/// Why S4's split entry did not start a split: its refusal's reason code (`topology_busy`,
-/// `instance_full`, `not_splittable`, `unknown_prefix`), or `unavailable` before it lands.
+/// Why S4's split entry did not split: its refusal's reason code (`topology_busy`,
+/// `not_ring_owner`, `instance_full`, `unavailable`, `not_splittable`, `unknown_prefix`,
+/// `rolled_back`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Refused(pub &'static str);
 
@@ -30,10 +31,37 @@ pub(crate) struct Refused(pub &'static str);
 pub(crate) type SplitFn =
     Arc<dyn Fn(String) -> BoxFuture<'static, Result<(), Refused>> + Send + Sync>;
 
-/// The split entry until S4's lands: every split is refused as unavailable.
-pub(crate) fn split_unavailable() -> SplitFn {
-    Arc::new(|_prefix| Box::pin(async { Err(Refused("unavailable")) }))
+/// S4's split entry (`topology::ops`, the operator route's own path, S4-DESIGN §6) behind the
+/// seam. It answers once the split has started; the split runs on as its own supervised task.
+pub(crate) fn split_entry(shards: ShardDirectory) -> SplitFn {
+    Arc::new(move |prefix: String| {
+        let shards = shards.clone();
+        Box::pin(async move {
+            let started = shards.topology_ops().split(prefix).await;
+            started
+                .map(|_| ())
+                .map_err(|refused| Refused(refusal_code(&refused)))
+        })
+    })
 }
+
+/// The reason code of S4's refusal.
+fn refusal_code(refused: &super::split::Refused) -> &'static str {
+    use super::split::Refused as S4;
+    match refused {
+        S4::Busy(_) => "topology_busy",
+        S4::NotOwner(_) => NOT_RING_OWNER,
+        S4::InstanceFull { .. } => INSTANCE_FULL,
+        S4::Unavailable(_) => "unavailable",
+        S4::NotSplittable(_) => "not_splittable",
+        S4::UnknownPrefix => "unknown_prefix",
+        S4::RolledBack(_) => "rolled_back",
+        S4::Unfinished(_) => "unfinished",
+    }
+}
+
+/// S4's refusal of a split whose parent another instance holds.
+const NOT_RING_OWNER: &str = "not_ring_owner";
 
 /// What one pass reads, and through what it acts.
 #[derive(Clone)]
@@ -118,6 +146,7 @@ async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
                     max: cell.limits.shards_per_instance_max,
                 },
                 "topology_busy" => Decision::Hold(super::policy::Hold::IntentLive),
+                NOT_RING_OWNER => Decision::Hold(super::policy::Hold::PeerActs),
                 _ => Decision::Hold(super::policy::Hold::Steady),
             }
         }

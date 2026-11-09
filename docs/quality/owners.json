@@ -2018,6 +2018,14 @@
     },
     {
       "category": "effect",
+      "count": 1,
+      "owner": "crate::the_policys_split_through_s4_keeps_every_stream_whole",
+      "path": "src/dst/tests/topology_policy.rs",
+      "reason": "The policy DST's load generator runs beside the policy loop it drives; it is stopped through the shared flag and joined before the topology is checked. The load must run while the loop decides, so it cannot be awaited inline.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
       "count": 2,
       "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
       "path": "src/dst/tests/runtime_retirement.rs",
