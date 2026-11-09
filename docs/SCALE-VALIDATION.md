@@ -1,8 +1,9 @@
 # Scale validation on Prisma Compute: streams and queues, cost and revenue
 
 Status: guide, written 2026-11-01 against slate `3a86e7e52`; its open items
-were decided on 2026-11-03 (§8). It tells an agent that already runs Streams
-on Prisma Compute, as a multi-instance fleet against an S3-compatible store
+were decided on 2026-11-03 (§8); #149's grow-and-shrink run has its own
+guide, `docs/SCALE-VALIDATION-149.md`. It tells an agent that already runs
+Streams on Prisma Compute, as a multi-instance fleet against an S3-compatible store
 (s3lite or Tigris), how to check at scale what the local rigs measured: what
 streams and queues cost us per tenant and per message, and what they earn at
 Cloudflare's public prices. Follow it literally. It runs nothing by itself.
@@ -61,6 +62,8 @@ git cat-file -e <commit>:src/http/forward.rs && echo forwarding-present
 ```
 
 ### 1.3 Topology: instances, shards, prefixes
+
+For the fixed-topology tests (§2, §3); #149's run is in its own guide.
 
 | Instances N | Fleet | `INITIAL_SHARDS` | `FLEET_MAX` | `FLEET_MIN` |
 |---:|---|---|---:|---:|
@@ -305,6 +308,8 @@ per-stream S tenant holds 25 (`bench/k2cost/points/PACK-S.env`), a T tenant
 spread evenly over N instances about (N − 1) / N of the waits are
 forwarded, so plan for twice the waits: 20 S (500, up to 1,000) and 400 T
 (400, up to 800).
+
+What a held wait costs, and the pool that binds first: `docs/SCALE-VALIDATION-149.md` §4.
 
 ### 2.3 Running a step
 
@@ -992,3 +997,4 @@ Held for the owner (not decided under the delegation):
   financially binding; the decision fixes only the model.
 - **Re-pricing** (from item 7): if a re-read price page differs, re-pricing
   is the owner's; the agent only reports both margins.
+
