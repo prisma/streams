@@ -233,3 +233,59 @@ async fn until_queued(engine: &crate::shard::ShardEngine) {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 }
+
+/// The sentinel rows of `tag` in `engine`'s log, keys only.
+async fn tagged(engine: &crate::shard::ShardEngine, tag: u8) -> Vec<Vec<u8>> {
+    let prefix = crate::spill::runindex::sentinel_prefix(tag);
+    let mut scan = engine.db.scan_prefix(&prefix[..], ..).await.unwrap();
+    let mut keys = Vec::new();
+    while let Some(kv) = scan.next().await.unwrap() {
+        keys.push(kv.key.to_vec());
+    }
+    keys
+}
+
+/// **The Preparing fold leaves no parent `'K'` row to copy** (K-SPLIT-DECISION-2026-11-09 §5's second
+/// case): with sealed `'K'` rows in the parent's log, the split's Preparing fold folds them into the
+/// run index, so neither child's seed holds a `'K'` row and both hold the parent's `'I'` rows; both
+/// streams read back as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_preparing_fold_leaves_the_children_no_parent_k_rows() {
+    let Cell {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+    } = cell().await;
+    parent.seal_requested().await.expect("seal");
+    use crate::keyspace::tag::{DIRECTORY, POINTER};
+    assert!(
+        !tagged(&parent, DIRECTORY).await.is_empty(),
+        "sealed 'K' rows to fold"
+    );
+    let want = (records(addr, &low).await, records(addr, &high).await);
+    let clock = state.runtime.clock.clone();
+    let published =
+        crate::topology::split::split(&state.shards, &parent, "op-fold", "inst-a", &*clock)
+            .await
+            .expect("the split publishes");
+    let pointers = tagged(&published.children[0].2, POINTER).await;
+    assert!(!pointers.is_empty(), "the fold's 'I' rows");
+    for (prefix, _, child) in &published.children {
+        assert!(
+            tagged(child, DIRECTORY).await.is_empty(),
+            "{prefix}: no 'K' row"
+        );
+        assert_eq!(
+            tagged(child, POINTER).await,
+            pointers,
+            "{prefix}: the parent's 'I' rows"
+        );
+    }
+    assert_eq!(
+        (records(addr, &low).await, records(addr, &high).await),
+        want
+    );
+    engine_shutdown(&state).await;
+}
