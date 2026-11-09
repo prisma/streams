@@ -135,6 +135,8 @@ impl std::fmt::Display for Refused {
 pub(crate) struct Published {
     pub version: u64,
     pub children: Vec<(String, u32, Arc<ShardEngine>)>,
+    /// The pause: from the barrier's park to its release to the children (S4-DESIGN §9).
+    pub pause: Duration,
 }
 
 /// The operation's parts every publishing step reads.
@@ -181,6 +183,7 @@ pub(crate) async fn split(
             drop(point.go.await);
         }
     }
+    let paused_at = std::time::Instant::now();
     let copied = match (&prepared, &barrier) {
         (Ok(()), Some(_)) => copy(&*store, parent, &children, op_id).await,
         (Err(e), _) => Err(e.clone()),
@@ -213,7 +216,9 @@ pub(crate) async fn split(
         drop(hold);
         return Err(roll_back(&*store, parent, &children, &held, format!("'T': {e}")).await);
     }
+    let released = std::cell::Cell::new(None);
     let retire = |reroute| {
+        released.set(Some(paused_at.elapsed()));
         if let Some(barrier) = barrier {
             barrier.retire(reroute);
         }
@@ -226,7 +231,10 @@ pub(crate) async fn split(
         children: &children,
         op_id,
     };
-    let published = publish(&op, now, retire).await;
+    let published = publish(&op, now, retire).await.map(|mut published| {
+        published.pause = released.get().unwrap_or_default();
+        published
+    });
     drop(hold);
     let ended = held_terminal(&held, intent::State::Reclaimed, "published");
     drop(intent::replace(&*store, &held, ended).await);
@@ -354,10 +362,15 @@ async fn copy(
     let plan = plan(store, parent, children, &rows).await?;
     let counts: Vec<Counts> = plan.iter().map(|(_, c)| c.clone()).collect();
     sentinel::check_sums(&rows, &counts).map_err(|e| e.to_string())?;
-    for (child, (routed, counts)) in children.iter().zip(&plan) {
+    for (child, (_, counts)) in children.iter().zip(&plan) {
         put_lists(store, parent, child, &rows, counts).await?;
+    }
+    let clones = children.iter().zip(&plan).map(|(child, (routed, counts))| {
         let seed = seed_rows(routed, counts, child.home);
-        clone_child(parent, &checkpoint, child, seed).await?;
+        clone_child(parent, &checkpoint, child, seed)
+    });
+    for cloned in futures_util::future::join_all(clones).await {
+        cloned?;
     }
     Ok(())
 }
@@ -478,16 +491,18 @@ async fn publish(
     let mut shards = next.shards.clone();
     shards.version = next.version;
     dir.install(shards, Some(etag), now);
-    let mut opened = Vec::with_capacity(children.len());
-    for child in children {
-        let mut route = [0u8; 16];
+    let opens = children.iter().map(|child| async move {
         let bits = u128::from_str_radix(&child.prefix, 2).unwrap_or(0);
-        route.copy_from_slice(&(bits << (128 - child.prefix.len())).to_be_bytes());
+        let route = (bits << (128 - child.prefix.len())).to_be_bytes();
         let engine = dir
             .resolve(&route, Adoption::Internal)
             .await
             .map_err(|e| format!("open {}: {e:?}", child.prefix))?;
-        opened.push((child.prefix.clone(), child.home, engine));
+        Ok::<_, String>((child.prefix.clone(), child.home, engine))
+    });
+    let mut opened = Vec::with_capacity(children.len());
+    for open in futures_util::future::join_all(opens).await {
+        opened.push(open?);
     }
     let engines: Vec<(Range, Arc<ShardEngine>)> = children
         .iter()
@@ -509,6 +524,7 @@ async fn publish(
     Ok(Published {
         version: next.version,
         children: opened,
+        pause: Duration::ZERO,
     })
 }
 

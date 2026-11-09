@@ -70,7 +70,11 @@ async fn append(addr: Addr, name: &str, n: u32) -> (u16, Option<String>) {
 }
 
 async fn cell() -> Cell {
-    let store = mem();
+    cell_over(mem()).await
+}
+
+/// `cell`, over `store`.
+async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
     let (state, addr) = http_rig(store.clone()).await;
     // The cell's stored topology, as boot leaves it: the rig's own.
     let topology = crate::topology::model::Topology {
@@ -287,5 +291,38 @@ async fn the_preparing_fold_leaves_the_children_no_parent_k_rows() {
         (records(addr, &low).await, records(addr, &high).await),
         want
     );
+    engine_shutdown(&state).await;
+}
+
+/// **The pause on a store 10 ms away, against the 2 s hold** (S4-DESIGN §9.2, the fallback arm's
+/// ≈40-44 round trips). Every store request takes 10 ms; the split's pause, from the barrier's park to
+/// its release to the children, is printed in milliseconds and round trips, and must stay within the
+/// hold. Timing-sensitive: its figure is quoted only from a run under the machine's lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_pause_on_a_store_ten_ms_away_stays_within_the_hold() {
+    use crate::dst::fault_store::{FaultPlan, FaultStore};
+    // `shard::transaction::barrier::HOLD`, the hold the pause must stay within.
+    const HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+    let plan = FaultPlan {
+        latency_pct: 100,
+        latency_ms: (10, 10),
+        ..FaultPlan::CLEAN
+    };
+    let store: Arc<dyn object_store::ObjectStore> = FaultStore::uniform(mem(), 0x5411, plan);
+    let Cell { state, parent, .. } = cell_over(store).await;
+    parent.seal_requested().await.expect("seal");
+    let clock = state.runtime.clock.clone();
+    let published =
+        crate::topology::split::split(&state.shards, &parent, "op-pause", "inst-a", &*clock)
+            .await
+            .expect("the split publishes");
+    let pause = published.pause;
+    let rtt = pause.as_millis() / 10;
+    eprintln!(
+        "PAUSE {} ms, about {rtt} round trips of 10 ms (hold: {:?})",
+        pause.as_millis(),
+        HOLD
+    );
+    assert!(pause < HOLD, "{pause:?}");
     engine_shutdown(&state).await;
 }

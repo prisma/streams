@@ -10053,6 +10053,19 @@
     "scenarios": []
   },
   {
+    "name": "the_pause_on_a_store_ten_ms_away_stays_within_the_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c8b443cfb0d16ea155fc7489bbce6aaae5085f980c3fbffb873a3796cf11f1de",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_pause_sequence_quiesces_writers_and_its_rollback_resumes_them",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
