@@ -166,6 +166,21 @@ async fn pinned(label: &str, n: usize, oracle: &Mutex<Oracle>) -> (Rig, BTreeSet
     pinned_with(label, n, oracle, ledger, dead).await
 }
 
+/// A gc rig whose purges are due at once and whose cleaner rewrites a
+/// half-dead object. Its L0 line is its own and high: under the process's line
+/// (yield at 16) a rig's 40 seals reach the yield mark under suite load (real
+/// L0 counts of 24 and 39 seen), and a pass at the mark releases nothing. The
+/// test of the yield sets its own line.
+async fn clean_rig(label: &str) -> Rig {
+    let rig = gc_rig(label).await;
+    rig.engine.gc_state().configure(|s| {
+        s.purge_delay = Duration::ZERO;
+        s.clean_pays = half_dead;
+    });
+    rig.engine.set_l0_line(4_096);
+    rig
+}
+
 /// `pinned` with each seal's ledger and dead records from `ledger` and
 /// `dead`.
 async fn pinned_with(
@@ -175,11 +190,7 @@ async fn pinned_with(
     ledger: impl Fn(usize) -> Vec<Bytes>,
     big: impl Fn(usize) -> Vec<Bytes>,
 ) -> (Rig, BTreeSet<ObjectId>) {
-    let rig = gc_rig(label).await;
-    rig.engine.gc_state().configure(|s| {
-        s.purge_delay = Duration::ZERO;
-        s.clean_pays = half_dead;
-    });
+    let rig = clean_rig(label).await;
     let dead = Mutex::new(Oracle::new());
     for i in 0..n {
         append_recorded(&rig.engine, oracle, LEDGER, ledger(i)).await;
@@ -616,11 +627,7 @@ async fn a_child_rewrites_exactly_its_half_of_a_shared_object() {
     let sibling = Mutex::new(Oracle::new());
     let small = |i: usize| vec![Bytes::from(vec![u8::try_from(i).unwrap(); 32])];
     let big = |_: usize| vec![Bytes::from(vec![0xDD; 900]), Bytes::from(vec![0xEE; 900])];
-    let rig = gc_rig("clean-two-half").await;
-    rig.engine.gc_state().configure(|s| {
-        s.purge_delay = Duration::ZERO;
-        s.clean_pays = half_dead;
-    });
+    let rig = clean_rig("clean-two-half").await;
     let dead = Mutex::new(Oracle::new());
     for i in 0..3 {
         append_recorded(&rig.engine, &oracle, own, small(i)).await;
