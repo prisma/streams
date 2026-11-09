@@ -465,6 +465,22 @@
       "syntax": "path = \"tests/shared_cell_weighted.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::shard_ownership",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Layout 8's range property over real HTTP rigs (S3a-DESIGN section 1.1, ROUTE-HASH-DECISION-2026-11-08): on four bit-prefix shards, every per-entity row and seal-directory entry a shard holds is in its prefix, and every stream and queue reads back whole after a seal, fold and clean on every shard; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/shard_ownership.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::every_row_of_a_shard_lies_in_its_range",
+      "path": "src/dst/tests/shard_ownership.rs",
+      "reason": "The ownership DST's queue create and send documents (an empty queue config, one message body) through the product routes; serde macro output is compiled and the DST asserts every queue's exact message count.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::q_key",

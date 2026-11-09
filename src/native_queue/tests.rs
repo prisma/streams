@@ -1,5 +1,5 @@
 //! Codec and arithmetic tests for the native queue vocabulary.
-use super::keys::{lease_token, message_id, parse_lease_token, parse_message_id};
+use super::keys::{jitter_seed, lease_token, message_id, parse_lease_token, parse_message_id};
 use super::rows::{Cause, DState, DeliveryRow, MetaRow, StateRow};
 use super::*;
 
@@ -260,4 +260,36 @@ fn queue_scans_cache_their_blocks() {
         ),
         (16, 1)
     );
+}
+
+/// An id or a token minted under one incarnation never resolves under another of the same name,
+/// whose entity hash shares its route's leading bytes (S3a-DESIGN §1.1): the incarnation tag is
+/// the hash's last four bytes, all identity.
+#[test]
+fn an_id_minted_under_another_identity_with_the_same_route_does_not_resolve() {
+    let first = [0x5a; 16];
+    let mut second = first;
+    second[12..].copy_from_slice(&[0xa5; 4]);
+    assert_eq!(first[..12], second[..12], "same route bytes and more");
+    let id = message_id(&first, 7);
+    assert_eq!(parse_message_id(&first, &id), Some(7));
+    assert_eq!(parse_message_id(&second, &id), None);
+    let token = Token {
+        offset: 7,
+        lease_gen: 3,
+    };
+    let minted = lease_token(&first, token);
+    assert_eq!(parse_lease_token(&first, &minted), Some(token));
+    assert_eq!(parse_lease_token(&second, &minted), None);
+}
+
+/// A queue's jitter seed is its entity hash's identity bits (S3a-DESIGN §1.1), so two queues whose
+/// leading bytes agree, as every queue of a deep shard's do, still jitter apart.
+#[test]
+fn a_queues_jitter_seed_is_drawn_from_its_identity_bits() {
+    let first = [0x5a; 16];
+    let mut second = first;
+    second[8..].copy_from_slice(&[0xa5; 8]);
+    assert_eq!(jitter_seed(&first), u64::from_le_bytes([0x5a; 8]) | 1);
+    assert_ne!(jitter_seed(&first), jitter_seed(&second));
 }

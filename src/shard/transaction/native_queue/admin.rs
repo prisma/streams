@@ -42,10 +42,9 @@ impl CommitTransaction<'_> {
                 Err(NqRefusal::ConfigConflict)
             };
         }
-        let seed = u64::from_le_bytes(hash[..8].try_into().unwrap_or([7u8; 8]));
         st.state = StateRow {
             cfg: cfg.clone(),
-            jitter: seed | 1,
+            jitter: keys::jitter_seed(&hash),
             ..StateRow::default()
         };
         st.exists = true;

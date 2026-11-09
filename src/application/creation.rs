@@ -120,6 +120,11 @@ pub(crate) use product::{ProductCreateConfig, ProductCreateError};
 pub(crate) use reconcile::{ForkDebtStatus, spawn_fork_debt_reconciler};
 
 impl CreationService {
+    /// A fresh incarnation's epoch for `sref`, whose segment 0 never has the sentinel's hash.
+    fn fresh_epoch(&self, sref: &crate::tenant::TenantStreamRef) -> [u8; 16] {
+        entity_epoch(|| self.runtime.epoch(), |epoch| segment_zero(sref, epoch))
+    }
+
     /// The `409 not_ring_owner` for a create of `sref` whose shard another
     /// instance owns, or `None` when this instance may create it. A refused
     /// create also drops what this instance cached of the stream: the owner
@@ -250,6 +255,30 @@ pub(crate) fn create_request_hash(
     }
     hex(&h.finalize()[..16])
 }
+/// A fresh incarnation's epoch: drawn again while the entity hash `mint` gives
+/// it is the sentinel's, which no entity may have (S3a-DESIGN §1.1; odds of
+/// 2^-128 a draw).
+fn entity_epoch(
+    mut draw: impl FnMut() -> [u8; 16],
+    mint: impl Fn(&[u8; 16]) -> crate::keyspace::EntityHash,
+) -> [u8; 16] {
+    loop {
+        let epoch = draw();
+        if !mint(&epoch).is_sentinel() {
+            return epoch;
+        }
+    }
+}
+
+/// Segment 0's entity hash for `sref` at `epoch`, as the registry derives it.
+fn segment_zero(
+    sref: &crate::tenant::TenantStreamRef,
+    epoch: &[u8; 16],
+) -> crate::keyspace::EntityHash {
+    let identity = crate::crypto::SegmentHash::for_stream(sref, &hex(epoch));
+    crate::keyspace::entity_hash(&crate::crypto::RouteHash::for_stream(sref), &identity)
+}
+
 /// A fresh incarnation hands back the epoch it minted, so key material derived
 /// from it (the product watch verifier) never re-parses the hex written here.
 #[expect(
@@ -264,7 +293,7 @@ pub(crate) fn fresh_desc(
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> (crate::registry::PersistedDescriptor, [u8; 16]) {
-    let epoch = service.runtime.epoch();
+    let epoch = service.fresh_epoch(sref);
     let desc = crate::registry::PersistedDescriptor {
         name: sref.name().as_str().to_string(),
         account_id: Some(service.deployment.account_id().to_string()),
@@ -396,6 +425,38 @@ pub(crate) use ttl::{TtlMutation, admit_ttl};
 #[cfg(test)]
 mod tests {
     use crate::application::request_work::{Action, Key, Kind, RequestWork, WorkError};
+
+    /// A fresh epoch whose entity hash would be the sentinel's is drawn again (S3a-DESIGN §1.1):
+    /// the sentinel names the shard's own rows, never an entity's.
+    #[test]
+    fn an_entity_hash_in_the_sentinel_space_is_refused() {
+        let ff = crate::keyspace::entity_hash(
+            &crate::crypto::RouteHash([0xFF; 16]),
+            &crate::crypto::SegmentHash([0xFF; 16]),
+        );
+        assert!(ff.is_sentinel());
+        let mut draws = [[1u8; 16], [2u8; 16]].into_iter();
+        let epoch = super::entity_epoch(
+            || draws.next().unwrap(),
+            |epoch| {
+                if *epoch == [1u8; 16] {
+                    ff
+                } else {
+                    super::segment_zero(&sref(), epoch)
+                }
+            },
+        );
+        assert_eq!(
+            epoch, [2u8; 16],
+            "the epoch whose hash is the sentinel's is drawn again"
+        );
+    }
+
+    fn sref() -> crate::tenant::TenantStreamRef {
+        crate::tenant::ProjectId::new("proj-test")
+            .unwrap()
+            .stream_ref("s")
+    }
     use std::{sync::Arc, time::Duration};
 
     #[expect(

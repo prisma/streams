@@ -731,7 +731,7 @@ fn a_slot_is_charged_for_what_it_allocates() {
     // buffer, its shard prefix's block and its lineage vectors' blocks.
     let mut persisted = desc("s", EPOCH, false);
     persisted.fork_children = vec!["f1".into(), "fork-22".into()];
-    let mut map = crate::segmap::SegmentMap::initial("prefix-0", 1);
+    let mut map = crate::segmap::SegmentMap::initial("", 1);
     map.split(0, 1 << 40, 0, [1; 16], [2; 16], 2).unwrap();
     let block = |n: usize| n.next_multiple_of(8);
     let segment = std::mem::size_of::<crate::segmap::SegmentDesc>();

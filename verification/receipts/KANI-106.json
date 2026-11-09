@@ -1,0 +1,180 @@
+{
+  "checks": [
+    {
+      "check": "KANI-106/entity-route",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "e1fb239b5027b9b3d5149501eff6b75e51b52cf7cfc677039c3f5dd1549abc03",
+      "role": "baseline",
+      "seconds": 90.7,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-106/entity-key",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "d5b0ccee79ba94417c1a01260c1657a4551f0539e60fa001c87ce317a34534e7",
+      "role": "baseline",
+      "seconds": 35.9,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-106/nc-mint-from-identity",
+      "expected": "fail:a prefix holds an entity exactly when it holds its route",
+      "failed_checks": [
+        "\"a prefix holds an entity exactly when it holds its route\""
+      ],
+      "log_sha256": "6789de055bf691377e2dec4ad23eded2a99b64de8737c8ad9b37cdddb8938420",
+      "mutated": {
+        "src/keyspace.rs": {
+          "baseline": "117a9ec8ac93bbcedbcbcc6f533bd9bfdde4f2f595b6884ccb6cf3394408539a",
+          "control": "a9dbae9f872e188012aa79c9498c0c7f8b8ca50beb5c3752f5ec49713a40ea6b"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 84.9,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-106/nc-prefix-past-the-route",
+      "expected": "fail:a prefix holds an entity exactly when it holds its route",
+      "failed_checks": [
+        "\"a prefix holds an entity exactly when it holds its route\""
+      ],
+      "log_sha256": "1a23438b8c1cfdf85cb0b70f0ee7e947fbcd0e7cf7d1ef32f64e48f170510269",
+      "mutated": {
+        "src/keyspace.rs": {
+          "baseline": "117a9ec8ac93bbcedbcbcc6f533bd9bfdde4f2f595b6884ccb6cf3394408539a",
+          "control": "aeba69ea05ff7967a226f6780eb564c5323ab0eefde39026dc1613b692375e4d"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 36.8,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-106/nc-family-byte-first",
+      "expected": "fail:an entity key lies in its hash's range",
+      "failed_checks": [
+        "\"an entity key lies in its hash's range\""
+      ],
+      "log_sha256": "98d5403d659509aeeb3b00ca98b35888ba2b3d2b4e69e8d57db2e010393ee972",
+      "mutated": {
+        "src/keyspace.rs": {
+          "baseline": "117a9ec8ac93bbcedbcbcc6f533bd9bfdde4f2f595b6884ccb6cf3394408539a",
+          "control": "902fd6db8f47d92ef65ce707123eb0e8a1b504d37a378a24ce41819c56fcb886"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 35.3,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-106/nc-sentinel-hash-admitted",
+      "expected": "fail:an entity key never lies in the sentinel",
+      "failed_checks": [
+        "\"an entity key never lies in the sentinel\""
+      ],
+      "log_sha256": "cba06107d0b1f38209b7dede7965f26847bf2848e48bd67dcabd485fe929e578",
+      "mutated": {
+        "src/keyspace/proofs.rs": {
+          "baseline": "44cda3231cb076d8e9c0f43eb6763db17bc67d2756d04bf5c50885ff58aec0ec",
+          "control": "3add3bd53bf6e67ed8120bd6ba40f396b26bf94960910370634adc64d2fe88d2"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 35.2,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-106",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
+      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/keyspace.rs": "117a9ec8ac93bbcedbcbcc6f533bd9bfdde4f2f595b6884ccb6cf3394408539a",
+      "src/keyspace/proofs.rs": "44cda3231cb076d8e9c0f43eb6763db17bc67d2756d04bf5c50885ff58aec0ec",
+      "src/keyspace/range.rs": "9a43870ec28e54cb87662d56e75f3948d3501b383c2013d647055bd47155a959",
+      "verification/kani/controls/KANI-106-family-byte-first.patch": "6f55f945effde431e84bef801ebba0358fb4cc30dba95ff78e67213f3683d35b",
+      "verification/kani/controls/KANI-106-mint-from-identity.patch": "abc9bb4d7784cca13a04f3c472ed0550f9468d923a676e48b6f96dd8a5f6f0c5",
+      "verification/kani/controls/KANI-106-prefix-past-the-route.patch": "fb880d9681b7455b71fef08077be482905518414c042e4fa11f9a2f251dd2f89",
+      "verification/kani/controls/KANI-106-sentinel-hash-admitted.patch": "e9867b1bdeefa2d381c1a967fb665d895c1d5b4e270d3e4bbe5f64df530275d2"
+    },
+    "manifest_entry": "a87401be4fdc5323a4a0f0ad27c64fa2c504d09e9c5354776c4ccb75c9b09abc",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "bc8daf65b9ceddbe57ce0c870182de1bef0f8e918f84685ad46795514f5ee271",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "89984fd5a15a07f4070840af79241a0c87f95c38"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

@@ -1,0 +1,13 @@
+diff --git a/src/keyspace.rs b/src/keyspace.rs
+--- a/src/keyspace.rs
++++ b/src/keyspace.rs
+@@ -97,8 +97,8 @@ pub(crate) mod tag {
+ /// with room for `extra` more bytes.
+ pub(crate) fn stream_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
+     let mut k = Vec::with_capacity(17 + extra);
+-    k.extend_from_slice(hash);
+     k.push(STREAM);
++    k.extend_from_slice(hash);
+     k
+ }
+ 

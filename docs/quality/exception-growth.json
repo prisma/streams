@@ -2677,6 +2677,19 @@
       },
       "rationale": "S16b: Layout 6A package 4 retirement: the queue position no longer awaits the retired absorber's durable_absorbed and returns the handle's durable next, so its Ok(QueuePosition { .. }) call's argument text changed (one new call-site fingerprint); the scope shrinks.",
       "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16b, approved 2026-10-28"
+    },
+    {
+      "path": "src/application/creation.rs",
+      "owner": "crate::fresh_desc",
+      "scope": "function",
+      "lint": "clippy::too_many_arguments",
+      "metrics": {
+        "scope_lines": 37,
+        "nested_items": 1,
+        "syntax_facts": 69
+      },
+      "rationale": "S3a layout 8 (ROUTE-HASH-DECISION-2026-11-08 §3; S3a-DESIGN §1.1, F12): a fresh incarnation's epoch is drawn again while segment 0's entity hash would be the sentinel's FF×16, which no entity may have. The re-draw lives outside the scope (CreationService::fresh_epoch, entity_epoch, segment_zero); fresh_desc reaches it as service.fresh_epoch(sref) in place of service.runtime.epoch(). The one new syntax fact is the sref argument (68 -> 69); scope_lines (37) and nested_items (1) are unchanged. The two claim.rs callers sit in resolve's frozen too_many_lines scope and a draw there would hand fresh_desc a seventh argument. Metrics are the gate's after values, reproduced independently with scripts/quality/source_rules.exception_contracts (S3A-ROWS-DECISION-2026-11-08).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
     }
   ],
   "schema": 1

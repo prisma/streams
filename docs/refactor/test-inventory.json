@@ -205,7 +205,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "cad412623354a03dbdbd6123d2b5dd3947ff5708d4c7d916556125832566f8d4",
+    "function_sha256": "7bad620996245c07e529f31a133f7d246ab0b13c664f7440941ac307743dbd9f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_merged.rs",
@@ -1419,7 +1419,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a7e8875e3a8aa336ccbede38ce2fa8f8c6ec362ec7c6f6521b1559ecdb59cc66",
+    "function_sha256": "71f5eb5f1b2e806054803bf22be60b41b6181882899b4d1c6717c315204d0524",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_merged.rs",
@@ -5311,6 +5311,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/json_fidelity.rs",
+    "scenarios": []
+  },
+  {
+    "name": "every_row_of_a_shard_lies_in_its_range",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "df00e854873d591a99302a91aaff22cb4546b0de7eefbbdd983444e8b963133f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shard_ownership.rs",
     "scenarios": []
   },
   {
@@ -10080,7 +10091,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6448d5b98129cf9aa053469b2172650a75556f1c00f8c5b833121018032eddaf",
+    "function_sha256": "1ac0b87cf9fe0626f9569db35aac8b5997f29a6c02c6dafce2adebc81d68c1a1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/watch_observation.rs",

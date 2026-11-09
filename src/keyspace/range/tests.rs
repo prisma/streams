@@ -38,7 +38,7 @@ fn a_bit_prefix_matches_exactly_the_registrys_hashes() {
         rng.fill_bytes(&mut hash);
         for p in prefixes {
             assert_eq!(
-                Range::of(p).contains(&hash),
+                Range::of(p).holds_route(&hash),
                 reference(p, &hash),
                 "prefix {p:?}, hash {hash:02x?}"
             );
@@ -48,14 +48,14 @@ fn a_bit_prefix_matches_exactly_the_registrys_hashes() {
 
 #[test]
 fn the_edges_of_a_range() {
-    assert!(Range::of("1").contains(&[0x80; 16]));
-    assert!(!Range::of("1").contains(&[0x7F; 16]));
-    assert!(Range::of("0").contains(&[0x7F; 16]));
-    let full = "1".repeat(128);
-    assert!(Range::of(&full).contains(&[0xFF; 16]));
-    assert!(!Range::of(&full).contains(&{
+    assert!(Range::of("1").holds_route(&[0x80; 16]));
+    assert!(!Range::of("1").holds_route(&[0x7F; 16]));
+    assert!(Range::of("0").holds_route(&[0x7F; 16]));
+    let full = "1".repeat(crate::keyspace::ROUTE_PREFIX_BITS);
+    assert!(Range::of(&full).holds_route(&[0xFF; 16]));
+    assert!(!Range::of(&full).holds_route(&{
         let mut h = [0xFF; 16];
-        h[15] = 0xFE;
+        h[2] = 0xFE;
         h
     }));
 }
@@ -64,19 +64,22 @@ fn the_edges_of_a_range() {
 fn a_label_or_the_root_covers_every_hash() {
     assert_eq!(Range::of("seal-clean-1a2b-0"), Range::ALL);
     assert_eq!(Range::of(""), Range::ALL);
-    assert!(Range::ALL.contains(&[0x00; 16]) && Range::ALL.contains(&[0xFF; 16]));
+    assert!(Range::ALL.holds_route(&[0x00; 16]) && Range::ALL.holds_route(&[0xFF; 16]));
 }
 
-/// A run of more than 128 bits parses (its leading zeros fit a `u128`) and a
-/// sign parses too, so neither may be read as a bit prefix: `parse` refuses
-/// both, and the seal's `of` reads them as every hash.
+/// A run past the route bits an entity hash carries (and a run of more than 128,
+/// whose leading zeros would fit a `u128`) and a sign parse too, so none may be
+/// read as a bit prefix: `parse` refuses each, and the seal's `of` reads them as
+/// every hash.
 #[test]
 fn a_prefix_longer_than_a_hash_or_signed_covers_every_hash() {
+    let deepest = crate::keyspace::ROUTE_PREFIX_BITS;
+    assert_eq!(Range::parse(&"0".repeat(deepest + 1)), None);
     assert_eq!(Range::parse(&"0".repeat(129)), None);
     assert_eq!(Range::parse("+1"), None);
-    assert_eq!(Range::of(&"0".repeat(129)), Range::ALL);
+    assert_eq!(Range::of(&"0".repeat(deepest + 1)), Range::ALL);
     assert_eq!(Range::of("+1"), Range::ALL);
-    assert!(!Range::of(&"0".repeat(128)).contains(&[0x80; 16]));
+    assert!(!Range::of(&"0".repeat(deepest)).holds_route(&[0x80; 16]));
 }
 
 /// The registry's match is exactly its string match before the range, for every bit prefix up to 12

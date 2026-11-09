@@ -15,10 +15,11 @@ use super::fixture_storage::{mem, skey};
 ///
 /// close_shard must match by the stream's ROUTE hash, not the
 /// storage-hash map key: fencing the route-owning shard resyncs a
-/// parked watch wait immediately, and fencing the shard that merely
-/// contains the STORAGE hash must not touch the journal. Pre-fix this
-/// failed both ways (route-vs-storage hash-domain mismatch: journals
-/// keyed by storage_hash, close matched route-space prefixes).
+/// parked watch wait immediately, and fencing another shard must not
+/// touch the journal. Pre-fix this failed both ways (route-vs-storage
+/// hash-domain mismatch: journals keyed by storage_hash, close matched
+/// route-space prefixes). Since layout 8 the storage hash leads with the
+/// route's bits (S3a §1.1), so the two always name one shard.
 #[expect(
     clippy::disallowed_methods,
     reason = "watch routing fixture; each parked waiter is joined after the touch that should wake it; the waiter must be parked before the touch is issued"
@@ -38,36 +39,26 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     )
     .await;
 
-    // Find a stream whose route- and storage-space shard prefixes
-    // DISAGREE (stream_epoch is random, so probe; ~50% per name).
-    let mut picked = None;
-    for i in 0..64 {
-        let name = format!("wtc-{i}");
-        let (st, _, b) = preq(
-            addr,
-            "PUT",
-            &format!("/v1/streams/{name}"),
-            &[("prisma-encryption-key", PRISMA_KEY)],
-            br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
-        )
-        .await;
-        assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
-        let desc = state
-            .registry
-            .get(&state.deployment.raw_adapter_sref(&name))
-            .await
-            .unwrap()
-            .unwrap();
-        let rp = state.shards.prefix_for(
-            &crate::crypto::RouteHash::for_stream(&state.deployment.raw_adapter_sref(&name)).0,
-        );
-        let sp = state.shards.prefix_for(&desc.storage_hash());
-        if rp != sp {
-            picked = Some((name, rp, sp));
-            break;
-        }
-    }
-    let (name, route_prefix, storage_prefix) = picked.expect("straddling stream in 64 tries");
+    // Layout 8: the stream's route- and storage-space shard prefixes
+    // agree; the other prefix holds nothing of it.
+    let name = "wtc-0".to_string();
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let sref = state.deployment.raw_adapter_sref(&name);
+    let desc = state.registry.get(&sref).await.unwrap().unwrap();
+    let route_prefix = state
+        .shards
+        .prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0);
+    let storage_prefix = state.shards.prefix_for(&desc.storage_hash());
+    assert_eq!(route_prefix, storage_prefix, "one shard for both hashes");
+    let other_prefix = if route_prefix == "0" { "1" } else { "0" };
 
     // Plant the journal via the REAL writer path: matching append ->
     // TouchFeed -> post-durability acker ingest.
@@ -104,10 +95,10 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    // Direction A: fencing the STORAGE-prefix shard must be a no-op —
+    // Direction A: fencing the other shard must be a no-op —
     // prove the journal survived by waking the waiter with a REAL
     // touch afterwards (not a resync).
-    state.touch.close_shard(&storage_prefix);
+    state.touch.close_shard(other_prefix);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let (st, _, _) = preq(
         addr,
@@ -127,7 +118,7 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
     assert_eq!(v["invalidated"], true, "{v}");
     assert_ne!(
         v["reason"], "resync",
-        "journal must survive a storage-prefix close: {v}"
+        "journal must survive another shard's close: {v}"
     );
 
     // Direction B: fence the ROUTE-prefix shard; a parked waiter must

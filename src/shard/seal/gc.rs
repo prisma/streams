@@ -182,6 +182,10 @@ pub(crate) struct GcState {
     /// Tests: where a clean stops after its copy's PUT.
     #[cfg(test)]
     pub(crate) clean_hook: Mutex<Option<CleanHook>>,
+    /// Tests: the range a split child would have (a rig's prefix is a label,
+    /// whose range is every hash).
+    #[cfg(test)]
+    pub(crate) range_override: Mutex<Option<crate::keyspace::range::Range>>,
 }
 
 /// Tests: a clean stopped after its copy's PUT, before the lock.
@@ -411,6 +415,15 @@ impl std::fmt::Display for GcError {
 impl ShardEngine {
     pub(crate) fn gc_state(&self) -> &GcState {
         &self.layout.seal.gc
+    }
+
+    /// The hashes whose chunks this shard counts (`range`).
+    pub(crate) fn range(&self) -> crate::keyspace::range::Range {
+        #[cfg(test)]
+        if let Some(r) = *lock(&self.gc_state().range_override) {
+            return r;
+        }
+        crate::keyspace::range::Range::of(&self.prefix)
     }
 
     /// The next object id of this opening (seals, folds, merges and

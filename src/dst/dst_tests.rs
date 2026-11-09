@@ -405,3 +405,6 @@ mod weighted_shares;
 
 #[path = "tests/shared_cell_weighted.rs"]
 mod shared_cell_weighted;
+
+#[path = "tests/shard_ownership.rs"]
+mod shard_ownership;

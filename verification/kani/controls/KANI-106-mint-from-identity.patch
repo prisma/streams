@@ -1,0 +1,12 @@
+diff --git a/src/keyspace.rs b/src/keyspace.rs
+--- a/src/keyspace.rs
++++ b/src/keyspace.rs
+@@ -67,7 +67,7 @@ pub(crate) fn entity_hash(
+     identity: &crate::crypto::SegmentHash,
+ ) -> EntityHash {
+     let mut hash = identity.0;
+-    hash[..ROUTE_BYTES].copy_from_slice(&route.0[..ROUTE_BYTES]);
++    let _ = route;
+     EntityHash(hash)
+ }
+ 

@@ -109,8 +109,14 @@ impl ShardEngine {
     ) -> Result<Option<Pointer>, FoldError> {
         let fs = self.fold_state();
         let mut read = Vec::with_capacity(inputs.len());
+        let range = self.range();
         for p in inputs {
-            read.push(self.read_input(p).await?);
+            let mut input = self.read_input(p).await?;
+            // A child carries only its range's streams of an inherited run.
+            input
+                .footer
+                .retain(|f| range.contains(crate::keyspace::EntityHash::from_stored(f.hash)));
+            read.push(input);
         }
         let level = read.iter().map(|i| i.pointer.level).max().unwrap_or(0) + 1;
         let claim = self.claim_object();

@@ -1,0 +1,11 @@
+diff --git a/src/keyspace/proofs.rs b/src/keyspace/proofs.rs
+--- a/src/keyspace/proofs.rs
++++ b/src/keyspace/proofs.rs
+@@ -19,7 +19,6 @@ fn prefix() -> Range {
+ /// Any entity hash: every minter refuses the sentinel's (S3a-DESIGN §1, F12).
+ fn entity() -> [u8; 16] {
+     let hash: [u8; 16] = kani::any();
+-    kani::assume(hash != SENTINEL);
+     hash
+ }
+ 

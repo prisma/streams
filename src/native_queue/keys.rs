@@ -109,18 +109,20 @@ pub(crate) fn decode_offset_key(prefix_len: usize, key: &[u8]) -> Option<u64> {
 }
 
 /// Public message ids: `msg_` + base32 of (incarnation tag, offset). The
-/// incarnation tag is the low 32 bits of the stream's storage hash, so an
-/// id from an earlier incarnation of the same name does not resolve (§4).
+/// incarnation tag is the low 32 bits of the queue's entity hash, all
+/// identity bits (its leading bytes are route bits, the same for every
+/// incarnation of a name), so an id from an earlier incarnation of the same
+/// name does not resolve (§4).
 pub(crate) fn message_id(hash: &[u8; 16], offset: u64) -> String {
     let mut raw = [0u8; 12];
-    raw[..4].copy_from_slice(&hash[..4]);
+    raw[..4].copy_from_slice(&hash[12..]);
     raw[4..].copy_from_slice(&offset.to_be_bytes());
     format!("msg_{}", base32(&raw))
 }
 
 pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
     let raw = unbase32(id.strip_prefix("msg_")?)?;
-    if raw.len() != 12 || raw[..4] != hash[..4] {
+    if raw.len() != 12 || raw[..4] != hash[12..] {
         return None;
     }
     Some(u64::from_be_bytes(raw[4..].try_into().ok()?))
@@ -129,7 +131,7 @@ pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
 /// Lease tokens: `lt_` + base32 of (incarnation tag, offset, lease gen).
 pub(crate) fn lease_token(hash: &[u8; 16], token: super::Token) -> String {
     let mut raw = [0u8; 16];
-    raw[..4].copy_from_slice(&hash[..4]);
+    raw[..4].copy_from_slice(&hash[12..]);
     raw[4..12].copy_from_slice(&token.offset.to_be_bytes());
     raw[12..].copy_from_slice(&token.lease_gen.to_be_bytes());
     format!("lt_{}", base32(&raw))
@@ -137,7 +139,7 @@ pub(crate) fn lease_token(hash: &[u8; 16], token: super::Token) -> String {
 
 pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token> {
     let raw = unbase32(s.strip_prefix("lt_")?)?;
-    if raw.len() != 16 || raw[..4] != hash[..4] {
+    if raw.len() != 16 || raw[..4] != hash[12..] {
         return None;
     }
     Some(super::Token {
@@ -147,6 +149,14 @@ pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token
 }
 
 const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+
+/// A queue's backoff jitter seed (`StateRow::jitter`): the entity hash's last eight bytes, all
+/// identity bits, so queues whose route bytes agree still jitter apart; odd, as xorshift needs.
+pub(crate) fn jitter_seed(hash: &[u8; 16]) -> u64 {
+    let mut seed = [0u8; 8];
+    seed.copy_from_slice(&hash[8..]);
+    u64::from_le_bytes(seed) | 1
+}
 
 fn base32(raw: &[u8]) -> String {
     let mut out = String::with_capacity(raw.len() * 8 / 5 + 1);

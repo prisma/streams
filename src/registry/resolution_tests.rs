@@ -121,8 +121,55 @@ fn descriptor_segments_serde_roundtrip() {
     assert!(legacy.segments.is_none());
 
     let mut with_map = desc("s2", "00000000000000000000000000000005", false);
-    with_map.segments = Some(crate::segmap::SegmentMap::initial("sh", 7));
+    with_map.segments = Some(crate::segmap::SegmentMap::initial("", 7));
     let j2 = serde_json::to_string(&with_map).unwrap();
     let back: StreamDesc = serde_json::from_str(&j2).unwrap();
     assert_eq!(back.segments, with_map.segments);
+    // Layout 8 routes every segment by its route: a segment pinned to a shard
+    // prefix (layout 7's legacy placement) is refused.
+    let mut pinned = with_map;
+    pinned.segments = Some(crate::segmap::SegmentMap::initial("sh", 7));
+    let refused = serde_json::from_str::<StreamDesc>(&serde_json::to_string(&pinned).unwrap());
+    let refusal = refused
+        .expect_err("a pinned segment is refused")
+        .to_string();
+    assert!(refusal.contains("unsupported_storage_layout"), "{refusal}");
+}
+
+/// Segment 0 keeps its route when a stream's first map is created, and every segment of a split
+/// map leads its identity with the route the registry places it by (S3a-DESIGN §1.1), so no
+/// segment's rows leave the shard that serves it.
+#[test]
+fn a_new_map_keeps_segment_zeros_route_and_its_children_share_theirs() {
+    let route_bytes = crate::keyspace::ROUTE_BYTES;
+    let mut d = desc("seg0", "00000000000000000000000000000005", false);
+    let before = d.resolve_segment("k");
+    assert_eq!((before.seg_id, before.identity), (0, d.storage_hash()));
+    d.segments = Some(crate::segmap::SegmentMap::initial("", 1));
+    let created = d.resolve_segment("k");
+    assert_eq!(
+        (created.seg_id, created.identity, created.shard_route),
+        (0, before.identity, before.shard_route)
+    );
+    let mid = u64::MAX / 2;
+    let high = crate::crypto::RouteHash::for_child(&d.sref(), 2, &0u32.to_be_bytes()).0;
+    let map = d.segments.as_mut().unwrap();
+    assert_eq!(
+        map.split(0, mid, 10, before.shard_route, high, 2),
+        Ok((1, 2))
+    );
+    assert_eq!(d.dynamic_segment_identity(0), d.storage_hash());
+    let mut seen = std::collections::BTreeSet::new();
+    for i in 0..64 {
+        let r = d.resolve_segment(&format!("k{i}"));
+        assert_eq!(
+            r.identity[..route_bytes],
+            r.shard_route[..route_bytes],
+            "segment {}",
+            r.seg_id
+        );
+        seen.insert((r.seg_id, r.shard_route));
+    }
+    let expected = [(1, before.shard_route), (2, high)];
+    assert_eq!(seen.into_iter().collect::<Vec<_>>(), expected);
 }

@@ -17,6 +17,8 @@
 
 use std::sync::Arc;
 
+#[cfg(kani)]
+mod proofs;
 pub(crate) mod range;
 
 /// The stream-state family byte, after the stream's hash.
@@ -34,6 +36,48 @@ pub(crate) const QUEUE_PREFIX_LEN: usize = 5;
 pub(crate) const SENTINEL: [u8; 16] = [0xFF; 16];
 /// The tail row's tag after `hash ‖ 'S'`.
 const TAIL_TAG: u8 = b't';
+
+/// The route bytes an entity hash leads with, so the deepest shard prefix is `ROUTE_PREFIX_BITS`:
+/// a row's leading bits are then its segment route's, whatever the shard (S3a-DESIGN §1.1).
+pub(crate) const ROUTE_BYTES: usize = 3;
+/// The deepest shard prefix, in bits; `range::Range::parse` refuses a longer one.
+pub(crate) const ROUTE_PREFIX_BITS: usize = 8 * ROUTE_BYTES;
+
+/// A row's entity hash (S3a-DESIGN §1.1, ROUTE-HASH-DECISION-2026-11-08): the leading
+/// `ROUTE_BYTES` of its segment's route (`RouteHash`), then the rest of its engine identity
+/// (`SegmentHash`). Every per-entity key starts with one. Only `entity_hash` mints one, so a row's
+/// key and the shard the registry routes it to never part.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub(crate) struct EntityHash([u8; 16]);
+
+impl EntityHash {
+    /// An entity hash read back from a row, a directory entry or a run-index footer: bytes this
+    /// shard minted through `entity_hash`. Only stored entity hashes come through here.
+    pub(crate) fn from_stored(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// The hash's bytes, as keys and the engine take them.
+    pub(crate) fn bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    /// Whether this is the sentinel's hash, which no entity may have: every place that mints a
+    /// route or an identity refuses one (a fresh epoch, the next salt, a declined topology change).
+    pub(crate) fn is_sentinel(self) -> bool {
+        self.0 == SENTINEL
+    }
+}
+
+/// The entity hash of the segment whose route is `route` and whose engine identity is `identity`.
+pub(crate) fn entity_hash(
+    route: &crate::crypto::RouteHash,
+    identity: &crate::crypto::SegmentHash,
+) -> EntityHash {
+    let mut hash = identity.0;
+    hash[..ROUTE_BYTES].copy_from_slice(&route.0[..ROUTE_BYTES]);
+    EntityHash(hash)
+}
 
 /// The sentinel's tags (S3a-DESIGN rev 3 §2.4): every shard-wide row is `SENTINEL ‖ tag ‖ suffix`, and
 /// each tag is read by its own prefix. A tag is defined here as its first writer lands; the full set,
@@ -126,6 +170,49 @@ mod tests {
         b'C', // lineage-sweep cursor (S6)
         b'T', // retired parent (S4)
     ];
+
+    /// An entity hash leads with its route's first `ROUTE_PREFIX_BITS`, so every shard prefix the
+    /// registry routes on holds an entity exactly when it holds its route (S3a-DESIGN §1.1), and a
+    /// deeper prefix is no shard's.
+    /// The route's first `len` bits, or, when `flip`, a prefix the route is not in: its last bit flipped.
+    fn route_prefix(bits: &str, len: usize, flip: bool) -> String {
+        let mut prefix = bits[..len].to_string();
+        if len > 0 && flip {
+            let last = if prefix.ends_with('0') { "1" } else { "0" };
+            prefix.replace_range(len - 1.., last);
+        }
+        prefix
+    }
+
+    #[test]
+    fn an_entity_hash_shares_its_routes_first_24_bits() {
+        use rand::{RngCore, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(24);
+        for _ in 0..1_000 {
+            let (mut route, mut identity) = ([0u8; 16], [0u8; 16]);
+            rng.fill_bytes(&mut route);
+            rng.fill_bytes(&mut identity);
+            let entity = super::entity_hash(
+                &crate::crypto::RouteHash(route),
+                &crate::crypto::SegmentHash(identity),
+            )
+            .bytes();
+            assert_eq!(entity[..super::ROUTE_BYTES], route[..super::ROUTE_BYTES]);
+            assert_eq!(entity[super::ROUTE_BYTES..], identity[super::ROUTE_BYTES..]);
+            let bits: String = route.iter().map(|b| format!("{b:08b}")).collect();
+            for len in 0..=super::ROUTE_PREFIX_BITS {
+                let prefix = route_prefix(&bits, len, rng.next_u32() % 2 == 0);
+                let range = super::range::Range::parse(&prefix).unwrap();
+                assert_eq!(
+                    range.contains(super::EntityHash::from_stored(entity)),
+                    range.holds_route(&route),
+                    "prefix {prefix}"
+                );
+            }
+        }
+        let deeper = "0".repeat(super::ROUTE_PREFIX_BITS + 1);
+        assert_eq!(super::range::Range::parse(&deeper), None);
+    }
 
     #[test]
     fn the_sentinel_tags_are_distinct() {

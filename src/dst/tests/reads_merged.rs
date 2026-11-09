@@ -10,6 +10,12 @@
 //! records stored but unreachable, their reads 500), and a clean pass that
 //! counted only such chunks left the shard's other live chunks out of its
 //! copies, so the originals stayed pinned and their dead bytes unreclaimed.
+//!
+//! Layout 8 mints a storage hash from its route's first 24 bits
+//! (`keyspace::entity_hash`, ROUTE-HASH-DECISION-2026-11-08), so the two
+//! filters are correct again and re-landed (§4.3): every ledger's storage
+//! hash is on its owner's shard, and the merge and the clean pass, filters
+//! on, must still keep every stream the shard serves.
 
 use super::fixture_billing::DrainWait;
 use super::fixture_cell::{Cell, CellSpec, open_cell, project};
@@ -110,7 +116,8 @@ async fn short_ledgers(cell: &Cell) -> Vec<(usize, u16, Vec<serde_json::Value>)>
 }
 
 /// Ledgers whose storage hash's leading bits are not their shard's prefix,
-/// which a filter on the storage hash would wrongly treat as foreign.
+/// which a filter on the storage hash would wrongly treat as foreign (none
+/// in layout 8).
 async fn misprefixed(cell: &Cell) -> usize {
     let prefixes: Vec<String> = PREFIXES.iter().map(|p| (*p).to_string()).collect();
     let mut count = 0;
@@ -144,9 +151,10 @@ async fn misprefixed(cell: &Cell) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_keeps_every_stream_its_shard_serves() {
     let cell = cell().await;
-    assert!(
-        misprefixed(&cell).await > 0,
-        "a storage hash off its prefix"
+    assert_eq!(
+        misprefixed(&cell).await,
+        0,
+        "layout 8: every ledger's storage hash is on its owner's shard"
     );
     for round in 0..ROUNDS {
         for n in 0..LEDGERS {
@@ -232,9 +240,10 @@ fn cleaned(cell: &Cell) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_clean_pass_copies_every_live_chunk_its_shard_serves() {
     let cell = cell().await;
-    assert!(
-        misprefixed(&cell).await > 0,
-        "a storage hash off its prefix"
+    assert_eq!(
+        misprefixed(&cell).await,
+        0,
+        "layout 8: every ledger's storage hash is on its owner's shard"
     );
     for n in 0..LEDGERS {
         create(&cell, &bulk(n)).await;

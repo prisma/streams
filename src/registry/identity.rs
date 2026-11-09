@@ -8,6 +8,25 @@ use crate::crypto::RouteHash;
 use crate::segmap::SegmentDesc;
 use crate::tenant::TenantStreamRef;
 
+/// A segment pinned to a shard prefix (the child-stream scaler's legacy
+/// `shard_prefix`) is layout 7's placement: its route would follow the pin
+/// while its rows' entity hash keeps the route it was minted from. Layout 8
+/// routes every segment by its route, so a pin is refused like layout 7.
+pub(super) fn refuse_pinned_segments(d: &PersistedDescriptor) -> Result<(), object_store::Error> {
+    let segments = d.segments.iter().flat_map(|map| &map.segments);
+    if segments
+        .clone()
+        .all(|segment| segment.shard_prefix.is_empty())
+    {
+        return Ok(());
+    }
+    let name = &d.name;
+    Err(object_store::Error::Generic {
+        store: "registry",
+        source: format!("unsupported_storage_layout: descriptor '{name}' pins a segment to a shard prefix (layout 7's placement)").into(),
+    })
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Identity {
     sref: TenantStreamRef,
@@ -33,7 +52,12 @@ impl Identity {
         if seg_id == 0 {
             return self.storage;
         }
-        crate::crypto::SegmentHash::for_segment(&self.sref, &desc.stream_epoch, seg_id).0
+        let route = self
+            .segment_route_by_id(desc, seg_id)
+            .unwrap_or(self.route.0);
+        let identity =
+            crate::crypto::SegmentHash::for_segment(&self.sref, &desc.stream_epoch, seg_id);
+        crate::keyspace::entity_hash(&RouteHash(route), &identity).bytes()
     }
 
     /// The physical shard route of one segment: its persisted route_hash

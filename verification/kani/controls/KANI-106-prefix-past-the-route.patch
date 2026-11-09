@@ -1,0 +1,12 @@
+diff --git a/src/keyspace.rs b/src/keyspace.rs
+--- a/src/keyspace.rs
++++ b/src/keyspace.rs
+@@ -39,7 +39,7 @@ const TAIL_TAG: u8 = b't';
+ /// a row's leading bits are then its segment route's, whatever the shard (S3a-DESIGN §1.1).
+ pub(crate) const ROUTE_BYTES: usize = 3;
+ /// The deepest shard prefix, in bits; `range::Range::parse` refuses a longer one.
+-pub(crate) const ROUTE_PREFIX_BITS: usize = 8 * ROUTE_BYTES;
++pub(crate) const ROUTE_PREFIX_BITS: usize = 8 * ROUTE_BYTES + 1;
+ 
+ /// A row's entity hash (S3a-DESIGN §1.1, ROUTE-HASH-DECISION-2026-11-08): the leading
+ /// `ROUTE_BYTES` of its segment's route (`RouteHash`), then the rest of its engine identity

@@ -503,14 +503,13 @@ async fn resume_incarnation(
             else {
                 return Mutation::Decline(false); // someone else already completed it
             };
-            // The high child's route must land on a DIFFERENT shard
-            // prefix than the parent whenever the topology has one —
-            // otherwise the "split" keeps both children behind the same
-            // serial committer and adds no capacity. Deterministic
-            // salting (same sequence on every CAS retry) walks candidate
-            // routes until the prefix differs; a single-shard topology
-            // accepts the first candidate (capacity comes when shards
-            // do).
+            // The high child's route must land on a DIFFERENT shard prefix
+            // than the parent whenever the topology has one — otherwise the
+            // "split" keeps both children behind the same serial committer
+            // and adds no capacity. Deterministic salting (same sequence on
+            // every CAS retry) walks candidate routes until the prefix
+            // differs; a single-shard topology takes the first (capacity
+            // comes when shards do).
             let Some(child_id) = map.next_seg_id.checked_add(1) else {
                 // A spent allocator has no id for the high child; the
                 // intent stays pending for the reason a refused split does.
@@ -522,19 +521,14 @@ async fn resume_incarnation(
                 return Mutation::Decline(false);
             };
             let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
-            let mut high_route = [0u8; 16];
-            for salt in 0u32..16 {
-                // Contract r1: route-child-v1 + project + name +
-                // child_segment_id + salt — the layout-4 domain-
-                // separated construction (was the "\0segroute\0"
-                // delimiter string).
-                high_route =
-                    crate::crypto::RouteHash::for_child(&stream, child_id, &salt.to_be_bytes()).0;
-                if prefixes.len() < 2
-                    || crate::registry::shard_for_hash(&prefixes, &high_route) != parent_prefix
-                {
-                    break;
-                }
+            let epoch = d.stream_epoch.clone();
+            let mint = child_hash(&stream, &epoch);
+            let high_route = high_child_route(&stream, child_id, &prefixes, &parent_prefix, &mint);
+            // The low child keeps the parent's route, so no salt moves it off the sentinel: the
+            // map refuses that split, as it refuses a merge child's.
+            let children = [(map.next_seg_id, low_route), (child_id, high_route)];
+            if mints_sentinel(&children, &mint) {
+                return Mutation::Decline(false);
             }
             if let Err(error) = map.split(
                 seg_id,
@@ -615,6 +609,7 @@ async fn resume_merge(
             let Some(child_route) = current.segment_route_by_id(a_id) else {
                 return Mutation::Decline(false);
             };
+            let stream = d.sref();
             let Some(map) = d
                 .segments
                 .as_mut()
@@ -622,6 +617,12 @@ async fn resume_merge(
             else {
                 return Mutation::Decline(false); // someone else already completed it
             };
+            if mints_sentinel(
+                &[(map.next_seg_id, child_route)],
+                child_hash(&stream, &d.stream_epoch),
+            ) {
+                return Mutation::Decline(false);
+            }
             if let Err(error) = map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
                 // As for a split: never an idempotent completion, and both
                 // parents are already closed.
@@ -647,4 +648,106 @@ async fn resume_merge(
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
+}
+
+/// The route of a split's high child `child_id`: the first salted candidate whose entity hash
+/// (`mint`) is not the sentinel's (S3a-DESIGN §1, F12: a split takes its next salt) on a shard
+/// other than the parent's `parent_prefix`, or the first on a single-shard topology.
+/// Deterministic, so every CAS retry draws the same.
+fn high_child_route(
+    stream: &crate::tenant::TenantStreamRef,
+    child_id: u32,
+    prefixes: &[String],
+    parent_prefix: &str,
+    mint: impl Fn(u32, [u8; 16]) -> crate::keyspace::EntityHash,
+) -> [u8; 16] {
+    let mut high_route = [0u8; 16];
+    for salt in 0u32..16 {
+        // Contract r1: route-child-v1 + project + name + child_segment_id + salt — the layout-4
+        // domain-separated construction (was the "\0segroute\0" delimiter string).
+        high_route = crate::crypto::RouteHash::for_child(stream, child_id, &salt.to_be_bytes()).0;
+        if mint(child_id, high_route).is_sentinel() {
+            continue;
+        }
+        if prefixes.len() < 2
+            || crate::registry::shard_for_hash(prefixes, &high_route) != parent_prefix
+        {
+            break;
+        }
+    }
+    high_route
+}
+
+/// Whether a segment the change would mint, `(seg_id, route)`, would have the sentinel's entity hash
+/// as `mint` derives it (S3a-DESIGN §1.1): odds of 2^-104. The segment map then refuses the change,
+/// which is declined and stays pending.
+fn mints_sentinel(
+    children: &[(u32, [u8; 16])],
+    mint: impl Fn(u32, [u8; 16]) -> crate::keyspace::EntityHash,
+) -> bool {
+    children
+        .iter()
+        .any(|(seg_id, route)| mint(*seg_id, *route).is_sentinel())
+}
+
+/// The entity hash a segment of `stream`'s incarnation `epoch` gets from its id and route, as the
+/// registry derives it.
+fn child_hash<'a>(
+    stream: &'a crate::tenant::TenantStreamRef,
+    epoch: &'a str,
+) -> impl Fn(u32, [u8; 16]) -> crate::keyspace::EntityHash + 'a {
+    move |seg_id, route| {
+        let identity = crate::crypto::SegmentHash::for_segment(stream, epoch, seg_id);
+        crate::keyspace::entity_hash(&crate::crypto::RouteHash(route), &identity)
+    }
+}
+
+#[cfg(test)]
+mod sentinel_tests {
+    /// A topology change whose new segment would have the sentinel's entity hash is declined.
+    #[test]
+    fn a_child_in_the_sentinel_space_declines_the_change() {
+        let ff = crate::keyspace::entity_hash(
+            &crate::crypto::RouteHash([0xFF; 16]),
+            &crate::crypto::SegmentHash([0xFF; 16]),
+        );
+        let stream = crate::tenant::ProjectId::new("proj-test")
+            .unwrap()
+            .stream_ref("s");
+        let real = super::child_hash(&stream, "00112233445566778899aabbccddeeff");
+        let children = [(1, [0x11; 16]), (2, [0x22; 16])];
+        assert!(!super::mints_sentinel(&children, &real));
+        let second = |seg_id, route| if seg_id == 2 { ff } else { real(seg_id, route) };
+        assert!(super::mints_sentinel(&children, second));
+    }
+
+    /// A split whose high child's salted route would mint the sentinel's entity hash takes the next
+    /// salt (the third mint site, creation's re-draw, is `creation`'s
+    /// `an_entity_hash_in_the_sentinel_space_is_refused`).
+    #[test]
+    fn a_split_takes_its_next_salt_past_the_sentinel() {
+        let ff = crate::keyspace::entity_hash(
+            &crate::crypto::RouteHash([0xFF; 16]),
+            &crate::crypto::SegmentHash([0xFF; 16]),
+        );
+        let stream = crate::tenant::ProjectId::new("proj-test")
+            .unwrap()
+            .stream_ref("s");
+        let salted =
+            |salt: u32| crate::crypto::RouteHash::for_child(&stream, 2, &salt.to_be_bytes()).0;
+        let real = super::child_hash(&stream, "00112233445566778899aabbccddeeff");
+        assert_eq!(
+            super::high_child_route(&stream, 2, &[], "", &real),
+            salted(0)
+        );
+        let first_is_sentinel = |id, route| {
+            if route == salted(0) {
+                ff
+            } else {
+                real(id, route)
+            }
+        };
+        let route = super::high_child_route(&stream, 2, &[], "", first_is_sentinel);
+        assert_eq!(route, salted(1), "the next salt");
+    }
 }

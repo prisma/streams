@@ -547,6 +547,7 @@ fn validate_descriptor(d: &PersistedDescriptor) -> Result<[u8; 16], object_store
     if let Some(map) = &d.segments {
         map.validate()
             .map_err(|error| invalid_descriptor(&d.name, &format!("topology: {error}")))?;
+        identity::refuse_pinned_segments(d)?;
     }
     if d.sealed && d.sealing.is_some() {
         return Err(invalid_descriptor(
@@ -664,12 +665,16 @@ impl PersistedDescriptor {
         )
     }
 
-    /// Storage identity (layout 4, MULTITENANCY §2.1):
-    /// storage-v1 + project_id + name + stream_epoch — so a recreated
-    /// stream gets a fresh keyspace (delete/recreate isolation) and two
-    /// projects sharing a name never share a byte.
+    /// Segment 0's entity hash (S3a-DESIGN §1.1): the route's leading bytes,
+    /// then storage-v1 + project_id + name + stream_epoch, so the row lands
+    /// in the shard its route names, a recreated stream gets a fresh
+    /// keyspace (delete/recreate isolation), and two projects sharing a name
+    /// never share a byte.
     pub(crate) fn storage_hash(&self) -> [u8; 16] {
-        crate::crypto::SegmentHash::for_stream(&self.sref(), &self.stream_epoch).0
+        let sref = self.sref();
+        let identity = crate::crypto::SegmentHash::for_stream(&sref, &self.stream_epoch);
+        crate::keyspace::entity_hash(&crate::crypto::RouteHash::for_stream(&sref), &identity)
+            .bytes()
     }
 
     pub(crate) fn is_json(&self) -> bool {
@@ -1330,11 +1335,10 @@ pub(crate) fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
         .unwrap_or_default()
 }
 
-/// Does `hash` fall inside bit-prefix `prefix`? A label, or a prefix past the 24 bits the
-/// registry routes on, matches no hash.
+/// Does `hash` fall inside bit-prefix `prefix`? A label, or a prefix past the
+/// `keyspace::ROUTE_PREFIX_BITS` the registry routes on, matches no hash.
 pub(crate) fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
-    let routed = prefix.len() <= 24;
-    routed && crate::keyspace::range::Range::parse(prefix).is_some_and(|range| range.contains(hash))
+    crate::keyspace::range::Range::parse(prefix).is_some_and(|range| range.holds_route(hash))
 }
 
 pub(crate) mod cache;

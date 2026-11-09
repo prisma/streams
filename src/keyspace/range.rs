@@ -20,22 +20,22 @@ impl Range {
     pub(crate) const ALL: Self = Self { bits: 0, len: 0 };
 
     /// The range of the shard named `prefix` for the seal's walks: its bit prefix, or every hash for
-    /// anything else (a rig's label). Test-only until layout 8's entity hash re-lands the seal's
-    /// filters (ROUTE-HASH-DECISION-2026-11-08 §4.3).
-    #[cfg(test)]
+    /// anything else (a rig's label).
     pub(crate) fn of(prefix: &str) -> Self {
         Self::parse(prefix).unwrap_or(Self::ALL)
     }
 
     /// The range of the bit prefix `prefix`; `None` for anything that is not one: a character other
-    /// than `'0'`/`'1'` (which `from_str_radix` would otherwise accept as a sign), or more bits than a
-    /// hash has (whose leading zeros would otherwise fit a `u128`). The root `""` is every hash, which
-    /// `from_str_radix` would refuse as empty.
+    /// than `'0'`/`'1'` (which `from_str_radix` would otherwise accept as a sign), or more bits than
+    /// the route an entity hash carries (`keyspace::ROUTE_PREFIX_BITS`; past them a prefix would
+    /// split one route's rows, and past 128 leading zeros would fit a `u128`). The root `""` is every
+    /// hash, which `from_str_radix` would refuse as empty.
     pub(crate) fn parse(prefix: &str) -> Option<Self> {
         if prefix.is_empty() {
             return Some(Self::ALL);
         }
-        let is_bits = prefix.len() <= 128 && prefix.bytes().all(|b| b == b'0' || b == b'1');
+        let is_bits = prefix.len() <= super::ROUTE_PREFIX_BITS
+            && prefix.bytes().all(|b| b == b'0' || b == b'1');
         if !is_bits {
             return None;
         }
@@ -47,13 +47,30 @@ impl Range {
         })
     }
 
-    /// Whether `hash` is in the range.
-    pub(crate) fn contains(self, hash: &[u8; 16]) -> bool {
+    /// Kani: the range of any `len`-bit prefix `bits` (KANI-106), without `parse`'s string.
+    #[cfg(kani)]
+    pub(crate) fn from_bits(bits: u128, len: u32) -> Self {
+        Self { bits, len }
+    }
+
+    /// Whether the row of entity hash `hash` is in the range: the one test of which shard holds a
+    /// row, typed so that a route or a raw engine identity cannot be passed for it (the S6 filter
+    /// once tested footers' identities against a route-space range).
+    pub(crate) fn contains(self, hash: super::EntityHash) -> bool {
+        self.holds(&hash.bytes())
+    }
+
+    /// Whether a segment's route bytes are in the range: where the registry places the segment.
+    pub(crate) fn holds_route(self, route: &[u8; 16]) -> bool {
+        self.holds(route)
+    }
+
+    fn holds(self, bytes: &[u8; 16]) -> bool {
         if self.len == 0 {
             return true;
         }
         let shift = 128 - self.len;
-        u128::from_be_bytes(*hash) >> shift == self.bits >> shift
+        u128::from_be_bytes(*bytes) >> shift == self.bits >> shift
     }
 }
 
