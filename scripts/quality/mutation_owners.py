@@ -155,7 +155,8 @@ OWNERS = (
     # AGENTS 1(3), approved). The skip is one word and never the first filter,
     # which the driver hands to cargo rather than to libtest.
     owner('topology', 'src/application/topology.rs',
-          'dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: dst_tests::topology_scaling:: '
+          'application::topology:: dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: '
+          'dst_tests::topology_scaling:: '
           '--skip=post_split_throughput_scales'),
     owner('sharddir', 'src/sharddir.rs', 'sharddir::'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
