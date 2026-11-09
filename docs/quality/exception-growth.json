@@ -243,12 +243,12 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849
+        "syntax_facts": 847
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap.rs",
@@ -256,12 +256,12 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849
+        "syntax_facts": 847
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap.rs",
@@ -269,9 +269,9 @@
       "scope": "function",
       "lint": "clippy::expect_used",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849,
+        "syntax_facts": 847,
         "expect_sites": 1,
         "expect_site::99a26f2c13866fad": 1,
         "expect_site:ordinary-call::b67d9b8d2ec02522": 1,
@@ -295,11 +295,8 @@
         "expect_site:ordinary-call::ea1f6bdb2dd17e54": 1,
         "expect_site:ordinary-call::9a275e2d4b2f78b1": 1,
         "expect_site:ordinary-call::b6bacbb6edfee464": 1,
-        "expect_site:ordinary-call::e2f7603654644d7a": 1,
         "expect_site:ordinary-call::240202fdbac8f809": 1,
         "expect_site:ordinary-call::2590b06af52c65fe": 1,
-        "expect_site:ordinary-call::e63d9ddf3d2a3347": 1,
-        "expect_site:ordinary-call::f7abc0f0581b13c9": 1,
         "expect_site:ordinary-call::16ab3f342c6de4b3": 1,
         "expect_site:ordinary-call::1f815880beb0a8da": 1,
         "expect_site:ordinary-call::cc9bb60107690f82": 1,
@@ -310,7 +307,6 @@
         "expect_site:ordinary-call::f686190f8ca70648": 1,
         "expect_site:ordinary-call::3f993eb415cf1d0b": 1,
         "expect_site:ordinary-call::ef9a345a36e239e5": 1,
-        "expect_site:ordinary-call::8b28ce1d16532c42": 1,
         "expect_site:ordinary-call::1667494b56b6290c": 1,
         "expect_site:ordinary-call::c1c141126d7f8ff8": 1,
         "expect_site:ordinary-call::fe1b5ec316511226": 1,
@@ -421,18 +417,17 @@
         "expect_site:path::5e15014c1855cfb3": 1,
         "expect_site:path::ec3932d9560e5c77": 1,
         "expect_site:path::f7e8c07bb19eb85a": 1,
-        "expect_site:path::0b9c846e7c472d4b": 1,
         "expect_site:path::12b35747787b2bf2": 5,
         "expect_site:path::bb9e9e7b6128dd1f": 1,
         "expect_site:path::c584b7c1e88292a2": 4,
         "expect_site:path::6162591f71d8fe40": 8,
         "expect_site:path::8928e21f6233d7a2": 4,
-        "expect_site:path::95c8a5710d194a76": 2,
+        "expect_site:path::95c8a5710d194a76": 3,
         "expect_site:path::c0bf4ce658f2c9f0": 1,
         "expect_site:path::da4e351beb4dc5ed": 2,
         "expect_site:path::94bf3c3a2631f97f": 4,
         "expect_site:path::a6b8018632e412fe": 2,
-        "expect_site:path::f43e392e2aef5d84": 6,
+        "expect_site:path::f43e392e2aef5d84": 5,
         "expect_site:path::e593490a360ac810": 4,
         "expect_site:path::57eb35615d47f34e": 2,
         "expect_site:path::b935494395c9021b": 2,
@@ -441,7 +436,6 @@
         "expect_site:path::9d276f1c0e2f970e": 1,
         "expect_site:path::74cb82698d04d18b": 3,
         "expect_site:path::c1b868e62e002cae": 1,
-        "expect_site:path::deeb9742794f0c8f": 1,
         "expect_site:path::45ece3d23341afce": 3,
         "expect_site:path::4b713294b37ed035": 1,
         "expect_site:path::69dbd531d4e8f823": 1,
@@ -458,7 +452,6 @@
         "expect_site:path::b316cd40619e08da": 1,
         "expect_site:path::f73604cab82b8918": 1,
         "expect_site:path::09eebc86de7bf55b": 1,
-        "expect_site:path::cfbb689739e81385": 1,
         "expect_site:path::e12bc4e82c2c1ad7": 2,
         "expect_site:path::244007d38f460f87": 1,
         "expect_site:path::bc76d906a01fc2aa": 1,
@@ -545,10 +538,15 @@
         "expect_site:path::1b4638dab79ca90b": 1,
         "expect_site:path::0e9261c30b7c52ca": 1,
         "expect_site:path::a5dc18314ad70cce": 1,
-        "expect_site:path::4903e341e5c7bcb6": 1
+        "expect_site:path::4903e341e5c7bcb6": 1,
+        "expect_site:ordinary-call::479ae00af4aed5c3": 1,
+        "expect_site:ordinary-call::8d1ba86bf2d616e2": 1,
+        "expect_site:ordinary-call::dae3b882083dc139": 1,
+        "expect_site:path::be85dadb4beadce1": 1,
+        "expect_site:path::da35ab7d74c75a96": 1
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap.rs",
@@ -556,12 +554,12 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849
+        "syntax_facts": 847
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap.rs",
@@ -569,12 +567,12 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849
+        "syntax_facts": 847
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap.rs",
@@ -582,9 +580,9 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 476,
+        "scope_lines": 475,
         "nested_items": 1,
-        "syntax_facts": 849,
+        "syntax_facts": 847,
         "unwrap_sites": 4,
         "unwrap_site::f84a2fda699af2b6": 1,
         "unwrap_site::a81fa5d8371d7b9c": 1,
@@ -611,11 +609,8 @@
         "unwrap_site:ordinary-call::ea1f6bdb2dd17e54": 1,
         "unwrap_site:ordinary-call::9a275e2d4b2f78b1": 1,
         "unwrap_site:ordinary-call::b6bacbb6edfee464": 1,
-        "unwrap_site:ordinary-call::e2f7603654644d7a": 1,
         "unwrap_site:ordinary-call::240202fdbac8f809": 1,
         "unwrap_site:ordinary-call::2590b06af52c65fe": 1,
-        "unwrap_site:ordinary-call::e63d9ddf3d2a3347": 1,
-        "unwrap_site:ordinary-call::f7abc0f0581b13c9": 1,
         "unwrap_site:ordinary-call::16ab3f342c6de4b3": 1,
         "unwrap_site:ordinary-call::1f815880beb0a8da": 1,
         "unwrap_site:ordinary-call::cc9bb60107690f82": 1,
@@ -626,7 +621,6 @@
         "unwrap_site:ordinary-call::f686190f8ca70648": 1,
         "unwrap_site:ordinary-call::3f993eb415cf1d0b": 1,
         "unwrap_site:ordinary-call::ef9a345a36e239e5": 1,
-        "unwrap_site:ordinary-call::8b28ce1d16532c42": 1,
         "unwrap_site:ordinary-call::1667494b56b6290c": 1,
         "unwrap_site:ordinary-call::c1c141126d7f8ff8": 1,
         "unwrap_site:ordinary-call::fe1b5ec316511226": 1,
@@ -737,18 +731,17 @@
         "unwrap_site:path::5e15014c1855cfb3": 1,
         "unwrap_site:path::ec3932d9560e5c77": 1,
         "unwrap_site:path::f7e8c07bb19eb85a": 1,
-        "unwrap_site:path::0b9c846e7c472d4b": 1,
         "unwrap_site:path::12b35747787b2bf2": 5,
         "unwrap_site:path::bb9e9e7b6128dd1f": 1,
         "unwrap_site:path::c584b7c1e88292a2": 4,
         "unwrap_site:path::6162591f71d8fe40": 8,
         "unwrap_site:path::8928e21f6233d7a2": 4,
-        "unwrap_site:path::95c8a5710d194a76": 2,
+        "unwrap_site:path::95c8a5710d194a76": 3,
         "unwrap_site:path::c0bf4ce658f2c9f0": 1,
         "unwrap_site:path::da4e351beb4dc5ed": 2,
         "unwrap_site:path::94bf3c3a2631f97f": 4,
         "unwrap_site:path::a6b8018632e412fe": 2,
-        "unwrap_site:path::f43e392e2aef5d84": 6,
+        "unwrap_site:path::f43e392e2aef5d84": 5,
         "unwrap_site:path::e593490a360ac810": 4,
         "unwrap_site:path::57eb35615d47f34e": 2,
         "unwrap_site:path::b935494395c9021b": 2,
@@ -757,7 +750,6 @@
         "unwrap_site:path::9d276f1c0e2f970e": 1,
         "unwrap_site:path::74cb82698d04d18b": 3,
         "unwrap_site:path::c1b868e62e002cae": 1,
-        "unwrap_site:path::deeb9742794f0c8f": 1,
         "unwrap_site:path::45ece3d23341afce": 3,
         "unwrap_site:path::4b713294b37ed035": 1,
         "unwrap_site:path::69dbd531d4e8f823": 1,
@@ -774,7 +766,6 @@
         "unwrap_site:path::b316cd40619e08da": 1,
         "unwrap_site:path::f73604cab82b8918": 1,
         "unwrap_site:path::09eebc86de7bf55b": 1,
-        "unwrap_site:path::cfbb689739e81385": 1,
         "unwrap_site:path::e12bc4e82c2c1ad7": 2,
         "unwrap_site:path::244007d38f460f87": 1,
         "unwrap_site:path::bc76d906a01fc2aa": 1,
@@ -861,10 +852,15 @@
         "unwrap_site:path::1b4638dab79ca90b": 1,
         "unwrap_site:path::0e9261c30b7c52ca": 1,
         "unwrap_site:path::a5dc18314ad70cce": 1,
-        "unwrap_site:path::4903e341e5c7bcb6": 1
+        "unwrap_site:path::4903e341e5c7bcb6": 1,
+        "unwrap_site:ordinary-call::479ae00af4aed5c3": 1,
+        "unwrap_site:ordinary-call::8d1ba86bf2d616e2": 1,
+        "unwrap_site:ordinary-call::dae3b882083dc139": 1,
+        "unwrap_site:path::be85dadb4beadce1": 1,
+        "unwrap_site:path::da35ab7d74c75a96": 1
       },
-      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values.",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 commit A1, ROW-DECISION-account-removal-2026-11-08 §A1): the scope shrank by the deployment identity's account argument when ACCOUNT_ID left the configuration, so the row takes the gate's after values (476, 1, 849); in the unwrap_used and expect_used rows the DeploymentIdentity::new call's fingerprint is respelled, 3c5411df20bd1010 -> 662f3be0e3df9266, and the config path count is 60; before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-10-26 (\"Yes, let's please do this!\", replying to \"One decision is left for you: landing the compaction guard, without which one shard crash-looped in testing\", relayed by the public-beta session); earlier: approved 2026-10-12 in the public-beta round (Q0 DECISION.md O1); values entered from the gate's output for the owner to confirm; updated by the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\")"
+      "rationale": "Boot installs the cell ceiling (CellCeiling::of_config: PROJECT_SHARE_K, the CELL_ENVELOPE_* settings, the instance bounds and the deployment identity) right after AuthService::new, before the feed refresher publishes the first policy snapshot (shared cells H1/L2, edge record #130); before that, it started the supervised fork-debt reconciler (TLA-019-F4, 0d40dc2a) and served on the bounded service runtime (af0e2f04). Q0 (2026-10-12): the shared block cache is built by RuntimeCaps::with_config, so run takes runtime_caps.shared_cache instead of building a FoyerCache, and starts the idle-release loop with idle::start(&state, &tasks). Compaction guard (2026-10-26): the shard log opens through native_queue::compaction_guard::shard_log_builder, whose size-tiered scheduler also refuses a submitted compaction that shares a sorted run or SST view with a live one, instead of Db::builder(..).with_settings(..); without it the 100x queue run of 2026-10-25 on slate 409acbc8 crash-looped shard 10 on SlateDB's compaction-worker assertion (a collector pass beside the embedded scheduler's compaction into the last run). Layout 6 (2026-10-27): the engine builds its layout state with one field line (`layout: layout::LayoutState::default()`, where every later layout 6 engine state lives) and no longer takes the absorber's channel (`absorb_tx` is an `AbsorberLink` the absorber attaches when it starts), so the opener in `bootstrap::run` creates no channel and passes none; these are the gate's after values. S4 route A (2026-11-10, package 5, s4-split rebased onto s3a-4a 518e1c6f2): the shard opener takes the path its log lives at from the directory's topology (OpenAt: prefix, path, incarnation) instead of deriving it from the prefix, so a split's child opens at shards/<prefix>~<home>; the directory is built with ShardDirectory::new_at. In run: the factory's return type OpenFn -> OpenAt, the inner closure takes `path: String`, the line `let path = crate::sharddir::shard_db_path(&prefix);` goes, and ShardDirectory::new -> new_at. Every other line is unchanged. The same change Fable approved on 2026-11-10 (S4-ROUTE-A-ROWS-DECISION.md) over the earlier base, re-measured on this one: these are the gate's after values (scope_lines 476 -> 475, syntax_facts 849 -> 847), reproduced with scripts/quality/source_rules.exception_contracts.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10"
     },
     {
       "path": "src/bootstrap/process_executor.rs",
