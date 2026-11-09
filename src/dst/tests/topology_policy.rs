@@ -189,6 +189,20 @@ async fn document(fleet: &Arc<dyn ObjectStore>, name: &str) -> serde_json::Value
     }
 }
 
+/// `streams-1`'s beat once `shows` holds of it, within 30 s.
+async fn beat_until(
+    fleet: &Arc<dyn ObjectStore>,
+    shows: fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut beat = document(fleet, "streams-1").await;
+    while !shows(&beat) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        beat = document(fleet, "streams-1").await;
+    }
+    beat
+}
+
 /// A split with no other instance to take a child asks the fleet for one: this instance's beat
 /// says `split_refused: "instance_full"`, the desired count grows past the one shard with the
 /// ceiling in its reason, and nothing splits. Once the instance asked for beats, the split goes,
@@ -214,10 +228,15 @@ async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_be
         reason.ends_with(" shards_per_instance=1/7 (2)"),
         "{desired}"
     );
+    // This instance's beat says why its split waits, in the decision's segments (E6). The
+    // production loop beside the double's polls only every 10 s on its stub entry, so a beat
+    // between them can carry its pass: the check waits for this loop's.
+    let beat = beat_until(&fleet, |beat| beat["split_refused"] == "instance_full").await;
     assert_eq!(
-        document(&fleet, "streams-1").await["split_refused"],
-        "instance_full"
+        beat["topology_decision"], "instance_full shards_per_instance=1/7",
+        "{beat}"
     );
+    assert_eq!(beat["shards_resident"], 1, "{beat}");
     assert!(asked.lock().unwrap().is_empty());
     assert_eq!(leaves(&rig.state), [""]);
 

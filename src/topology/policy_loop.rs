@@ -86,14 +86,22 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
     let view = view(cell, seen);
     let decision = act(cell, &view, policy.decide(&view, &cell.limits)).await;
     let waiting = matches!(decision, Decision::AskInstance { .. }).then_some(INSTANCE_FULL);
-    cell.fleet
-        .standing()
-        .set_topology(waiting, resident(&view, &cell.me));
+    let standing = cell.fleet.standing();
+    standing.set_topology(waiting, resident(&view, &cell.me));
+    standing.set_topology_decision(decision.reason());
     decision
 }
 
-/// `decision`, after the split entry's answer to the split it names.
+/// `decision`, after the split entry's answer to the split it names. A merge is held until
+/// S6's merge entry lands.
 async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
+    if let Decision::Merge { parent } = &decision {
+        tracing::info!(
+            parent,
+            "topology merge decided; held until S6's merge entry"
+        );
+        return Decision::Hold(super::policy::Hold::MergePendingS6);
+    }
     let Decision::Split { prefix, .. } = &decision else {
         return decision;
     };

@@ -133,6 +133,10 @@ pub(crate) struct Heartbeat {
     /// The shards the ring gives this instance, as its topology policy counts them.
     #[serde(default)]
     pub shards_resident: u32,
+    /// The topology policy's latest decision as its segments (E6): `split prefix=… kind=…
+    /// doubling=… fleet_axis=…`, `instance_full shards_per_instance=<n>/<max>`, or `hold=<name>`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topology_decision: String,
     pub owned_shards: Vec<String>,
     /// The publisher is handing its ownership off in a planned drain: every
     /// ring drops it while it keeps beating (`fleet::drain`).
@@ -402,6 +406,7 @@ impl Sampler {
             split_demand: state.fleet.standing().split_demand(),
             split_refused: state.fleet.standing().split_refused().map(str::to_owned),
             shards_resident: state.fleet.standing().shards_resident(),
+            topology_decision: state.fleet.standing().topology_decision(),
             owned_shards: engines.into_iter().map(|(prefix, _)| prefix).collect(),
             draining: state.fleet.standing().draining(),
             absorb_lag_max_secs: state.shards.stall_max_secs(),

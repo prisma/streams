@@ -59,6 +59,8 @@ pub(crate) struct Standing {
     /// The topology policy's latest pass: why its split waits (`None`: none waits), and the
     /// shards the ring gives this instance (S5, Q4).
     topology: Mutex<(Option<&'static str>, u32)>,
+    /// The topology policy's latest decision as its segments (`Decision::reason`).
+    decision: Mutex<String>,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -99,6 +101,7 @@ impl Default for Standing {
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
+            decision: Mutex::new(String::new()),
         }
     }
 }
@@ -213,6 +216,21 @@ impl Standing {
         if let Ok(mut topology) = self.topology.lock() {
             *topology = (split_refused, shards_resident);
         }
+    }
+
+    /// The topology policy's pass decided `decision` (its segments).
+    pub(crate) fn set_topology_decision(&self, decision: String) {
+        if let Ok(mut held) = self.decision.lock() {
+            *held = decision;
+        }
+    }
+
+    /// The topology policy's latest decision, for the next beat; empty before its first pass.
+    pub(crate) fn topology_decision(&self) -> String {
+        self.decision
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default()
     }
 
     /// Why the topology policy's split waits, for the next beat.
@@ -370,6 +388,9 @@ mod tests {
             (standing.split_refused(), standing.shards_resident()),
             (Some("instance_full"), 7)
         );
+        assert_eq!(standing.topology_decision(), "");
+        standing.set_topology_decision("hold=cooldown".into());
+        assert_eq!(standing.topology_decision(), "hold=cooldown");
         standing.set_topology(None, 3);
         assert_eq!(
             (standing.split_refused(), standing.shards_resident()),
