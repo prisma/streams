@@ -1563,15 +1563,15 @@
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::unwrap_used",
+      "rationale": "Fleet count hysteresis (FLEET-HYSTERESIS.md, option B), C1 the extraction and C2 the sustained in-flight: the publish decision (a grow at once, a shrink to the conservative target after SCALE_IN_SECS) left fleet::start for the pure fleet::hysteresis::Gate, which also holds the in-flight the planner reads (from C2 the in-flight that lasted 30 s, read from the move cooldown after a change; Gate::new takes that cooldown); start reads desired.json before planning so the decision sees the published count. The scope shrank (scope_lines 371 -> 364, syntax_facts 742 -> 740); the three unwrap sites, the fleet_io! serialisations of the fleet documents, are unchanged in count and fingerprint; the new or grown fingerprints are the hysteresis types' constructor and calls (Gate::new with its two settings, Now::current), their bindings (gate, now, decided), the decision's Some, and the loads and cur the gate takes, none an unwrap, expect or panic site. S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747.",
       "metrics": {
         "nested_items": 2,
         "scope_lines": 364,
-        "syntax_facts": 740,
+        "syntax_facts": 747,
         "unwrap_site:macro::2f0c39814bc1185b": 1,
         "unwrap_site:macro::4d014f917951ced2": 1,
         "unwrap_site:macro::be987c2cb440ff9d": 1,
         "unwrap_site:ordinary-call::0850176f9547ded7": 1,
-        "unwrap_site:ordinary-call::2a9c28158191f7c3": 1,
         "unwrap_site:ordinary-call::2b750b83f4d6c8f3": 1,
         "unwrap_site:ordinary-call::2bbcc86ae057fdfb": 1,
         "unwrap_site:ordinary-call::2c469b7da0ae90e2": 1,
@@ -1598,7 +1598,7 @@
         "unwrap_site:ordinary-call::d84686254758ce62": 1,
         "unwrap_site:ordinary-call::f712bf90f811834a": 1,
         "unwrap_site:path::01c5222e9405d6a8": 1,
-        "unwrap_site:path::065706597e258f2b": 2,
+        "unwrap_site:path::065706597e258f2b": 4,
         "unwrap_site:path::0772301bfdd7eab9": 1,
         "unwrap_site:path::0c3741575880196e": 1,
         "unwrap_site:path::0dfad14f1461ae41": 8,
@@ -1610,7 +1610,7 @@
         "unwrap_site:path::165187d67742523c": 1,
         "unwrap_site:path::17062d99b9df1255": 1,
         "unwrap_site:path::1776c986cb487291": 1,
-        "unwrap_site:path::17e8c24ea46462ab": 6,
+        "unwrap_site:path::17e8c24ea46462ab": 7,
         "unwrap_site:path::17f91da5f956e667": 2,
         "unwrap_site:path::1950584d23f4184d": 7,
         "unwrap_site:path::1953b2461162f4da": 1,
@@ -1723,10 +1723,10 @@
         "unwrap_site:path::f6dc1034b093dd79": 3,
         "unwrap_site:path::f9111136fa50e1f6": 1,
         "unwrap_site:path::fb0c6fa64024ff79": 1,
-        "unwrap_sites": 3
+        "unwrap_sites": 3,
+        "unwrap_site:ordinary-call::c8ac9b54f7404eb5": 1
       },
-      "rationale": "Fleet count hysteresis (FLEET-HYSTERESIS.md, option B), C1 the extraction and C2 the sustained in-flight: the publish decision (a grow at once, a shrink to the conservative target after SCALE_IN_SECS) left fleet::start for the pure fleet::hysteresis::Gate, which also holds the in-flight the planner reads (from C2 the in-flight that lasted 30 s, read from the move cooldown after a change; Gate::new takes that cooldown); start reads desired.json before planning so the decision sees the published count. The scope shrank (scope_lines 371 -> 364, syntax_facts 742 -> 740); the three unwrap sites, the fleet_io! serialisations of the fleet documents, are unchanged in count and fingerprint; the new or grown fingerprints are the hysteresis types' constructor and calls (Gate::new with its two settings, Now::current), their bindings (gate, now, decided), the decision's Some, and the loads and cur the gate takes, none an unwrap, expect or panic site.",
-      "approver": "approved by Fable 5.1 on 2026-11-09 under the owner's delegation for exception rows in the scaling program (FLEET-HYSTERESIS-REVIEW.md §6), conditional on the metric conditions stated there; the metrics are the gate's after values on the landing tree of C1, reproduced with scripts/quality/source_rules.exception_contracts; replaces the P4 row of 2026-11-03 for this contract"
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10 (EDGE-249-251-RATIFICATION.md, \"Step 12 rows\"): reproduced with scripts/quality/source_rules.exception_contracts on 55838385a vs 4e61eda04 (every metric exact); no new unwrap, expect or panic site in the scope; for the owner's review"
     },
     {
       "path": "src/http.rs",
@@ -2763,6 +2763,58 @@
       },
       "rationale": "Edge #253 stage 0, commit A2 (CONTAINER-VALIDATION §2/§4, ACCOUNT-REMOVAL-PLAN): usage stops recording the workspace, so billing::identity_with_capabilities no longer takes the deployment identity. seed's call loses its &state.deployment argument, which respells two ordinary-call fingerprints the unwrap_used contract pins: the call itself (a51aa225b33eefa9) and its enclosing std::sync::Arc::new(BillingRef { .. }) (7cb38c47d6e5586c); the old spellings vanish. No unwrap is added or moved (unwrap_sites stays 1: the fail-stop h.state.lock().unwrap() the reason documents), and scope_lines, nested_items and syntax_facts all shrink. Metrics are the gate's after values, reproduced independently (ROW-DECISION-account-removal-2026-11-08).",
       "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+    },
+    {
+      "path": "src/fleet.rs",
+      "owner": "crate::start",
+      "scope": "function",
+      "lint": "clippy::cast_sign_loss",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747.",
+      "metrics": {
+        "scope_lines": 364,
+        "nested_items": 2,
+        "syntax_facts": 747
+      },
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10 (EDGE-249-251-RATIFICATION.md, \"Step 12 rows\"): reproduced with scripts/quality/source_rules.exception_contracts on 55838385a vs 4e61eda04 (every metric exact); no new unwrap, expect or panic site in the scope; for the owner's review"
+    },
+    {
+      "path": "src/fleet.rs",
+      "owner": "crate::start",
+      "scope": "function",
+      "lint": "clippy::excessive_nesting",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747.",
+      "metrics": {
+        "scope_lines": 364,
+        "nested_items": 2,
+        "syntax_facts": 747
+      },
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10 (EDGE-249-251-RATIFICATION.md, \"Step 12 rows\"): reproduced with scripts/quality/source_rules.exception_contracts on 55838385a vs 4e61eda04 (every metric exact); no new unwrap, expect or panic site in the scope; for the owner's review"
+    },
+    {
+      "path": "src/fleet.rs",
+      "owner": "crate::start",
+      "scope": "function",
+      "lint": "clippy::let_underscore_must_use",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747.",
+      "metrics": {
+        "scope_lines": 364,
+        "nested_items": 2,
+        "syntax_facts": 747
+      },
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10 (EDGE-249-251-RATIFICATION.md, \"Step 12 rows\"): reproduced with scripts/quality/source_rules.exception_contracts on 55838385a vs 4e61eda04 (every metric exact); no new unwrap, expect or panic site in the scope; for the owner's review"
+    },
+    {
+      "path": "src/fleet.rs",
+      "owner": "crate::start",
+      "scope": "function",
+      "lint": "clippy::too_many_lines",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747.",
+      "metrics": {
+        "scope_lines": 364,
+        "nested_items": 2,
+        "syntax_facts": 747
+      },
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-10 (EDGE-249-251-RATIFICATION.md, \"Step 12 rows\"): reproduced with scripts/quality/source_rules.exception_contracts on 55838385a vs 4e61eda04 (every metric exact); no new unwrap, expect or panic site in the scope; for the owner's review"
     }
   ],
   "schema": 1

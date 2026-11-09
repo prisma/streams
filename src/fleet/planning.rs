@@ -222,6 +222,27 @@ impl Loads {
     }
 }
 
+/// The members' split reservations, as the fleet tick's candidacies carry them (S4-DESIGN §4.4).
+pub(super) trait Reservations {
+    /// The members of `active` that may receive a lag move: those holding no split reservation
+    /// (the actor of a live split is about to hold two more shards).
+    fn unreserved(&self, active: &[String]) -> Vec<String>;
+    /// The shards `member` holds in reserve for its own live split.
+    fn reserved_of(&self, member: &str) -> usize;
+}
+
+impl Reservations for HashMap<String, Candidacy> {
+    fn unreserved(&self, active: &[String]) -> Vec<String> {
+        let reserving = |m: &String| self.get(m).is_some_and(|c| c.reserved_shards > 0);
+        active.iter().filter(|m| !reserving(m)).cloned().collect()
+    }
+
+    fn reserved_of(&self, member: &str) -> usize {
+        let reserved = self.get(member).map_or(0, |c| c.reserved_shards);
+        usize::try_from(reserved).unwrap_or(usize::MAX)
+    }
+}
+
 /// The planning thresholds: `fleet::FleetCfg`'s, this instance's RSS shed
 /// line, and the per-instance capacities every member of one build shares.
 #[derive(Clone, Copy, Debug)]
@@ -579,6 +600,31 @@ mod tests {
             ["streams-1"],
             "a ring has at least one ordinal"
         );
+    }
+
+    /// **The tick's moves honour a split's reservation** (S4-DESIGN §4.4). A member whose beat
+    /// reserves two shards for its own split receives no lag move and counts the two as held in
+    /// return-home's share; the others, and a member with no beat, reserve nothing.
+    #[test]
+    fn a_split_reservation_bars_a_lag_move_and_counts_as_held() {
+        use super::Reservations;
+        let reserving = |instance: &str, reserved: u32| {
+            let document = format!(
+                r#"{{"instance":"{instance}","ts_ms":{NOW},"rps":0.0,"owned_shards":[],"draining":false,"reserved_shards":{reserved}}}"#
+            );
+            let heartbeat: crate::fleet::Heartbeat = serde_json::from_str(&document).unwrap();
+            (instance.to_string(), heartbeat.candidacy(NOW))
+        };
+        let candidacies: HashMap<String, Candidacy> =
+            [reserving("streams-1", 0), reserving("streams-2", 2)]
+                .into_iter()
+                .collect();
+        let active: Vec<String> = ["streams-1", "streams-2", "streams-3"]
+            .map(str::to_string)
+            .to_vec();
+        assert_eq!(candidacies.unreserved(&active), ["streams-1", "streams-3"]);
+        let held: Vec<usize> = active.iter().map(|m| candidacies.reserved_of(m)).collect();
+        assert_eq!(held, [0, 2, 0]);
     }
 }
 

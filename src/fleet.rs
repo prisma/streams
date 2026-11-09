@@ -23,6 +23,7 @@ mod heartbeat;
 mod hysteresis;
 mod outbox;
 mod planning;
+use planning::Reservations as _;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
@@ -740,7 +741,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                                 state.ownership.effective_owner(p).as_deref() == Some(home.as_str())
                             })
                             .count();
-                        let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1;
+                        let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1 + hb_age_ms.reserved_of(&home);
                         if !return_home_allowed(
                             owned,
                             gain,
@@ -797,7 +798,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     // the threshold and unguarded moves just hand the
                     // backlog around (ladder p3: 7 moves in 10 min, shard
                     // ping-pong, zero net absorption gained).
-                    let target = pick_move_target(&peer_load, &active, &cfg.instance, rebalance_lag_secs);
+                    let target = pick_move_target(&peer_load, &hb_age_ms.unreserved(&active), &cfg.instance, rebalance_lag_secs);
                     if target.is_none() {
                         tracing::info!(
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
