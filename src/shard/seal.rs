@@ -544,18 +544,30 @@ impl ShardEngine {
         &self.layout.seal
     }
 
+    /// The log's SlateDB metrics, once its builder registered them under the log's path: looked
+    /// up until found (a split's child learns its path from the directory right after its open),
+    /// then kept, and the sealer follows its freeze size.
+    fn find_log_metrics(&self) {
+        let sp = self.seal_state();
+        if sp.metrics.get().is_some() {
+            return;
+        }
+        let Some(found) = crate::spill::metrics::of_log(&self.log_path()) else {
+            return;
+        };
+        if let Some(freeze) = found.freeze_bytes() {
+            sp.follow_freeze_bytes(freeze);
+        }
+        sp.metrics.get_or_init(|| Some(found));
+    }
+
     /// The sealer: the open's rebuild (retried until it succeeds), then the
     /// triggers, one seal at a time, and idle handle eviction. The
     /// deadlines run beside it (`deadline_loop`), so a slow seal holds a
     /// deadline flush back by at most the deadline again.
     pub(super) async fn seal_loop(self: Arc<Self>) {
         let sp = self.seal_state();
-        let metrics = sp.metrics.get_or_init(|| {
-            crate::spill::metrics::of_log(&crate::sharddir::shard_db_path(&self.prefix))
-        });
-        if let Some(freeze) = metrics.as_ref().and_then(|m| m.freeze_bytes()) {
-            sp.follow_freeze_bytes(freeze);
-        }
+        self.find_log_metrics();
         self.reset_baseline();
         let mut closed = self.close_tx.subscribe();
         let mut retry = Duration::from_millis(50);
@@ -580,6 +592,7 @@ impl ShardEngine {
                 self.evict_idle();
             }
             self.watch_dispatch(&mut dispatch_seen);
+            self.find_log_metrics();
             let settings = sp.settings();
             if !settings.auto || sp.backing_off() {
                 continue;

@@ -407,7 +407,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // PR 6.1-B: the opener is a FACTORY over the directory's close
     // notifier — the one capability an engine's close needs — and it
     // captures nothing else of the runtime.
-    let opener = |notifier: crate::shard_directory::ShardCloseNotifier| -> crate::sharddir::OpenFn {
+    let opener = |notifier: crate::shard_directory::ShardCloseNotifier| -> crate::sharddir::OpenAt {
         let shard_store = shard_store.clone();
         let data_store = data_store.clone();
         let touch = touch.clone();
@@ -420,7 +420,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
         let mut shard_config = shard_config(&config.cli);
         shard_config.shared_ops = Some(runtime_caps.ops.clone());
         Box::new(
-            move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
+            move |prefix: String, path: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
                 let shard_config = shard_config.clone();
                 let shared_cache = shared_cache.clone();
@@ -442,7 +442,6 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
                 }
                 let notifier = notifier.clone();
                 Box::pin(async move {
-                    let path = crate::sharddir::shard_db_path(&prefix);
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
                     let db = {
                         let p2 = path.clone();
@@ -501,7 +500,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // directory builds its serving map and gate itself, from the opener
     // factory and its timings.
     let ownership = crate::ownership::OwnershipService::new(config.cli.instance_name.clone());
-    let shard_directory = crate::shard_directory::ShardDirectory::new(
+    let shard_directory = crate::shard_directory::ShardDirectory::new_at(
         topology.shards.clone(),
         ownership.clone(),
         crate::shard_directory::OpenTiming {

@@ -260,7 +260,7 @@ fn identity_value(home: u32) -> [u8; 8] {
 /// Checks the identity of the shard log at `path`, writing it on an empty log, and refuses the
 /// open of a log of another layout or home (a `data` error; a store error keeps its own kind).
 pub(crate) async fn check_identity(db: &Db, path: &str) -> Result<(), slatedb::Error> {
-    let Some(home) = crate::keyspace::home_of(crate::sharddir::prefix_of_db_path(path)) else {
+    let Some(home) = crate::sharddir::home_of_db_path(path) else {
         return Err(slatedb::Error::data(format!(
             "shard log {path} names no shard prefix, so it has no home"
         )));
@@ -283,6 +283,20 @@ pub(crate) async fn check_identity(db: &Db, path: &str) -> Result<(), slatedb::E
     db.put_with_options(&key, &want, &Default::default(), &WriteOptions::default())
         .await?;
     Ok(())
+}
+
+/// The home a log's `'Y'` row records; `None` for a log without one, which only a log opened
+/// without `check_identity` can be (a test's `keyspace::db_builder` rig).
+pub(super) async fn recorded_home(db: &Db) -> Result<Option<u32>, slatedb::Error> {
+    let Some(value) = db.get(&identity_key()).await? else {
+        return Ok(None);
+    };
+    let home = value
+        .get(4..8)
+        .and_then(|b| b.try_into().ok())
+        .map(u32::from_be_bytes);
+    home.map(Some)
+        .ok_or_else(|| slatedb::Error::data("shard log identity row is short".to_string()))
 }
 
 /// This shard's maintenance ledger, rebuilt before the engine starts serving (layout 6: the

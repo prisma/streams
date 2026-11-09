@@ -108,21 +108,34 @@ pub(crate) async fn check(engine: &ShardEngine, snapshot: &Snapshot) -> Result<V
 /// The directory's topology as the fence reads it at each check.
 pub(crate) type SnapshotFn = Arc<dyn Fn() -> Option<Arc<Snapshot>> + Send + Sync>;
 
-/// `open`, fenced: the engine it opens is returned only once the fence lets it serve (see the
-/// module).
+/// `open`, fenced: it opens the log at the path the topology gives the prefix's home (its static
+/// path for a prefix that is no leaf), and the engine it opens is returned only once the fence lets
+/// it serve (see the module).
 pub(crate) fn fenced(
-    open: crate::sharddir::OpenFn,
+    open: crate::sharddir::LogOpener,
     snapshot: SnapshotFn,
 ) -> crate::sharddir::OpenFn {
-    let open = Arc::new(open);
+    let open = Arc::new(open.0);
     Box::new(move |prefix, incarnation| {
         let (open, snapshot) = (open.clone(), snapshot.clone());
         Box::pin(async move {
-            let engine = open(prefix, incarnation).await?;
+            let path = log_path(snapshot().as_deref(), &prefix);
+            let engine = open(prefix, path.clone(), incarnation).await?;
+            engine.place(path, snapshot.clone());
             hold_until_served(&engine, &snapshot).await?;
             Ok(engine)
         })
     })
+}
+
+/// The path of `prefix`'s log: its leaf home's in `snapshot`, else its static path.
+pub(crate) fn log_path(snapshot: Option<&Snapshot>, prefix: &str) -> String {
+    snapshot
+        .and_then(|s| s.shards.homes.get(s.shards.leaves.get(prefix)?))
+        .map_or_else(
+            || crate::sharddir::shard_db_path(prefix),
+            |home| home.path.clone(),
+        )
 }
 
 /// Re-read the fence every [`RECHECK`] until it lets `engine` serve, its collection passes off

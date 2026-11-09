@@ -233,7 +233,23 @@ pub(crate) struct Resident {
 /// which locks `st`, and `get_or_open` re-checks this map while holding
 /// `st`. Because `st` is ONE mutex shared across every prefix, the two
 /// operations deadlocked even when they named DIFFERENT shards.
+mod open_at;
+pub(crate) use open_at::{LogOpener, home_of_db_path};
+
 pub(crate) type ServingMap = Arc<RwLock<HashMap<String, Resident>>>;
+
+/// What the directory's opener is handed (S4 route A): the shard's prefix, the path its log lives at
+/// in the cell's topology (`shards/<prefix>` for an initial home, `shards/<prefix>~<home>` for one a
+/// split or merge made), and the incarnation the engine's close notification must carry.
+pub(crate) type OpenAt = Box<
+    dyn Fn(
+            String,
+            String,
+            EngineIncarnation,
+        ) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
+        + Send
+        + Sync,
+>;
 
 /// Opens the shard log for `prefix`; the incarnation is the identity the
 /// engine's close notification must carry.

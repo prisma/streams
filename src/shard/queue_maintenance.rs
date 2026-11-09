@@ -540,11 +540,7 @@ impl ShardEngine {
     }
 
     fn queue_admin(&self) -> slatedb::admin::Admin {
-        slatedb::admin::AdminBuilder::new(
-            crate::sharddir::shard_db_path(&self.prefix),
-            self.data_store.clone(),
-        )
-        .build()
+        slatedb::admin::AdminBuilder::new(self.log_path(), self.data_store.clone()).build()
     }
 
     /// Steps 4-5 of the coverage rule: flush the memtable so every captured
@@ -684,7 +680,7 @@ impl ShardEngine {
 
     /// Superseded SSTs still in the bucket, the residual excepted.
     async fn superseded_left(&self, superseded: &[String], residual: Option<&String>) -> usize {
-        let base = crate::sharddir::shard_db_path(&self.prefix);
+        let base = self.log_path();
         let mut left = 0usize;
         for id in superseded.iter().filter(|id| Some(*id) != residual) {
             let path = object_store::path::Path::from(format!("{base}/compacted/{id}.sst"));

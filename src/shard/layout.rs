@@ -62,6 +62,43 @@ pub(crate) struct LayoutState {
     pub(crate) seal: super::seal::SealState,
     /// The L0 watermark (`l0_watermark`).
     pub(crate) l0: l0_watermark::L0Watermark,
+    /// Where the log lives in the cell's topology, and the topology (S4 route A).
+    place: Place,
+}
+
+/// Where an engine's log lives (its home's path in the cell's topology) and the topology it was
+/// opened under, for the roots of its ancestors' objects: set once, by the directory's fenced open
+/// (`topology::fence::fenced`). An engine opened outside the directory (a test's) has neither, and
+/// keeps S3a's static layout.
+#[derive(Default)]
+struct Place {
+    log: std::sync::OnceLock<String>,
+    topology: std::sync::OnceLock<crate::topology::fence::SnapshotFn>,
+}
+
+impl super::ShardEngine {
+    /// Record where this engine's log lives and the topology it was opened under (once).
+    pub(crate) fn place(&self, log: String, topology: crate::topology::fence::SnapshotFn) {
+        let place = &self.layout.place;
+        place.log.get_or_init(|| log);
+        place.topology.get_or_init(|| topology);
+    }
+
+    /// This engine's log path: its home's in the topology, else S3a's static path of its prefix.
+    pub(crate) fn log_path(&self) -> String {
+        self.layout
+            .place
+            .log
+            .get()
+            .cloned()
+            .unwrap_or_else(|| crate::sharddir::shard_db_path(&self.prefix))
+    }
+
+    /// `home`'s root in the topology this engine was opened under, if it names that home.
+    pub(crate) fn home_root(&self, home: u32) -> Option<String> {
+        let snapshot = (self.layout.place.topology.get()?)()?;
+        Some(snapshot.shards.homes.get(&home)?.path.clone())
+    }
 }
 
 /// The usage dirty set.

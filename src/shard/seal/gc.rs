@@ -42,6 +42,8 @@ mod gate_tests;
 #[cfg(test)]
 mod pass_tests;
 pub(crate) mod purge;
+#[cfg(test)]
+mod root_tests;
 mod sweep;
 #[cfg(test)]
 mod sweep_tests;
@@ -790,13 +792,15 @@ impl ShardEngine {
         &self.data_store
     }
 
-    /// The root of `home`'s objects: this shard's own path for its own home; in S3a's static
-    /// topology another home is the prefix of this shard's width that it numbers.
+    /// The root of `home`'s objects: this shard's own log path for its own home; another home's
+    /// path in the topology this engine was opened under (an ancestor's, after a split); else, in
+    /// S3a's static topology, the prefix of this shard's width that it numbers.
     pub(crate) fn object_root(&self, home: u32) -> String {
         if home == self.home() {
-            crate::sharddir::shard_db_path(&self.prefix)
+            self.log_path()
         } else {
-            crate::sharddir::object_root(home, self.prefix.len())
+            self.home_root(home)
+                .unwrap_or_else(|| crate::sharddir::object_root(home, self.prefix.len()))
         }
     }
 

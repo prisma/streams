@@ -171,6 +171,7 @@ OWNERS = (
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
+    owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index::'),
     owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),
     owner('crypto', 'src/crypto.rs', 'crypto::'),
     owner('tail_ring', 'src/shard/tail_ring.rs', 'shard:: dst_tests::reads_ring::'),

@@ -10,8 +10,11 @@ use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use crate::shard::ShardEngine;
+#[cfg(test)]
+#[cfg(test)]
+use crate::sharddir::OpenFn;
 use crate::sharddir::supersede::Supersession;
-use crate::sharddir::{EngineIncarnation, OpenFn, OpenGate, OpenOutcome};
+use crate::sharddir::{EngineIncarnation, OpenGate, OpenOutcome};
 
 /// How a resolution counts for sweep custody (R29).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,11 +198,23 @@ impl ShardDirectory {
     /// Build the directory, its serving map and its open gate together.
     /// `opener` receives the close notifier it must wire into every
     /// engine it produces; it captures nothing else of the runtime.
+    #[cfg(test)]
     pub(crate) fn new(
         shards: impl Into<crate::topology::model::ShardSet>,
         ownership: crate::ownership::OwnershipService,
         timing: OpenTiming,
         opener: impl FnOnce(ShardCloseNotifier) -> OpenFn,
+    ) -> Self {
+        let opener = |notifier| crate::sharddir::LogOpener::from(opener(notifier)).0;
+        Self::new_at(shards, ownership, timing, opener)
+    }
+
+    /// `new`, with an opener handed each log's path in the topology (production's, S4 route A).
+    pub(crate) fn new_at(
+        shards: impl Into<crate::topology::model::ShardSet>,
+        ownership: crate::ownership::OwnershipService,
+        timing: OpenTiming,
+        opener: impl FnOnce(ShardCloseNotifier) -> crate::sharddir::OpenAt,
     ) -> Self {
         let topology = RwLock::new(Arc::new(crate::topology::model::Snapshot {
             shards: shards.into(),
@@ -220,7 +235,7 @@ impl ShardDirectory {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 Some(snapshot.clone())
             });
-            let opener = crate::topology::fence::fenced(opener(notifier), snapshot);
+            let opener = crate::topology::fence::fenced(opener(notifier).into(), snapshot);
             let gate = OpenGate::new(shards.clone(), opener, timing.open_deadline);
             DirInner {
                 topology,
@@ -658,6 +673,45 @@ mod directory_tests {
             }
         }
         panic!("no hash lands in {prefix}");
+    }
+
+    /// **The opener is handed the log path the topology gives the shard's home, and its bare
+    /// prefix** (S4 route A). After a split of `1` into `10` (home 2) and `11` (home 3), a resolve in
+    /// `10` opens `shards/10~2` for prefix `10`; one in `0` opens its initial `shards/0`.
+    #[tokio::test]
+    async fn the_opener_is_handed_the_path_the_topology_gives_the_home() {
+        let topology = crate::config::validation::InitialShards::new(2)
+            .unwrap()
+            .topology(1 << 20);
+        let (reserved, homes) = topology.reserve_homes();
+        let split = reserved.split("1", homes, "op").unwrap();
+        let handed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = handed.clone();
+        let opener: crate::sharddir::OpenAt = Box::new(
+            move |prefix: String, path: String, _inc: EngineIncarnation| {
+                seen.lock().unwrap().push((prefix, path));
+                Box::pin(std::future::ready(Err(anyhow::anyhow!("recorded"))))
+            },
+        );
+        let dir = ShardDirectory::new_at(
+            split.shards,
+            OwnershipService::new(""),
+            OpenTiming {
+                open_deadline: Duration::from_secs(60),
+                open_wait: Duration::from_millis(500),
+            },
+            |_notifier| opener,
+        );
+        for prefix in ["10", "0"] {
+            let refused = dir
+                .resolve(&hash_in(&dir, prefix), Adoption::Internal)
+                .await;
+            assert!(refused.is_err(), "{prefix}");
+        }
+        let handed = handed.lock().unwrap().clone();
+        let want = [("10", "shards/10~2"), ("0", "shards/0")]
+            .map(|(p, path)| (p.to_string(), path.to_string()));
+        assert_eq!(handed, want);
     }
 
     /// A shard the ring assigns elsewhere is refused with the owner's
