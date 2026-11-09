@@ -211,6 +211,7 @@
     "spill_directory_split": 4,
     "spill_estimate": 46,
     "spill_gc": 79,
+    "spill_lineage": 0,
     "spill_metrics": 34,
     "spill_mod": 0,
     "spill_object": 91,

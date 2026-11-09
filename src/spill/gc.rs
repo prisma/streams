@@ -82,14 +82,14 @@ pub(crate) enum ObjectKind {
 impl ObjectKind {
     pub(crate) const ALL: [Self; 2] = [Self::Segment, Self::RunIndex];
 
-    fn byte(self) -> u8 {
+    pub(crate) fn byte(self) -> u8 {
         match self {
             Self::Segment => 0,
             Self::RunIndex => 1,
         }
     }
 
-    fn of(byte: u8) -> Option<Self> {
+    pub(crate) fn of(byte: u8) -> Option<Self> {
         match byte {
             0 => Some(Self::Segment),
             1 => Some(Self::RunIndex),

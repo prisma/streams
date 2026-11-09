@@ -12,6 +12,10 @@ pub(crate) mod crc32c;
 pub(crate) mod directory;
 pub(crate) mod estimate;
 pub(crate) mod gc;
+// S4's split writes the reference lists (S4 step 11) and S6's collector the release logs; until
+// the first of them, only its tests.
+#[cfg(test)]
+pub(crate) mod lineage;
 pub(crate) mod metrics;
 pub(crate) mod object;
 pub(crate) mod object_table;
