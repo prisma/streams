@@ -20,6 +20,9 @@ use std::sync::Arc;
 #[cfg(kani)]
 mod proofs;
 pub(crate) mod range;
+// S6's merge is its caller (S6-DESIGN §7.3); until its route, only its tests.
+#[cfg(test)]
+pub(crate) mod merge_rules;
 // S4's split and S6's merge are its callers (S3a §2.8).
 pub(crate) mod split_rules;
 
@@ -266,6 +269,34 @@ mod tests {
             [super::tag::DIRECTORY, super::tag::POINTER].map(split_rule),
             [Some(CopyToBoth); 2],
             "'K' and 'I' are copied to both children and filtered where they are read"
+        );
+    }
+
+    /// Every sentinel tag has a merge rule (S6 §7.3), and the per-object counts sum while the
+    /// two indexes of the parent's objects are unioned with equal values asserted.
+    #[test]
+    fn every_sentinel_tag_has_a_merge_rule() {
+        use super::merge_rules::{MergeRule, merge_rule};
+        for t in SENTINEL_TAGS {
+            assert!(merge_rule(t).is_some(), "tag {}", t as char);
+        }
+        assert_eq!(
+            merge_rule(super::FINALS),
+            None,
+            "'V' lives in its stream's range"
+        );
+        assert_eq!(
+            [super::tag::REFCOUNT, super::tag::ORPHAN].map(merge_rule),
+            [Some(MergeRule::Sum); 2]
+        );
+        assert_eq!(
+            [super::tag::DIRECTORY, super::tag::POINTER].map(merge_rule),
+            [Some(MergeRule::Union); 2]
+        );
+        assert_eq!(
+            [super::tag::GARBAGE, super::tag::RELEASE].map(merge_rule),
+            [Some(MergeRule::Drop); 2],
+            "a source's own garbage and its pending releases are not the merged leaf's"
         );
     }
 
