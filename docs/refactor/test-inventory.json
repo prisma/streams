@@ -1356,6 +1356,17 @@
     "scenarios": []
   },
   {
+    "name": "a_log_holding_t_does_not_serve_before_the_topology_that_retires_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "6c071f45f4e7b4d942b702c5cd5c0f60403fe36f592c0b6f197b47864805742f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_lost_applied_suffix_rewinds_to_the_durable_frontier",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4262,6 +4273,17 @@
     ]
   },
   {
+    "name": "an_intent_naming_another_incarnation_holds_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "18ad2b76b40b59282fdfbe5b905488b5eacc135ad27109218ed5c0a76c9981c0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_internal_token_signed_by_a_customer_key_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4286,6 +4308,17 @@
       "crate::failpoints::release_release_after_epoch_check(\"frk21src\");"
     ],
     "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_open_a_live_intent_names_holds_until_the_intent_ends",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "96e244904d3a22a39091f92e6077c18f0a54b14d26d4a6fdd90ebf29216f2899",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
     "scenarios": []
   },
   {

@@ -135,8 +135,8 @@ impl MaintenanceGate {
         tokio::time::timeout(deadline, self.lock.write()).await.ok()
     }
 
-    /// Tests until the split sets it (S4 step 11): the collection passes stand down or resume.
-    #[cfg(test)]
+    /// The collection passes stand down or resume: while a split prepares (S4 step 11), and while
+    /// an open is held by the fence (`topology::fence`).
     pub(crate) fn set_collection_off(&self, off: bool) {
         self.collection_off.store(off, Ordering::Release);
     }

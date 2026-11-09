@@ -785,6 +785,11 @@ impl ShardEngine {
         self.layout.seal.home()
     }
 
+    /// The cell's data store, which also holds the topology and its intent (`topology::fence`).
+    pub(crate) fn data_store(&self) -> &Arc<dyn object_store::ObjectStore> {
+        &self.data_store
+    }
+
     /// The root of `home`'s objects: this shard's own path for its own home; in S3a's static
     /// topology another home is the prefix of this shard's width that it numbers.
     pub(crate) fn object_root(&self, home: u32) -> String {

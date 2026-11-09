@@ -211,7 +211,17 @@ impl ShardDirectory {
             let notifier = ShardCloseNotifier {
                 inner: weak.clone(),
             };
-            let gate = OpenGate::new(shards.clone(), opener(notifier), timing.open_deadline);
+            let topology_of = weak.clone();
+            let snapshot: crate::topology::fence::SnapshotFn = Arc::new(move || {
+                let inner = topology_of.upgrade()?;
+                let snapshot = inner
+                    .topology
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Some(snapshot.clone())
+            });
+            let opener = crate::topology::fence::fenced(opener(notifier), snapshot);
+            let gate = OpenGate::new(shards.clone(), opener, timing.open_deadline);
             DirInner {
                 topology,
                 revalidation: tokio::sync::Mutex::new(()),

@@ -747,6 +747,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::open_fence",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The open-path fence on a serving rig (S4-DESIGN section 6.3): an open a live split intent names as its source holds, reads included, until the intent ends, and an intent naming another shard holds nothing; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/open_fence.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::purge_gate",
       "path": "src/dst/dst_tests.rs",
       "reason": "A purge request while a split holds the engine's maintenance gate (S4-DESIGN section 5.1): the client DELETE, the tombstone walk and the closure-debt pass each fall back on Busy without waiting out the pause, and ask again once the gate is free; compiler and the full DST suite exercise the module.",

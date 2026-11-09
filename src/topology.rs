@@ -1,9 +1,9 @@
 //! The cell's versioned shard topology (S4-DESIGN §3): the stored map, and the split that
 //! changes it.
-// Until its first caller (the open-path fence, S4 step 9) the intent's store protocol builds
-// only for its tests.
+pub(crate) mod fence;
 pub(crate) mod gate;
-#[cfg(test)]
+// The intent's read is production (the open-path fence, and S6's lineage sweeper, read the live
+// intent); its writes and lease build only for their tests until their first caller (S4 step 11).
 pub(crate) mod intent;
 pub(crate) mod model;
 pub(crate) mod revalidate;
