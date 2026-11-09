@@ -750,4 +750,24 @@ mod sentinel_tests {
         let route = super::high_child_route(&stream, 2, &[], "", first_is_sentinel);
         assert_eq!(route, salted(1), "the next salt");
     }
+
+    /// On two shards or more a split's high child takes the first salt that lands on a shard other
+    /// than its parent's; on one shard, the first salt.
+    #[test]
+    fn a_split_puts_its_high_child_on_another_shard() {
+        let stream = crate::tenant::ProjectId::new("proj-test")
+            .unwrap()
+            .stream_ref("s");
+        let salted =
+            |salt: u32| crate::crypto::RouteHash::for_child(&stream, 2, &salt.to_be_bytes()).0;
+        let real = super::child_hash(&stream, "00112233445566778899aabbccddeeff");
+        let prefixes = ["0".to_string(), "1".to_string()];
+        let shard = |route: &[u8; 16]| crate::registry::shard_for_hash(&prefixes, route);
+        let parent = shard(&salted(0));
+        let other = (1..16).map(salted).find(|r| shard(r) != parent).unwrap();
+        let two = super::high_child_route(&stream, 2, &prefixes, &parent, &real);
+        assert_eq!(two, other, "the first salt off the parent's shard");
+        let one = super::high_child_route(&stream, 2, &prefixes[..1], &parent, &real);
+        assert_eq!(one, salted(0), "one shard: the first salt");
+    }
 }
