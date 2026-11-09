@@ -203,6 +203,7 @@ fn a_cached_run_is_charged_its_entries_and_their_heap() {
         first: 0,
         last: 0,
         page_count: 1,
+        max_ts_ms: 0,
         keys: crate::spill::directory::KeySummary::Keys(vec![]),
         anchors: Vec::new(),
     };

@@ -2731,13 +2731,43 @@
       "scope": "module",
       "lint": "dead_code",
       "metrics": {
-        "scope_lines": 421,
+        "scope_lines": 424,
         "nested_items": 66,
-        "syntax_facts": 1292,
+        "syntax_facts": 1300,
         "fields": 16
       },
-      "rationale": "S3a layout 8 §3.2 (commit 5, the lineage home): a run-index entry carries its object's home as a varint ahead of epoch, so a run of a merged or split shard addresses each chunk under its writer's root. Two codec lines in src/spill/runindex/format.rs (put_entry: put_varint(home); get_entry: home through the existing get_u32), scope_lines 419 -> 421, syntax_facts 1283 -> 1292; fields (16) and nested_items (66) unchanged. The run_index fuzz target compiles format.rs by path under a module-wide dead_code allow (AGENTS.md §5's by-path list gains the file in the same commit); its encode mode draws the home from one input byte, so the canonical-encoding and truncation properties cover the new varint. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08).",
-      "approver": "Fable 5.1 under the owner's delegation, 2026-11-08"
+      "rationale": "S3a layout 8 §3.2 and §3.4 (commits 5 and 6): a run-index entry carries its object's home as a varint ahead of epoch, so a run of a merged or split shard addresses each chunk under its writer's root, and its chunk's max_ts_ms as a varint after page_count (0 is unknown, never \"old\"), so S3b's expiry answers from the entry. Codec lines in src/spill/runindex/format.rs only: put_entry gains put_varint(home) and put_varint(e.max_ts_ms); get_entry gains home through the existing get_u32, get_varint for max_ts_ms and the literal field (scope_lines 419 -> 421 -> 424, syntax_facts 1283 -> 1292 -> 1300; fields 16 and nested_items 66 unchanged). The run_index fuzz target compiles format.rs by path under a module-wide dead_code allow (AGENTS.md §5's by-path list names the file); its encode mode draws the home from one input byte and max_ts_ms from four, so the canonical-encoding and truncation properties cover both varints. Metrics are the gate's after values, reproduced independently (S3A-ROWS-DECISION-2026-11-08 §2 and Commit 6).",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09"
+    },
+    {
+      "path": "fuzz/fuzz_targets/seal_directory.rs",
+      "owner": "crate::row",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 173,
+        "nested_items": 33,
+        "syntax_facts": 519,
+        "fields": 11,
+        "field_site:crate::DirEntry::max_ts_ms:65a5a7e0d3e246e1": 1
+      },
+      "rationale": "S3a layout 8 §3.4 (commit 6): a sealed chunk's 'K' value and run-index entry carry max_ts_ms (varint; 0 is unknown, never \"old\") so S3b's expiry can answer without reading the chunk's pages. DirEntry in src/spill/directory/row.rs is the one in-memory description of a chunk for both codecs, so the field lives there: the field and its doc, DirEntry::of copying the chunk table's max_ts (u64::try_from(..).unwrap_or(0)), one put_varint in encode_row, one get_varint and the literal field in decode_row (scope_lines 168 -> 173, nested_items 32 -> 33, syntax_facts 498 -> 519, fields 10 -> 11, the DirEntry::max_ts_ms site). The seal_directory fuzz target compiles row.rs by path under a module-wide dead_code allow; its chunks carry max_ts 0, so the row codec it fuzzes carries the varint at its position. A parallel map or a by-path helper module would move the growth, not remove it (S3A-ROWS-DECISION-2026-11-08 §2, Commit 6). Metrics are the gate's after values, reproduced independently.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09"
+    },
+    {
+      "path": "fuzz/fuzz_targets/run_index.rs",
+      "owner": "crate::row",
+      "scope": "module",
+      "lint": "dead_code",
+      "metrics": {
+        "scope_lines": 173,
+        "nested_items": 33,
+        "syntax_facts": 519,
+        "fields": 11,
+        "field_site:crate::DirEntry::max_ts_ms:65a5a7e0d3e246e1": 1
+      },
+      "rationale": "S3a layout 8 §3.4 (commit 6): a sealed chunk's 'K' value and run-index entry carry max_ts_ms (varint; 0 is unknown, never \"old\") so S3b's expiry can answer without reading the chunk's pages. DirEntry in src/spill/directory/row.rs is the one in-memory description of a chunk for both codecs, so the field lives there: the field and its doc, DirEntry::of copying the chunk table's max_ts (u64::try_from(..).unwrap_or(0)), one put_varint in encode_row, one get_varint and the literal field in decode_row (scope_lines 168 -> 173, nested_items 32 -> 33, syntax_facts 498 -> 519, fields 10 -> 11, the DirEntry::max_ts_ms site). The run_index fuzz target compiles row.rs by path under a module-wide dead_code allow; its encode mode draws max_ts_ms from four input bytes, so the canonical-encoding and truncation properties cover the new varint. A parallel map or a by-path helper module would move the growth, not remove it (S3A-ROWS-DECISION-2026-11-08 §2, Commit 6). Metrics are the gate's after values, reproduced independently.",
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09"
     }
   ],
   "schema": 1

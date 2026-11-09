@@ -295,6 +295,7 @@ impl Input<'_> {
             first,
             last,
             page_count: self.u32()?,
+            max_ts_ms: u64::from(self.u32()?),
             keys,
             anchors,
         })

@@ -505,6 +505,11 @@ pub(super) async fn check_stream(
             (hash, e.first, e.last)
         );
         assert_eq!(u32::try_from(chunk.pages.len()).unwrap(), e.page_count);
+        assert_eq!(
+            e.max_ts_ms,
+            u64::try_from(chunk.max_ts).unwrap(),
+            "the entry's max_ts is its chunk's (S3a §3.4)"
+        );
         let mut o = e.first;
         for (last, page) in &chunk.pages {
             let admitted = CheckedPage::admit(page.clone(), *last)

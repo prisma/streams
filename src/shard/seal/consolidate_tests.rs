@@ -297,6 +297,7 @@ fn entry(first: u64, last: u64, len: u32) -> (DirEntry, Bytes) {
         first,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(vec![1]),
         anchors: Vec::new(),
     };

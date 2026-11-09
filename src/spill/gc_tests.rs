@@ -25,6 +25,7 @@ fn entry(object: u64, off: u64, first: u64, last: u64, len: u32) -> DirEntry {
         first,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(Vec::new()),
         anchors: Vec::new(),
     }

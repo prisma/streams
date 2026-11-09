@@ -29,6 +29,7 @@ fn entry(first: u64, last: u64, len: u32, keys: Vec<u64>) -> Candidate {
         first,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(keys),
         anchors: Vec::new(),
     })
@@ -144,6 +145,7 @@ fn the_directory_cut_never_splits_a_chunk_from_its_copy() {
         first: last - 9,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(Vec::new()),
         anchors: Vec::new(),
     };
@@ -182,6 +184,7 @@ fn the_directory_window_drops_a_group_its_cap_would_split() {
         first: last - 9,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(Vec::new()),
         anchors: Vec::new(),
     };
@@ -218,6 +221,7 @@ fn a_plan_from_an_anchor_fetches_and_claims_exactly_its_span() {
         first: 0,
         last: 3,
         page_count: 4,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(Vec::new()),
         anchors: vec![crate::spill::object::Anchor {
             page: 2,

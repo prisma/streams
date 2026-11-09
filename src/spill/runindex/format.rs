@@ -236,6 +236,7 @@ fn put_entry(v: &mut Vec<u8>, e: &DirEntry) {
     put_varint(v, e.first);
     put_varint(v, e.last - e.first);
     put_varint(v, u64::from(e.page_count));
+    put_varint(v, e.max_ts_ms);
     put_summary(v, &e.keys);
     put_varint(v, e.anchors.len() as u64);
     for a in &e.anchors {
@@ -260,6 +261,7 @@ fn get_entry(input: &mut &[u8]) -> Option<DirEntry> {
     let first = get_varint(input)?;
     let last = first.checked_add(get_varint(input)?)?;
     let page_count = get_u32(input)?;
+    let max_ts_ms = get_varint(input)?;
     let keys = get_summary(input)?;
     let anchors_n = get_varint(input)?;
     let mut anchors = Vec::with_capacity(usize::try_from(anchors_n.min(RESERVE_CAP)).ok()?);
@@ -276,6 +278,7 @@ fn get_entry(input: &mut &[u8]) -> Option<DirEntry> {
         first,
         last,
         page_count,
+        max_ts_ms,
         keys,
         anchors,
     })

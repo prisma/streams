@@ -300,6 +300,49 @@ async fn fold_stopped(stop: Option<FoldStep>, seed: u64) {
     rig.engine.begin_close();
 }
 
+/// A fold keeps each chunk's `max_ts_ms` (S3a §3.4): the run-index entries carry the largest
+/// record timestamp the directory entries had from the chunk table, none of them unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_fold_keeps_each_chunks_max_ts() {
+    let rig = cold_rig("fold-max-ts").await;
+    let mut rng = StdRng::seed_from_u64(0x7357);
+    let streams = hashes(&mut rng, 3);
+    let oracle = std::sync::Mutex::new(Oracle::new());
+    sealed_rounds(&rig, &mut rng, &streams, &oracle, 4).await;
+    let span = |hash: [u8; 16], e: &crate::spill::directory::DirEntry| (hash, e.first, e.max_ts_ms);
+    let mut sealed: Vec<_> = directory_rows(&rig)
+        .await
+        .into_iter()
+        .flat_map(|(hash, entries)| entries.iter().map(|e| span(hash, e)).collect::<Vec<_>>())
+        .collect();
+    sealed.sort_unstable();
+    assert!(
+        sealed.iter().all(|(_, _, ts)| *ts > 0),
+        "every sealed chunk's max_ts is known"
+    );
+    let object = rig.engine.fold_once().await.unwrap().object.unwrap();
+    let path = rig.engine.run_index_path(object);
+    let raw = object_store::ObjectStoreExt::get(&*rig.store, &path.into())
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let (_, runs) = crate::spill::runindex::format::decode_object(&raw).unwrap();
+    let mut folded: Vec<_> = runs
+        .iter()
+        .flat_map(|(footer, entries)| {
+            entries
+                .iter()
+                .map(|e| span(footer.hash, e))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    folded.sort_unstable();
+    assert_eq!(folded, sealed);
+    rig.engine.begin_close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_fold_stopped_at_any_step_leaves_the_rows_or_the_pointer() {
     for (i, stop) in [
@@ -838,10 +881,10 @@ async fn a_gap_a_corrupt_index_row_leaves_answers_corruption_and_nothing_else_do
 }
 
 /// A shard's line holds what the directory really allocates: single-chunk
-/// streams reach `DIRECTORY_FOLD_BYTES` of true charge at 26,052 entries (a
-/// fold every 87 s at 300 appends a second; 27,414 before layout 8's ids
-/// carried their home), not the 34,953 they took when a leaf node per stream
-/// went uncharged.
+/// streams reach `DIRECTORY_FOLD_BYTES` of true charge at 24,819 entries (a
+/// fold every 83 s at 300 appends a second; 26,052 before the entries carried
+/// `max_ts_ms`, 27,414 before layout 8's ids carried their home), not the
+/// 34,953 they took when a leaf node per stream went uncharged.
 #[test]
 fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
     use crate::spill::budget::DIRECTORY_FOLD_BYTES;
@@ -857,6 +900,7 @@ fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
         first: 0,
         last: 0,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(vec![1]),
         anchors: Vec::new(),
     };
@@ -868,7 +912,7 @@ fn a_fold_is_due_at_the_entry_count_the_line_really_holds() {
         d.insert(hash, tiny());
         n += 1;
     }
-    assert_eq!(n, 26_052);
+    assert_eq!(n, 24_819);
 }
 
 #[test]

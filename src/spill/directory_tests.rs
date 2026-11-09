@@ -106,12 +106,14 @@ fn the_row_and_key_bytes_are_pinned() {
     expected.extend_from_slice(&[1; 16]);
     expected.extend_from_slice(&[5, 0]);
     crate::crypto_page::put_varint(&mut expected, u64::from(len));
-    expected.extend_from_slice(&[1, 1]);
+    expected.push(1);
+    crate::crypto_page::put_varint(&mut expected, u64::try_from(input.max_ts).unwrap());
+    expected.push(1);
     expected.extend_from_slice(&fingerprint("lane").to_be_bytes());
     expected.push(0);
     assert_eq!(
         row, expected,
-        "ver, 1 chunk, hash, first, span, len, pages, 1 key, no anchor"
+        "ver, 1 chunk, hash, first, span, len, pages, max_ts, 1 key, no anchor"
     );
 }
 
@@ -132,8 +134,8 @@ fn every_malformed_row_is_refused() {
     let mut version = row.clone();
     version[0] = 2;
     assert!(decode_row(OBJECT, &version).is_none());
-    // The key count sits after hash (16), first, span, len (2 B) and pages.
-    let at = 2 + 16 + 1 + 1 + 2 + 1;
+    // The key count sits after hash (16), first, span, len (2 B), pages and max_ts (1 B).
+    let at = 2 + 16 + 1 + 1 + 2 + 1 + 1;
     let mut too_many = row.clone();
     too_many[at] = u8::try_from(MAX_SUMMARY_KEYS + 1).unwrap();
     assert!(
@@ -262,6 +264,7 @@ fn an_entrys_memory_counts_its_summary_and_anchors_exactly() {
         first: 0,
         last: 9,
         page_count: 1,
+        max_ts_ms: 0,
         keys,
         anchors: vec![
             Anchor {
@@ -294,6 +297,7 @@ fn tiny(last: u64) -> DirEntry {
         first: last,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(vec![1]),
         anchors: Vec::new(),
     }

@@ -97,6 +97,9 @@ pub(crate) struct DirEntry {
     pub(crate) first: u64,
     pub(crate) last: u64,
     pub(crate) page_count: u32,
+    /// The largest record timestamp in the chunk, from the chunk table (S3a §3.4); 0 is unknown,
+    /// never "old": a reader reads such a chunk rather than expire it.
+    pub(crate) max_ts_ms: u64,
     pub(crate) keys: KeySummary,
     pub(crate) anchors: Vec<Anchor>,
 }
@@ -110,6 +113,7 @@ impl DirEntry {
             first: chunk.entry.first,
             last: chunk.entry.last,
             page_count: chunk.entry.page_count,
+            max_ts_ms: u64::try_from(chunk.entry.max_ts).unwrap_or(0),
             keys,
             anchors: chunk.anchors.clone(),
         }
@@ -137,6 +141,7 @@ pub(crate) fn encode_row(chunks: &[(&EncodedChunk, &KeySummary)]) -> Vec<u8> {
         put_varint(&mut v, c.entry.last - c.entry.first);
         put_varint(&mut v, u64::from(c.entry.len));
         put_varint(&mut v, u64::from(c.entry.page_count));
+        put_varint(&mut v, u64::try_from(c.entry.max_ts).unwrap_or(0));
         match keys {
             KeySummary::Bloom(bloom) => {
                 put_varint(&mut v, 0);
@@ -177,6 +182,7 @@ pub(crate) fn decode_row(object: ObjectId, raw: &[u8]) -> Option<Vec<([u8; 16], 
         let last = first.checked_add(get_varint(&mut input)?)?;
         let len = u32::try_from(get_varint(&mut input)?).ok()?;
         let page_count = u32::try_from(get_varint(&mut input)?).ok()?;
+        let max_ts_ms = get_varint(&mut input)?;
         let keys = decode_keys(&mut input)?;
         let anchors_n = get_varint(&mut input)?;
         let mut anchors = Vec::new();
@@ -193,6 +199,7 @@ pub(crate) fn decode_row(object: ObjectId, raw: &[u8]) -> Option<Vec<([u8; 16], 
             first,
             last,
             page_count,
+            max_ts_ms,
             keys,
             anchors,
         };

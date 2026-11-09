@@ -1745,6 +1745,7 @@ before marking it complete."
   tool whose pinned build is present ("Kani … bundle already set up"). A
   workflow change, so the lead or the owner decides when.
 - **`fresh_desc` at five parameters (candidate, S3A-ROWS-DECISION-2026-11-08 §1).** Its `content_type`, `ttl_secs` and `expires_at_ms` are the immutable configuration `validate_live` already compares as one unit; one typed value for them brings `fresh_desc` to the `clippy.toml` threshold and removes its `too_many_arguments` exception (and its growth row), which also shrinks `creation::claim::resolve`. Touches CreatePlan, ProductCreateConfig and four DST call sites; one behaviour per commit.
+- **`seal_directory` fuzz target: draw each chunk's `max_ts` from input (optional, S3A-ROWS-DECISION-2026-11-08 "Commit 6", condition 5).** Its chunks carry `max_ts` 0 today, so the `'K'` codec's `max_ts_ms` varint is fuzzed at its position only; drawing it (and mapping an entry's back) covers non-trivial values. The target's own code, outside every contract; the `crate::row` row's rationale then needs Fable's rewording.
 
 ## 11. Deployment gates (need the owner or the Compute owner)
 

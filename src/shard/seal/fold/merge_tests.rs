@@ -100,6 +100,7 @@ fn entry(seq: u64, first: u64, last: u64) -> DirEntry {
         first,
         last,
         page_count: 1,
+        max_ts_ms: 0,
         keys: KeySummary::Keys(vec![1]),
         anchors: Vec::new(),
     }
