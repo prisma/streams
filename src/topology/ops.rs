@@ -16,6 +16,9 @@ use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
 /// How many split requests may wait for the loop.
 const QUEUED: usize = 16;
+/// How old the fleet's published count must be before a split starts (S4-DESIGN §10.1,
+/// `SHARD_TOPOLOGY_COOLDOWN_SECS`): the topology waits for the fleet, never the reverse.
+const FLEET_SETTLE_MS: i64 = 60_000;
 
 /// A started split: its operation, and the topology version it splits from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,11 +52,14 @@ impl Handle {
     }
 }
 
-/// What the loop starts splits with: the directory, the ring's overrides, the clock, this
-/// instance's name (the actor's lease owner) and the shards it may hold (`SHARDS_PER_INSTANCE_MAX`).
+/// What the loop starts splits with: the directory, the ring's overrides, the fleet's documents
+/// and its move cooldown, the clock, this instance's name (the actor's lease owner) and the shards
+/// it may hold (`SHARDS_PER_INSTANCE_MAX`).
 pub(crate) struct Parts {
     pub dir: ShardDirectory,
     pub ownership: crate::ownership::OwnershipService,
+    pub fleet: crate::fleet::FleetRepository,
+    pub move_cooldown_ms: i64,
     pub clock: Arc<dyn Clock>,
     pub owner: String,
     pub shards_max: u32,
@@ -129,7 +135,7 @@ fn finish(started: split::Started, clock: Arc<dyn Clock>, tasks: &TaskSupervisor
 
 impl Parts {
     /// Start the split of leaf `prefix` (S4-DESIGN §6.2 step 0): refused for no leaf, an override on
-    /// it, another instance holding it, or an instance the split would fill past `shards_max` (its
+    /// it, a fleet that has not settled (`fleet_settled`), another instance holding it, or an instance the split would fill past `shards_max` (its
     /// open shards, the parent among them, plus one: the parent retires and two children open,
     /// S4-DESIGN §10); else the parent is opened here and the split started.
     async fn start(&self, prefix: &str) -> Result<split::Started, Refused> {
@@ -140,6 +146,7 @@ impl Parts {
         if self.ownership.overrides().contains_key(prefix) {
             return Err(Refused::Busy("override"));
         }
+        self.fleet_settled().await?;
         let parent = self
             .dir
             .resolve(&route_of(prefix), Adoption::Internal)
@@ -161,6 +168,32 @@ impl Parts {
             self.clock.now().ms()
         );
         split::start(&self.dir, &parent, &op_id, &self.owner).await
+    }
+}
+
+impl Parts {
+    /// Whether the fleet settled (S4-DESIGN §10.1): its published count at least
+    /// [`FLEET_SETTLE_MS`] old and no override younger than the move cooldown, both by the wall
+    /// clock the fleet's documents are stamped in; else `topology_busy {reason: "fleet"}`. A cell
+    /// without the fleet has nothing to wait for; an unreadable document is `Unavailable`.
+    async fn fleet_settled(&self) -> Result<(), Refused> {
+        if !self.fleet.enabled() {
+            return Ok(());
+        }
+        let unread = |e: anyhow::Error| Refused::Unavailable(format!("fleet: {e}"));
+        let now = crate::shard::now_ms();
+        let (desired, _) = self.fleet.read_desired_state().await.map_err(unread)?;
+        let young_count =
+            desired.is_some_and(|d| now.saturating_sub(d.computed_at_ms) < FLEET_SETTLE_MS);
+        let (overrides, _) = self.fleet.read_overrides().await.map_err(unread)?;
+        let young_move = overrides
+            .entries
+            .values()
+            .any(|entry| now.saturating_sub(entry.ms) < self.move_cooldown_ms);
+        if young_count || young_move {
+            return Err(Refused::Busy("fleet"));
+        }
+        Ok(())
     }
 }
 

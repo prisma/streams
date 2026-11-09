@@ -698,6 +698,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::a_split_waits_for_the_fleet_to_settle",
+      "path": "src/dst/tests/split_k.rs",
+      "reason": "The fleet-wait DST's split body and its fleet documents (a desired count and an override, each at a chosen age), written to the rig's fleet store; serde macro output is compiled and the DST asserts the route's reason for each.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 1,
       "owner": "crate::a_purge_request_mid_pass_abandons_the_copy",
       "path": "src/shard/seal/gc/clean/tests.rs",

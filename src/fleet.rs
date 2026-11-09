@@ -369,6 +369,10 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     let topology = crate::topology::ops::Parts {
         dir: state.shards.clone(),
         ownership: state.ownership.clone(),
+        fleet: state.fleet.clone(),
+        move_cooldown_ms: i64::try_from(state.config.fleet.rebalance_move_cooldown_secs)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(1_000),
         clock: state.runtime.clock.clone(),
         owner: state.config.cli.instance_name.clone(),
         shards_max: state.config.cli.shards_per_instance_max,

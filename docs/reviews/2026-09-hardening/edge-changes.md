@@ -5362,22 +5362,23 @@ One record has verified=false: its commit did not match the recorded text.
     - `202 {"op_id", "version"}`: the split started from `version` and runs on (its op id is `split-<prefix>-v<version>-<ms>`). The operator follows it by the intent (`GET /operator/topology.json`, a later part of E3) or by the stored topology.
     - `400 bad_request`: the body is not `{"prefix"}`.
     - `404 unknown_prefix` (`{prefix}`): no leaf of this instance's topology.
-    - `409 topology_busy {reason: "intent"}`: a live intent holds the cell; `{reason: "override"}`: an ownership override names the prefix (any override, not only a young one, S4 §4.4).
+    - `409 topology_busy {reason: "intent"}`: a live intent holds the cell; `{reason: "override"}`: an ownership override names the prefix (any override, not only a young one, S4 §4.4); `{reason: "fleet"}`: on a fleet cell, the fleet has not settled (S4 §10.1: `fleet/desired.json` younger than 60 s by its `computed_at_ms`, or any override younger than `REBALANCE_MOVE_COOLDOWN_SECS`, both by the wall clock the fleet stamps them in). **`"fleet"` is not in E3's ratified list** (an addition, from Fable's FLEET-HYSTERESIS-REVIEW §8).
     - `409 instance_full {resident, max}`: the split would leave this instance holding more than `SHARDS_PER_INSTANCE_MAX` shards (its open shards, the parent among them, plus one: the parent retires and two children open; S4 §10, the knob package 1 owns under E6).
     - `409 not_ring_owner {owner}`: another instance holds the parent; ask it. **Not in E3's ratified list** (an addition).
     - `422 not_splittable` (`{message}`): the prefix is at the routing width (24 bits), or its log holds `'T'`.
     - `503 topology_unavailable` (`{message}`): no topology loop runs here, or the parent could not be opened, or the intent or topology write failed on the store; retry. **Not in E3's ratified list** (an addition).
   - **`POST /operator/topology/merge`:** `501 not_implemented` until S6.
-  - **Not yet shipped under E3:** `GET /operator/topology.json`; `instance_full`'s RSS-headroom half (S4 §10: 2 × open transient + 2 × busy shard, which wait for stage 1's measured terms); §10.1's wait for the fleet (`fleet/desired.json` at least 60 s old, no override younger than the move cooldown), proposed as `409 topology_busy {reason: "fleet"}`.
+  - **Not yet shipped under E3:** `GET /operator/topology.json`; `instance_full`'s RSS-headroom half (S4 §10: 2 × open transient + 2 × busy shard, which wait for stage 1's measured terms).
 - **Retry semantics:** a 202 is not retried (a second POST meets `topology_busy {reason: "intent"}` while the first runs). 409 `topology_busy` and 503 `topology_unavailable` are retryable later; 404, 422 and 400 are not. A `not_ring_owner` is retried at the named owner.
 - **Who is affected:** operators only. A split it starts affects that shard's clients as #249 states (the pause, the hold, the re-route) and #250 (the hops).
 - **Pinning tests:**
   - `dst::dst_tests::split_k::the_split_route_starts_a_split_that_runs_on_to_its_publish`: 202 with `version` 1 at once; the intent then ends `Reclaimed` under that `op_id`, the stored topology is at version 2 with `last_op` naming it, and both streams read back byte-exact from the children. Red without the routes: `left: 404, right: 202`.
   - `dst::dst_tests::split_k::the_split_routes_refusals`: 503 `topology_unavailable` before the loop runs, then 400 `bad_request`, 404 `unknown_prefix`, 409 `topology_busy` `override`, 409 `topology_busy` `intent`, and 501 for the merge; the stored topology stays at version 1. Red without the routes: `left: (404, ""), right: (503, "topology_unavailable")`.
   - `dst::dst_tests::split_k::a_split_that_would_fill_its_instance_is_refused`: with a ceiling of 1, `(409, {"error": "instance_full", "resident": 3, "max": 1})`, no intent and the topology at version 1. Red without the check: `left: (202, {"op_id": "split-00-v1-…", "version": 1})`.
+  - `dst::dst_tests::split_k::a_split_waits_for_the_fleet_to_settle`: on a fleet rig, a count 10 s old and then an override 10 s old each answer `topology_busy` `fleet`; with both past their waits the fleet refuses nothing. Red without the wait: `left: None, right: Some("fleet")`.
   - `topology::ops::tests::a_prefixs_first_route_is_its_bits_then_zeros`.
 - **Risk reason:** medium. It is the first production path that splits a shard, behind the operator bearer. Its parts (the split, its pause, the claimant, the no-shrink rule) are pinned by #249's and the split's tests.
-- **Status:** awaiting ratification (E3, with #249 and #250 as one batch); the two additions above (`not_ring_owner`, `topology_unavailable`) and the proposed `fleet` reason are for Fable.
+- **Status:** awaiting ratification (E3, with #249 and #250 as one batch); the three additions above (`not_ring_owner`, `topology_unavailable`, the `fleet` reason) are for Fable.
 - **Check against commit:** written with the change.
 
 ### #250 (this record's commit) — A request through a split reaches its owner in at most two hops, each to a newer topology, and every 409 `not_ring_owner` names the answering instance's topology version

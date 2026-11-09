@@ -3166,6 +3166,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_waits_for_the_fleet_to_settle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "09546725841e539cbbd19fbceb3f01edc564d0ac4da6d07eabf79429397b9418",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_whose_lease_a_claimant_took_rolls_back_before_t",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

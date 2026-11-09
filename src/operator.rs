@@ -71,7 +71,7 @@ struct SplitBody {
 /// `POST /operator/topology/split` `{"prefix"}` (edge change #251, S4-DESIGN §11): starts the split
 /// of the leaf `prefix` (`""` names the root shard) on this instance's topology loop and answers once
 /// it started, while the split runs on. 202 `{op_id, version}`; 400 `bad_request`; 404
-/// `unknown_prefix`; 409 `topology_busy {reason: "intent" | "override"}`, `instance_full {resident,
+/// `unknown_prefix`; 409 `topology_busy {reason: "intent" | "override" | "fleet"}`, `instance_full {resident,
 /// max}` or `not_ring_owner {owner}`; 422 `not_splittable`; 503 `topology_unavailable`.
 pub(crate) async fn topology_split(
     State(state): State<Arc<AppState>>,

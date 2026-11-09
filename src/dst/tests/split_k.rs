@@ -597,11 +597,18 @@ async fn a_split_whose_lease_a_claimant_took_rolls_back_before_t() {
 /// `cell`'s topology loop (`topology::ops`), started under a supervisor of its own, its instance
 /// holding at most `shards_max` shards.
 fn start_ops(cell: &Cell, shards_max: u32) -> crate::tasks::TaskSupervisor {
+    start_ops_on(&cell.state, shards_max)
+}
+
+/// `start_ops`, on `state`'s rig; the fleet's move cooldown is 600 s.
+fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::TaskSupervisor {
     let tasks = crate::tasks::TaskSupervisor::new();
     let parts = crate::topology::ops::Parts {
-        dir: cell.state.shards.clone(),
-        ownership: cell.state.ownership.clone(),
-        clock: cell.state.runtime.clock.clone(),
+        dir: state.shards.clone(),
+        ownership: state.ownership.clone(),
+        fleet: state.fleet.clone(),
+        move_cooldown_ms: 600_000,
+        clock: state.runtime.clock.clone(),
         owner: "inst-a".to_string(),
         shards_max,
     };
@@ -770,4 +777,71 @@ async fn a_split_that_would_fill_its_instance_is_refused() {
     );
     tasks.cancel();
     engine_shutdown(&cell.state).await;
+}
+
+/// **A split waits for the fleet to settle** (S4-DESIGN §10.1, edge #251). On a fleet cell whose
+/// published count is 10 s old, the split route answers 409 `topology_busy {reason: "fleet"}`; with
+/// the count 61 s old but an override (of another prefix) published 10 s ago, the same; with the
+/// override past the 600 s move cooldown too, the fleet no longer refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_waits_for_the_fleet_to_settle() {
+    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    let fleet = mem();
+    let rig = http_rig_build(
+        mem(),
+        super::fixture_runtime::RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(fleet.clone()),
+            instance: Some("streams-1".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let tasks = start_ops_on(&rig.state, 7);
+    let leaf = rig
+        .state
+        .shards
+        .prefixes()
+        .shards
+        .leaves
+        .keys()
+        .next()
+        .cloned()
+        .unwrap();
+    let body = serde_json::json!({ "prefix": leaf }).to_string();
+    let put = |path: &'static str, doc: serde_json::Value| {
+        let fleet = fleet.clone();
+        async move {
+            let raw = serde_json::to_vec(&doc).unwrap();
+            object_store::ObjectStoreExt::put(&*fleet, &path.into(), raw.into())
+                .await
+                .unwrap();
+        }
+    };
+    let now = crate::shard::now_ms();
+    let desired = |age_ms: i64| serde_json::json!({"count": 1, "reason": "t", "epoch": 1, "computed_at_ms": now - age_ms});
+    let overrides = |age_ms: i64| serde_json::json!({"entries": {"1111": {"to": "streams-1", "ms": now - age_ms}}});
+    let reason = |answer: (u16, serde_json::Value)| answer.1["reason"].as_str().map(str::to_string);
+    put("fleet/desired.json", desired(10_000)).await;
+    assert_eq!(
+        reason(post_split(rig.addr, &body).await),
+        Some("fleet".into()),
+        "a young count"
+    );
+    put("fleet/desired.json", desired(61_000)).await;
+    put("fleet/overrides.json", overrides(10_000)).await;
+    assert_eq!(
+        reason(post_split(rig.addr, &body).await),
+        Some("fleet".into()),
+        "a young override"
+    );
+    put("fleet/overrides.json", overrides(601_000)).await;
+    let settled = post_split(rig.addr, &body).await;
+    assert_ne!(
+        reason(settled.clone()),
+        Some("fleet".into()),
+        "settled: {settled:?}"
+    );
+    tasks.cancel();
+    engine_shutdown(&rig.state).await;
 }
