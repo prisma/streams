@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::registry::Registry;
+use crate::runtime::{Clock, MonotonicNow};
 use crate::shard_directory::ShardDirectory;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
@@ -15,11 +16,12 @@ use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 pub(crate) fn start(
     registry: Arc<Registry>,
     shards: ShardDirectory,
+    clock: Arc<dyn Clock>,
     period: Duration,
     tasks: &TaskSupervisor,
 ) {
     if let Err(rejected) = tasks.spawn("topology-revalidate", Policy::Noncritical, move |cancel| {
-        run(registry, shards, period, cancel)
+        run(registry, shards, clock, period, cancel)
     }) {
         tracing::debug!(
             ?rejected,
@@ -31,6 +33,7 @@ pub(crate) fn start(
 async fn run(
     registry: Arc<Registry>,
     shards: ShardDirectory,
+    clock: Arc<dyn Clock>,
     period: Duration,
     cancel: Cancellation,
 ) -> TaskResult {
@@ -39,21 +42,22 @@ async fn run(
             _ = cancel.cancelled() => return TaskResult::Done,
             _ = tokio::time::sleep(period) => {}
         }
-        if let Err(e) = once(&registry, &shards).await {
+        if let Err(e) = once(&registry, &shards, clock.monotonic()).await {
             tracing::debug!("topology revalidation: {e}");
         }
     }
 }
 
-/// One revalidation: whether it installed a newer topology.
+/// One revalidation at `now`: whether it installed the stored topology.
 pub(crate) async fn once(
     registry: &Registry,
     shards: &ShardDirectory,
+    now: MonotonicNow,
 ) -> Result<bool, object_store::Error> {
     let held = shards.prefixes();
     match registry.topology(held.etag.as_deref()).await? {
         None => Ok(false),
-        Some((topology, etag)) => Ok(shards.install(topology.shards, etag)),
+        Some((topology, etag)) => Ok(shards.install(topology.shards, etag, now)),
     }
 }
 
@@ -134,20 +138,25 @@ mod tests {
         let cell = crate::tenant::CellId::new("test-cell").unwrap();
         let registry = crate::registry::Registry::new(store.clone(), &cell);
         let dir = directory(v1.shards.clone());
+        let clock = crate::runtime::ManualClock::at(0);
+        let now = || crate::runtime::Clock::monotonic(&clock);
         assert!(dir.prefixes().etag.is_none(), "boot read no ETag");
         assert!(
-            super::once(&registry, &dir).await.unwrap(),
+            super::once(&registry, &dir, now()).await.unwrap(),
             "the first read installs"
         );
         let first = dir.prefixes();
         assert!(first.etag.is_some());
-        assert!(!super::once(&registry, &dir).await.unwrap(), "unchanged");
+        assert!(
+            !super::once(&registry, &dir, now()).await.unwrap(),
+            "unchanged"
+        );
         assert!(Arc::ptr_eq(&first, &dir.prefixes()), "the snapshot is kept");
 
         let v2 = split_of_one(&v1);
         put(&store, &v2).await;
         assert!(
-            super::once(&registry, &dir).await.unwrap(),
+            super::once(&registry, &dir, now()).await.unwrap(),
             "a newer version installs"
         );
         let held = dir.prefixes();
@@ -163,9 +172,51 @@ mod tests {
 
         put(&store, &v1).await;
         assert!(
-            !super::once(&registry, &dir).await.unwrap(),
+            !super::once(&registry, &dir, now()).await.unwrap(),
             "an older version does not"
         );
         assert_eq!(dir.prefixes().shards.version, 2);
+    }
+
+    /// **A version's install instant is this process's first install of that version.** The
+    /// boot set has none; the first read sets it; a re-read of the same version under a new
+    /// ETag keeps it; a newer version sets a new one (S6 §4 step 1's grace is measured from
+    /// it).
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_versions_install_instant_is_its_first_install_here() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards = crate::config::validation::InitialShards::new(2).unwrap();
+        let v1 = crate::registry::load_or_init_topology(&store, shards, 1 << 20)
+            .await
+            .unwrap();
+        let cell = crate::tenant::CellId::new("test-cell").unwrap();
+        let registry = crate::registry::Registry::new(store.clone(), &cell);
+        let dir = directory(v1.shards.clone());
+        let clock = crate::runtime::ManualClock::at(0);
+        let now = || crate::runtime::Clock::monotonic(&clock);
+        assert_eq!(dir.prefixes().installed_at, None, "the boot set has none");
+        let first = now();
+        super::once(&registry, &dir, first).await.unwrap();
+        clock.advance_monotonic(Duration::from_secs(60));
+        put(&store, &v1).await;
+        assert!(
+            super::once(&registry, &dir, now()).await.unwrap(),
+            "a new ETag re-reads"
+        );
+        assert_eq!(
+            dir.prefixes().installed_at,
+            Some(first),
+            "the same version keeps it"
+        );
+        clock.advance_monotonic(Duration::from_secs(60));
+        put(&store, &split_of_one(&v1)).await;
+        let newer = now();
+        super::once(&registry, &dir, newer).await.unwrap();
+        assert_eq!(
+            dir.prefixes().installed_at,
+            Some(newer),
+            "a newer version sets it"
+        );
+        assert_ne!(first, newer);
     }
 }

@@ -202,6 +202,7 @@ impl ShardDirectory {
         let topology = RwLock::new(Arc::new(crate::topology::model::Snapshot {
             shards: shards.into(),
             etag: None,
+            installed_at: None,
         }));
         let inner = Arc::new_cyclic(|weak: &Weak<DirInner>| {
             let shards: crate::sharddir::ServingMap = Arc::new(RwLock::new(HashMap::new()));
@@ -268,13 +269,15 @@ impl ShardDirectory {
         crate::registry::shard_for_hash(&self.prefixes(), hash)
     }
 
-    /// Install `shards`, read under `etag`, unless it is older than the snapshot held (a
-    /// version never goes back). The engines of prefixes that are no longer leaves are
-    /// retired (`RetirementReason::Split`). Returns whether it installed.
+    /// Install `shards`, read under `etag` at `now`, unless it is older than the snapshot held
+    /// (a version never goes back). The version's install instant is kept across a re-read of
+    /// the same version and set by a newer one. The engines of prefixes that are no longer
+    /// leaves are retired (`RetirementReason::Split`). Returns whether it installed.
     pub(crate) fn install(
         &self,
         shards: crate::topology::model::ShardSet,
         etag: Option<String>,
+        now: crate::runtime::MonotonicNow,
     ) -> bool {
         let gone: Vec<String> = {
             let mut held = self
@@ -292,7 +295,15 @@ impl ShardDirectory {
                 .filter(|p| !shards.leaves.contains_key(*p))
                 .cloned()
                 .collect();
-            *held = Arc::new(crate::topology::model::Snapshot { shards, etag });
+            let installed_at = match held.installed_at {
+                Some(at) if held.shards.version == shards.version => Some(at),
+                _ => Some(now),
+            };
+            *held = Arc::new(crate::topology::model::Snapshot {
+                shards,
+                etag,
+                installed_at,
+            });
             gone
         };
         for prefix in gone {

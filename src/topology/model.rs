@@ -64,13 +64,18 @@ impl std::ops::Deref for ShardSet {
     }
 }
 
-/// The shard directory's view of the topology (S4-DESIGN §3.2): a shard set and the ETag of
-/// the stored object it came from, `None` until a revalidation read one. It reads as its
-/// ordered prefixes.
+/// The shard directory's view of the topology (S4-DESIGN §3.2): a shard set, the ETag of the
+/// stored object it came from (`None` until a revalidation read one), and when this process
+/// first installed its version. It reads as its ordered prefixes.
 #[derive(Debug)]
 pub(crate) struct Snapshot {
     pub shards: ShardSet,
     pub etag: Option<String>,
+    /// This process's monotonic instant of the first install of `shards.version` (`None` for
+    /// the set it booted with, until an install). A re-read of the same version keeps it; a
+    /// newer version sets it. S6's lineage sweeper waits a grace from it (S6 §4 step 1); no
+    /// time from another node ever measures that grace.
+    pub installed_at: Option<crate::runtime::MonotonicNow>,
 }
 
 impl std::ops::Deref for Snapshot {
