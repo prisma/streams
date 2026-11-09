@@ -1,0 +1,13 @@
+diff --git a/src/spill/gc.rs b/src/spill/gc.rs
+index af3a7ca63..4015e3cf2 100644
+--- a/src/spill/gc.rs
++++ b/src/spill/gc.rs
+@@ -71,7 +71,7 @@ pub(crate) fn merged_refcount(a: Refcount, b: Refcount) -> Option<Refcount> {
+         return None;
+     }
+     Some(Refcount {
+-        live_bytes: a.live_bytes.checked_add(b.live_bytes)?,
++        live_bytes: a.live_bytes.wrapping_add(b.live_bytes),
+         live_chunks: a.live_chunks.checked_add(b.live_chunks)?,
+         created_ms: a.created_ms.min(b.created_ms),
+         object_len: a.object_len,
