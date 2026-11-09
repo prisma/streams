@@ -300,6 +300,20 @@ for (const kind of STORES) {
         expect(readState(c.state).projects.proj_q.kind).toBe("queues");
       });
 
+      test("a single-stream container's credential holds no fork or dead-letter scope", async () => {
+        const c = await initCell();
+        const admit = (p: string, ...more: string[]) =>
+          run("admit", "--state", c.state, "--project", p, "--workspace", "w", ...more);
+        expect((await admit("proj_one", "--quota", "max_streams=1")).code).toBe(0);
+        expect((await admit("proj_many", "--quota", "max_streams=2")).code).toBe(0);
+        const scopes = Object.fromEntries((customerOnly(readBundle(c.state)).grants.credentials as any[])
+          .map((g) => [g.container_id, g.scopes.split(" ")]));
+        expect(scopes.proj_one).not.toContain("streams.forks.create");
+        expect(scopes.proj_one).not.toContain("streams.dlq.configure");
+        expect(scopes.proj_one).toContain("streams.create");
+        expect(scopes.proj_many).toEqual(expect.arrayContaining(["streams.forks.create", "streams.dlq.configure"]));
+      });
+
       test("refuses a stream prefix the cell's grants parser refuses, and no writer publishes one", async () => {
         const c = await initCell();
         const refused: [string, string][] = [

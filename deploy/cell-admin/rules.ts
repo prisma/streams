@@ -625,7 +625,7 @@ function addCredentialRecord(
     role: "customer",
     grant_version: 1,
     status: "active",
-    scopes,
+    scopes: containerScopes(state, project, scopes),
     ...(stream_prefixes ? { stream_prefixes: [...stream_prefixes] } : {}),
     expires_at: null,
     omitted: false,
@@ -634,6 +634,21 @@ function addCredentialRecord(
     seq: cred.seq ?? nextCredentialSeq(state),
   };
   bumpFeed(state);
+}
+
+/// What a single-stream container (max_streams 1) can never use: a fork
+/// and a dead-letter stream are second streams (edge #253).
+const SECOND_STREAM_SCOPES = ["streams.forks.create", "streams.dlq.configure"];
+
+/// `scopes` as a credential of `project` holds them: without the
+/// second-stream scopes while its max_streams is 1.
+function containerScopes(state: CellState, project: string, scopes: string): string {
+  if (state.projects[project]?.quotas.max_streams !== 1) return scopes;
+  const kept = scopes.split(" ").filter((s) => !SECOND_STREAM_SCOPES.includes(s));
+  if (kept.length === 0) {
+    throw new AdminError(`project ${project} holds one stream: its credential cannot hold only ${scopes}`, 2);
+  }
+  return kept.join(" ");
 }
 
 /// The customer projects on the cell (not offboarded, not the canary):

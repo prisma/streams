@@ -449,8 +449,9 @@ In each of these changes, a request that used to succeed can now fail permanentl
      - 3a-3, ec89e78f4: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
      - 3b-1, 4d58bbf4c: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
      - 3b-2, acc1a02cd: a create of the other kind is refused `409 container_kind_mismatch`.
-     - 3b-3a, this commit: at `max_streams` 1 a container creates only `default` (`409 container_single_stream`).
-     - Pending: 3b-3b (the lost-race arms check liveness), 3b-4 (single-stream credentials), 3c (internal names, operator fields, docs).
+     - 3b-3a, fc89196da: at `max_streams` 1 a container creates only `default` (`409 container_single_stream`).
+     - 3b-4, this commit: a single-stream container's credentials hold no `streams.forks.create` or `streams.dlq.configure`.
+     - Pending: 3b-3b (the lost-race arms check liveness), 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
   - From part 2's commit on:
@@ -488,6 +489,7 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - while the verified policy's `max_streams` is 1, a stream or queue create of any name but `default` answers `409 container_single_stream` ("while its max_streams is 1 this container holds one stream or queue, named default"), not retryable; so no dead-letter stream can exist beside it (`400 unknown_dead_letter_stream`), and no customer route forks (forks are the deployment's raw surface only);
     - a deleted stream's `default` is created again at once; a deleted queue's answers `409 queue_deleting` until its cleanup is done (pinned, unchanged);
     - platform-e2e's per-instance `max_streams` leg uses a cap of 2 for proj-b, since at 1 the name rule answers first.
+  - From 3b-4's commit on: a customer credential cell-admin or the issuer makes for a container whose `max_streams` is 1 holds neither `streams.forks.create` nor `streams.dlq.configure` (a fork and a dead-letter stream are second streams); one asked for with only those scopes is refused. Credentials made before a quota change keep their scopes, which the name rule makes unusable.
   - Until 3c: the issuer page's copy, cell-admin's flags and state fields (`--max-projects`, `--project`, `projects`, `project_id`), the audit records and the operator fields still say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.
