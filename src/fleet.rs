@@ -382,6 +382,8 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
         shards_max: state.config.cli.shards_per_instance_max,
     };
     crate::topology::ops::start(topology, tasks);
+    let (shards, store) = (state.shards.clone(), state.data_store.clone());
+    crate::topology::lineage::start(shards, store, state.runtime.clock.clone(), tasks);
     if !state.fleet.enabled() {
         return supersede::start(&state.shards, &state.data_store, &state.runtime, tasks);
     }

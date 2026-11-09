@@ -37,9 +37,6 @@ use crate::spill::gc::{self, Decrements, Garbage, ObjectKind, Refcount, Release}
 use crate::spill::object::ObjectId;
 
 pub(crate) mod clean;
-// The lineage sweep's caller is S4's topology snapshot (S6-DESIGN §4 steps 1-2);
-// until it lands the sweep is built and tested, not reachable.
-#[cfg(test)]
 mod lineage;
 #[cfg(test)]
 mod lineage_tests;

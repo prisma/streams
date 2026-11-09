@@ -52,7 +52,6 @@ pub(crate) fn encode(entries: &[Entry]) -> Vec<u8> {
 }
 
 /// A body's entries; `None` for a body that is not one `encode` wrote.
-#[cfg(test)]
 pub(crate) fn decode(body: &[u8]) -> Option<Vec<Entry>> {
     let (head, crc) = body.split_last_chunk::<4>()?;
     if crc32c(head) != u32::from_be_bytes(*crc) {

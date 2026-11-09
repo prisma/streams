@@ -83,6 +83,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::run",
+      "path": "src/topology/lineage.rs",
+      "reason": "The lineage sweep task selects between supervised cancellation and its period (S6-DESIGN §4); compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::Inner::begin_drain",
       "path": "src/tasks/drain.rs",
       "reason": "The drain loop selects between supervised cancellation (a critical failure stops the runtime at once) and its budget-bounded drain; compiler checks expansion.",

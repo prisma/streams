@@ -8,6 +8,7 @@ pub(crate) mod gate;
 // S6's lineage sweeper, read the live intent); its create and the actor's lease build only for
 // their tests until the split's route calls them (S4 step 13).
 pub(crate) mod intent;
+pub(crate) mod lineage;
 pub(crate) mod model;
 pub(crate) mod ops;
 pub(crate) mod policy;
