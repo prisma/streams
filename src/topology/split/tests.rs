@@ -5,8 +5,9 @@ use std::ops::Bound;
 
 use bytes::Bytes;
 
-use super::{key_bounds, seed_rows};
+use super::{Lists, key_bounds, seed_rows, supplements};
 use crate::keyspace::SENTINEL;
+use crate::spill::gc::ObjectKind;
 use crate::topology::sentinel::Counts;
 
 fn at(bytes: [u8; 16]) -> Bytes {
@@ -87,4 +88,19 @@ fn a_splits_future_is_send() {
         &std::sync::Arc<crate::shard::ShardEngine>,
         &dyn crate::runtime::Clock,
     ) = check;
+}
+
+/// **The pause's `-d` lists hold exactly the holdings Preparing's lists lack** (S4-DESIGN §7.3).
+/// Preparing listed a segment and a run index of home 0. By the pause a seal added a segment of
+/// home 0 and a run index of home 3 appeared, and the listed run index is gone (a holding removed
+/// is not supplemented). The `-d` lists hold the new segment under home 0 and the run index under
+/// home 3; the same lists again add nothing.
+#[test]
+fn the_pauses_supplements_hold_exactly_what_preparing_lacks() {
+    let (seg, run) = (ObjectKind::Segment, ObjectKind::RunIndex);
+    let put = Lists::from([(0, vec![(seg, 1, 1), (run, 1, 2)])]);
+    let now = Lists::from([(0, vec![(seg, 1, 1), (seg, 1, 3)]), (3, vec![(run, 2, 9)])]);
+    let want = Lists::from([(0, vec![(seg, 1, 3)]), (3, vec![(run, 2, 9)])]);
+    assert_eq!(supplements(&put, &now), want);
+    assert_eq!(supplements(&now, &now), Lists::new());
 }

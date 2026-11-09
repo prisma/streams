@@ -170,7 +170,7 @@ pub(crate) async fn split(
     let gate = &parent.gc_state().gate;
     let prepared = prepare(&*store, parent, &children).await;
     let hold = match prepared {
-        Ok(()) => gate.exclusive(QUIESCE).await,
+        Ok(_) => gate.exclusive(QUIESCE).await,
         Err(_) => None,
     };
     let barrier = match hold {
@@ -185,7 +185,7 @@ pub(crate) async fn split(
     }
     let paused_at = std::time::Instant::now();
     let copied = match (&prepared, &barrier) {
-        (Ok(()), Some(_)) => copy(&*store, parent, &children, op_id).await,
+        (Ok(put), Some(_)) => copy(&*store, parent, &children, put, op_id).await,
         (Err(e), _) => Err(e.clone()),
         (_, None) => Err("the quiesce did not complete within its deadline".to_string()),
     };
@@ -321,7 +321,7 @@ async fn prepare(
     store: &dyn ObjectStore,
     parent: &Arc<ShardEngine>,
     children: &[Child],
-) -> Result<(), String> {
+) -> Result<Vec<Lists>, String> {
     for _ in 0..8 {
         match parent.fold_once().await {
             Ok(report) if report.more => {}
@@ -333,10 +333,13 @@ async fn prepare(
     gate.start_marking();
     let rows = sentinel_rows(parent).await?;
     let plan = plan(store, parent, children, &rows).await?;
+    let mut put = Vec::with_capacity(children.len());
     for (child, (_, counts)) in children.iter().zip(&plan) {
-        put_lists(store, parent, child, &rows, counts).await?;
+        let lists = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
+        put_lists(store, parent, child, &lists, lineage::reference_list_path).await?;
+        put.push(lists);
     }
-    Ok(())
+    Ok(put)
 }
 
 /// Quiesced (S4-DESIGN §6.2 steps 1.3 to 2.5): the WAL flushed and a checkpoint of everything, the
@@ -346,6 +349,7 @@ async fn copy(
     store: &dyn ObjectStore,
     parent: &Arc<ShardEngine>,
     children: &[Child],
+    prepared: &[Lists],
     op_id: &str,
 ) -> Result<(), String> {
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
@@ -363,8 +367,17 @@ async fn copy(
     let plan = plan(store, parent, children, &rows).await?;
     let counts: Vec<Counts> = plan.iter().map(|(_, c)| c.clone()).collect();
     sentinel::check_sums(&rows, &counts).map_err(|e| e.to_string())?;
-    for (child, (_, counts)) in children.iter().zip(&plan) {
-        put_lists(store, parent, child, &rows, counts).await?;
+    for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(prepared) {
+        let now = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
+        let added = supplements(put, &now);
+        put_lists(
+            store,
+            parent,
+            child,
+            &added,
+            lineage::supplementary_list_path,
+        )
+        .await?;
     }
     let clones = children.iter().zip(&plan).map(|(child, (routed, counts))| {
         let seed = seed_rows(routed, counts, child.home);
@@ -412,21 +425,42 @@ async fn sentinel_rows(parent: &ShardEngine) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
-/// `child`'s reference lists, one under each ancestor home's root it holds objects of.
+/// A child's lists: per ancestor home, the objects of that home it holds (`sentinel::child_lists`).
+type Lists = BTreeMap<u32, Vec<sentinel::ListEntry>>;
+
+/// Per ancestor home, the holdings `now` lists that `put` lacks (S4-DESIGN §7.3): what the pause's
+/// `-d` lists hold. A home with none has no `-d` list.
+fn supplements(put: &Lists, now: &Lists) -> Lists {
+    let mut added = Lists::new();
+    for (home, entries) in now {
+        let had = put.get(home).map_or(&[][..], Vec::as_slice);
+        let new: Vec<_> = entries
+            .iter()
+            .filter(|entry| had.binary_search(entry).is_err())
+            .copied()
+            .collect();
+        if !new.is_empty() {
+            added.insert(*home, new);
+        }
+    }
+    added
+}
+
+/// `child`'s lists, one under each ancestor home's root in `lists`, at `path_of(root, child.home)`:
+/// its reference lists in Preparing, its supplementary (`-d`) lists in the pause.
 async fn put_lists(
     store: &dyn ObjectStore,
     parent: &ShardEngine,
     child: &Child,
-    rows: &[Row],
-    counts: &Counts,
+    lists: &Lists,
+    path_of: fn(&str, u32) -> String,
 ) -> Result<(), String> {
-    let lists = sentinel::child_lists(rows, counts).map_err(|e| e.to_string())?;
     for (ancestor, entries) in lists {
-        let path = lineage::reference_list_path(&parent.object_root(ancestor), child.home);
+        let path = path_of(&parent.object_root(*ancestor), child.home);
         store
             .put(
                 &object_store::path::Path::from(path.as_str()),
-                lineage::encode(&entries).into(),
+                lineage::encode(entries).into(),
             )
             .await
             .map_err(|e| format!("{path}: {e}"))?;
@@ -544,16 +578,31 @@ async fn roll_back(
             let Ok(lists) = sentinel::child_lists(&rows, &counts) else {
                 continue;
             };
-            for ancestor in lists.keys() {
-                let path = lineage::reference_list_path(&parent.object_root(*ancestor), child.home);
-                drop(store.delete(&object_store::path::Path::from(path)).await);
-            }
+            delete_lists(store, parent, child, lists.keys()).await;
         }
     }
     let ended = held_terminal(held, intent::State::RolledBack, &why);
     drop(intent::replace(store, held, ended).await);
     drop_checkpoint(parent, &held.intent.op_id).await;
     Refused::RolledBack(why)
+}
+
+/// Delete `child`'s reference and supplementary lists under each of the `ancestors`' roots.
+async fn delete_lists(
+    store: &dyn ObjectStore,
+    parent: &ShardEngine,
+    child: &Child,
+    ancestors: impl Iterator<Item = &u32>,
+) {
+    for ancestor in ancestors {
+        let root = parent.object_root(*ancestor);
+        for path in [
+            lineage::reference_list_path(&root, child.home),
+            lineage::supplementary_list_path(&root, child.home),
+        ] {
+            drop(store.delete(&object_store::path::Path::from(path)).await);
+        }
+    }
 }
 
 /// Delete the pause's checkpoint of operation `op_id` from the parent, if it was taken: the children

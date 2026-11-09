@@ -235,6 +235,43 @@ async fn a_split_that_rolls_back_after_its_checkpoint_deletes_it() {
     engine_shutdown(&state).await;
 }
 
+/// Every reference list in `store` (S6-DESIGN §2.3): its path and ETag.
+async fn lists(store: &dyn object_store::ObjectStore) -> BTreeMap<String, Option<String>> {
+    use futures_util::TryStreamExt;
+    let all: Vec<_> = store.list(None).try_collect().await.unwrap();
+    all.into_iter()
+        .filter(|meta| meta.location.as_ref().contains("/lineage/refs/"))
+        .map(|meta| (meta.location.to_string(), meta.e_tag))
+        .collect()
+}
+
+/// **The pause PUTs no list when nothing adds a holding** (S4-DESIGN §7.3). The split pauses at its
+/// park, with the lists Preparing PUT for the sealed object in place; released, it publishes, and
+/// every list is the one Preparing PUT (its ETag unchanged), with no `-d` list beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_pause_puts_no_list_when_nothing_adds_a_holding() {
+    let store = mem();
+    let Cell { state, parent, .. } = cell_over(store.clone()).await;
+    parent.seal_requested().await.expect("seal");
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    parent.gc_state().gate.pause_at_park(point);
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, "op-d", "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split paused at its park");
+        let prepared = lists(&*store).await;
+        assert!(go_tx.send(()).is_ok(), "the split waits for go");
+        prepared
+    };
+    let (published, prepared) = tokio::join!(split, control);
+    published.expect("the split publishes");
+    assert_eq!(prepared.len(), 2, "one list per child: {prepared:?}");
+    assert_eq!(lists(&*store).await, prepared);
+    engine_shutdown(&state).await;
+}
+
 /// **An append the split held is acked by its child, at its exact offset.** The split pauses once
 /// its barrier parked; an append to the lower stream then waits in the parent's queue. Released, the
 /// split publishes and re-routes it: the append is answered 204 by the child, the stream's next

@@ -2,7 +2,10 @@
 //! A lineage body round-trips its entries in order, once each, and refuses
 //! any body `encode` did not write.
 
-use super::{Entry, decode, encode, reference_list_path, release_log_path, released_all_path};
+use super::{
+    Entry, decode, encode, reference_list_path, release_log_path, released_all_path,
+    supplementary_list_path,
+};
 use crate::spill::gc::ObjectKind::{RunIndex, Segment};
 
 #[test]
@@ -70,5 +73,9 @@ fn a_holders_logs_and_marker_sit_under_the_ancestors_root() {
     assert_eq!(
         reference_list_path("shards/01", 5),
         "shards/01/lineage/refs/5"
+    );
+    assert_eq!(
+        supplementary_list_path("shards/01", 5),
+        "shards/01/lineage/refs/5-d"
     );
 }

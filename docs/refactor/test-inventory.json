@@ -10087,6 +10087,17 @@
     "scenarios": []
   },
   {
+    "name": "the_pause_puts_no_list_when_nothing_adds_a_holding",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "900ca3465cef107a9835edf27bab1cb4e1e0f543749073b07d5972bfb3cd5aba",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_pause_sequence_quiesces_writers_and_its_rollback_resumes_them",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -5,6 +5,9 @@
 //!
 //! - Reference list `<root>/lineage/refs/<holder>`: the ancestor's objects the
 //!   holder held at birth (written by the operation that made it a leaf).
+//! - Supplementary list `<root>/lineage/refs/<holder>-d`: the holdings the
+//!   operation's pause added to the reference list's (S4-DESIGN §7.3); the holder
+//!   held at birth the union of the two.
 //! - Release log `<root>/lineage/rel/<holder>/<epoch>-<seq>`: objects the
 //!   holder released, one log per collector tick and ancestor, at most
 //!   `RELEASE_LOG_MAX` entries; `<epoch>` is the opening's writer epoch and
@@ -84,6 +87,12 @@ pub(crate) fn release_log_path(root: &str, holder: u32, epoch: u64, seq: u64) ->
 /// split and S6's merge write it).
 pub(crate) fn reference_list_path(root: &str, holder: u32) -> String {
     format!("{root}/lineage/refs/{holder}")
+}
+
+/// `holder`'s supplementary list under `root`: the holdings its birth's pause
+/// added to its reference list's.
+pub(crate) fn supplementary_list_path(root: &str, holder: u32) -> String {
+    format!("{root}/lineage/refs/{holder}-d")
 }
 
 /// `holder`'s released-all marker under `root`.
