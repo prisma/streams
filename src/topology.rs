@@ -1,5 +1,7 @@
 //! The cell's versioned shard topology (S4-DESIGN §3): the stored map, and the split that
 //! changes it.
+// The actor of a split or a merge: its lease, its ownership checks, its terminal write.
+pub(crate) mod actor;
 pub(crate) mod fence;
 pub(crate) mod gate;
 // The intent's read, its CAS and the lapse are production (the open-path fence's claimant, and
