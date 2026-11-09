@@ -5,7 +5,7 @@
 // platform side of the Streams contract: Management API, one-time
 // secrets, Prisma-Auth token exchange, JWKS/policy/grant full-snapshot
 // feeds with atomic file projection, workload-JWT rotation, project
-// placement across cells, transfer/deletion sagas, and a minimal
+// placement across cells, the deletion saga, and a minimal
 // console. It executes the REAL wire contract — the Rust cell consumes
 // its files and tokens unmodified — and shares only the JSON schemas
 // in contracts/streams-platform/v1, never Rust serialization code, so
@@ -39,11 +39,11 @@ import { validateDocument } from "./validate.mjs";
 // deliberately bypasses this: that is what it is for.)
 const SCHEMA_DIR = new URL("../../contracts/streams-platform/v1/", import.meta.url);
 const SCHEMAS = Object.fromEntries(
-  ["keys", "project-policies", "credential-grants"].map((n) => [
+  ["keys", "container-policies", "credential-grants"].map((n) => [
     n, JSON.parse(readFileSync(new URL(`${n}.schema.json`, SCHEMA_DIR))),
   ]),
 );
-const FEED_SCHEMA = { keys: "keys", policies: "project-policies", grants: "credential-grants" };
+const FEED_SCHEMA = { keys: "keys", policies: "container-policies", grants: "credential-grants" };
 
 const argOne = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -105,9 +105,9 @@ const keyEntries = (customer) => [
 ];
 
 // ---- model --------------------------------------------------------------
-/** project_id -> {workspace_id, status, ppv, ov, quotas, cell_id,
- *  pending_workspace?} — status ∈ active|suspended|transfer_pending|
- *  deleting|deleted. */
+/** project_id -> {workspace_id, status, ppv, ov, quotas, cell_id} — status ∈
+ *  active|suspended|deleting|deleted. The workspace is the control plane's
+ *  owner link: no feed or token carries it (edge #253). */
 const projects = new Map();
 /** credential_id -> {project_id, display, scopes, prefixes, grant_version,
  *  status, expires_at, hash (scrypt), salt, hint, created_at, last_used} */
@@ -143,12 +143,11 @@ function snapshotBodies(cellId) {
     }),
     policies: ({
       feed_version: gen.policies,
-      projects: [...projects.entries()].filter(own).map(([project_id, p]) => ({
-        project_id,
-        workspace_id: p.workspace_id,
+      containers: [...projects.entries()].filter(own).map(([container_id, p]) => ({
+        container_id,
         cell_id: p.cell_id,
-        project_policy_version: p.ppv,
-        ownership_version: p.ov,
+        policy_version: p.ppv,
+        generation: p.ov,
         status: p.status === "active" ? "active" : "suspended", // cell vocabulary; saga states read as not-active
         quotas: p.quotas,
       })),
@@ -159,7 +158,7 @@ function snapshotBodies(cellId) {
         .filter(([, c]) => own([c.project_id, projects.get(c.project_id) ?? { cell_id: null, status: "deleted" }]))
         .map(([credential_id, c]) => ({
           credential_id,
-          project_id: c.project_id,
+          container_id: c.project_id,
           grant_version: c.grant_version,
           status: c.status,
           scopes: c.scopes,
@@ -212,9 +211,8 @@ function mintCustomer(credId, cred) {
   const p = projects.get(cred.project_id);
   return signJwt({
     iss: ISS, aud: AUD_CUSTOMER, sub: `cred:${credId}`,
-    credential_id: credId, project_id: cred.project_id,
-    workspace_id: p.workspace_id, cell_id: p.cell_id,
-    ownership_version: p.ov, grant_version: cred.grant_version,
+    credential_id: credId, container_id: cred.project_id, cell_id: p.cell_id,
+    generation: p.ov, grant_version: cred.grant_version,
     scope: cred.scopes,
     ...(cred.prefixes ? { stream_prefixes: cred.prefixes } : {}),
     jti: randomBytes(8).toString("hex"), iat: now, nbf: now, exp: now + 600,
@@ -336,7 +334,7 @@ const server = http.createServer(async (req, res) => {
       if (cred.status !== "active") return json(res, 403, { error: `credential ${cred.status}` });
       const p = projects.get(cred.project_id);
       // §10.1: token exchange stops the moment a saga begins — any
-      // non-active status (suspended/transfer_pending/deleting) refuses.
+      // non-active status (suspended/deleting) refuses.
       if (!p || p.status !== "active") return json(res, 403, { error: `project ${p?.status ?? "unknown"}` });
       cred.last_used = new Date().toISOString();
       return json(res, 200, {
@@ -348,7 +346,7 @@ const server = http.createServer(async (req, res) => {
     // Feeds (HTTP form; the file projection is the primary transport)
     if (req.method === "GET" && parts[0] === "internal" && parts[1] === "streams" && parts[2] === "cells") {
       const cellId = cells.has(parts[3]) ? parts[3] : firstCell;
-      const feed = { jwks: "keys", "project-policies": "policies", "credential-grants": "grants" }[parts[4]];
+      const feed = { jwks: "keys", "container-policies": "policies", "credential-grants": "grants" }[parts[4]];
       if (!feed) return json(res, 404, { error: "unknown feed" });
       res.writeHead(200, {
         "content-type": "application/json",
@@ -372,27 +370,6 @@ const server = http.createServer(async (req, res) => {
       const p = projects.get(pid);
       if (!p) return json(res, 404, { error: "unknown project" });
       const body = JSON.parse((await readBody(req)) || "{}");
-      // §10 ownership-transfer saga, split so tests can observe the
-      // intermediate state: step 1 stops exchange; complete performs
-      // ov++/workspace swap/revocation/publication atomically.
-      if (parts[3] === "transfer" && parts.length === 4) {
-        if (p.status !== "active") return json(res, 409, { error: `project ${p.status}` });
-        if (!body.toWorkspace) return json(res, 400, { error: "toWorkspace required" });
-        p.status = "transfer_pending";
-        p.pending_workspace = body.toWorkspace;
-        return json(res, 200, { project_id: pid, status: p.status });
-      }
-      if (parts[3] === "transfer" && parts[4] === "complete") {
-        if (p.status !== "transfer_pending") return json(res, 409, { error: `project ${p.status}` });
-        p.ov += 1;
-        p.workspace_id = p.pending_workspace;
-        delete p.pending_workspace;
-        revokeAllCredentials(pid); // §10 step 4: revoke-all by default
-        p.ppv += 1;
-        p.status = "active";
-        project();
-        return json(res, 200, { project_id: pid, status: p.status, ownership_version: p.ov, workspace_id: p.workspace_id });
-      }
       // §11 deletion saga: authorization cutoff FIRST (revoke + publish
       // while `deleting`), then the project leaves the feed entirely —
       // the omission tombstone. Storage cleanup is the cell's own saga.
@@ -456,38 +433,6 @@ const server = http.createServer(async (req, res) => {
         case "partial-write": // torn file on the NEXT projection(s)
           faultModes.set(cellId, { ...(faultModes.get(cellId) ?? {}), partialWrite: body.feed ?? "grants" });
           return json(res, 200, { fault: "partial-write", cell: cellId, feed: body.feed ?? "grants" });
-        case "workspace-swap-no-bump": {
-          // HOSTILE: change a project's workspace WITHOUT an
-          // ownership_version increment (ppv bumps so the snapshot is
-          // otherwise acceptable). The cell must refuse the snapshot
-          // (round 3 F3): owner changes are structurally tied to
-          // ownership_version.
-          const p = projects.get(body.project);
-          if (!p) return json(res, 404, { error: "unknown project" });
-          p.prev_workspace ??= p.workspace_id;
-          p.workspace_id = body.toWorkspace ?? `${p.workspace_id}-hostile`;
-          p.ppv += 1;
-          project();
-          return json(res, 200, { fault: "workspace-swap-no-bump", project: body.project, workspace_id: p.workspace_id, ownership_version: p.ov });
-        }
-        case "workspace-restore": {
-          // Undo the hostile swap LEGITIMATELY: workspace back to the
-          // remembered owner WITH an ownership_version increment, so
-          // the next publication is acceptable to the cell. Without a
-          // restore the emulator keeps publishing the unbumped hostile
-          // workspace forever — the cell refuses every later snapshot
-          // and every later-minted token for the project carries the
-          // hostile workspace (the battery's 401/workspace_mismatch
-          // contamination class).
-          const p = projects.get(body.project);
-          if (!p || p.prev_workspace == null) return json(res, 409, { error: "nothing to restore" });
-          p.workspace_id = p.prev_workspace;
-          delete p.prev_workspace;
-          p.ov += 1;
-          p.ppv += 1;
-          project();
-          return json(res, 200, { fault: "workspace-restore", project: body.project, workspace_id: p.workspace_id, ownership_version: p.ov });
-        }
         case "freeze": // stale feeds: no further projections
           faultModes.set(cellId, { ...(faultModes.get(cellId) ?? {}), freeze: true });
           return json(res, 200, { fault: "freeze", cell: cellId });

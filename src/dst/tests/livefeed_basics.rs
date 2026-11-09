@@ -154,8 +154,8 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_revocation_terminates_the_subscription() {
-    let (_svc, _state, addr) = auth_rig("proj-lfr", "ws_lf", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-lfr", "ws_lf", 1, 1, "lf1", 600);
+    let (_svc, _state, addr) = auth_rig("proj-lfr", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-lfr", 1, 1, "lf1", 600);
     rig_create(addr, "lfr", &tok).await;
     let mut sub = rig_sse(addr, "lfr", &tok, "", None).await;
     let (a, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;

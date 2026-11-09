@@ -20,7 +20,7 @@ use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy, ProjectQuotas,
     ProjectStatus,
 };
-use crate::tenant::{ProjectId, Scope, ScopeSet, StreamGrant, WorkspaceId};
+use crate::tenant::{ProjectId, Scope, ScopeSet, StreamGrant};
 use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,8 +29,6 @@ use std::sync::Arc;
 pub(super) const NAMES: [&str; 3] = ["orders", "events", "a/b/c"];
 /// The routing keys every project reuses; "" is the default key.
 pub(super) const KEYS: [&str; 4] = ["", "k0", "k1", "k2"];
-/// Projects share workspaces, as real accounts do.
-pub(super) const WORKSPACES: usize = 16;
 /// Concurrent requests the rig drives at once.
 const FANOUT: usize = 32;
 const SUITE_PROJECTS: usize = 128;
@@ -51,10 +49,6 @@ pub(super) fn project(i: usize) -> String {
     format!("proj-sc{i:04}")
 }
 
-pub(super) fn workspace(i: usize) -> String {
-    format!("ws-sc{:02}", i % WORKSPACES)
-}
-
 pub(super) fn credential(i: usize) -> String {
     format!("c-sc{i:04}")
 }
@@ -68,7 +62,6 @@ fn all_scopes() -> String {
 pub(super) fn policy(i: usize, quotas: ProjectQuotas) -> ProjectPolicy {
     ProjectPolicy {
         project_id: ProjectId::new(&project(i)).unwrap(),
-        workspace_id: WorkspaceId::new(&workspace(i)).unwrap(),
         cell_id: Arc::from("test-cell"),
         project_policy_version: 1,
         ownership_version: 1,
@@ -97,9 +90,10 @@ pub(super) struct Token {
     aud: &'static str,
     sub: &'static str,
     pub(super) credential_id: String,
+    #[serde(rename = "container_id")]
     pub(super) project_id: String,
-    pub(super) workspace_id: String,
     cell_id: &'static str,
+    #[serde(rename = "generation")]
     pub(super) ownership_version: u64,
     pub(super) grant_version: u64,
     scope: String,
@@ -121,7 +115,6 @@ impl Token {
             sub: "u",
             credential_id: credential(i),
             project_id: project(i),
-            workspace_id: workspace(i),
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,

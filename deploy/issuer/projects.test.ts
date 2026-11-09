@@ -83,7 +83,7 @@ describe("creating a project", () => {
     expect(denylistText(cell.state).split("\n")).toContain(id);
     // Published: the cell's next bundle holds the project and its grant.
     const bundle = customerOnly(readBundle(cell.state));
-    expect([bundle.keys.feed_version, (bundle.policies.projects as any[]).map((p) => p.project_id)]).toEqual([before + 1, [id]]);
+    expect([bundle.keys.feed_version, (bundle.policies.containers as any[]).map((p) => p.container_id)]).toEqual([before + 1, [id]]);
     expect((bundle.grants.credentials as any[]).map((c) => [c.credential_id, c.grant_version])).toEqual([[cid, 1]]);
     // The secret is nowhere but in the answer, and it exchanges at once.
     expect(storeTexts(cell.state).join("\n")).not.toContain(raw);
@@ -118,7 +118,7 @@ describe("creating a project", () => {
     expect(minted.status).toBe(200);
     await m.cache.refresh();
     expect(readBundle(cell.state).keys.feed_version).toBe(published + 1);
-    expect((customerOnly(readBundle(cell.state)).policies.projects as any[]).map((p) => p.project_id)).toEqual([body.project.id]);
+    expect((customerOnly(readBundle(cell.state)).policies.containers as any[]).map((p) => p.container_id)).toEqual([body.project.id]);
   });
 
   test("answers a store it cannot reach 503 issuer_unavailable, audited, and any other failure 500 with its request id", async () => {
@@ -310,7 +310,7 @@ describe("creating a project", () => {
     expect(answers[1][1]).toEqual(refusal("project_limit", "workspace ws_a already has 1 Streams project(s), its limit"));
     const placed = Object.entries(cellState(cell).projects).filter(([, p]) => p.workspace_id === "ws_a");
     expect(placed.map(([id]) => id)).toEqual([answers[0][1].project.id]);
-    expect(customerOnly(readBundle(cell.state)).policies.projects.length).toBe(1);
+    expect(customerOnly(readBundle(cell.state)).policies.containers.length).toBe(1);
     expect(managementAudits(cell).map((r) => [r.outcome, r.reason]).sort()).toEqual([
       ["done", undefined],
       ["refused", "project_limit: workspace ws_a already has 1 project(s) on cell cell_sc1 (cap 1)"],
@@ -445,7 +445,7 @@ describe("a project's readiness", () => {
     // The probe's token: the project's first credential at its current
     // grant_version, narrowed to streams.catalog.read, for 300 s.
     expect(fake.tokens.at(-1)).toMatchObject({
-      credential_id: cid, project_id: id, grant_version: 1, scope: "streams.catalog.read", exp: Math.floor(m.clock.t / 1000) - 60 + 300,
+      credential_id: cid, container_id: id, grant_version: 1, scope: "streams.catalog.read", exp: Math.floor(m.clock.t / 1000) - 60 + 300,
     });
     // Ready stays ready without another probe.
     m.clock.t += 60_000;
@@ -588,7 +588,7 @@ describe("deleting a project", () => {
       expect(after.credentials[cid]).toMatchObject({ status: "revoked", grant_version: 2 });
     }
     expect(after.feed_version).toBe(before.feed_version + 1);
-    const grants = (readBundle(cell.state).grants.credentials as any[]).filter((g) => g.project_id === id);
+    const grants = (readBundle(cell.state).grants.credentials as any[]).filter((g) => g.container_id === id);
     expect(grants.map((g) => [g.credential_id, g.status]).sort()).toEqual(
       [[made.credential.id, "revoked"], [second.credential.id, "revoked"], [operator[0], "active"]].sort(),
     );

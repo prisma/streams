@@ -7,7 +7,6 @@ use super::fixture_requests::{PRISMA_KEY, preq};
 async fn account_watch_wait_charges_one_request_and_releases_its_subscription() {
     let (state, addr, bearer) = sr_rig(
         "watch-once",
-        "ws-once",
         "cred-once",
         "kid-once",
         "streams.create streams.watches.manage streams.metadata.read",
@@ -25,7 +24,7 @@ async fn account_watch_wait_charges_one_request_and_releases_its_subscription() 
     )
     .await;
     assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
-    let mut policy = rig_policy("watch-once", "ws-once", 1, 2);
+    let mut policy = rig_policy("watch-once", 1, 2);
     policy.quotas.max_inflight_requests = 1;
     policy.quotas.max_live_subscriptions = 1;
     rig_publish_policy(&state.auth, policy, 2).unwrap();

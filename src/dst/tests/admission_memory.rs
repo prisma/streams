@@ -26,14 +26,14 @@ use std::sync::Arc;
 /// constrained.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_budget_noisy_project_cannot_evict_another() {
-    let (svc, state, addr) = auth_rig("proj-noisy", "ws_iso", &["ca"], None).await;
+    let (svc, state, addr) = auth_rig("proj-noisy", &["ca"], None).await;
     // Second project in the same cell: republish policies + grants at
     // v2 carrying BOTH projects (an omission would kill proj-noisy via
     // the high-water rules).
     {
         let mut projects = std::collections::HashMap::new();
         for p in ["proj-noisy", "proj-victim"] {
-            let pol = rig_policy(p, "ws_iso", 1, 1);
+            let pol = rig_policy(p, 1, 1);
             projects.insert(pol.project_id.clone(), pol);
         }
         svc.publish_policies(crate::project_policy::PolicySnapshot {
@@ -68,8 +68,8 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
     // ceiling — twelve noisy feeds demand ~384 KiB of retention.
     state.livefeed.set_ring_bytes(32 * 1024);
     state.livefeed.budget().set_max_for_test(256 * 1024);
-    let tok_a = mint_token("ca", "proj-noisy", "ws_iso", 1, 1, "na", 600);
-    let tok_b = mint_token("cb", "proj-victim", "ws_iso", 1, 1, "vb", 600);
+    let tok_a = mint_token("ca", "proj-noisy", 1, 1, "na", 600);
+    let tok_b = mint_token("cb", "proj-victim", 1, 1, "vb", 600);
 
     // Noisy project A: 12 two-subscriber streams, rings filled with
     // real retained batches (8-KiB payloads; ~11-KiB prepared charge).
@@ -288,7 +288,6 @@ async fn pm_enforce_rig(
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_pm").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -339,9 +338,10 @@ async fn pm_enforce_rig(
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -359,7 +359,6 @@ async fn pm_enforce_rig(
             sub: "u",
             credential_id: "cpm",
             project_id: "proj-pm",
-            workspace_id: "ws_pm",
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,

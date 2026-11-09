@@ -12,10 +12,9 @@ struct AccessClaims<'a> {
     aud: &'a str,
     sub: &'a str,
     credential_id: &'a str,
-    project_id: &'a str,
-    workspace_id: &'a str,
+    container_id: &'a str,
     cell_id: &'a str,
-    ownership_version: u64,
+    generation: u64,
     grant_version: u64,
     scope: &'a str,
     jti: &'a str,
@@ -41,7 +40,6 @@ impl AccessClaims<'_> {
 /// jwks+policy+grant for a single project and mints one token.
 pub(super) async fn sr_rig(
     project: &str,
-    ws: &str,
     cred: &str,
     kid: &str,
     scopes: &str,
@@ -71,7 +69,6 @@ pub(super) async fn sr_rig(
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -111,10 +108,9 @@ pub(super) async fn sr_rig(
         aud: "prisma-streams-data",
         sub: "u",
         credential_id: cred,
-        project_id: project,
-        workspace_id: ws,
+        container_id: project,
         cell_id: "test-cell",
-        ownership_version: 1,
+        generation: 1,
         grant_version: 1,
         scope: scopes,
         jti: "t",
@@ -209,15 +205,9 @@ pub(super) const RIG_PUB: &str = include_str!("../fixtures/mt-test-rsa.pub.pem")
 pub(super) const RIG_SCOPES: &str = "streams.create streams.records.append streams.records.read \
                           streams.metadata.read";
 
-pub(super) fn rig_policy(
-    project: &str,
-    ws: &str,
-    ov: u64,
-    ppv: u64,
-) -> crate::project_policy::ProjectPolicy {
+pub(super) fn rig_policy(project: &str, ov: u64, ppv: u64) -> crate::project_policy::ProjectPolicy {
     crate::project_policy::ProjectPolicy {
         project_id: crate::tenant::ProjectId::new(project).unwrap(),
-        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
@@ -272,7 +262,6 @@ pub(super) fn rig_publish_grants(
 /// credentials (Active, gv 1). `staleness` shortens the feed window.
 pub(super) async fn auth_rig(
     project: &str,
-    ws: &str,
     creds: &[&str],
     staleness: Option<i64>,
 ) -> (
@@ -303,7 +292,7 @@ pub(super) async fn auth_rig(
         feed_version: 1,
     })
     .unwrap();
-    rig_publish_policy(&svc, rig_policy(project, ws, 1, 1), 1).unwrap();
+    rig_publish_policy(&svc, rig_policy(project, 1, 1), 1).unwrap();
     let cs: Vec<_> = creds
         .iter()
         .map(|c| (*c, crate::project_policy::CredentialStatus::Active, 1u64))
@@ -320,7 +309,7 @@ pub(super) async fn auth_rig(
 /// manage) needs both sides widened.
 pub(super) fn rig_scoped_bearer(
     svc: &crate::auth::AuthService,
-    project: (&str, &str),
+    project: &str,
     cred: &str,
     scopes: &str,
     gv: u64,
@@ -330,7 +319,7 @@ pub(super) fn rig_scoped_bearer(
         std::sync::Arc::from(cred),
         crate::project_policy::CredentialGrant {
             credential_id: std::sync::Arc::from(cred),
-            project_id: crate::tenant::ProjectId::new(project.0).unwrap(),
+            project_id: crate::tenant::ProjectId::new(project).unwrap(),
             grant_version: gv,
             status: crate::project_policy::CredentialStatus::Active,
             scopes: crate::tenant::ScopeSet::parse(scopes).0,
@@ -351,18 +340,16 @@ pub(super) fn rig_scoped_bearer(
 /// the credential grant the caller published (`rig_scoped_bearer`
 /// publishes an every-name grant; a caller needing another stream grant
 /// publishes its own).
-pub(super) fn rig_bearer(project: (&str, &str), cred: &str, scopes: &str, gv: u64) -> String {
-    let (project_id, ws) = project;
+pub(super) fn rig_bearer(project: &str, cred: &str, scopes: &str, gv: u64) -> String {
     let now = crate::shard::now_ms() / 1000;
     AccessClaims {
         iss: "https://auth.prisma.io",
         aud: "prisma-streams-data",
         sub: "u",
         credential_id: cred,
-        project_id,
-        workspace_id: ws,
+        container_id: project,
         cell_id: "test-cell",
-        ownership_version: 1,
+        generation: 1,
         grant_version: gv,
         scope: scopes,
         jti: "scoped",
@@ -374,12 +361,11 @@ pub(super) fn rig_bearer(project: (&str, &str), cred: &str, scopes: &str, gv: u6
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "authentication fixture; seven independent signed bindings drive mismatch and expiry regressions; bundling them would hide which authority input each negative test changes"
+    reason = "authentication fixture; six independent signed bindings drive mismatch and expiry regressions; bundling them would hide which authority input each negative test changes"
 )]
 pub(super) fn mint_token(
     cred: &str,
     project: &str,
-    ws: &str,
     ov: u64,
     gv: u64,
     jti: &str,
@@ -391,10 +377,9 @@ pub(super) fn mint_token(
         aud: "prisma-streams-data",
         sub: "u",
         credential_id: cred,
-        project_id: project,
-        workspace_id: ws,
+        container_id: project,
         cell_id: "test-cell",
-        ownership_version: ov,
+        generation: ov,
         grant_version: gv,
         scope: RIG_SCOPES,
         jti,

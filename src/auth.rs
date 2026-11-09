@@ -42,9 +42,7 @@ use arc_swap::ArcSwap;
 use jsonwebtoken::Algorithm;
 
 use crate::project_policy::{CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectStatus};
-use crate::tenant::{
-    CanonicalPrefix, ProjectId, Scope, ScopeSet, StreamGrant, WorkspaceId, validate_cell_id,
-};
+use crate::tenant::{CanonicalPrefix, ProjectId, Scope, ScopeSet, StreamGrant, validate_cell_id};
 
 /// §5 recommended constraints.
 pub(crate) const MAX_TOKEN_BYTES: usize = 8 * 1024;
@@ -137,7 +135,6 @@ pub(crate) enum AuthError {
     EmptyPrefixArray,
     ProjectNotActive(ProjectStatus),
     OwnershipVersionMismatch,
-    WorkspaceMismatch,
     CredentialUnknown,
     CredentialNotActive(CredentialStatus),
     CredentialExpired,
@@ -171,7 +168,6 @@ impl AuthError {
             AuthError::EmptyPrefixArray => "empty_prefix_array",
             AuthError::ProjectNotActive(_) => "project_not_active",
             AuthError::OwnershipVersionMismatch => "ownership_version_mismatch",
-            AuthError::WorkspaceMismatch => "workspace_mismatch",
             AuthError::CredentialUnknown => "credential_unknown",
             AuthError::CredentialNotActive(_) => "credential_not_active",
             AuthError::CredentialExpired => "credential_expired",
@@ -281,9 +277,10 @@ struct RawClaims {
     aud: String,
     sub: String,
     credential_id: String,
+    #[serde(rename = "container_id")]
     project_id: String,
-    workspace_id: String,
     cell_id: String,
+    #[serde(rename = "generation")]
     ownership_version: u64,
     grant_version: u64,
     #[serde(default)]
@@ -487,14 +484,12 @@ impl AuthService {
         self.check_times(c.iat, c.nbf, c.exp, now)?;
 
         let project_id =
-            ProjectId::new(&c.project_id).map_err(|_| AuthError::ClaimInvalid("project_id"))?;
+            ProjectId::new(&c.project_id).map_err(|_| AuthError::ClaimInvalid("container_id"))?;
         // §10.4: the reserved system project is internal-only; a
         // customer token claiming it is hostile or a grave issuer bug.
         if project_id.is_system() {
-            return Err(AuthError::ClaimInvalid("project_id is reserved"));
+            return Err(AuthError::ClaimInvalid("container_id is reserved"));
         }
-        let workspace_id = WorkspaceId::new(&c.workspace_id)
-            .map_err(|_| AuthError::ClaimInvalid("workspace_id"))?;
         validate_cell_id(&c.cell_id).map_err(|_| AuthError::ClaimInvalid("cell_id"))?;
         if c.credential_id.is_empty() || c.jti.is_empty() || c.sub.is_empty() {
             return Err(AuthError::ClaimInvalid("empty identity claim"));
@@ -541,9 +536,6 @@ impl AuthService {
         }
         if policy.status != ProjectStatus::Active {
             return Err(AuthError::ProjectNotActive(policy.status));
-        }
-        if workspace_id != policy.workspace_id {
-            return Err(AuthError::WorkspaceMismatch);
         }
 
         let grants = self.fresh_grants(now)?;
@@ -785,10 +777,9 @@ mod tests {
         aud: String,
         sub: String,
         credential_id: String,
-        project_id: String,
-        workspace_id: String,
+        container_id: String,
         cell_id: String,
-        ownership_version: u64,
+        generation: u64,
         grant_version: u64,
         scope: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -804,10 +795,9 @@ mod tests {
             aud: AUD_CUSTOMER.into(),
             sub: "svc-1".into(),
             credential_id: "strcred_123".into(),
-            project_id: "proj_456".into(),
-            workspace_id: "ws_789".into(),
+            container_id: "proj_456".into(),
             cell_id: CELL.into(),
-            ownership_version: 12,
+            generation: 12,
             grant_version: 7,
             scope: "streams.records.read streams.records.append streams.metadata.read".into(),
             stream_prefixes: Some(vec!["customers/acme".into()]),
@@ -853,7 +843,6 @@ mod tests {
             pid.clone(),
             ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: WorkspaceId::new("ws_789").unwrap(),
                 cell_id: Arc::from(CELL),
                 project_policy_version: 40,
                 ownership_version: 12,
@@ -1031,7 +1020,7 @@ mod tests {
         let svc = service();
         // Old ownership_version token refused (§4.2).
         let mut c = claims();
-        c.ownership_version = 11;
+        c.generation = 11;
         assert_eq!(
             svc.verify_customer(&sign(&c), NOW).unwrap_err(),
             AuthError::OwnershipVersionMismatch
@@ -1047,7 +1036,7 @@ mod tests {
         // never a 401 — the credential is valid, this cell just does not
         // serve that project.
         let mut c = claims();
-        c.project_id = "proj_nope".into();
+        c.container_id = "proj_nope".into();
         assert_eq!(
             svc.verify_customer(&sign(&c), NOW).unwrap_err(),
             AuthError::WrongCell
@@ -1249,7 +1238,6 @@ mod tests {
             pid.clone(),
             ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: WorkspaceId::new("ws_NEW").unwrap(),
                 cell_id: Arc::from(CELL),
                 project_policy_version: 41,
                 ownership_version: 13,
@@ -1271,7 +1259,6 @@ mod tests {
             pid.clone(),
             ProjectPolicy {
                 project_id: pid,
-                workspace_id: WorkspaceId::new("ws_789").unwrap(),
                 cell_id: Arc::from(CELL),
                 project_policy_version: 40,
                 ownership_version: 12,

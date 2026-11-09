@@ -373,8 +373,8 @@ async fn r09_tombstone_walk_advances_one_catalog_page_per_pass() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (_svc, state, addr) = auth_rig("proj-walk", "ws_walk", &["c_walk"], None).await;
-    let bearer = mint_token("c_walk", "proj-walk", "ws_walk", 1, 1, "walk-1", 600);
+    let (_svc, state, addr) = auth_rig("proj-walk", &["c_walk"], None).await;
+    let bearer = mint_token("c_walk", "proj-walk", 1, 1, "walk-1", 600);
     let project = crate::tenant::ProjectId::new("proj-walk").unwrap();
     assert_ne!(&project, state.deployment.deployment_tenant());
     let mut rows = Vec::new();
@@ -468,8 +468,8 @@ async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_recreation_over_an_idle_expired_incarnation_still_closes_its_storage() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (_svc, state, addr) = auth_rig("proj-recreate", "ws_rec", &["c_rec"], None).await;
-    let bearer = mint_token("c_rec", "proj-recreate", "ws_rec", 1, 1, "rec-1", 600);
+    let (_svc, state, addr) = auth_rig("proj-recreate", &["c_rec"], None).await;
+    let bearer = mint_token("c_rec", "proj-recreate", 1, 1, "rec-1", 600);
     let project = crate::tenant::ProjectId::new("proj-recreate").unwrap();
     let mut rows = Vec::new();
     for name in ["idle", "renewed"] {
@@ -587,8 +587,8 @@ async fn gauge_closes(engine: &crate::shard::ShardEngine, identity: [u8; 16]) ->
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_closure_debt_pass_reaches_a_debt_behind_waiting_ones() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (_svc, state, addr) = auth_rig("proj-starve", "ws_starve", &["c_st"], None).await;
-    let bearer = mint_token("c_st", "proj-starve", "ws_starve", 1, 1, "st-1", 600);
+    let (_svc, state, addr) = auth_rig("proj-starve", &["c_st"], None).await;
+    let bearer = mint_token("c_st", "proj-starve", 1, 1, "st-1", 600);
     let project = crate::tenant::ProjectId::new("proj-starve").unwrap();
     rig_create(addr, "z-idle", &bearer).await;
     assert_eq!(rig_append(addr, "z-idle", &bearer, r#"{"n":1}"#).await, 200);

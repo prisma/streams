@@ -43,7 +43,7 @@ use crate::project_policy::{
     CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource, ProjectQuotas,
     ProjectStatus,
 };
-use crate::tenant::{ProjectId, WorkspaceId};
+use crate::tenant::ProjectId;
 
 mod compact;
 
@@ -83,10 +83,12 @@ struct KeyDoc {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyDoc {
+    #[serde(rename = "container_id")]
     project_id: ProjectId,
-    workspace_id: WorkspaceId,
     cell_id: String,
+    #[serde(rename = "policy_version")]
     project_policy_version: u64,
+    #[serde(rename = "generation")]
     ownership_version: u64,
     status: ProjectStatus,
     /// Required, as in the contract (shared-cells R3): a policy without
@@ -98,6 +100,7 @@ struct PolicyDoc {
 #[serde(deny_unknown_fields)]
 struct GrantDoc {
     credential_id: String,
+    #[serde(rename = "container_id")]
     project_id: ProjectId,
     grant_version: u64,
     status: CredentialStatus,
@@ -384,7 +387,7 @@ mod tests {
     #[async_trait::async_trait]
     impl PolicySource for EmptyPolicies {
         async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
-            parse_policies(r#"{"feed_version":1,"projects":[]}"#)
+            parse_policies(r#"{"feed_version":1,"containers":[]}"#)
         }
     }
     struct EmptyGrants;
@@ -450,10 +453,9 @@ mod tests {
             &pp,
             serde_json::json!({
                 "feed_version": 1,
-                "projects": [{
-                    "project_id": "proj_456", "workspace_id": "ws_789",
-                    "cell_id": "fra-cell-07", "project_policy_version": 1,
-                    "ownership_version": 1, "status": "active", "quotas": {}
+                "containers": [{
+                    "container_id": "proj_456", "cell_id": "fra-cell-07", "policy_version": 1,
+                    "generation": 1, "status": "active", "quotas": {}
                 }]
             })
             .to_string(),
@@ -464,7 +466,7 @@ mod tests {
             serde_json::json!({
                 "feed_version": 1,
                 "credentials": [{
-                    "credential_id": "c1", "project_id": "proj_456",
+                    "credential_id": "c1", "container_id": "proj_456",
                     "grant_version": 1, "status": "active",
                     "scopes": "streams.records.read"
                 }]
@@ -550,7 +552,7 @@ mod tests {
                 "{feed}: a failed read refreshes nothing"
             );
         }
-        std::fs::write(&pp, r#"{"feed_version":7,"projects":[]}"#).unwrap();
+        std::fs::write(&pp, r#"{"feed_version":7,"containers":[]}"#).unwrap();
         std::fs::write(&gp, r#"{"feed_version":7,"credentials":[]}"#).unwrap();
         let report = refresh_once(&svc, &ks, &ps, &gs).await;
         assert_eq!(
@@ -758,13 +760,13 @@ mod tests {
             parse_policies(doc.to_string())
         };
         let valid = golden(include_str!(
-            "../contracts/streams-platform/v1/golden/project-policies.valid.json"
+            "../contracts/streams-platform/v1/golden/container-policies.valid.json"
         ))
         .unwrap();
         let pid = ProjectId::new("proj-golden").unwrap();
         assert_eq!(valid.projects[&pid].status, ProjectStatus::Active);
         let hostile = golden(include_str!(
-            "../contracts/streams-platform/v1/golden/project-policies.hostile-negative-stored.json"
+            "../contracts/streams-platform/v1/golden/container-policies.hostile-negative-stored.json"
         ))
         .map(|s| s.projects.len());
         assert!(hostile.is_err(), "a negative quota parsed as {hostile:?}");
@@ -775,9 +777,9 @@ mod tests {
     #[test]
     fn a_policy_feed_carries_max_stored_bytes() {
         let stored = |quotas: &str| {
-            let doc = r#"{"feed_version": 1, "projects": [{"project_id": "proj_456",
-                "workspace_id": "ws_789", "cell_id": "fra-cell-07",
-                "project_policy_version": 1, "ownership_version": 1,
+            let doc = r#"{"feed_version": 1, "containers": [{"container_id": "proj_456",
+                "cell_id": "fra-cell-07",
+                "policy_version": 1, "generation": 1,
                 "status": "active", "quotas": QUOTAS}]}"#;
             let s = parse_policies(doc.replace("QUOTAS", quotas)).unwrap();
             s.projects[&ProjectId::new("proj_456").unwrap()]
@@ -788,16 +790,34 @@ mod tests {
         assert_eq!(stored("{}"), 0);
     }
 
+    /// Edge #253: the feed names a container and no workspace or owner. A
+    /// policy that still names its workspace, or a token-side owner field,
+    /// is refused whole (unknown field), as the old key `projects` is.
+    #[test]
+    fn a_policy_naming_a_workspace_is_refused() {
+        let feed = |entry: &str| {
+            parse_policies(format!(
+                r#"{{"feed_version": 1, "containers": [{{"container_id": "ct_1",
+                "cell_id": "fra-cell-07", "policy_version": 1, "generation": 1,
+                "status": "active", "quotas": {{}}{entry}}}]}}"#
+            ))
+            .map(|s| s.projects.len())
+        };
+        assert_eq!(feed("").unwrap(), 1);
+        assert!(feed(r#", "workspace_id": "ws_789""#).is_err());
+        let old_key = parse_policies(r#"{"feed_version": 1, "projects": []}"#);
+        assert!(old_key.is_err(), "the old key parsed");
+    }
+
     #[test]
     fn policies_parse_strictly() {
         let ok = serde_json::json!({
             "feed_version": 40,
-            "projects": [{
-                "project_id": "proj_456",
-                "workspace_id": "ws_789",
+            "containers": [{
+                "container_id": "proj_456",
                 "cell_id": "fra-cell-07",
-                "project_policy_version": 40,
-                "ownership_version": 12,
+                "policy_version": 40,
+                "generation": 12,
                 "status": "active",
                 "quotas": { "requests_per_sec": 100 }
             }]
@@ -815,7 +835,7 @@ mod tests {
         // Quotas fail closed (shared-cells R3): a misspelled quota key, or
         // no quotas object at all, would leave every field 0, unlimited.
         let mut bare = ok.clone();
-        bare["projects"][0]
+        bare["containers"][0]
             .as_object_mut()
             .unwrap()
             .remove("quotas");
@@ -837,7 +857,7 @@ mod tests {
             "feed_version": 7,
             "credentials": [{
                 "credential_id": "strcred_123",
-                "project_id": "proj_456",
+                "container_id": "proj_456",
                 "grant_version": 7,
                 "status": "active",
                 "scopes": "streams.records.read streams.records.append",
@@ -866,7 +886,7 @@ mod tests {
             "feed_version": 7,
             "credentials": [{
                 "credential_id": "c2",
-                "project_id": "proj_456",
+                "container_id": "proj_456",
                 "grant_version": 1,
                 "status": "active",
                 "scopes": "streams.records.read"
@@ -883,11 +903,11 @@ mod tests {
     /// what the feed should hold there.
     #[test]
     fn a_feed_whose_list_is_not_a_list_names_what_it_expected() {
-        let policies = parse_policies(r#"{"feed_version":1,"projects":5}"#).unwrap_err();
+        let policies = parse_policies(r#"{"feed_version":1,"containers":5}"#).unwrap_err();
         let grants = parse_grants(r#"{"feed_version":1,"credentials":"x"}"#).unwrap_err();
         let (policies, grants) = (policies.to_string(), grants.to_string());
         assert!(
-            policies.contains("expected a list of project policies"),
+            policies.contains("expected a list of container policies"),
             "{policies}"
         );
         assert!(
@@ -904,15 +924,15 @@ mod tests {
         let (mut policies, mut grants) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for i in 0..n {
             policies.push(format!(
-                r#"{{"project_id":"proj_{i:08}","workspace_id":"ws_{i:08}","cell_id":"test-cell","project_policy_version":1,"ownership_version":1,"status":"active","quotas":{quotas}}}"#
+                r#"{{"container_id":"proj_{i:08}","cell_id":"test-cell","policy_version":1,"generation":1,"status":"active","quotas":{quotas}}}"#
             ));
             grants.push(format!(
-                r#"{{"credential_id":"strcred_{i:08}","project_id":"proj_{i:08}","grant_version":1,"status":"active","scopes":"streams.records.read streams.records.append"}}"#
+                r#"{{"credential_id":"strcred_{i:08}","container_id":"proj_{i:08}","grant_version":1,"status":"active","scopes":"streams.records.read streams.records.append"}}"#
             ));
         }
         (
             format!(
-                r#"{{"feed_version":1,"projects":[{}]}}"#,
+                r#"{{"feed_version":1,"containers":[{}]}}"#,
                 policies.join(",")
             ),
             format!(

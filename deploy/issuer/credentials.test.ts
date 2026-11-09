@@ -61,7 +61,7 @@ describe("a project's credentials", () => {
     expect(state.feed_version).toBe(before + 1);
     const grants = customerOnly(readBundle(cell.state)).grants.credentials as any[];
     expect(grants.find((g) => g.credential_id === cid)).toEqual({
-      credential_id: cid, project_id: id, grant_version: 1, status: "active",
+      credential_id: cid, container_id: id, grant_version: 1, status: "active",
       scopes: "streams.records.read streams.catalog.read", stream_prefixes: ["orders"], expires_at: expSecs,
     });
     expect(storeTexts(cell.state).join("\n")).not.toContain(raw);

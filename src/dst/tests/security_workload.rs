@@ -19,7 +19,7 @@ async fn raw_sse_terminates_at_workload_token_expiry() {
     // expiry tests that move it (gap_lock convention).
     let _serial = gap_lock().lock().await;
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (_state, addr, _tok) = sr_rig("proj-rwl", "ws_rwl", "c_rwl", "rwl-1", scopes).await;
+    let (_state, addr, _tok) = sr_rig("proj-rwl", "c_rwl", "rwl-1", scopes).await;
     let ct = ("content-type", "application/json");
     // Stage the stream as the static fleet operator (bridge posture),
     // then subscribe under the SHORT-LIVED workload identity.
@@ -70,7 +70,7 @@ async fn raw_sse_terminates_at_workload_token_expiry() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn internal_segment_read_refuses_live_semantics() {
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (_state, addr, _tok) = sr_rig("proj-rlv", "ws_rlv", "c_rlv", "rlv-1", scopes).await;
+    let (_state, addr, _tok) = sr_rig("proj-rlv", "c_rlv", "rlv-1", scopes).await;
     let ct = ("content-type", "application/json");
     let fleet = ("authorization", "Bearer dst-internal-token");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rlv", &[ct, fleet], br#"[{"i":0}]"#).await;
@@ -103,7 +103,7 @@ async fn internal_segment_read_refuses_live_semantics() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn workload_jwt_operations_scope_the_internal_surface() {
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (_state, addr, _tok) = sr_rig("proj-opsc", "ws_opsc", "c_opsc", "opsc-1", scopes).await;
+    let (_state, addr, _tok) = sr_rig("proj-opsc", "c_opsc", "opsc-1", scopes).await;
     let now = crate::shard::now_ms() / 1000;
     let ct = ("content-type", "application/json");
     let fleet = ("authorization", "Bearer dst-internal-token");
@@ -174,7 +174,7 @@ async fn workload_jwt_operations_scope_the_internal_surface() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn raw_surface_operations_follow_the_request_method() {
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (_state, addr, _tok) = sr_rig("proj-rmo", "ws_rmo", "c_rmo", "rmo-1", scopes).await;
+    let (_state, addr, _tok) = sr_rig("proj-rmo", "c_rmo", "rmo-1", scopes).await;
     let now = crate::shard::now_ms() / 1000;
     let ops = ["raw-lifecycle", "raw-append", "raw-read"];
     let tokens = ops.map(|op| format!("Bearer {}", sr2_workload_jwt(FLEET_KID, &[op], now)));

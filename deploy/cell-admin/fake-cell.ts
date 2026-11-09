@@ -72,13 +72,13 @@ export class FakeCell {
     this.tokens.push(claims);
     this.credential = claims.credential_id;
     if (claims.exp + 30 <= this.now() / 1000) return this.reply(401, "expired");
-    const policy = (this.live.policies.projects as any[]).find((p) => p.project_id === claims.project_id);
+    const policy = (this.live.policies.containers as any[]).find((p) => p.container_id === claims.container_id);
     if (!policy) return this.reply(421, "wrong_cell");
-    if (claims.ownership_version !== policy.ownership_version) return this.reply(401, "ownership_version_mismatch");
+    if (claims.generation !== policy.generation) return this.reply(401, "ownership_version_mismatch");
     if (policy.status !== "active") return this.reply(403, "project_not_active");
     const cred = (this.live.grants.credentials as any[]).find((c) => c.credential_id === claims.credential_id);
     if (!cred) return this.reply(401, "credential_unknown");
-    if (cred.project_id !== claims.project_id) return this.reply(401, "credential_project_mismatch");
+    if (cred.container_id !== claims.container_id) return this.reply(401, "credential_project_mismatch");
     if (cred.status !== "active") return this.reply(403, "credential_not_active");
     if (cred.expires_at !== null && cred.expires_at <= Math.floor(this.now() / 1000)) {
       return this.reply(401, "credential_expired");
@@ -89,7 +89,7 @@ export class FakeCell {
     if (new URL(req.url).pathname === "/v1/streams" && !(granted(claims.scope) && granted(cred.scopes))) {
       return this.reply(403, "missing_scope");
     }
-    return { project: claims.project_id };
+    return { project: claims.container_id };
   }
 
   private answer(req: Request): Response {

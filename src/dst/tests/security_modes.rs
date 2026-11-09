@@ -49,7 +49,6 @@ async fn shadow_mode_observes_without_enforcing() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 40,
             ownership_version: 12,
@@ -101,9 +100,10 @@ async fn shadow_mode_observes_without_enforcing() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -121,7 +121,6 @@ async fn shadow_mode_observes_without_enforcing() {
             sub: "user_1",
             credential_id: "strcred_123",
             project_id: "proj_456",
-            workspace_id: "ws_789",
             cell_id: "test-cell",
             ownership_version: 12,
             grant_version: 7,
@@ -242,9 +241,8 @@ async fn enforce_mode_gates_the_product_surface() {
     })
     .unwrap();
 
-    let policy = |proj: &str, ws: &str, cell: &str, status| crate::project_policy::ProjectPolicy {
+    let policy = |proj: &str, cell: &str, status| crate::project_policy::ProjectPolicy {
         project_id: crate::tenant::ProjectId::new(proj).unwrap(),
-        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
         cell_id: std::sync::Arc::from(cell),
         project_policy_version: 1,
         ownership_version: 12,
@@ -253,14 +251,14 @@ async fn enforce_mode_gates_the_product_surface() {
     };
     use crate::project_policy::ProjectStatus as PS;
     let mut projects = std::collections::HashMap::new();
-    for (p, ws, cell, st) in [
-        ("proj-test", "ws_789", "test-cell", PS::Active),
-        ("proj_off", "ws_off", "test-cell", PS::Suspended),
-        ("proj_far", "ws_far", "other-cell", PS::Active),
+    for (p, cell, st) in [
+        ("proj-test", "test-cell", PS::Active),
+        ("proj_off", "test-cell", PS::Suspended),
+        ("proj_far", "other-cell", PS::Active),
     ] {
         projects.insert(
             crate::tenant::ProjectId::new(p).unwrap(),
-            policy(p, ws, cell, st),
+            policy(p, cell, st),
         );
     }
     svc.publish_policies(crate::project_policy::PolicySnapshot {
@@ -352,9 +350,10 @@ async fn enforce_mode_gates_the_product_surface() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -364,42 +363,39 @@ async fn enforce_mode_gates_the_product_surface() {
         iat: i64,
         exp: i64,
     }
-    let mint =
-        |cred: &str, proj: &str, ws: &str, cell: &str, scope: &str, pfx: Option<Vec<&str>>| {
-            let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-            header.kid = Some("enf-1".into());
-            jsonwebtoken::encode(
-                &header,
-                &Claims {
-                    iss: "https://auth.prisma.io",
-                    aud: "prisma-streams-data",
-                    sub: "user_1",
-                    credential_id: cred,
-                    project_id: proj,
-                    workspace_id: ws,
-                    cell_id: cell,
-                    ownership_version: 12,
-                    grant_version: 7,
-                    scope,
-                    stream_prefixes: pfx,
-                    jti: "tok_enf",
-                    iat: now - 60,
-                    exp: now + 600,
-                },
-                &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-            )
-            .unwrap()
-        };
+    let mint = |cred: &str, proj: &str, cell: &str, scope: &str, pfx: Option<Vec<&str>>| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("enf-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &Claims {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "user_1",
+                credential_id: cred,
+                project_id: proj,
+                cell_id: cell,
+                ownership_version: 12,
+                grant_version: 7,
+                scope,
+                stream_prefixes: pfx,
+                jti: "tok_enf",
+                iat: now - 60,
+                exp: now + 600,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
     let t_full = format!(
         "Bearer {}",
-        mint("c_full", "proj-test", "ws_789", "test-cell", full, None)
+        mint("c_full", "proj-test", "test-cell", full, None)
     );
     let t_read = format!(
         "Bearer {}",
         mint(
             "c_read",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.metadata.read streams.records.read",
             None
@@ -410,7 +406,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_pfx",
             "proj-test",
-            "ws_789",
             "test-cell",
             full,
             Some(vec!["customers/acme"])
@@ -421,7 +416,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_meta",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.metadata.read streams.create",
             None
@@ -432,7 +426,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_watch",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.create streams.watches.manage",
             None
@@ -443,7 +436,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_cons",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.consumers.configure",
             None
@@ -454,7 +446,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_consdlq",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.consumers.configure streams.dlq.configure",
             None
@@ -465,7 +456,6 @@ async fn enforce_mode_gates_the_product_surface() {
         mint(
             "c_dlqpfx",
             "proj-test",
-            "ws_789",
             "test-cell",
             "streams.create streams.consumers.configure streams.dlq.configure",
             Some(vec!["acme"])
@@ -473,11 +463,11 @@ async fn enforce_mode_gates_the_product_surface() {
     );
     let t_susp = format!(
         "Bearer {}",
-        mint("c_susp", "proj_off", "ws_off", "test-cell", full, None)
+        mint("c_susp", "proj_off", "test-cell", full, None)
     );
     let t_far = format!(
         "Bearer {}",
-        mint("c_far", "proj_far", "ws_far", "other-cell", full, None)
+        mint("c_far", "proj_far", "other-cell", full, None)
     );
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let body = br#"{"format":{"kind":"json"}}"#;

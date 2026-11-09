@@ -244,8 +244,7 @@ def main() -> None:
     ttl = int(min(24 * 3600 - 300, est + 3600))
     jwt_path = os.path.join(sdir, f"gen-{k}.jwt")
     subprocess.run(["node", os.path.join(F.HERE, "feeds.mjs"), "token", "--dir", sdir, "--cell-id", st["cell_id"],
-                    "--project", st["customer_project_id"], "--workspace", st["workspace_id"],
-                    "--credential", st["credential_id"], "--ttl", str(ttl), "--sub", svc, "--out", jwt_path], check=True)
+                    "--project", st["customer_project_id"], "--credential", st["credential_id"], "--ttl", str(ttl), "--sub", svc, "--out", jwt_path], check=True)
     data_key = F.ensure_secret(run, cell, "data-key", F.b64key)
     with open(jwt_path, encoding="utf-8") as f:
         jwt = f.read().strip()

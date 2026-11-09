@@ -14,7 +14,7 @@ use super::fixture_storage::mem;
 async fn enforce_denials_journal_to_audit_events() {
     // Deliberately NO streams.records.read: the read leg must deny.
     let scopes = "streams.create streams.records.append";
-    let (state, addr, token) = sr_rig("proj-audj", "ws_audj", "c_audj", "audj-1", scopes).await;
+    let (state, addr, token) = sr_rig("proj-audj", "c_audj", "audj-1", scopes).await;
     let auth = ("authorization", token.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
@@ -238,7 +238,6 @@ async fn shared_cell_certification_smoke() {
     // Workspaces are SHARED across projects (16 workspaces for 128
     // projects) — the realistic shape, and it exercises per-project
     // rollup rows under one account.
-    let ws_name = |i: usize| format!("ws-c{:02}", i % 16);
     let mut base_projects = std::collections::HashMap::new();
     let mut base_credentials = std::collections::HashMap::new();
     for i in 0..project_count {
@@ -247,7 +246,6 @@ async fn shared_cell_certification_smoke() {
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: crate::tenant::WorkspaceId::new(&ws_name(i)).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
@@ -295,9 +293,10 @@ async fn shared_cell_certification_smoke() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -309,7 +308,7 @@ async fn shared_cell_certification_smoke() {
     let mint = |i: usize| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("cert-1".into());
-        let (p, w, c) = (proj_name(i), ws_name(i), cred_name(i));
+        let (p, c) = (proj_name(i), cred_name(i));
         format!(
             "Bearer {}",
             jsonwebtoken::encode(
@@ -320,7 +319,6 @@ async fn shared_cell_certification_smoke() {
                     sub: "u",
                     credential_id: &c,
                     project_id: &p,
-                    workspace_id: &w,
                     cell_id: "test-cell",
                     ownership_version: 1,
                     grant_version: 1,

@@ -14,7 +14,7 @@ use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 async fn delete_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.lifecycle.manage";
-    let (state, addr, token) = sr_rig("proj-delb", "ws_delb", "c_delb", "del-1", scopes).await;
+    let (state, addr, token) = sr_rig("proj-delb", "c_delb", "del-1", scopes).await;
     let auth = ("authorization", token.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
@@ -83,7 +83,7 @@ async fn delete_stays_inside_the_requesting_project() {
 async fn transition_append_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
-    let (state, addr, tok) = sr_rig("proj-trab", "ws_trab", "c_trab", "tra-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-trab", "c_trab", "tra-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = [("content-type", "application/json")];
@@ -186,7 +186,7 @@ async fn transition_append_stays_inside_the_requesting_project() {
 async fn stale_lineage_read_stays_inside_the_requesting_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
-    let (state, addr, tok) = sr_rig("proj-lrb", "ws_lrb", "c_lrb", "lrb-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-lrb", "c_lrb", "lrb-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = [("content-type", "application/json")];
@@ -348,7 +348,7 @@ fn stale_jwks_maps_to_retryable_503() {
 async fn ttl_slide_stays_inside_the_owning_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
-    let (state, addr, tok) = sr_rig("proj-ttlb", "ws_ttlb", "c_ttlb", "ttl-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-ttlb", "c_ttlb", "ttl-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = [("content-type", "application/json")];
@@ -407,7 +407,7 @@ async fn ttl_slide_stays_inside_the_owning_project() {
 async fn seal_fence_resolves_the_owning_project() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.lifecycle.manage";
-    let (state, addr, tok) = sr_rig("proj-fenb", "ws_fenb", "c_fenb", "fen-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-fenb", "c_fenb", "fen-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 

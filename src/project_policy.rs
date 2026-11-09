@@ -16,18 +16,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
+use crate::tenant::{ProjectId, ScopeSet, StreamGrant};
 
-/// §11. Every status except `Active` fails closed at authorization;
-/// `TransferPending` additionally means the issuer has stopped minting
-/// tokens, so a verified token seen in that state is pre-transfer and
-/// must not act.
+/// §11. Every status except `Active` fails closed at authorization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProjectStatus {
     Active,
     Suspended,
-    TransferPending,
     Deleting,
     Deleted,
 }
@@ -83,7 +79,6 @@ pub(crate) struct ProjectQuotas {
 #[derive(Clone, Debug)]
 pub(crate) struct ProjectPolicy {
     pub project_id: ProjectId,
-    pub workspace_id: WorkspaceId,
     pub cell_id: Arc<str>,
     pub project_policy_version: u64,
     pub ownership_version: u64,

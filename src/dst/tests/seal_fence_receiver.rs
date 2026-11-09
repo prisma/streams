@@ -143,7 +143,7 @@ async fn held<T>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn seal_fence_receiver_demands_its_exact_operation() {
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (state, addr, _tok) = sr_rig("proj-sfr", "ws_sfr", "c_sfr", "sfr-1", scopes).await;
+    let (state, addr, _tok) = sr_rig("proj-sfr", "c_sfr", "sfr-1", scopes).await;
     let desc = stage(&state, addr, "sfr", FLEET).await;
     let target = target(&desc);
     let th = target_headers(&target);

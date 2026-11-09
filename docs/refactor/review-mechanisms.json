@@ -903,7 +903,7 @@
         {
           "file": "src/dst/tests/security_revocation.rs",
           "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
-          "sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a"
+          "sha256": "2ccc4ff436b09d866dbc7192edf447c2e02ebff172dd731af6dd87d64c9e9a60"
         }
       ]
     },
@@ -1134,9 +1134,9 @@
       "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
       "before_commit": "89884ab114b22929aa93707361e9e8d52c762bc2",
       "before_sha256": "9a082639f18a6130d4173f2733b39186b747af77671dce5cfc4eef6da4cab1b8",
-      "after_sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a",
+      "after_sha256": "2ccc4ff436b09d866dbc7192edf447c2e02ebff172dd731af6dd87d64c9e9a60",
       "finding": "V01",
-      "reason": "Replace an unverified sleep-based three-second freshness precondition and final silence assertion with real TCP per-publication delivery. New owned-clock tests prove refresh before each old deadline and both exact stale boundaries using the unchanged production predicate. Original stale-feed, revocation and expiry controls remain unchanged; historical failures are not relabeled."
+      "reason": "Replace an unverified sleep-based three-second freshness precondition and final silence assertion with real TCP per-publication delivery. New owned-clock tests prove refresh before each old deadline and both exact stale boundaries using the unchanged production predicate. Original stale-feed, revocation and expiry controls remain unchanged; historical failures are not relabeled. Edge #253 part 3 (3a-1): the feed and token claims name the container and no workspace, so the rig calls lose their workspace argument (auth_rig, mint_token, rig_policy); no other value or assertion changed."
     },
     {
       "file": "src/dst/tests/persistence_faults.rs",

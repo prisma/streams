@@ -10,7 +10,7 @@ use crate::project_policy::{CredentialGrant, CredentialStatus, GrantSnapshot};
 use crate::tenant::{ProjectId, Scope, ScopeSet, StreamGrant};
 use std::sync::Arc;
 
-const PROJECT: (&str, &str) = ("proj-seal", "ws-seal");
+const PROJECT: &str = "proj-seal";
 const LIFECYCLE: &str = "streams.lifecycle.manage streams.records.read streams.metadata.read";
 const APPEND: &str = "streams.records.append streams.records.read";
 
@@ -27,7 +27,7 @@ fn bearers(svc: &crate::auth::AuthService) -> [String; 3] {
     let credentials = grants.iter().map(|&(cred, scopes)| {
         let credential = CredentialGrant {
             credential_id: Arc::from(cred),
-            project_id: ProjectId::new(PROJECT.0).unwrap(),
+            project_id: ProjectId::new(PROJECT).unwrap(),
             grant_version: 2,
             status: CredentialStatus::Active,
             scopes: ScopeSet::parse(scopes).0,
@@ -118,13 +118,7 @@ async fn state_of(addr: std::net::SocketAddr, bearer: &str, name: &str) -> (usiz
 /// credential never gets lifecycle authority through a final record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_final_record_seal_needs_append_as_well_as_lifecycle() {
-    let (svc, state, addr) = auth_rig(
-        PROJECT.0,
-        PROJECT.1,
-        &["c-full", "c-life", "c-append"],
-        None,
-    )
-    .await;
+    let (svc, state, addr) = auth_rig(PROJECT, &["c-full", "c-life", "c-append"], None).await;
     let [full, life, append_only] = bearers(&svc);
     rig_create(addr, "a/refused", &full).await;
     assert_eq!(append(addr, &full, "a/refused", false).await, 200);

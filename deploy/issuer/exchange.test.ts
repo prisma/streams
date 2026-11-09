@@ -74,7 +74,7 @@ describe("the exchange", () => {
     const state = cellState(cell);
     expect(claims).toMatchObject({
       iss: "https://auth.prisma.io", aud: "prisma-streams-data", sub: `cred:${id}`, credential_id: id,
-      project_id: "sp_a", workspace_id: "ws_sp_a", cell_id: CELL, ownership_version: 1,
+      container_id: "sp_a", cell_id: CELL, generation: 1,
       grant_version: state.credentials[id].grant_version, scope: CUSTOMER_SCOPES.join(" "),
       iat: T0 / 1000 - 60, nbf: T0 / 1000 - 60, exp: T0 / 1000 + 3540,
     });

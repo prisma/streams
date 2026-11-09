@@ -18,7 +18,7 @@ import { AdminError } from "./errors";
 export const STREAM_MAP_ENTRIES = 65_536;
 
 /// The quota fields of the policy feed (contracts/streams-platform/v1,
-/// project-policies.schema.json), in contract order.
+/// container-policies.schema.json), in contract order.
 export const QUOTA_FIELDS = [
   "requests_per_sec",
   "append_bytes_per_sec",

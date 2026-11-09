@@ -8,7 +8,7 @@ use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectPolicy, ProjectQuotas,
     ProjectStatus,
 };
-use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
+use crate::tenant::{ProjectId, ScopeSet, StreamGrant};
 
 const WORKERS: u64 = 8;
 const ROUNDS: u64 = 128;
@@ -103,7 +103,6 @@ fn concurrent_grant_publications_preserve_snapshot_order() {
 fn policy(version: u64) -> ProjectPolicy {
     ProjectPolicy {
         project_id: ProjectId::new("proj-publish").unwrap(),
-        workspace_id: WorkspaceId::new("ws_publish").unwrap(),
         cell_id: Arc::from("test-cell"),
         project_policy_version: version,
         ownership_version: version,

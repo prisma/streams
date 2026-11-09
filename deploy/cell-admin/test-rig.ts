@@ -213,10 +213,10 @@ export const readState = (where: string): CellState => JSON.parse(readStateText(
 /// A bundle without the issuer's canary (every cell `init` makes carries
 /// it), for tests about customer projects.
 export function customerOnly(b: Bundle): Bundle {
-  const mine = (e: unknown) => !String((e as { project_id: string }).project_id).startsWith("sp_canary_");
+  const mine = (e: unknown) => !String((e as { container_id: string }).container_id).startsWith("sp_canary_");
   return {
     keys: b.keys,
-    policies: { ...b.policies, projects: b.policies.projects.filter(mine) },
+    policies: { ...b.policies, containers: b.policies.containers.filter(mine) },
     grants: { ...b.grants, credentials: b.grants.credentials.filter(mine) },
   };
 }

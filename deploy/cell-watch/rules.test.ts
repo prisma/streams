@@ -250,7 +250,7 @@ function lacedData(i: number): Json {
     "feeds.jwks.ageSecs": 120,
     "feeds.policies.reservedDropped": 2,
     "feeds.policies.stale": true,
-    "feeds.policies.projects_named": [PROJECT, WORKSPACE],
+    "feeds.policies.containers_named": [PROJECT, WORKSPACE],
     "local.instance": laced,
     "local.rss_mb": 520.5,
     "local.admit_shed_rss": i,

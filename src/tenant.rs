@@ -85,27 +85,6 @@ fn validate_id(raw: &str, max: usize) -> Result<(), IdentityError> {
     Ok(())
 }
 
-/// Mutable commercial/authorization identity (§1.1). Never an input to
-/// a storage identity; deliberately NOT a field of [`TenantStreamRef`].
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub(crate) struct WorkspaceId(Arc<str>);
-
-impl WorkspaceId {
-    pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
-        validate_id(raw, ID_MAX_BYTES)?;
-        Ok(Self(Arc::from(raw)))
-    }
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for WorkspaceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 /// Stable tenant identity (§1.1): appears in registry paths, route
 /// hashes, storage hashes, segment identities, cursors, consumer
 /// state, usage rows, and internal RPC targets.
@@ -141,15 +120,6 @@ impl<'de> serde::Deserialize<'de> for ProjectId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
         ProjectId::new(&raw).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Same validated-construction rule as `ProjectId`: no unchecked bytes
-/// enter through a deserializer side door (Stage 5 feed files).
-impl<'de> serde::Deserialize<'de> for WorkspaceId {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(d)?;
-        WorkspaceId::new(&raw).map_err(serde::de::Error::custom)
     }
 }
 

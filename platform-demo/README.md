@@ -50,10 +50,6 @@ fleet token) and proves the §14.5 scenario families — 64 checks:
   refresh (proven against a 100s cadence — the cell's own ceiling,
   refresh ≤ a third of the 300s staleness window); retirement is
   permanent; retired-kid tokens die everywhere.
-- **Transfer saga (§10)**: no new token during `transfer_pending`;
-  old-ownership tokens fail after publication; the new workspace's
-  replacement credential reads the SAME stream (storage identity
-  never changes).
 - **Deletion saga (§11)**: authorization cutoff first, then the
   project leaves every feed (omission tombstone).
 - **Feed faults** (`--enable-fault-api`, deliberate §7.2 violations):

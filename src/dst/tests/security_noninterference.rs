@@ -101,7 +101,6 @@ fn dab_policies(
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid,
-                workspace_id: crate::tenant::WorkspaceId::new(&format!("ws-dab-{tag}")).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: feed_version,
                 ownership_version: 1,
@@ -125,9 +124,10 @@ fn dab_jwt(tag: &str, side: &str, kid: &str, scopes: &str, now: i64) -> String {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -145,7 +145,6 @@ fn dab_jwt(tag: &str, side: &str, kid: &str, scopes: &str, now: i64) -> String {
             sub: "u",
             credential_id: &format!("c-dab-{side}-{tag}"),
             project_id: &format!("proj-dab-{side}-{tag}"),
-            workspace_id: &format!("ws-dab-{tag}"),
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,

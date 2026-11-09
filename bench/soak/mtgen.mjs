@@ -43,19 +43,17 @@ const signJwt = (claims) => {
 
 const SCOPES = "streams.create streams.records.append streams.records.read streams.metadata.read";
 const pid = (i) => `proj-mt-${String(i).padStart(4, "0")}`;
-const WS = "ws-mt";
 const now = Math.floor(Date.now() / 1000);
 
 const bundle = {
   keys: { feed_version: 1, keys: [{ kid: KID, alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] },
   policies: {
     feed_version: 1,
-    projects: Array.from({ length: N }, (_, i) => ({
-      project_id: pid(i + 1),
-      workspace_id: WS,
+    containers: Array.from({ length: N }, (_, i) => ({
+      container_id: pid(i + 1),
       cell_id: CELL,
-      project_policy_version: 1,
-      ownership_version: 1,
+      policy_version: 1,
+      generation: 1,
       status: "active",
       quotas: {},
     })),
@@ -64,7 +62,7 @@ const bundle = {
     feed_version: 1,
     credentials: Array.from({ length: N }, (_, i) => ({
       credential_id: `strcred_mt_${String(i + 1).padStart(4, "0")}`,
-      project_id: pid(i + 1),
+      container_id: pid(i + 1),
       grant_version: 1,
       status: "active",
       scopes: SCOPES,
@@ -76,7 +74,7 @@ const bundle = {
 const SCHEMA_DIR = new URL("../../contracts/streams-platform/v1/", import.meta.url);
 for (const [part, schema] of [
   ["keys", "keys.schema.json"],
-  ["policies", "project-policies.schema.json"],
+  ["policies", "container-policies.schema.json"],
   ["grants", "credential-grants.schema.json"],
 ]) {
   const errs = validateDocument(bundle[part], JSON.parse(readFileSync(new URL(schema, SCHEMA_DIR))));
@@ -88,8 +86,8 @@ const tokens = Array.from({ length: N }, (_, i) => ({
   token: signJwt({
     iss: ISS, aud: "prisma-streams-data", sub: `campaign:mt-tenants`,
     credential_id: `strcred_mt_${String(i + 1).padStart(4, "0")}`,
-    project_id: pid(i + 1), workspace_id: WS, cell_id: CELL,
-    ownership_version: 1, grant_version: 1,
+    container_id: pid(i + 1), cell_id: CELL,
+    generation: 1, grant_version: 1,
     scope: SCOPES,
     jti: randomBytes(8).toString("hex"),
     iat: now, nbf: now, exp: now + TOKEN_TTL_S,

@@ -407,7 +407,7 @@ async fn seal_converges_through_transient_commit_group_failures() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
     let scopes = "streams.create streams.records.append streams.records.read";
-    let (state, addr, _tok) = sr_rig("proj-scl", "ws_scl", "c_scl", "scl-1", scopes).await;
+    let (state, addr, _tok) = sr_rig("proj-scl", "c_scl", "scl-1", scopes).await;
     let ct = ("content-type", "application/json");
     // Stage a raw stream (deployment tenant = the receiver's own
     // registry view) with one record.

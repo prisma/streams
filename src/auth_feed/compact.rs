@@ -1,7 +1,7 @@
 //! The policy and grant feeds parsed straight into their snapshots (tuning
 //! item 3c, step 1): as a file is read, with no whole-file copy and no
 //! list of parsed documents beside the map, and with one shared copy of
-//! each distinct cell id, workspace id and (in the grants) project id. The
+//! each distinct cell id and (in the grants) container id. The
 //! strict rules are `parse_policies`' and `parse_grants`': an item that
 //! breaks one refuses the whole feed.
 
@@ -19,6 +19,7 @@ use crate::tenant::{ProjectId, ScopeSet, StreamGrant};
 #[serde(deny_unknown_fields)]
 struct PolicyFeed {
     feed_version: u64,
+    #[serde(rename = "containers")]
     projects: Policies,
 }
 
@@ -29,7 +30,7 @@ struct GrantFeed {
     credentials: Grants,
 }
 
-/// The `projects` list, as the map it becomes.
+/// The `containers` list, as the map it becomes.
 struct Policies(HashMap<ProjectId, ProjectPolicy>);
 
 /// The `credentials` list, as the map it becomes.
@@ -85,19 +86,18 @@ impl<'de> Visitor<'de> for PoliciesVisitor {
     type Value = Policies;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a list of project policies")
+        f.write_str("a list of container policies")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Policies, A::Error> {
         let mut projects = HashMap::with_capacity(items.size_hint().unwrap_or(0));
-        let (mut cells, mut workspaces) = (Interned::new(), Interned::new());
+        let mut cells = Interned::new();
         while let Some(doc) = items.next_element::<PolicyDoc>()? {
             crate::tenant::validate_cell_id(&doc.cell_id).map_err(|e| {
                 A::Error::custom(format!("project {:?}: bad cell_id: {e}", doc.project_id))
             })?;
             let policy = ProjectPolicy {
                 project_id: doc.project_id.clone(),
-                workspace_id: workspaces.share(doc.workspace_id),
                 cell_id: cells.share(Arc::<str>::from(doc.cell_id)),
                 project_policy_version: doc.project_policy_version,
                 ownership_version: doc.ownership_version,

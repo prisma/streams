@@ -65,8 +65,8 @@ The Control Plane owns mutable commercial and authorization state. The Streams c
 1. One customer access token authorizes exactly one `project_id`.
 2. Human sessions, Management API tokens, workspace integration tokens, and durable Streams credential secrets are never accepted by a Streams cell.
 3. `project_id + stream_name + stream_epoch` is stable data identity.
-4. `workspace_id + ownership_version` is mutable authorization and billing identity.
-5. A workspace transfer never rewrites registry paths, stream hashes, segment identities, cursors, or records.
+4. `generation` is the container's token epoch: the Control Plane increments it to invalidate every token of the container in one write. The workspace is the Control Plane's owner link and appears in no feed and no token (edge #253).
+5. Moving a container between workspaces is not supported (owner decision, 2026-11-08). Streams storage identity never depends on the workspace: registry paths, stream hashes, segment identities, cursors and records name the container alone.
 6. The gateway verifies a token before reading `project_id`, selecting a cell, or choosing a quota bucket.
 7. The cell verifies the token and exact current project/grant versions again.
 8. Control Plane feeds are complete full snapshots. Omission means removal, not pagination or temporary absence.
@@ -111,14 +111,15 @@ The live project-to-workspace relation is authoritative. `workspace_id_at_creati
 ### 4.2 Project Streams policy
 
 ```text
-project_id
-workspace_id
+container_id
 cell_id
-project_policy_version
-ownership_version
+policy_version
+generation
 status
 quotas
 ```
+
+The workspace is not a policy field: the Control Plane keeps it as the container's owner link.
 
 Planned quota field (round-12 decision, 2026-08-31): the per-project
 LiveFeed retention allowance becomes policy-driven as
@@ -140,7 +141,6 @@ Supported status values:
 ```text
 active
 suspended
-transfer_pending
 deleting
 deleted
 ```
@@ -167,9 +167,9 @@ A quota value of `0` means that no project-level limit is configured at that lay
 
 ### 4.3 Version rules
 
-`project_policy_version` increments whenever status, placement, quota, or other policy content changes.
+`policy_version` increments whenever status, placement, quota, or other policy content changes.
 
-`ownership_version` increments whenever workspace ownership changes.
+`generation` increments when the Control Plane invalidates every token of the container at once.
 
 `grant_version` increments whenever credential status, secret, scopes, prefixes, or expiry changes.
 
@@ -331,10 +331,9 @@ Prefer a stable gateway endpoint. Direct cell endpoints should not be part of th
   "aud": "prisma-streams-data",
   "sub": "service-account-or-user-id",
   "credential_id": "strcred_123",
-  "project_id": "proj_456",
-  "workspace_id": "ws_789",
+  "container_id": "proj_456",
   "cell_id": "fra-cell-07",
-  "ownership_version": 12,
+  "generation": 12,
   "grant_version": 7,
   "scope": "streams.records.append streams.metadata.read",
   "stream_prefixes": ["events/production"],
@@ -380,7 +379,7 @@ Expose one authenticated internal snapshot endpoint per feed and cell assignment
 
 ```http
 GET /internal/streams/cells/{cell_id}/jwks
-GET /internal/streams/cells/{cell_id}/project-policies
+GET /internal/streams/cells/{cell_id}/container-policies
 GET /internal/streams/cells/{cell_id}/credential-grants
 ```
 
@@ -416,13 +415,12 @@ For file projection, write to a temporary file, flush it, and atomically rename 
 ```json
 {
   "feed_version": 42,
-  "projects": [
+  "containers": [
     {
-      "project_id": "proj_456",
-      "workspace_id": "ws_789",
+      "container_id": "proj_456",
       "cell_id": "fra-cell-07",
-      "project_policy_version": 9,
-      "ownership_version": 3,
+      "policy_version": 9,
+      "generation": 3,
       "status": "active",
       "quotas": {
         "requests_per_sec": 1000,
@@ -598,31 +596,9 @@ A process-local per-instance count is only a safety backstop, not an exact proje
 
 ---
 
-## 10. Workspace transfer saga
+## 10. Moving a container between workspaces
 
-Recommended state machine:
-
-```text
-Active(old owner)
-  -> TransferPending
-  -> ownership changed + credentials revoked
-  -> policy/event acknowledged by cell and billing
-  -> Active(new owner)
-```
-
-Procedure:
-
-1. Transactionally mark the project `transfer_pending` and stop token exchange.
-2. Increment `ownership_version`.
-3. Change `workspace_id`.
-4. Revoke all existing Streams credentials by default, incrementing their grant versions.
-5. Publish the new project-policy and credential-grant generations.
-6. Emit durable `ProjectOwnershipChanged` with old/new workspace and version plus `effective_at`.
-7. Wait for cell feed acknowledgement and billing-rollup acknowledgement.
-8. Mark the project active.
-9. Permit the new workspace to create replacement credentials.
-
-Failure recovery must be idempotent at every step. Storage identity never changes.
+Not supported (owner decision, 2026-11-08). To invalidate every token of a container, for example after a credential compromise, increment its `generation` and publish the policy: a token minted at an older generation is refused `401` once the cell holds the new policy, and the container's credentials are re-issued. Storage identity never changes.
 
 ---
 
@@ -773,7 +749,7 @@ Use TypeScript/Node so the producer side is independent from the Rust consumer a
 ```text
 contracts/streams-platform/v1/
   keys.schema.json
-  project-policies.schema.json
+  container-policies.schema.json
   credential-grants.schema.json
   customer-token-claims.schema.json
   workload-token-claims.schema.json
@@ -878,12 +854,10 @@ Quotas:
 - terminal fork-cascade hard delete releases the stream slot;
 - queued append bytes release on every success, refusal, cancellation, and shutdown path.
 
-Transfer and deletion:
+Generation and deletion:
 
-- no new token during `transfer_pending`;
-- old ownership token fails after feed publication;
+- a token of an older generation fails once the policy publishes;
 - storage identity remains unchanged;
-- usage changes workspace at the ownership boundary;
 - restart after every saga step converges without double billing;
 - deletion cuts off authorization before storage cleanup.
 

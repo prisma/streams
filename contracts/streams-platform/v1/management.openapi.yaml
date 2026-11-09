@@ -118,10 +118,10 @@ paths:
       x-internal: true
       summary: JWKS snapshot for one cell (document = keys.schema.json)
       responses: { "200": { description: Full snapshot + Prisma-Streams-Feed-Generation header } }
-  /internal/streams/cells/{cellId}/project-policies:
+  /internal/streams/cells/{cellId}/container-policies:
     get:
       x-internal: true
-      summary: Project-policy snapshot (project-policies.schema.json; only this cell's projects)
+      summary: Project-policy snapshot (container-policies.schema.json; only this cell's projects)
       responses: { "200": { description: Full snapshot + generation header } }
   /internal/streams/cells/{cellId}/credential-grants:
     get:

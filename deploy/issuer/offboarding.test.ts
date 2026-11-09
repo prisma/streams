@@ -43,7 +43,7 @@ async function deleted() {
 const entriesOf = (cell: { state: string }, project: string) => {
   const b = readBundle(cell.state);
   return {
-    policies: (b.policies.projects as any[]).filter((p) => p.project_id === project),
+    policies: (b.policies.containers as any[]).filter((p) => p.container_id === project),
     grants: (b.grants.credentials as any[]).filter((g) => g.project_id === project),
   };
 };
@@ -68,7 +68,7 @@ describe("the offboarding job", () => {
       ["/v1/streams?limit=1", 403],
     ]);
     expect(fake.tokens[0]).toMatchObject({
-      credential_id: operator, project_id: id, sub: "issuer-offboard", scope: OPERATOR_SCOPES, grant_version: 1,
+      credential_id: operator, container_id: id, sub: "issuer-offboard", scope: OPERATOR_SCOPES, grant_version: 1,
     });
     expect(fake.tokens[1]).toMatchObject({ credential_id: made.credential.id, grant_version: 2 });
     // Pages of twice the project's rate (10 a second, the free tier).
@@ -310,7 +310,7 @@ describe("the offboarding job", () => {
     await m.cache.refresh();
     await m.issuer.offboarding.runDue();
     expect(cellState(cell).projects.sp_c).toMatchObject({ phase: "offboarding", status: "suspended", offboard_attempts: 1 });
-    expect(fake.tokens.map((t) => t.project_id).filter((p) => p === "sp_c" || p.startsWith("sp_canary_"))).toEqual([]);
+    expect(fake.tokens.map((t) => t.container_id).filter((p) => p === "sp_c" || p.startsWith("sp_canary_"))).toEqual([]);
     expect(m.logs).toContain(
       "offboarding sp_c: attempt 1 failed (project sp_c is suspended and being offboarded without a witness " +
         "version: its revocation was not made by offboard's first run, so no canary answer proves the cell holds " +

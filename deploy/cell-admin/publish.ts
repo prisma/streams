@@ -73,7 +73,7 @@ export function unversionedChanges(published: Bundle, ours: Bundle): string[] {
     }
   };
   check(published.keys.keys, ours.keys.keys, "kid", null, "key");
-  check(published.policies.projects, ours.policies.projects, "project_id", "project_policy_version", "project");
+  check(published.policies.containers, ours.policies.containers, "container_id", "policy_version", "container");
   check(published.grants.credentials, ours.grants.credentials, "credential_id", "grant_version", "credential");
   return changed;
 }

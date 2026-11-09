@@ -57,36 +57,34 @@ const credentials = [];
 for (let i = 0; i < total; i++) {
   const pid = i <= NOISY ? projName(i) : `proj-idle-${String(i - NOISY).padStart(3, "0")}`;
   projects.push({
-    project_id: pid,
-    workspace_id: `ws-${i % 16}`,
+    container_id: pid,
     cell_id: CELL,
-    project_policy_version: 1,
-    ownership_version: 1,
+    policy_version: 1,
+    generation: 1,
     status: "active",
     quotas: {},
   });
   credentials.push({
     credential_id: `cred-${pid}`,
-    project_id: pid,
+    container_id: pid,
     grant_version: 1,
     status: "active",
     scopes,
   });
 }
 writeFileSync(join(dir, "keys.json"), JSON.stringify({ feed_version: 1, keys: [{ kid: "camp-1", alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] }));
-writeFileSync(join(dir, "policies.json"), JSON.stringify({ feed_version: 1, projects }));
+writeFileSync(join(dir, "policies.json"), JSON.stringify({ feed_version: 1, containers: projects }));
 writeFileSync(join(dir, "grants.json"), JSON.stringify({ feed_version: 1, credentials }));
 
 const b64u = (b) => Buffer.from(b).toString("base64url");
-function jwt(project, ws) {
+function jwt(project) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64u(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "camp-1" }));
   const claims = b64u(
     JSON.stringify({
       iss: ISS, aud: "prisma-streams-data", sub: "camp",
-      credential_id: `cred-${project}`, project_id: project,
-      workspace_id: ws, cell_id: CELL,
-      ownership_version: 1, grant_version: 1, scope: scopes,
+      credential_id: `cred-${project}`, container_id: project, cell_id: CELL,
+      generation: 1, grant_version: 1, scope: scopes,
       jti: randomBytes(8).toString("hex"), iat: now - 60, exp: now + 7200,
     }),
   );
@@ -176,7 +174,7 @@ async function main() {
   process.on("exit", () => { if (!process.env.KEEP) kill(); });
   await new Promise((r) => setTimeout(r, 2500));
 
-  const vt = jwt("proj-victim", "ws-0");
+  const vt = jwt("proj-victim");
   // Victim + noisy streams exist under the SAME name in every project
   // — the adversarial configuration.
   let r = await req("PUT", "/v1/streams/victim", vt, JSON.stringify({ format: { kind: "json" } }));
@@ -189,7 +187,7 @@ async function main() {
   const noisyToks = [];
   for (let i = 1; i <= NOISY; i++) {
     const p = projName(i);
-    const t = jwt(p, `ws-${i % 16}`);
+    const t = jwt(p);
     const c = await req("PUT", "/v1/streams/victim", t, JSON.stringify({ format: { kind: "json" } }));
     if (c.status !== 201) throw new Error(`noisy ${p} create: ${c.status}`);
     noisyToks.push(t);

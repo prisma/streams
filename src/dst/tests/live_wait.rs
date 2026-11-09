@@ -504,7 +504,7 @@ async fn a_watch_pins_its_cursor_and_a_matching_append_invalidates_it() {
     engine_shutdown(&state).await;
 }
 
-const PROJECT: (&str, &str) = ("proj-live", "ws-live");
+const PROJECT: &str = "proj-live";
 
 /// `c-full` holds every scope over every name; `c-a` reads records and
 /// pulls under "a" only; `c-pull` only pulls, over every name.
@@ -520,7 +520,7 @@ fn bearers(svc: &crate::auth::AuthService) -> (String, String, String) {
     let credentials = grants.into_iter().map(|(cred, scopes, grant)| {
         let credential = CredentialGrant {
             credential_id: Arc::from(cred),
-            project_id: ProjectId::new(PROJECT.0).unwrap(),
+            project_id: ProjectId::new(PROJECT).unwrap(),
             grant_version: 2,
             status: CredentialStatus::Active,
             scopes: ScopeSet::parse(scopes).0,
@@ -563,7 +563,7 @@ async fn per_stream_refusal(addr: SocketAddr, bearer: &str, name: &str) -> (u16,
 /// path naming another project is the usage route's 404.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_refusal() {
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &[], None).await;
     let (full, under_a, pull_only) = bearers(&svc);
     for name in ["a/x", "b/y"] {
         let (st, _, b) = preq(
@@ -580,7 +580,7 @@ async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_re
     let wrong = json!({"id": "k", "kind": "tail", "stream": "a/x", "cursor": "now",
                        "key": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="});
     let body = json!({"subs": [tail("ok", "a/x", "now"), tail("no", "b/y", "now"), wrong]});
-    let (st, answer, _) = live_wait(addr, PROJECT.0.into(), &as_a, &body).await;
+    let (st, answer, _) = live_wait(addr, PROJECT.into(), &as_a, &body).await;
     assert_eq!(st, 200, "{answer}");
     assert_eq!(ids(&answer), ["ok", "no", "k"]);
     assert_eq!(entry(&answer, "ok")["records"], json!([]));
@@ -591,7 +591,7 @@ async fn every_subscription_is_held_to_the_tokens_grants_and_answered_its_own_re
     assert_eq!(entry(&answer, "k")["error"]["code"], json!("wrong_key"));
     let as_pull = [("authorization", pull_only.as_str())];
     let body = json!({"subs": [tail("s", "a/x", "now")]});
-    let (_, answer, _) = live_wait(addr, PROJECT.0.into(), &as_pull, &body).await;
+    let (_, answer, _) = live_wait(addr, PROJECT.into(), &as_pull, &body).await;
     let (status, error) = per_stream_refusal(addr, &pull_only, "a/x").await;
     assert_eq!((status, &entry(&answer, "s")["error"]), (403, &error));
     let (st, answer, _) = live_wait(addr, "proj-other".into(), &as_a, &body).await;

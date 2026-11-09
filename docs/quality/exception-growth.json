@@ -1516,12 +1516,12 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 123,
-        "nested_items": 18,
-        "syntax_facts": 179
+        "scope_lines": 120,
+        "nested_items": 17,
+        "syntax_facts": 173
       },
       "rationale": "S16: Layout 6A package 4 D7 port of a pinned or retargeted test to the sealer (approved D7 classification, step-3 batch 1 S8).",
-      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28"
+      "approver": "Fable 5.1 under the owner's delegation, 2026-11-09 (edge #253 part 3 commit 3a-1, ROW-DECISION-account-removal-2026-11-08 §3a-1): the rig shrank when the token claims and the policy lost the workspace (the local claims struct's workspace_id field and literal, and the workspace argument of auth_rig, rig_policy and mint_token), so the row takes the gate's after values (120, 17, 173); before that, the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28"
     },
     {
       "path": "src/dst/tests/seal_cancellation.rs",

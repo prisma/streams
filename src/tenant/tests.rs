@@ -36,7 +36,6 @@ fn id_bounds_are_enforced() {
         );
     }
     assert!(ProjectId::new("proj_ABC-123").is_ok());
-    assert!(WorkspaceId::new("ws_789").is_ok());
     assert!(validate_cell_id("fra-cell-07").is_ok());
 }
 

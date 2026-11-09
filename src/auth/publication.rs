@@ -6,7 +6,7 @@
 //!
 //! Monotonic publication (review item 2, authorization P0): a stale or
 //! out-of-order feed must never restore an earlier authorization state — an
-//! earlier workspace owner, a revoked credential, a removed scope, a retired
+//! earlier generation, a revoked credential, a removed scope, a retired
 //! signing key. Each publish REFUSES a snapshot that would move any version
 //! backward; the refused snapshot is dropped, the current one keeps aging
 //! toward the §7.1 staleness refusal, and the refresher logs the refusal.
@@ -32,14 +32,6 @@ struct ProjHw {
     /// Max (ownership_version, policy_version) ever seen.
     o_hw: u64,
     p_hw: u64,
-    /// Round-4 finding 3: the workspace bound to `o_hw`. The
-    /// direct-transition check compares a new policy against a project
-    /// still PRESENT in the current snapshot — an omit-and-reintroduce
-    /// sequence hid behind that, moving the workspace at an UNCHANGED
-    /// ownership_version (no transfer event, no credential revocation,
-    /// no billing split). The workspace at the high-water ownership
-    /// version survives omissions, so the coupling holds across them.
-    workspace_at_o_hw: crate::tenant::WorkspaceId,
     /// Version pair at the moment the project was last OMITTED from a
     /// full snapshot. Reintroduction requires strictly exceeding one
     /// of them — a replayed pre-omission snapshot cannot resurrect it.
@@ -115,19 +107,10 @@ fn feed_fp(debug: impl std::fmt::Debug) -> [u8; 32] {
 impl ProjHw {
     fn check(&self, np: &ProjectPolicy) -> Result<(), &'static str> {
         if np.ownership_version < self.o_hw {
-            return Err("ownership_version below high-water");
+            return Err("generation below high-water");
         }
         if np.project_policy_version < self.p_hw {
-            return Err("project_policy_version below high-water");
-        }
-        // Round-4 finding 3: the workspace bound to the
-        // HIGH-WATER ownership version survives omissions. A
-        // workspace change at an unchanged ownership_version is
-        // refused even when the current snapshot no longer
-        // contains the project — omit-and-reintroduce must not
-        // bypass the transfer coupling.
-        if np.ownership_version == self.o_hw && np.workspace_id != self.workspace_at_o_hw {
-            return Err("workspace changed without ownership_version increment");
+            return Err("policy_version below high-water");
         }
         if let Some((oo, op)) = self.omitted_at
             && np.ownership_version <= oo
@@ -144,12 +127,7 @@ impl ProjHw {
 
     fn observe(&mut self, np: &ProjectPolicy) {
         let vpair = (np.ownership_version, np.project_policy_version);
-        if np.ownership_version > self.o_hw {
-            self.o_hw = np.ownership_version;
-            // Round-4 finding 3: the workspace travels with
-            // the ownership high-water.
-            self.workspace_at_o_hw = np.workspace_id.clone();
-        }
+        self.o_hw = self.o_hw.max(np.ownership_version);
         self.p_hw = self.p_hw.max(np.project_policy_version);
         if vpair >= self.fp_at {
             self.fp_at = vpair;
@@ -166,17 +144,10 @@ impl ProjHw {
 
 fn check_projects_transition(op: &ProjectPolicy, np: &ProjectPolicy) -> Result<(), &'static str> {
     if np.ownership_version < op.ownership_version {
-        return Err("ownership_version regressed");
+        return Err("generation regressed");
     }
     if np.project_policy_version < op.project_policy_version {
-        return Err("project_policy_version regressed");
-    }
-    // Review round 3 F3: the contract ties a workspace
-    // (owner) change to an ownership_version increment. A
-    // higher policy version must not smuggle an owner
-    // change past the lease/transfer machinery.
-    if np.workspace_id != op.workspace_id && np.ownership_version <= op.ownership_version {
-        return Err("workspace changed without ownership_version increment");
+        return Err("policy_version regressed");
     }
     Ok(())
 }
@@ -288,7 +259,6 @@ impl HighWater {
             ProjHw {
                 o_hw: np.ownership_version,
                 p_hw: np.project_policy_version,
-                workspace_at_o_hw: np.workspace_id.clone(),
                 omitted_at: None,
                 fp_at: vpair,
                 fp: feed_fp(np),
@@ -550,23 +520,6 @@ impl AuthService {
     fn published(&self) {
         let generation = self.generation.fetch_add(1, Ordering::Release) + 1;
         self.gen_tx.send_replace(generation);
-    }
-}
-
-/// The workspace the CURRENT policy snapshot names for `project`. Usage no
-/// longer records it (edge #253 part 1); the feed carries it until part 3,
-/// and only the feed's transfer tests read it.
-#[cfg(test)]
-impl super::AuthService {
-    pub(crate) fn workspace_for(
-        &self,
-        project: &crate::tenant::ProjectId,
-    ) -> Option<super::WorkspaceId> {
-        self.projects
-            .load()
-            .projects
-            .get(project)
-            .map(|p| p.workspace_id.clone())
     }
 }
 

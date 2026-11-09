@@ -15,7 +15,7 @@ use crate::product::{
 };
 use crate::tenant::Scope;
 
-const PROJECT: (&str, &str) = ("proj-ops", "ws-ops");
+const PROJECT: &str = "proj-ops";
 const CREDENTIAL: &str = "c-ops";
 
 /// Every operation the product entry dispatches, on a stream that never
@@ -269,7 +269,7 @@ async fn refused_by_route(answer: Response) -> bool {
 /// no scope: its handler verifies a capability instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_dispatched_operation_demands_exactly_its_scope() {
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &[CREDENTIAL], None).await;
     let mut grant_version = 1;
     for (method, path, scope) in OPERATIONS {
         let others = Scope::ALL.into_iter().filter(|s| Some(*s) != scope);
@@ -308,7 +308,7 @@ async fn every_dispatched_operation_demands_exactly_its_scope() {
 /// the route table. Grammar refusals come first, from the route parser.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_request_naming_no_operation_authenticates_before_its_404_or_405() {
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &[CREDENTIAL], None).await;
     let consumer = "/v1/streams/opgrid/consumers/c:x";
     let (status, _, body) = preq(addr, "GET", consumer, &[], b"").await;
     let grammar = (status, error_code(&body));
@@ -389,7 +389,7 @@ async fn the_entry_dispatches_exactly_the_resolved_operations() {
 /// operation demands gets the route's own refusal, not 403 missing_scope.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_request_naming_no_operation_is_refused_by_route_not_by_scope() {
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &[CREDENTIAL], None).await;
     let mut grant_version = 1;
     for (method, path, withheld, status, code) in NO_OPERATION_WITHHELD {
         let held = claim(Scope::ALL.into_iter().filter(|s| *s != withheld));
@@ -410,7 +410,7 @@ async fn a_request_naming_no_operation_is_refused_by_route_not_by_scope() {
 /// operator surfaces alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn every_401_carries_its_bearer_challenge() {
-    let (_svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &[CREDENTIAL], None).await;
+    let (_svc, state, addr) = auth_rig(PROJECT, &[CREDENTIAL], None).await;
     let forged: &[(&str, &str)] = &[("authorization", "Bearer not-a-token")];
     for (method, path, headers) in [
         ("GET", "/v1/streams/opgrid", &[][..]),

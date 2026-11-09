@@ -110,7 +110,7 @@ test("tokens writes one verifiable 12 h token per project, re-mints them on its 
   const bundle = readBundle(w.state);
   for (const e of list) {
     const c = verifiedClaims(bundle, e.token);
-    expect([c?.project_id, c.exp - c.iat, c.sub]).toEqual([e.project, TOKEN_TTL_SECS, "tenants-harness"]);
+    expect([c?.container_id, c.exp - c.iat, c.sub]).toEqual([e.project, TOKEN_TTL_SECS, "tenants-harness"]);
   }
   expect(r.out.join("\n")).not.toContain(list[0]!.token);
   expect([TOKEN_TTL_SECS, REFRESH_SECS]).toEqual([43_200, 28_800]);
@@ -158,7 +158,7 @@ test("feeds writes the bundle's three feeds as a native cell reads them, and ref
   // Every admitted project is in the policy feed the cell will read, the
   // canary beside them.
   const plan = expand(manifest, "");
-  const ids = (JSON.parse(readFileSync(join(feeds, "policies.json"), "utf8")).projects as Array<{ project_id: string }>).map((p) => p.project_id);
+  const ids = (JSON.parse(readFileSync(join(feeds, "policies.json"), "utf8")).containers as Array<{ container_id: string }>).map((p) => p.container_id);
   expect(ids.sort()).toEqual([...plan.projects.map((p) => p.id), canaryProjectId("cell_t")].sort());
 
   const torn = join(w.root, "torn");
@@ -200,7 +200,7 @@ test("admit's cost per project does not grow with the cell: 3,000 projects withi
     "--cell-id", "cell_t", "--deployment-project", "proj_dep");
   expect([r.code, r.out.at(-1)]).toEqual([0, "admit: 3000 admitted, 0 already held, 0 failed of 3000"]);
   expect(Date.now() - started).toBeLessThan(30_000);
-  expect(readBundle(w.state).policies.projects.length).toBe(3001);
+  expect(readBundle(w.state).policies.containers.length).toBe(3001);
 }, 600_000);
 
 test("a rerun with nothing to admit takes a cell made on another profile, as a cached rig cell is; one with something to admit is refused", async () => {

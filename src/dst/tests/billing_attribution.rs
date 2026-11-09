@@ -49,13 +49,12 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     // tenant (proj-test) — using proj-test as project A made this a
     // deployment+foreign proof, which masked the drain reconciler's
     // deployment-ref lookup bug.
-    for (proj, ws, cred) in [("proj-inva", "ws_a", "c_a"), ("proj-b", "ws_b", "c_b")] {
+    for (proj, cred) in [("proj-inva", "c_a"), ("proj-b", "c_b")] {
         let pid = crate::tenant::ProjectId::new(proj).unwrap();
         projects.insert(
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
@@ -100,9 +99,10 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -110,7 +110,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         iat: i64,
         exp: i64,
     }
-    let mint = |cred: &str, proj: &str, ws: &str| {
+    let mint = |cred: &str, proj: &str| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("inv-1".into());
         jsonwebtoken::encode(
@@ -121,7 +121,6 @@ async fn same_name_cross_project_usage_attributes_exactly() {
                 sub: "u",
                 credential_id: cred,
                 project_id: proj,
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: 1,
                 grant_version: 1,
@@ -134,8 +133,8 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("c_a", "proj-inva", "ws_a"));
-    let tb = format!("Bearer {}", mint("c_b", "proj-b", "ws_b"));
+    let ta = format!("Bearer {}", mint("c_a", "proj-inva"));
+    let tb = format!("Bearer {}", mint("c_b", "proj-b"));
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let auth_a = ("authorization", ta.as_str());
     let auth_b = ("authorization", tb.as_str());
@@ -264,16 +263,12 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
                   streams.metadata.read streams.usage.read";
     let mut projects = std::collections::HashMap::new();
     let mut credentials = std::collections::HashMap::new();
-    for (proj, ws, cred) in [
-        ("proj-reca", "ws_reca", "c_ra"),
-        ("proj-recb", "ws_recb", "c_rb"),
-    ] {
+    for (proj, cred) in [("proj-reca", "c_ra"), ("proj-recb", "c_rb")] {
         let pid = crate::tenant::ProjectId::new(proj).unwrap();
         projects.insert(
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
@@ -318,9 +313,10 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -328,7 +324,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         iat: i64,
         exp: i64,
     }
-    let mint = |cred: &str, proj: &str, ws: &str| {
+    let mint = |cred: &str, proj: &str| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("rec-1".into());
         jsonwebtoken::encode(
@@ -339,7 +335,6 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
                 sub: "u",
                 credential_id: cred,
                 project_id: proj,
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: 1,
                 grant_version: 1,
@@ -352,8 +347,8 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("c_ra", "proj-reca", "ws_reca"));
-    let tb = format!("Bearer {}", mint("c_rb", "proj-recb", "ws_recb"));
+    let ta = format!("Bearer {}", mint("c_ra", "proj-reca"));
+    let tb = format!("Bearer {}", mint("c_rb", "proj-recb"));
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let auth_a = ("authorization", ta.as_str());
     let auth_b = ("authorization", tb.as_str());
@@ -485,8 +480,8 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
 /// counter is process-wide, so other scenarios may add a few to either.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn unowned_meter_events_count_the_containers_the_feed_does_not_know() {
-    let (_svc, state, addr) = auth_rig("proj-known", "ws_known", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-known", "ws_known", 1, 1, "known", 600);
+    let (_svc, state, addr) = auth_rig("proj-known", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-known", 1, 1, "known", 600);
     rig_create(addr, "known", &tok).await;
     let sref = crate::tenant::TenantStreamRef::new(
         crate::tenant::ProjectId::new("proj-known").unwrap(),

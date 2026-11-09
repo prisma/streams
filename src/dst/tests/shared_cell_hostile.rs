@@ -200,10 +200,9 @@ async fn reserved_ids_are_dropped_from_the_feed() {
         .as_str()
         .to_string();
     let mut tokens = Vec::new();
-    let (pid, ws) = (deployment.as_str(), "ws-sc00");
+    let pid = deployment.as_str();
     let mut p = policy(0, ProjectQuotas::default());
     p.project_id = ProjectId::new(pid).unwrap();
-    p.workspace_id = crate::tenant::WorkspaceId::new(ws).unwrap();
     cell.policies.insert(p.project_id.clone(), p);
     let mut g = grant(0, 1);
     let cred = format!("c-{pid}");
@@ -212,7 +211,6 @@ async fn reserved_ids_are_dropped_from_the_feed() {
     cell.grants.insert(Arc::from(cred.as_str()), g);
     let mut token = Token::of(0);
     token.project_id = pid.to_string();
-    token.workspace_id = ws.to_string();
     token.credential_id = cred;
     tokens.push((pid.to_string(), token.bearer()));
     let mut system = policy(0, ProjectQuotas::default());

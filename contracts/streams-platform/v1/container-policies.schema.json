@@ -1,28 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://prisma.io/streams-platform/v1/project-policies.schema.json",
-  "title": "Streams project-policy feed snapshot (full, per cell)",
+  "$id": "https://prisma.io/streams-platform/v1/container-policies.schema.json",
+  "title": "Streams container-policy feed snapshot (full, per cell)",
   "type": "object",
-  "required": ["feed_version", "projects"],
+  "required": ["feed_version", "containers"],
   "additionalProperties": false,
   "properties": {
     "feed_version": { "type": "integer", "minimum": 1 },
-    "projects": {
+    "containers": {
       "type": "array",
       "items": {
         "type": "object",
         "required": [
-          "project_id", "workspace_id", "cell_id",
-          "project_policy_version", "ownership_version", "status", "quotas"
+          "container_id", "cell_id",
+          "policy_version", "generation", "status", "quotas"
         ],
         "additionalProperties": false,
         "properties": {
-          "project_id": { "$ref": "#/$defs/id" },
-          "workspace_id": { "$ref": "#/$defs/id" },
+          "container_id": { "$ref": "#/$defs/id" },
           "cell_id": { "$ref": "#/$defs/id" },
-          "project_policy_version": { "type": "integer", "minimum": 1 },
-          "ownership_version": { "type": "integer", "minimum": 1 },
-          "status": { "enum": ["active", "suspended", "transfer_pending", "deleting", "deleted"] },
+          "policy_version": { "type": "integer", "minimum": 1 },
+          "generation": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["active", "suspended", "deleting", "deleted"] },
           "quotas": {
             "type": "object",
             "additionalProperties": false,

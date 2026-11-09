@@ -64,7 +64,7 @@ for (const kind of STORES) {
       const noCred = (where: string) =>
         (readBundle(where).grants.credentials as { credential_id: string }[]).map(({ credential_id: _c, ...rest }) => rest).sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)));
       expect(noCred(many.state)).toEqual(noCred(one.state));
-      expect(readBundle(many.state).policies.projects).toEqual(readBundle(one.state).policies.projects);
+      expect(readBundle(many.state).policies.containers).toEqual(readBundle(one.state).policies.containers);
       expect(denylistText(many.state)).toBe(denylistText(one.state));
       expect(readBundle(many.state).keys.feed_version).toBe(2);
       // The ordinary path takes the state on from here.

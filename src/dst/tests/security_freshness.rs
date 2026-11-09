@@ -19,7 +19,7 @@ impl LeaseRig {
     async fn new() -> Self {
         // Initialize the real owner under its ordinary production window.
         // Every short-window decision below then uses only this owned clock.
-        let (service, state, _) = auth_rig("proj-v01", "ws-v01", &["c-v01"], None).await;
+        let (service, state, _) = auth_rig("proj-v01", &["c-v01"], None).await;
         let clock = ManualClock::at(crate::shard::now_ms());
         let lease = AuthLease {
             project_id: crate::tenant::ProjectId::new("proj-v01").unwrap(),
@@ -63,7 +63,7 @@ impl LeaseRig {
     fn publish(&mut self, policy: bool, grants: bool) {
         self.version += 1;
         if policy {
-            let policy = rig_policy("proj-v01", "ws-v01", 1, 1);
+            let policy = rig_policy("proj-v01", 1, 1);
             self.service
                 .publish_policies(PolicySnapshot {
                     projects: [(policy.project_id.clone(), policy)].into(),

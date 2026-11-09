@@ -1,13 +1,12 @@
 {
   "_comment": "HOSTILE: a negative max_stored_bytes. The schema refuses it (minimum 0), and the cell's strict parser refuses the whole snapshot, so no reading of a negative cap can stand (MULTITENANCY §17.3 r9).",
   "feed_version": 2,
-  "projects": [
+  "containers": [
     {
-      "project_id": "proj-golden",
-      "workspace_id": "ws-golden",
+      "container_id": "proj-golden",
       "cell_id": "local-cell",
-      "project_policy_version": 1,
-      "ownership_version": 1,
+      "policy_version": 1,
+      "generation": 1,
       "status": "active",
       "quotas": { "max_stored_bytes": -1 }
     }

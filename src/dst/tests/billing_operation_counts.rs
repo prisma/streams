@@ -534,11 +534,11 @@ async fn settle_counts_follow_the_typed_outcome() {
 /// and `_ops_metrics` (one snapshot), so each later step reads a page of its
 /// ledger and finds nothing to apply.
 async fn consumed_ledgers() -> std::sync::Arc<crate::http::AppState> {
-    let (_feeds, state, addr) = auth_rig("proj-opcsys", "ws_opcsys", &["c1"], None).await;
+    let (_feeds, state, addr) = auth_rig("proj-opcsys", &["c1"], None).await;
     let store = state.data_store.clone();
     let rollup = crate::rollup::UsageRollup::open(store, "", &state.config).await;
     install_rollup(&state, rollup.unwrap()).await;
-    let bearer = mint_token("c1", "proj-opcsys", "ws_opcsys", 1, 1, "opcsys", 600);
+    let bearer = mint_token("c1", "proj-opcsys", 1, 1, "opcsys", 600);
     rig_create(addr, "opcsys", &bearer).await;
     assert_eq!(rig_append(addr, "opcsys", &bearer, r#"{"n":1}"#).await, 200);
     state.billing.reads().seal_if_aged(0);

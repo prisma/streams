@@ -231,7 +231,7 @@ describe("constants cell-admin shares with the server", () => {
   });
 
   test("the quota fields are the policy contract's, in its order", () => {
-    const s = schema("project-policies.schema.json") as any;
-    expect(Object.keys(s.properties.projects.items.properties.quotas.properties)).toEqual([...QUOTA_FIELDS]);
+    const s = schema("container-policies.schema.json") as any;
+    expect(Object.keys(s.properties.containers.items.properties.quotas.properties)).toEqual([...QUOTA_FIELDS]);
   });
 });

@@ -214,8 +214,7 @@ impl CellCeiling {
         snapshot.projects.retain(|project, policy| {
             let reserved = self.reserves(policy);
             if reserved {
-                tracing::warn!(%project, workspace = %policy.workspace_id.as_str(),
-                    "policy feed names a reserved project or account; dropped");
+                tracing::warn!(%project, "policy feed names a reserved container; dropped");
                 dropped += 1;
             }
             !reserved
@@ -248,7 +247,7 @@ mod tests {
     use crate::config::{MapEnvironment, ServerConfig};
     use crate::deployment::DeploymentIdentity;
     use crate::project_policy::{PolicySnapshot, ProjectPolicy, ProjectQuotas, ProjectStatus};
-    use crate::tenant::{CellId, ProjectId, WorkspaceId};
+    use crate::tenant::{CellId, ProjectId};
 
     const BOUNDS: SharedBounds = SharedBounds {
         requests_per_sec: 1_411,
@@ -442,11 +441,10 @@ mod tests {
         assert_eq!(stored(&CellCeiling::dedicated(), 0), 0);
     }
 
-    fn policy(project: &str, workspace: &str) -> (ProjectId, ProjectPolicy) {
+    fn policy(project: &str) -> (ProjectId, ProjectPolicy) {
         let project_id = ProjectId::new(project).unwrap();
         let policy = ProjectPolicy {
             project_id: project_id.clone(),
-            workspace_id: WorkspaceId::new(workspace).unwrap(),
             cell_id: "cell".into(),
             project_policy_version: 1,
             ownership_version: 1,
@@ -483,10 +481,10 @@ mod tests {
         let deployment = deployment();
         let snapshot = PolicySnapshot {
             projects: [
-                policy(crate::tenant::SYSTEM_PROJECT, "ws-a"),
-                policy("proj-deploy", "ws-a"),
-                policy("proj-a", "acct-deploy"),
-                policy("proj-b", "ws-a"),
+                policy(crate::tenant::SYSTEM_PROJECT),
+                policy("proj-deploy"),
+                policy("proj-a"),
+                policy("proj-b"),
             ]
             .into(),
             fetched_at_unix: 0,
@@ -539,7 +537,7 @@ mod tests {
         );
         assert_eq!(cell.effective(&quotas(0)).max_stored_bytes, 10 << 30);
         let (_, dropped) = cell.apply(PolicySnapshot {
-            projects: [policy("proj-deploy", "ws"), policy("proj-a", "acct-deploy")].into(),
+            projects: [policy("proj-deploy"), policy("proj-a")].into(),
             fetched_at_unix: 0,
             feed_version: 1,
         });

@@ -442,7 +442,9 @@ In each of these changes, a request that used to succeed can now fail permanentl
 - **Landed in:**
   1. Part 1, 5263d590b (the record's first commit) and its test 6c7ac12c9: usage records no workspace or account.
   2. Part 2, this commit: `ACCOUNT_ID` leaves the configuration: the server, `deployment.rs`, the auth ceiling's account check, cell-admin, the shipped profiles, composer, cell-watch, the bench and effective-config scripts.
-  3. Part 3, pending: the project → container rename: paths, codes, claims, feed v2, kind and single-name rules, issuer, cell-admin, SDK and docs.
+  3. Part 3, in commits:
+     - 3a-1, this commit: the feed and the token claims name the container and no workspace (`containers[]`, `container_id`, `policy_version`, `generation`); `workspace_mismatch`, the transfer coupling and `transfer_pending` are removed.
+     - Pending: 3a-2 (paths, codes, JSON keys, env, header, SDK), 3a-3 (issuer and cell-admin), 3b (kind and single-name refusals), 3c (internal names and docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
   - From part 2's commit on:
@@ -450,7 +452,11 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - the auth ceiling reserves no workspace on any cell, so a policy whose workspace was once a cell's `ACCOUNT_ID` is served like any other (the system project and the deployment's `PROJECT_ID` stay reserved);
     - cell-admin's `init` takes no `--account`, its state holds no `account_id`, `--cell-env` sets `CELL_ID`, `PROJECT_ID` and `STREAMS_AUTH_ISSUER`, and no placement or allow-list refuses a workspace as the account sink;
     - the Composer entry takes no `ACCOUNT_ID` from the cells file.
-  - Until part 3: every path, error code, claim, feed field, env name and SDK option still says project, the token and feed still carry `workspace_id`, and `403 workspace_mismatch` still exists.
+  - From 3a-1's commit on:
+    - the policy feed is `{feed_version, containers: [{container_id, cell_id, policy_version, generation, status, quotas}]}` and grants name `container_id`; a feed entry naming `workspace_id`, and the old key `projects`, are refused (unknown field);
+    - a customer token carries `container_id` and `generation`, and no `workspace_id`; a token of the old shape does not verify;
+    - `403 workspace_mismatch` and the status `transfer_pending` no longer exist, and a policy may change at any `generation` without a workspace check.
+  - Until 3a-2: every path, error code, JSON key, env name and SDK option still says project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.
 - **Endpoint:**

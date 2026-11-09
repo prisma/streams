@@ -42,13 +42,12 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
                   streams.metadata.read streams.catalog.read";
     let mut projects = std::collections::HashMap::new();
     let mut credentials = std::collections::HashMap::new();
-    for (proj, ws, cred) in [("proj-test", "ws_a", "c_a"), ("proj-b", "ws_b", "c_b")] {
+    for (proj, cred) in [("proj-test", "c_a"), ("proj-b", "c_b")] {
         let pid = crate::tenant::ProjectId::new(proj).unwrap();
         projects.insert(
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
@@ -89,9 +88,10 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -99,7 +99,7 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
         iat: i64,
         exp: i64,
     }
-    let mint = |cred: &str, proj: &str, ws: &str| {
+    let mint = |cred: &str, proj: &str| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("mp-1".into());
         jsonwebtoken::encode(
@@ -110,7 +110,6 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
                 sub: "u",
                 credential_id: cred,
                 project_id: proj,
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: 1,
                 grant_version: 1,
@@ -123,8 +122,8 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("c_a", "proj-test", "ws_a"));
-    let tb = format!("Bearer {}", mint("c_b", "proj-b", "ws_b"));
+    let ta = format!("Bearer {}", mint("c_a", "proj-test"));
+    let tb = format!("Bearer {}", mint("c_b", "proj-b"));
     let auth_a = ("authorization", ta.as_str());
     let auth_b = ("authorization", tb.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
@@ -260,18 +259,17 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
                   streams.metadata.read";
     let mut projects = std::collections::HashMap::new();
     let mut credentials = std::collections::HashMap::new();
-    for (proj, ws, cred, rps, recs) in [
+    for (proj, cred, rps, recs) in [
         // A: generous — its paced load must never brush the limits.
-        ("proj-test", "ws_a", "c_a", 10_000u64, 100_000u64),
+        ("proj-test", "c_a", 10_000u64, 100_000u64),
         // B: tight — the flood must hit the wall immediately.
-        ("proj-b", "ws_b", "c_b", 5, 10),
+        ("proj-b", "c_b", 5, 10),
     ] {
         let pid = crate::tenant::ProjectId::new(proj).unwrap();
         projects.insert(
             pid.clone(),
             crate::project_policy::ProjectPolicy {
                 project_id: pid.clone(),
-                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
                 cell_id: std::sync::Arc::from("test-cell"),
                 project_policy_version: 1,
                 ownership_version: 1,
@@ -316,9 +314,10 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -326,7 +325,7 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
         iat: i64,
         exp: i64,
     }
-    let mint = |cred: &str, proj: &str, ws: &str| {
+    let mint = |cred: &str, proj: &str| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("nn-1".into());
         jsonwebtoken::encode(
@@ -337,7 +336,6 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
                 sub: "u",
                 credential_id: cred,
                 project_id: proj,
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: 1,
                 grant_version: 1,
@@ -350,8 +348,8 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("c_a", "proj-test", "ws_a"));
-    let tb = format!("Bearer {}", mint("c_b", "proj-b", "ws_b"));
+    let ta = format!("Bearer {}", mint("c_a", "proj-test"));
+    let tb = format!("Bearer {}", mint("c_b", "proj-b"));
     let body = br#"{"format":{"kind":"json"}}"#;
 
     // Both create their own stream (uses one token from each bucket).

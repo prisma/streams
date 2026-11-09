@@ -637,7 +637,7 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
 async fn nondeployment_pending_split_resumes() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
-    let (state, addr, tok) = sr_rig("proj-spl", "ws_spl", "c_spl", "spl-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-spl", "c_spl", "spl-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let (st, _, _) = preq(

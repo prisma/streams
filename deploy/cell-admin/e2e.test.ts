@@ -199,7 +199,7 @@ const catalogAnswer = async (cell: string, bearer: string) =>
 
 /// `project`'s status in the bundle `state` holds, or "omitted".
 const statusIn = (state: string, project: string) =>
-  (readBundle(state).policies.projects as { project_id: string; status: string }[])
+  (readBundle(state).policies.containers as { container_id: string; status: string }[])
     .find((p) => p.project_id === project)?.status ?? "omitted";
 
 maybe("a suspended project is offboarded through the canary witness on the real binary", async () => {
@@ -290,7 +290,7 @@ maybe("the S3 store's preconditions hold on s3lite, and concurrent writers lose 
   const store = await S3Store.open("s3://ctl/cells/cell_e2e", { control: target("ctl"), feeds: target("feeds") });
   const published = await store.readBundle();
   expect(published?.version).toBe(4);
-  expect((published?.bundle.policies.projects as { project_id: string }[]).map((p) => p.project_id))
+  expect((published?.bundle.policies.containers as { container_id: string }[]).map((p) => p.container_id))
     .toEqual(["proj_a", "proj_b", "proj_c", "sp_canary_cell_e2e"]);
   const loaded = await store.load();
   expect(Object.keys(loaded.state.projects).sort())

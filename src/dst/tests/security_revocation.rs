@@ -26,15 +26,15 @@ fn data_frames(s: &str) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
-    let (svc, _state, addr) = auth_rig("proj-st2", "ws_st", &["c1"], Some(3)).await;
-    let tok = mint_token("c1", "proj-st2", "ws_st", 1, 1, "s2", 600);
+    let (svc, _state, addr) = auth_rig("proj-st2", &["c1"], Some(3)).await;
+    let tok = mint_token("c1", "proj-st2", 1, 1, "s2", 600);
     rig_create(addr, "st2", &tok).await;
     let mut sub = rig_sse(addr, "st2", &tok, "", None).await;
     let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
     assert!(b.contains("upToDate"), "parks:\n{b}");
     // Keep the POLICY feed fresh; let GRANTS age past the window.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    rig_publish_policy(&svc, rig_policy("proj-st2", "ws_st", 1, 1), 2).unwrap();
+    rig_publish_policy(&svc, rig_policy("proj-st2", 1, 1), 2).unwrap();
     let (_, eof) = hub_sse_collect(&mut sub, 14, |_| false).await;
     assert!(
         eof,
@@ -46,15 +46,15 @@ async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
 async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
     // Real TCP delivery/publication smoke. The owned-clock V01 tests separately
     // prove refresh-before-deadline and age == / > window without scheduler races.
-    let (svc, _state, addr) = auth_rig("proj-st3", "ws_st", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-st3", "ws_st", 1, 1, "s3", 600);
+    let (svc, _state, addr) = auth_rig("proj-st3", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-st3", 1, 1, "s3", 600);
     rig_create(addr, "st3", &tok).await;
     let mut sub = rig_sse(addr, "st3", &tok, "", None).await;
     let (b, eof) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
     assert!(!eof && b.contains("upToDate"), "parks:\n{b}");
     for fv in 2..6 {
         let generation = svc.auth_generation();
-        rig_publish_policy(&svc, rig_policy("proj-st3", "ws_st", 1, 1), fv).unwrap();
+        rig_publish_policy(&svc, rig_policy("proj-st3", 1, 1), fv).unwrap();
         rig_publish_grants(
             &svc,
             "proj-st3",
@@ -94,9 +94,9 @@ async fn off_mode_subscriptions_are_untouched_by_staleness() {
 async fn revocation_interrupts_active_direct_delivery() {
     // Same deterministic interleaving as the hub leg, on the DIRECT
     // producer path.
-    let (svc, _state, addr) = auth_rig("proj-rv2", "ws_rv", &["c1", "c2"], None).await;
-    let tok1 = mint_token("c1", "proj-rv2", "ws_rv", 1, 1, "d1", 600);
-    let tok2 = mint_token("c2", "proj-rv2", "ws_rv", 1, 1, "d2", 600);
+    let (svc, _state, addr) = auth_rig("proj-rv2", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rv2", 1, 1, "d1", 600);
+    let tok2 = mint_token("c2", "proj-rv2", 1, 1, "d2", 600);
     rig_create(addr, "rv2", &tok1).await;
     for i in 0..4 {
         rig_append_retry(addr, "rv2", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
@@ -160,18 +160,18 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
     // LEASE_TERMINATIONS is process-global; serialize with the other
     // expiry tests that move it (gap_lock convention).
     let _serial = gap_lock().lock().await;
-    let (_svc, _state, addr) = auth_rig("proj-ex1", "ws_ex", &["c1"], None).await;
+    let (_svc, _state, addr) = auth_rig("proj-ex1", &["c1"], None).await;
     // Setup (create, backlog, trigger) rides a LONG-lived token; only
     // the SUBSCRIPTION's lease is short (5 s) — the timing-sensitive
     // window is just connect + catch-up, not the whole rig setup on a
     // loaded runner. The producer is then parked at the send
     // failpoint PAST the lease's expiry.
-    let tok_setup = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e0", 600);
+    let tok_setup = mint_token("c1", "proj-ex1", 1, 1, "e0", 600);
     rig_create(addr, "ex1", &tok_setup).await;
     for i in 0..4 {
         rig_append_retry(addr, "ex1", &tok_setup, &format!(r#"{{"i":{i}}}"#)).await;
     }
-    let tok = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e1", 5);
+    let tok = mint_token("c1", "proj-ex1", 1, 1, "e1", 5);
     let mut sub = rig_sse(addr, "ex1", &tok, "", None).await;
     let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
     assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
@@ -207,9 +207,9 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
 /// yield, never the enqueue.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
-    let (svc, state, addr) = auth_rig("proj-rvq", "ws_rv", &["c1", "c2"], None).await;
-    let tok1 = mint_token("c1", "proj-rvq", "ws_rv", 1, 1, "q1", 600);
-    let tok2 = mint_token("c2", "proj-rvq", "ws_rv", 1, 1, "q2", 600);
+    let (svc, state, addr) = auth_rig("proj-rvq", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rvq", 1, 1, "q1", 600);
+    let tok2 = mint_token("c2", "proj-rvq", 1, 1, "q2", 600);
     rig_create(addr, "rvq", &tok1).await;
     rig_append_retry(addr, "rvq", &tok1, r#"{"i":0}"#).await;
     let mut sub = rig_sse(addr, "rvq", &tok1, "", None).await;
@@ -269,9 +269,9 @@ async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
 /// the body gate is PER SUBSCRIBER, not per feed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
-    let (svc, state, addr) = auth_rig("proj-rv3", "ws_rv", &["c1", "c2"], None).await;
-    let tok1 = mint_token("c1", "proj-rv3", "ws_rv", 1, 1, "s1", 600);
-    let tok2 = mint_token("c2", "proj-rv3", "ws_rv", 1, 1, "s2", 600);
+    let (svc, state, addr) = auth_rig("proj-rv3", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rv3", 1, 1, "s1", 600);
+    let tok2 = mint_token("c2", "proj-rv3", 1, 1, "s2", 600);
     rig_create(addr, "rv3", &tok1).await;
     for i in 0..2 {
         rig_append_retry(addr, "rv3", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
@@ -355,9 +355,9 @@ async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
 /// binding past the cutoff.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn livefeed_source_swap_revocation_yields_zero_post_cutoff_frames() {
-    let (svc, state, addr) = auth_rig("proj-rv4", "ws_rv", &["c1", "c2"], None).await;
-    let tok1 = mint_token("c1", "proj-rv4", "ws_rv", 1, 1, "w1", 600);
-    let tok2 = mint_token("c2", "proj-rv4", "ws_rv", 1, 1, "w2", 600);
+    let (svc, state, addr) = auth_rig("proj-rv4", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rv4", 1, 1, "w1", 600);
+    let tok2 = mint_token("c2", "proj-rv4", 1, 1, "w2", 600);
     rig_create(addr, "rv4", &tok1).await;
     for i in 0..2 {
         rig_append_retry(addr, "rv4", &tok1, &format!(r#"{{"i":{i}}}"#)).await;

@@ -619,7 +619,7 @@ async fn debug_surface_refuses_every_path_without_the_token() {
 async fn debug_surface_serves_every_handler_with_the_token() {
     let (state, addr) = http_rig_auth(mem(), "s3cret").await;
     // A published policy gives /v1/debug/auth a feed age to report.
-    rig_publish_policy(&state.auth, rig_policy("proj_dbg", "ws_dbg", 1, 1), 1).unwrap();
+    rig_publish_policy(&state.auth, rig_policy("proj_dbg", 1, 1), 1).unwrap();
     for (path, field) in [
         ("/v1/debug/timings", None),
         ("/v1/debug/load", Some("inflight_now")),

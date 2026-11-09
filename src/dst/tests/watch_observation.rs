@@ -486,7 +486,7 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
 async fn watch_capability_respects_project_suspension() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
-    let (state, addr, tok) = sr_rig("proj-capb", "ws_capb", "c_capb", "cap-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-capb", "c_capb", "cap-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
@@ -534,7 +534,6 @@ async fn watch_capability_respects_project_suspension() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid,
-            workspace_id: crate::tenant::WorkspaceId::new("ws_capb").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
@@ -572,7 +571,7 @@ async fn watch_capability_respects_project_suspension() {
 async fn watch_capability_waits_occupy_project_admission() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
-    let (state, addr, tok) = sr_rig("proj-capq", "ws_capq", "c_capq", "capq-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-capq", "c_capq", "capq-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let (st, _, _) = preq(
@@ -591,7 +590,6 @@ async fn watch_capability_waits_occupy_project_admission() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid,
-            workspace_id: crate::tenant::WorkspaceId::new("ws_capq").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,
@@ -665,7 +663,7 @@ async fn watch_capability_waits_occupy_project_admission() {
 async fn stale_policy_fails_watch_capabilities_closed() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.watches.manage";
-    let (state, addr, tok) = sr_rig("proj-stalec", "ws_stalec", "c_stalec", "stc-1", scopes).await;
+    let (state, addr, tok) = sr_rig("proj-stalec", "c_stalec", "stc-1", scopes).await;
     let auth = ("authorization", tok.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let (st, _, _) = preq(
@@ -712,7 +710,6 @@ async fn stale_policy_fails_watch_capabilities_closed() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid,
-            workspace_id: crate::tenant::WorkspaceId::new("ws_stalec").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,

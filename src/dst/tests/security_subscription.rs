@@ -13,12 +13,12 @@ use super::fixture_storage::mem;
 // ---- #274 hub promotion + teardown (Søren review F8+F9) ------------
 
 /// Edge #253: the billing identity names the container and no workspace,
-/// so neither a refused hostile policy nor a valid transfer (ownership
-/// bump) moves what a stream's usage is billed to.
+/// so neither a newer policy nor a generation bump moves what a stream's
+/// usage is billed to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn identity_of_names_the_container_whatever_its_workspace() {
-    let (svc, state, addr) = auth_rig("proj-idw", "ws_ida", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-idw", "ws_ida", 1, 1, "idw", 600);
+    let (svc, state, addr) = auth_rig("proj-idw", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-idw", 1, 1, "idw", 600);
     rig_create(addr, "idw", &tok).await;
     // Enforce mode namespaces the stream under its PROJECT.
     let sref = crate::tenant::TenantStreamRef::new(
@@ -28,11 +28,12 @@ async fn identity_of_names_the_container_whatever_its_workspace() {
     let desc = state.registry.get(&sref).await.unwrap().expect("desc");
     let billed = crate::billing::identity_of(&state, &desc);
     assert_eq!(billed.container_id, "proj-idw");
-    // Hostile shape is refused and leaves attribution untouched.
-    assert!(rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 1, 2), 2).is_err());
+    // A newer policy leaves attribution untouched.
+    rig_publish_policy(&svc, rig_policy("proj-idw", 1, 2), 2).unwrap();
     assert_eq!(crate::billing::identity_of(&state, &desc), billed);
-    // A valid transfer does not move it either.
-    rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 2, 3), 3).unwrap();
+    // A generation bump (every token of the container invalidated) does not
+    // move it either.
+    rig_publish_policy(&svc, rig_policy("proj-idw", 2, 3), 3).unwrap();
     assert_eq!(crate::billing::identity_of(&state, &desc), billed);
 }
 
@@ -43,12 +44,12 @@ async fn identity_of_names_the_container_whatever_its_workspace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn valid_transfer_bills_one_container_on_both_sides() {
     let _xr = crate::billing::billing_clock_lock().read().await;
-    let (svc, state, addr) = auth_rig("proj-vtx", "ws_vta", &["c1"], None).await;
+    let (svc, state, addr) = auth_rig("proj-vtx", &["c1"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     install_rollup(&state, rollup).await;
-    let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
+    let tok_a = mint_token("c1", "proj-vtx", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
     let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
@@ -67,7 +68,7 @@ async fn valid_transfer_bills_one_container_on_both_sides() {
     );
 
     // THE TRANSFER: ownership 2, workspace B, c1 revoked, c2 granted.
-    rig_publish_policy(&svc, rig_policy("proj-vtx", "ws_vtb", 2, 2), 2).unwrap();
+    rig_publish_policy(&svc, rig_policy("proj-vtx", 2, 2), 2).unwrap();
     rig_publish_grants(
         &svc,
         "proj-vtx",
@@ -91,7 +92,7 @@ async fn valid_transfer_bills_one_container_on_both_sides() {
 
     // New owner: fresh credential, new subscription, post-transfer
     // delivery.
-    let tok_b = mint_token("c2", "proj-vtx", "ws_vtb", 2, 1, "vb", 600);
+    let tok_b = mint_token("c2", "proj-vtx", 2, 1, "vb", 600);
     let mut p2 = rig_sse(addr, "vtx", &tok_b, "?cursor=now", None).await;
     let (c, _) = hub_sse_collect(&mut p2, 8, |t| t.contains("event: control")).await;
     assert!(c.contains(" 200 "), "new owner subscribes:\n{c}");
@@ -180,9 +181,8 @@ async fn transfer_terminates_established_subscriptions() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
     let pid = crate::tenant::ProjectId::new("proj-ttx").unwrap();
-    let policy_in = |ws: &str, ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
+    let policy_in = |ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
         project_id: pid.clone(),
-        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
@@ -199,7 +199,7 @@ async fn transfer_terminates_established_subscriptions() {
         })
         .unwrap();
     };
-    publish_policy(policy_in("ws_ta", 1, 1), 1);
+    publish_policy(policy_in(1, 1), 1);
     let grant = |gv: u64, status: crate::project_policy::CredentialStatus, fv: u64| {
         let mut credentials = std::collections::HashMap::new();
         credentials.insert(
@@ -230,9 +230,10 @@ async fn transfer_terminates_established_subscriptions() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -240,7 +241,7 @@ async fn transfer_terminates_established_subscriptions() {
         iat: i64,
         exp: i64,
     }
-    let mint = |ws: &'static str, ov: u64, jti: &'static str, exp: i64| {
+    let mint = |ov: u64, jti: &'static str, exp: i64| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("wtx-1".into());
         jsonwebtoken::encode(
@@ -251,7 +252,6 @@ async fn transfer_terminates_established_subscriptions() {
                 sub: "u",
                 credential_id: "c_tx",
                 project_id: "proj-ttx",
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: ov,
                 grant_version: 1,
@@ -265,7 +265,7 @@ async fn transfer_terminates_established_subscriptions() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("ws_ta", 1, "ta", now + 600));
+    let ta = format!("Bearer {}", mint(1, "ta", now + 600));
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let auth_a = ("authorization", ta.as_str());
     let (st, _, _) = preq(
@@ -296,7 +296,7 @@ async fn transfer_terminates_established_subscriptions() {
 
     // THE TRANSFER: ownership_version 2, new workspace, old credential
     // revoked — the full §Phase-D shape, not just a billing remap.
-    publish_policy(policy_in("ws_tb", 2, 2), 2);
+    publish_policy(policy_in(2, 2), 2);
     grant(2, crate::project_policy::CredentialStatus::Revoked, 2);
 
     // Old token: NEW requests must fail closed.
@@ -364,7 +364,6 @@ async fn subscription_terminates_at_token_expiry() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_te").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -405,9 +404,10 @@ async fn subscription_terminates_at_token_expiry() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -427,7 +427,6 @@ async fn subscription_terminates_at_token_expiry() {
             sub: "u",
             credential_id: "c_te",
             project_id: "proj-texp",
-            workspace_id: "ws_te",
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,
@@ -502,9 +501,8 @@ async fn suspension_terminates_established_subscriptions() {
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read";
     let pid = crate::tenant::ProjectId::new("proj-tsx").unwrap();
-    let policy_in = |ws: &str, ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
+    let policy_in = |ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
         project_id: pid.clone(),
-        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
         cell_id: std::sync::Arc::from("test-cell"),
         project_policy_version: ppv,
         ownership_version: ov,
@@ -521,7 +519,7 @@ async fn suspension_terminates_established_subscriptions() {
         })
         .unwrap();
     };
-    publish_policy(policy_in("ws_sa", 1, 1), 1);
+    publish_policy(policy_in(1, 1), 1);
     let grant = |gv: u64, status: crate::project_policy::CredentialStatus, fv: u64| {
         let mut credentials = std::collections::HashMap::new();
         credentials.insert(
@@ -552,9 +550,10 @@ async fn suspension_terminates_established_subscriptions() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -562,7 +561,7 @@ async fn suspension_terminates_established_subscriptions() {
         iat: i64,
         exp: i64,
     }
-    let mint = |ws: &'static str, ov: u64, jti: &'static str, exp: i64| {
+    let mint = |ov: u64, jti: &'static str, exp: i64| {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("wtx-1".into());
         jsonwebtoken::encode(
@@ -573,7 +572,6 @@ async fn suspension_terminates_established_subscriptions() {
                 sub: "u",
                 credential_id: "c_sx",
                 project_id: "proj-tsx",
-                workspace_id: ws,
                 cell_id: "test-cell",
                 ownership_version: ov,
                 grant_version: 1,
@@ -587,7 +585,7 @@ async fn suspension_terminates_established_subscriptions() {
         )
         .unwrap()
     };
-    let ta = format!("Bearer {}", mint("ws_sa", 1, "ta", now + 600));
+    let ta = format!("Bearer {}", mint(1, "ta", now + 600));
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let auth_a = ("authorization", ta.as_str());
     let (st, _, _) = preq(
@@ -619,7 +617,7 @@ async fn suspension_terminates_established_subscriptions() {
     // THE SUSPENSION: same workspace, same versions, same credential —
     // only the project status flips. The lease must fail on status
     // alone.
-    let mut suspended = policy_in("ws_sa", 2, 1);
+    let mut suspended = policy_in(2, 1);
     suspended.status = crate::project_policy::ProjectStatus::Suspended;
     publish_policy(suspended, 2);
 
@@ -690,8 +688,8 @@ async fn assert_no_frames_after_pre_establishment_invalidation(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn lineage_sse_refuses_authorization_invalidated_before_body_construction() {
     let _serial = gap_lock().lock().await;
-    let (svc, state, addr) = auth_rig("proj-f1l", "ws_f1", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-f1l", "ws_f1", 1, 1, "f1l", 600);
+    let (svc, state, addr) = auth_rig("proj-f1l", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-f1l", 1, 1, "f1l", 600);
     rig_create(addr, "f1l", &tok).await;
     for i in 0..4 {
         for k in ["ga", "gb"] {
@@ -747,7 +745,7 @@ async fn lineage_sse_refuses_authorization_invalidated_before_body_construction(
         crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1l") > 0,
         "request never reached the construction window"
     );
-    rig_publish_policy(&svc, rig_policy("proj-f1l", "ws_other", 2, 2), 2).unwrap();
+    rig_publish_policy(&svc, rig_policy("proj-f1l", 2, 2), 2).unwrap();
     rig_publish_grants(
         &svc,
         "proj-f1l",

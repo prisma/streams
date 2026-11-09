@@ -372,7 +372,6 @@ async fn every_auth_refusal_keeps_its_response() {
             denied("the project is not active"),
         ),
         (E::OwnershipVersionMismatch, UNVERIFIED),
-        (E::WorkspaceMismatch, UNVERIFIED),
         (E::CredentialUnknown, UNVERIFIED),
         (
             E::CredentialNotActive(CredentialStatus::Revoked),

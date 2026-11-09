@@ -41,14 +41,14 @@ async function twoProjects(): Promise<Cell> {
 const entriesOf = (c: Cell, project: string) => {
   const b = readBundle(c.state);
   return {
-    policies: (b.policies.projects as any[]).filter((p) => p.project_id === project),
-    grants: (b.grants.credentials as any[]).filter((g) => g.project_id === project),
+    policies: (b.policies.containers as any[]).filter((p) => p.container_id === project),
+    grants: (b.grants.credentials as any[]).filter((g) => g.container_id === project),
   };
 };
 
 /// `project`'s entry in a bundle's policy feed, or undefined.
 const policyOf = (b: Bundle, project: string) =>
-  (b.policies.projects as any[]).find((p) => p.project_id === project) as { status: string } | undefined;
+  (b.policies.containers as any[]).find((p) => p.container_id === project) as { status: string } | undefined;
 
 const second = (c: Cell, extra: string[] = []) =>
   run("offboard", "--state", c.state, "--project", "proj_a", "--cell-url", fake!.url, "--key-file", c.key,
@@ -68,7 +68,7 @@ for (const kind of STORES) {
         expect(r.code).toBe(0);
         const a = entriesOf(c, "proj_a");
         expect(a.policies).toHaveLength(1);
-        expect(a.policies[0].project_policy_version).toBe(1);
+        expect(a.policies[0].policy_version).toBe(1);
         const op = a.grants.find((g) => g.credential_id !== cred);
         expect(a.grants.find((g) => g.credential_id === cred)).toMatchObject({ status: "revoked", grant_version: 2 });
         expect(op).toMatchObject({ status: "active", grant_version: 1, scopes: OPERATOR_SCOPES });
@@ -99,10 +99,10 @@ for (const kind of STORES) {
         });
         expect([after.credentials[canary].grant_version, after.feed_version]).toEqual([2, before.feed_version + 1]);
         const bundle = readBundle(c.state);
-        expect(entriesOf(c, "proj_a").policies).toEqual([expect.objectContaining({ status: "suspended", project_policy_version: 2 })]);
+        expect(entriesOf(c, "proj_a").policies).toEqual([expect.objectContaining({ status: "suspended", policy_version: 2 })]);
         expect(entriesOf(c, "proj_a").grants.find((g) => g.credential_id === cred)).toMatchObject({ status: "revoked", grant_version: 2 });
         expect((bundle.grants.credentials as any[]).find((g) => g.credential_id === canary)).toEqual({
-          credential_id: canary, project_id: "sp_canary_cell_sc1", grant_version: 2, status: "active",
+          credential_id: canary, container_id: "sp_canary_cell_sc1", grant_version: 2, status: "active",
           scopes: "streams.catalog.read", expires_at: null,
         });
         expect(bundle.grants.feed_version).toBe(after.feed_version);

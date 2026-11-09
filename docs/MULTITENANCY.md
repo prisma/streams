@@ -81,7 +81,7 @@
   2026-10-12 in the public-beta calls X3 and S1, and ratified at landing
   under his X2, edge change #156): §17.3 — the policy
   feed's `quotas` carries `max_stored_bytes`, the stored bytes a project
-  may own (`contracts/streams-platform/v1/project-policies.schema.json`
+  may own (`contracts/streams-platform/v1/container-policies.schema.json`
   stays v1: the field is additive and optional). A 0 or absent value
   takes the cell's `PROJECT_STORED_BYTES_DEFAULT` at any k (default 0, no
   limit; the shipped profiles set 0 too since edge change #244, storage
@@ -126,19 +126,17 @@ project_id
 + stream_epoch
 ```
 
-The mutable commercial and authorization identity is:
+The mutable authorization identity is:
 
 ```text
-workspace_id
-+ project_id
-+ ownership_version
+project_id (the container, edge #253)
++ generation
 ```
 
 Consequences:
 
 * `project_id` appears in registry paths, route hashes, storage hashes, segment identities, cursors, consumer state, usage rows, and internal RPC targets.
-* `workspace_id` does **not** appear in immutable storage identities.
-* A project transfer between workspaces changes authorization and billing attribution without rewriting stream data.
+* The workspace appears in no storage identity, no feed and no token: it is the Control Plane's owner link (edge #253). Moving a container between workspaces is not supported (owner decision, 2026-11-08).
 * "Account" is reserved for external login identity and is not used as the Streams tenant type.
 
 ### 1.2 One access token authorizes exactly one project
@@ -368,7 +366,7 @@ The Streams cell never receives the durable credential secret.
 
 Use three distinct versions.
 
-### 4.1 `project_policy_version`
+### 4.1 `policy_version`
 
 Changes whenever project placement, status, quota, or policy data changes.
 
@@ -380,19 +378,19 @@ It is used for:
 
 A token does not authorize against an older policy. The cell always applies the newest locally cached quota and status.
 
-### 4.2 `ownership_version`
+### 4.2 `generation`
 
-Changes whenever the project's workspace owner changes.
+Changes when the Control Plane invalidates every token of the container at once.
 
 A request requires:
 
 ```text
-token.ownership_version
+token.generation
 ==
-cached_project.ownership_version
+cached_project.generation
 ```
 
-This invalidates all pre-transfer access tokens immediately after the new policy reaches the cell.
+This invalidates every older-generation access token as soon as the new policy reaches the cell.
 
 ### 4.3 `grant_version`
 
@@ -488,10 +486,9 @@ Illustrative token:
   "aud": "prisma-streams-data",
   "sub": "service-account-or-user-id",
   "credential_id": "strcred_123",
-  "project_id": "proj_456",
-  "workspace_id": "ws_789",
+  "container_id": "proj_456",
   "cell_id": "fra-cell-07",
-  "ownership_version": 12,
+  "generation": 12,
   "grant_version": 7,
   "scope": "streams.records.read streams.records.append streams.metadata.read",
   "stream_prefixes": ["customers/acme"],
@@ -501,8 +498,6 @@ Illustrative token:
   "exp": 1786600900
 }
 ```
-
-`workspace_id` is checked against the current project policy. It is not used to locate storage.
 
 Recommended constraints:
 
@@ -675,7 +670,6 @@ Create `src/auth.rs`.
 
 ```rust
 pub struct RequestPrincipal {
-    pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
     pub cell_id: Arc<str>,
     pub credential_id: Arc<str>,
@@ -719,7 +713,7 @@ unknown kid:       asynchronous rate-limited refresh
 A request fails closed when:
 
 * JWT signature or claims are invalid;
-* `ownership_version` differs;
+* `generation` differs;
 * `grant_version` differs;
 * credential is inactive;
 * project is suspended/deleting/deleted;
@@ -953,17 +947,15 @@ Create `src/project_policy.rs`.
 pub enum ProjectStatus {
     Active,
     Suspended,
-    TransferPending,
     Deleting,
     Deleted,
 }
 
 pub struct ProjectPolicy {
     pub project_id: ProjectId,
-    pub workspace_id: WorkspaceId,
     pub cell_id: Arc<str>,
-    pub project_policy_version: u64,
-    pub ownership_version: u64,
+    pub project_policy_version: u64, // feed field `policy_version`
+    pub ownership_version: u64,      // feed field `generation`
     pub status: ProjectStatus,
     pub quotas: ProjectQuotas,
 }
@@ -983,72 +975,13 @@ pub struct CredentialGrant {
 }
 ```
 
-The data plane never infers workspace ownership from credential creation metadata. It uses the current `ProjectPolicy`.
+The data plane knows no workspace: neither credentials nor policies carry one (edge #253).
 
 ---
 
-## 12. Workspace transfer
+## 12. Moving a container between workspaces
 
-Project transfer must not rewrite Streams data.
-
-### 12.1 Transfer protocol
-
-1. Mark project `TransferPending`.
-2. Stop issuing new access tokens.
-3. Increment `ownership_version`.
-4. Change `workspace_id`.
-5. Revoke all existing Streams credentials by default.
-6. Publish the new project policy to the assigned cell.
-7. Durably emit `ProjectOwnershipChanged` with:
-
-   ```text
-   project_id
-   old_workspace_id
-   new_workspace_id
-   old_ownership_version
-   new_ownership_version
-   effective_at
-   ```
-
-8. Wait for the cell and usage rollup to acknowledge the policy/event.
-9. Mark the project `Active`.
-10. Allow the destination workspace to create new credentials.
-
-The project's:
-
-```text
-registry paths
-route hashes
-storage hashes
-stream epochs
-segment identities
-```
-
-remain unchanged.
-
-### 12.2 Billing across transfer
-
-Segment billing metadata stores stable `project_id` and stream identity, not permanent workspace ownership.
-
-Usage events include:
-
-```text
-project_id
-workspace_id_at_event
-ownership_version
-event time
-```
-
-The usage rollup consumes `ProjectOwnershipChanged` and splits:
-
-* ingest/read usage by event ownership version;
-* stored byte-time at `effective_at`.
-
-Monthly project artifacts contain a workspace-attribution breakdown. Workspace invoices aggregate only the portions attributable to that workspace.
-
-Historical charges remain attached to the former workspace. New usage accrues to the new workspace.
-
----
+Not supported (owner decision, 2026-11-08). Usage names the container alone and records no workspace (edge #253), so nothing in Streams needs a transfer protocol: the Control Plane keeps each container's workspace link and its history, and Console splits invoices by it. To invalidate every token of a container, the Control Plane increments its `generation` and publishes the policy. A container's registry paths, route hashes, storage hashes, stream epochs and segment identities never change.
 
 ## 13. Control Plane permissions versus Streams permissions
 
@@ -1741,7 +1674,7 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 * [ ] Credential secret is shown once.
 * [ ] Revoked credential cannot exchange a token.
 * [ ] Old `grant_version` token is refused.
-* [ ] Old `ownership_version` token is refused.
+* [ ] Old `generation` token is refused.
 * [ ] Workspace transfer revokes existing credentials.
 * [ ] New workspace can create a replacement credential.
 * [ ] Durable credential secret is never accepted by the data plane.

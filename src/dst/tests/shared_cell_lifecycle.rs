@@ -9,7 +9,7 @@
 
 use super::fixture_cell::{
     Cell, CellSpec, KEYS, Ledger, NAMES, Token, active, cell_keys, cell_scale, jwks_key, key_query,
-    map_each, open_cell, project, seed, workspace,
+    map_each, open_cell, project, seed,
 };
 use super::fixture_http::engine_shutdown;
 use crate::project_policy::{CredentialStatus, GrantSnapshot, PolicySnapshot, ProjectStatus};
@@ -133,11 +133,9 @@ async fn revoke(cell: &mut Cell, t: usize) {
 /// Ownership 2 under another workspace: the old token is refused, a
 /// token of the new ownership reads exactly the project's records.
 async fn transfer(cell: &mut Cell, t: usize, ledger: &Ledger) {
-    let to = workspace(t + 1);
     let p = cell.policy_mut(t);
     p.ownership_version = 2;
     p.project_policy_version = 2;
-    p.workspace_id = crate::tenant::WorkspaceId::new(&to).unwrap();
     cell.publish();
     let got = refusal(cell, &cell.bearers[t]).await;
     assert_eq!(
@@ -148,7 +146,6 @@ async fn transfer(cell: &mut Cell, t: usize, ledger: &Ledger) {
     );
     let mut token = Token::of(t);
     token.ownership_version = 2;
-    token.workspace_id = to;
     let (st, _, b) = cell
         .call_with(&token.bearer(), "GET", "/v1/streams/orders/records", b"")
         .await;

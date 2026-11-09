@@ -111,13 +111,13 @@ for (const kind of STORES) {
         // credential without a secret, at the smallest quotas that serve a probe:
         // two streams, one for cell-check's `cell-check` stream and one for the
         // alerting watch's canary stream, so neither's create meets the other's.
-        expect(b.policies.projects).toEqual([{
-          project_id: "sp_canary_cell_sc1", workspace_id: "streams-issuer-canary", cell_id: "cell_sc1",
-          project_policy_version: 1, ownership_version: 1, status: "active",
+        expect(b.policies.containers).toEqual([{
+          container_id: "sp_canary_cell_sc1", cell_id: "cell_sc1",
+          policy_version: 1, generation: 1, status: "active",
           quotas: { ...CEILINGS, requests_per_sec: 5, max_streams: 2 },
         }]);
         const [[id, canary]] = Object.entries(readState(c.state).credentials);
-        expect(b.grants.credentials).toEqual([{ credential_id: id, project_id: "sp_canary_cell_sc1", grant_version: 1,
+        expect(b.grants.credentials).toEqual([{ credential_id: id, container_id: "sp_canary_cell_sc1", grant_version: 1,
           status: "active", scopes: "streams.catalog.read", expires_at: null }]);
         expect([canary.role, canary.hidden, canary.display_name, canary.secret_hash]).toEqual(
           ["customer", true, "catalog-read", undefined]);
@@ -170,7 +170,7 @@ for (const kind of STORES) {
         const out = join(root, "t.jwt");
         expect((await run("token", "--state", state, "--credential", customerCredential(state, "proj_a"),
           "--key-file", key, "--out", out)).code).toBe(0);
-        expect(verifiedClaims(readBundle(state), readFileSync(out, "utf8"))?.project_id).toBe("proj_a");
+        expect(verifiedClaims(readBundle(state), readFileSync(out, "utf8"))?.container_id).toBe("proj_a");
       });
 
       test("refuses placeholder identities and a second init", async () => {
@@ -331,19 +331,19 @@ for (const kind of STORES) {
         const b = customerOnly(readBundle(c.state));
         expect(b.policies).toEqual({
           feed_version: 2,
-          projects: [{
-            project_id: "proj_a", workspace_id: "wksp_a", cell_id: "cell_sc1", project_policy_version: 1,
-            ownership_version: 1, status: "active",
+          containers: [{
+            container_id: "proj_a", cell_id: "cell_sc1", policy_version: 1,
+            generation: 1, status: "active",
             quotas: { ...CEILINGS, max_streams: 100, queued_append_bytes: 1048576 },
           }],
         });
         const cred = customerCredential(c.state, "proj_a");
         expect(cred).toMatch(/^strcred_[0-9a-f]{32}$/);
         expect(b.grants.credentials).toEqual([{
-          credential_id: cred, project_id: "proj_a", grant_version: 1, status: "active",
+          credential_id: cred, container_id: "proj_a", grant_version: 1, status: "active",
           scopes: expect.stringContaining("streams.records.append"), expires_at: null,
         }]);
-        expect(validateDocument(b.policies, schema("project-policies.schema.json"))).toEqual([]);
+        expect(validateDocument(b.policies, schema("container-policies.schema.json"))).toEqual([]);
         expect(validateDocument(b.grants, schema("credential-grants.schema.json"))).toEqual([]);
         expect(denylistText(c.state)).toBe("proj_a\n");
       });
@@ -355,8 +355,8 @@ for (const kind of STORES) {
         expect([r.code, r.err]).toEqual([0, ""]);
         expect(r.out).toContain(" queued_append_bytes=67108864 max_stored_bytes=21474836480 request_weight=1 byte_weight=1\n");
         const b = customerOnly(readBundle(c.state));
-        expect((b.policies.projects as any[]).map((p) => p.quotas)).toEqual([{ ...CEILINGS, max_stored_bytes: 21474836480 }]);
-        expect(validateDocument(b.policies, schema("project-policies.schema.json"))).toEqual([]);
+        expect((b.policies.containers as any[]).map((p) => p.quotas)).toEqual([{ ...CEILINGS, max_stored_bytes: 21474836480 }]);
+        expect(validateDocument(b.policies, schema("container-policies.schema.json"))).toEqual([]);
       });
 
       const refusals: [string, string[], string][] = [
@@ -403,9 +403,9 @@ for (const kind of STORES) {
           request_weight: 2, byte_weight: 5,
         };
         const quotasOf = () =>
-          Object.fromEntries((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]));
+          Object.fromEntries((customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => [p.container_id, p.quotas]));
         expect(quotasOf()).toEqual({ proj_m: weighted });
-        expect(validateDocument(readBundle(c.state).policies, schema("project-policies.schema.json"))).toEqual([]);
+        expect(validateDocument(readBundle(c.state).policies, schema("container-policies.schema.json"))).toEqual([]);
         const over = await run("admit", "--state", c.state, "--project", "proj_l", "--workspace", "w2", "--weight", "bytes=3");
         expect([over.code, over.err]).toEqual([1,
           "cell-admin admit: --weight bytes=3: the cell's heavy projects would hold 8 byte_weight units, over k - 1 = 7 (they hold 5)"]);
@@ -469,7 +469,7 @@ for (const kind of STORES) {
         // No --profile: admit takes the shipped dedicated profiles for a k = 1 cell.
         const a = await run("admit", "--state", c.state, "--project", "proj_a", "--workspace", "w1");
         expect([a.code, a.err]).toEqual([0, ""]);
-        const quotas = () => (customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]);
+        const quotas = () => (customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => [p.container_id, p.quotas]);
         expect(quotas()).toEqual([["proj_a", BOUNDS]]);
         const published = readBundleText(c.state);
         const second = await run("admit", "--state", c.state, "--project", "proj_b", "--workspace", "w2");
@@ -484,12 +484,12 @@ for (const kind of STORES) {
         const m = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m");
         expect([m.code, m.err]).toEqual([0, ""]);
         const quotasOf = () =>
-          Object.fromEntries((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => [p.project_id, p.quotas]));
+          Object.fromEntries((customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => [p.container_id, p.quotas]));
         // Byte weight 6 passes the memory-lines check: lineOf(6) = 63,963,135
         // (the read memory less two unit lines, less 1) and two unit lines
         // (67,108,864) stay below the read memory (131,072,000).
         expect(quotasOf()).toEqual({ proj_m: M_SHARED });
-        expect(validateDocument(readBundle(c.state).policies, schema("project-policies.schema.json"))).toEqual([]);
+        expect(validateDocument(readBundle(c.state).policies, schema("container-policies.schema.json"))).toEqual([]);
         // One M per cell: a second M, or any byte-weighted project, passes k - 1.
         const second = await run("admit", "--state", c.state, "--project", "proj_m2", "--workspace", "w2", "--class", "m");
         expect([second.code, second.err]).toEqual([1,
@@ -519,7 +519,7 @@ for (const kind of STORES) {
           const c = await initCell(DEDICATED);
           const r = await run("admit", "--state", c.state, "--project", `proj_${cls}`, "--workspace", "w1", "--class", cls);
           expect([r.code, r.err]).toEqual([0, ""]);
-          expect((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => p.quotas))
+          expect((customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => p.quotas))
             .toEqual([{ ...BOUNDS, max_stored_bytes: stored }]);
         }
       });
@@ -529,7 +529,7 @@ for (const kind of STORES) {
         const r = await run("admit", "--state", c.state, "--project", "proj_m", "--workspace", "w1", "--class", "m",
           "--quota", "max_stored_bytes=21474836480");
         expect([r.code, r.err]).toEqual([0, ""]);
-        expect((customerOnly(readBundle(c.state)).policies.projects as any[]).map((p) => p.quotas))
+        expect((customerOnly(readBundle(c.state)).policies.containers as any[]).map((p) => p.quotas))
           .toEqual([{ ...M_SHARED, max_stored_bytes: 21474836480 }]);
       });
 
@@ -707,8 +707,8 @@ for (const kind of STORES) {
         expect(r.out).not.toContain(token.split(".")[2]);
         const claims = verifiedClaims(readBundle(c.state), token);
         expect(claims).toMatchObject({
-          aud: "prisma-streams-data", iss: "https://auth.prisma.io", credential_id: cred, project_id: "proj_a",
-          workspace_id: "wksp_a", cell_id: "cell_sc1", ownership_version: 1, grant_version: 1,
+          aud: "prisma-streams-data", iss: "https://auth.prisma.io", credential_id: cred, container_id: "proj_a",
+          cell_id: "cell_sc1", generation: 1, grant_version: 1,
           stream_prefixes: ["orders"],
         });
         expect(claims.exp - claims.iat).toBe(86400);
@@ -745,7 +745,7 @@ for (const kind of STORES) {
           "--out", out);
         const token = readFileSync(out, "utf8");
         expect(decodeJwt(token).header.alg).toBe("EdDSA");
-        expect(verifiedClaims(readBundle(state), token)?.project_id).toBe("proj_a");
+        expect(verifiedClaims(readBundle(state), token)?.container_id).toBe("proj_a");
       });
     });
 
@@ -778,7 +778,7 @@ for (const kind of STORES) {
         writeStateText(c.state, JSON.stringify(s));
         expect((await run("bundle", "--state", c.state)).code).toBe(0);
         const b = customerOnly(readBundle(c.state));
-        expect((b.policies.projects as any[]).map((p) => [p.status, p.project_policy_version])).toEqual([["suspended", 2]]);
+        expect((b.policies.containers as any[]).map((p) => [p.status, p.policy_version])).toEqual([["suspended", 2]]);
         expect((b.grants.credentials as any[]).map((g) => [g.expires_at, g.grant_version])).toEqual([[1_900_000_000, 2]]);
       });
 
@@ -807,7 +807,7 @@ for (const kind of STORES) {
         writeStateText(c.state, JSON.stringify(s));
         const r = await run("bundle", "--state", c.state);
         expect([r.code, r.err]).toEqual([1, "cell-admin bundle: the bundle at feed_version 3 changes what the cell " +
-          `holds without a new version: project proj_a at project_policy_version 1, credential ${cred} at ` +
+          `holds without a new version: container proj_a at policy_version 1, credential ${cred} at ` +
           "grant_version 1; a published field changes only with its entry's version"]);
         expect(readBundleText(c.state)).toBe(before);
       });
@@ -826,7 +826,7 @@ for (const kind of STORES) {
         expect((await run("bundle", "--state", c.state)).code).toBe(0);
         const after = readBundle(c.state);
         expect(after.policies.feed_version).toBe(before.policies.feed_version + 1);
-        expect(after.policies.projects).toEqual(before.policies.projects);
+        expect(after.policies.containers).toEqual(before.policies.containers);
         expect(after.grants.credentials).toEqual(before.grants.credentials);
       });
 

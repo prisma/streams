@@ -52,7 +52,6 @@ impl AuthError {
             | Self::ClaimInvalid(_)
             | Self::EmptyPrefixArray
             | Self::OwnershipVersionMismatch
-            | Self::WorkspaceMismatch
             | Self::CredentialUnknown
             | Self::CredentialExpired
             | Self::CredentialProjectMismatch

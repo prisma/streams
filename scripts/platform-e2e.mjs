@@ -14,7 +14,7 @@
 // no static fleet token, STREAMS_RELEASE_POSTURE=1).
 // Phase C/D + faults: placement isolation, direct-to-wrong-cell 421,
 // forged path project refused before routing, unknown-kid nudge,
-// retired-kid cutoff, ownership transfer + deletion sagas, torn/
+// retired-kid cutoff, the deletion saga, torn/
 // regressed/drifted/resurrected feed publications refused, operation-
 // scoped workload JWTs, per-cell workload rotation.
 import { spawn, execSync } from "node:child_process";
@@ -339,27 +339,6 @@ check("token signed with a retired kid is refused", retiredRead.status === 401, 
 const tokB2 = await j(await exchange(SECRET_B)); // kid #2
 check("current-kid token still serves after retirement", (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
 
-// ---- Phase D: ownership transfer saga -------------------------------------
-const preTransfer = await j(await exchange(NEW_SECRET));
-check("pre-transfer token minted", preTransfer.status === 200);
-await sfetch(`${emuBase}/admin/projects/proj-e2e/transfer`, {
-  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ toWorkspace: "ws-new" }),
-});
-check("no new token during transfer_pending", (await exchange(NEW_SECRET)).status === 403);
-await sfetch(`${emuBase}/admin/projects/proj-e2e/transfer/complete`, { method: "POST" });
-await sleep(2000);
-const oldOwnership = await readRecords(gwBase, "e2e/orders", preTransfer.body.accessToken);
-check("old-ownership token fails after feed publication", oldOwnership.status === 401 || oldOwnership.status === 403, `status ${oldOwnership.status}`);
-check("revoked-by-transfer credential cannot exchange", (await exchange(NEW_SECRET)).status === 403);
-const credNewWs = await mkCred("proj-e2e", "post-transfer ingest");
-const tokNewWs = await j(await exchange(credNewWs.body.secret));
-await sleep(1500);
-const survivor = await readRecords(gwBase, "e2e/orders", tokNewWs.body.accessToken);
-let survivorRecords = [];
-if (survivor.status === 200) try { survivorRecords = await survivor.json(); } catch {}
-check("storage identity unchanged: new owner reads the existing stream",
-  survivor.status === 200 && Array.isArray(survivorRecords) && survivorRecords.length >= 1, `status ${survivor.status}`);
-
 // ---- Phase D: deletion saga ------------------------------------------------
 const credDel = await mkCred("proj-del", "del ingest");
 const tokDel = await j(await exchange(credDel.body.secret));
@@ -423,35 +402,11 @@ await sleep(2500);
 const afterDrift = (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status;
 check("same-generation content drift refused: revoked grant still dead",
   afterDrift === afterClear.status, `status ${afterDrift} (${afterClear.status} before the fault)`);
-// Round 3 F3: an owner change WITHOUT an ownership bump is refused by
-// the cell — the token minted for the OLD workspace keeps serving
-// (had the cell accepted ws-hostile, the exact workspace check would
-// 401 it), and the project's advertised workspace is unchanged.
-await fault({ kind: "workspace-swap-no-bump", project: "proj-b", toWorkspace: "ws-hostile" });
-await sleep(2500);
-check("workspace change without ownership bump refused: old-workspace token still serves",
-  (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
 await fault({ kind: "resurrect-kid" });
 await sleep(2500);
 check("retired-kid resurrection refused: old-kid token stays dead", (await readRecords(bBase, "e2e/orders", tokBOld)).status === 401);
 check("refused snapshot does not clobber good state: current-kid token still serves",
   (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
-// RESTORE the ownership tuple the hostile leg mutated. Without this
-// the emulator republishes proj-b@ws-hostile at the unbumped
-// ownership_version forever: cell B (correctly) refuses every later
-// policy snapshot, and every later-minted proj-b token carries
-// ws-hostile against the cell's kept ws-b — the quota, usage, and
-// foreign-probe legs then fail 401/workspace_mismatch (round-8
-// review: ownership-state contamination, a TEST defect). The restore
-// is a legitimate owner progression (ownership_version increments),
-// so it lands; tokens minted BEFORE the swap die with it
-// (OwnershipChanged) — every later leg mints fresh.
-await fault({ kind: "workspace-restore", project: "proj-b" });
-await sleep(2500);
-const tokRestored = await j(await exchange(SECRET_B));
-check("restored ownership tuple lands: freshly minted token serves on cell B",
-  (await readRecords(bBase, "e2e/orders", tokRestored.body.accessToken)).status === 200);
-
 // ---- §14.3: shared schemas actually reject hostile shapes ------------------
 // The emulator refuses to publish schema-invalid snapshots at runtime
 // (every leg above ran through that gate); here the BATTERY exercises
@@ -462,7 +417,7 @@ check("restored ownership tuple lands: freshly minted token serves on cell B",
   const schema = (f) => JSON.parse(readFileSync(`contracts/streams-platform/v1/${f}`, "utf8"));
   const validOk =
     validateDocument(golden("keys.valid.json"), schema("keys.schema.json")).length === 0 &&
-    validateDocument(golden("project-policies.valid.json"), schema("project-policies.schema.json")).length === 0 &&
+    validateDocument(golden("container-policies.valid.json"), schema("container-policies.schema.json")).length === 0 &&
     validateDocument(golden("credential-grants.valid.json"), schema("credential-grants.schema.json")).length === 0;
   check("golden vectors validate against the shared schemas", validOk);
   const emptyPrefixes = validateDocument(golden("credential-grants.hostile-empty-prefixes.json"), schema("credential-grants.schema.json"));
@@ -502,9 +457,8 @@ const bOverflow = await streamCreateRaw(gwBase, "b/overflow", tokBQ.body.accessT
 check("cell B independently refuses beyond ITS feed-delivered cap (seeded from the catalog)", bOverflow === 429, `status ${bOverflow}`);
 
 // ---- §15 item 7: billing reconciliation through the usage surface ---------
-// proj-b (workspace never changed — rows land under workspace-at-event,
-// so the transferred project would legitimately read zero) appended one
-// record earlier; the usage drain appends it to _usage within its 8 s
+// proj-b appended one record earlier (usage names the container alone,
+// edge #253); the usage drain appends it to _usage within its 8 s
 // cadence (the binary's default, edge change #117), the rollup applies
 // within 2s, so the project row must show ingest bytes within ~20s.
 const credU = await mkCred("proj-b", "usage probe",

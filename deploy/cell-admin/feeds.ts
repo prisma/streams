@@ -8,7 +8,7 @@
 import credentialGrants from "../../contracts/streams-platform/v1/credential-grants.schema.json";
 import customerTokenClaims from "../../contracts/streams-platform/v1/customer-token-claims.schema.json";
 import keys from "../../contracts/streams-platform/v1/keys.schema.json";
-import projectPolicies from "../../contracts/streams-platform/v1/project-policies.schema.json";
+import containerPolicies from "../../contracts/streams-platform/v1/container-policies.schema.json";
 import { validateDocument } from "../../platform-demo/src/validate.mjs";
 import { AdminError } from "./errors";
 import { prefixesRefusal } from "./prefixes";
@@ -18,7 +18,7 @@ const SCHEMAS: Record<string, unknown> = {
   "credential-grants.schema.json": credentialGrants,
   "customer-token-claims.schema.json": customerTokenClaims,
   "keys.schema.json": keys,
-  "project-policies.schema.json": projectPolicies,
+  "container-policies.schema.json": containerPolicies,
 };
 
 export function schema(name: string): unknown {
@@ -37,21 +37,21 @@ export function validate(doc: unknown, schemaName: string, what: string): void {
 
 export interface Bundle {
   keys: { feed_version: number; keys: unknown[] };
-  policies: { feed_version: number; projects: unknown[] };
+  policies: { feed_version: number; containers: unknown[] };
   grants: { feed_version: number; credentials: unknown[] };
 }
 
 const sortedEntries = <T>(rec: Record<string, T>) =>
   Object.entries(rec).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
-/// A project's entry in the policy feed: every field the cell reads, and
-/// nothing else (no timestamp, no display name).
+/// A container's entry in the policy feed: every field the cell reads, and
+/// nothing else (no timestamp, no display name, and no workspace: the owner
+/// link stays in this state, never in a feed or token; edge #253).
 export const policyEntry = (state: CellState, id: string, p: ProjectRecord) => ({
-  project_id: id,
-  workspace_id: p.workspace_id,
+  container_id: id,
   cell_id: state.cell.cell_id,
-  project_policy_version: p.project_policy_version,
-  ownership_version: p.ownership_version,
+  policy_version: p.project_policy_version,
+  generation: p.ownership_version,
   status: p.status,
   quotas: { ...p.quotas },
 });
@@ -59,7 +59,7 @@ export const policyEntry = (state: CellState, id: string, p: ProjectRecord) => (
 /// A credential's entry in the grants feed (never its secret's hash).
 export const grantEntry = (id: string, c: CredentialRecord) => ({
   credential_id: id,
-  project_id: c.project_id,
+  container_id: c.project_id,
   grant_version: c.grant_version,
   status: c.status,
   scopes: c.scopes,
@@ -87,11 +87,11 @@ export function bundleOf(state: CellState): Bundle {
   const credentials = live.map(([id, c]) => grantEntry(id, c));
   const bundle: Bundle = {
     keys: { feed_version: v, keys: state.keys.map((k) => ({ ...k })) },
-    policies: { feed_version: v, projects },
+    policies: { feed_version: v, containers: projects },
     grants: { feed_version: v, credentials },
   };
   validate(bundle.keys, "keys.schema.json", "keys snapshot");
-  validate(bundle.policies, "project-policies.schema.json", "policy snapshot");
+  validate(bundle.policies, "container-policies.schema.json", "policy snapshot");
   validate(bundle.grants, "credential-grants.schema.json", "grant snapshot");
   return bundle;
 }

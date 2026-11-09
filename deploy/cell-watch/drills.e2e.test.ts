@@ -114,11 +114,11 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
 
   // Row 7: a policy naming the deployment's PROJECT_ID is dropped, and the drop pages.
   let mark = p.changes.length;
-  const reserved = { ...(bundle.policies.projects[0] as object), project_id: "proj_deploy", workspace_id: "ws_drill" };
-  writeFeed(feeds, "policies", { feed_version: v + 1, projects: [...bundle.policies.projects, reserved] });
+  const reserved = { ...(bundle.policies.containers[0] as object), container_id: "proj_deploy" };
+  writeFeed(feeds, "policies", { feed_version: v + 1, containers: [...bundle.policies.containers, reserved] });
   await shows(p, mark, 120, [["open", page("r07_reserved_policy_dropped"), true]]);
   expect(summaryOf(p, mark, page("r07_reserved_policy_dropped"))).toBe("[PAGE] cell_sc1/r07_reserved_policy_dropped reserved_dropped=1");
-  writeFeed(feeds, "policies", { feed_version: v + 2, projects: bundle.policies.projects });
+  writeFeed(feeds, "policies", { feed_version: v + 2, projects: bundle.policies.containers });
   await shows(p, mark, 150, [["open", page("r07_reserved_policy_dropped"), true], ["resolve", page("r07_reserved_policy_dropped"), true]]);
 
   // Row 6: the bundle deleted (the wrapper's `feeds deleted`) pages once a feed is 75 s old.
@@ -127,7 +127,7 @@ maybe("the cell's drills each page the on-call: rows 7, 6, 13, 12, 3 with the up
   await shows(p, mark, 150, [["open", page("r06_feed_delivery"), true]]);
   expect(summaryOf(p, mark, page("r06_feed_delivery"))).toMatch(/^\[PAGE\] cell_sc1\/r06_feed_delivery jwks_age_secs=(7[6-9]|[89]\d) /);
   writeFeed(feeds, "keys", bundle.keys);
-  writeFeed(feeds, "policies", { feed_version: v + 2, projects: bundle.policies.projects });
+  writeFeed(feeds, "policies", { feed_version: v + 2, projects: bundle.policies.containers });
   writeFeed(feeds, "grants", bundle.grants);
   await shows(p, mark, 150, [["open", page("r06_feed_delivery"), true], ["resolve", page("r06_feed_delivery"), true]]);
 

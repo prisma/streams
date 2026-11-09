@@ -300,10 +300,10 @@ async fn product_sse_controls_carry_signed_cursors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn termination_reasons_count_exactly_once_per_subscription() {
     let _serial = gap_lock().lock().await; // exact LEASE_TERMINATIONS delta below
-    let (_svc, _state, addr) = auth_rig("proj-tc1", "ws_tc", &["c1"], None).await;
+    let (_svc, _state, addr) = auth_rig("proj-tc1", &["c1"], None).await;
     // Expires in 5 s: long enough to park two connections, short
     // enough to watch both deadlines fire.
-    let tok = mint_token("c1", "proj-tc1", "ws_tc", 1, 1, "tc1", 5);
+    let tok = mint_token("c1", "proj-tc1", 1, 1, "tc1", 5);
     rig_create(addr, "tc1", &tok).await;
     let mut promoter = rig_sse(addr, "tc1", &tok, "?cursor=now", None).await;
     let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;

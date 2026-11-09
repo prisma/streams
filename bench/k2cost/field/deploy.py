@@ -200,7 +200,7 @@ def cell_state(run: str, cell: str) -> dict:
             "run": run, "cell": cell,
             "deploy_project_id": F.rand_id("proj_"),
             "cell_id": F.rand_id("cell_"), "customer_project_id": F.rand_id("proj_"),
-            "workspace_id": F.rand_id("wksp_"), "credential_id": F.rand_id("strcred_"),
+            "credential_id": F.rand_id("strcred_"),
             "path_prefix": F.PATH_PREFIX, "fleet_prefix": F.FLEET_PREFIX, "created": F.utc(),
         }
         F.write_json(path, st)
@@ -227,7 +227,7 @@ def ensure_feeds(run: str, cell: str, st: dict) -> str:
     if not os.path.exists(bundle):
         subprocess.run(["node", os.path.join(F.HERE, "feeds.mjs"), "init", "--dir", sdir,
                         "--cell-id", st["cell_id"], "--project", st["customer_project_id"],
-                        "--workspace", st["workspace_id"], "--credential", st["credential_id"]], check=True)
+                        "--credential", st["credential_id"]], check=True)
     key = f"k2c/{run}/{cell}/feeds.json"
     F.record_artifact_object(run, cell, key)
     client, bucket = F.artifact_s3()

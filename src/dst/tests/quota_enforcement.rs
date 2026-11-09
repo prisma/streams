@@ -43,7 +43,6 @@ async fn project_rate_quota_backstop_answers_429() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -87,9 +86,10 @@ async fn project_rate_quota_backstop_answers_429() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -107,7 +107,6 @@ async fn project_rate_quota_backstop_answers_429() {
             sub: "u",
             credential_id: "cq",
             project_id: "proj-test",
-            workspace_id: "ws_789",
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,
@@ -185,7 +184,6 @@ async fn volume_quotas_meter_appends_and_reads() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -234,9 +232,10 @@ async fn volume_quotas_meter_appends_and_reads() {
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -254,7 +253,6 @@ async fn volume_quotas_meter_appends_and_reads() {
             sub: "u",
             credential_id: "cv",
             project_id: "proj-test",
-            workspace_id: "ws_789",
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,
@@ -386,7 +384,6 @@ async fn quota_rig(
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid.clone(),
-            workspace_id: crate::tenant::WorkspaceId::new(&format!("ws-q-{tag}")).unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 1,
             ownership_version: 1,
@@ -427,9 +424,10 @@ async fn quota_rig(
         aud: &'a str,
         sub: &'a str,
         credential_id: &'a str,
+        #[serde(rename = "container_id")]
         project_id: &'a str,
-        workspace_id: &'a str,
         cell_id: &'a str,
+        #[serde(rename = "generation")]
         ownership_version: u64,
         grant_version: u64,
         scope: &'a str,
@@ -447,7 +445,6 @@ async fn quota_rig(
             sub: "u",
             credential_id: &format!("c-q-{tag}"),
             project_id: &format!("proj-q-{tag}"),
-            workspace_id: &format!("ws-q-{tag}"),
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,
@@ -894,7 +891,6 @@ async fn max_streams_transition_seeds_from_reality() {
         pid.clone(),
         crate::project_policy::ProjectPolicy {
             project_id: pid,
-            workspace_id: crate::tenant::WorkspaceId::new("ws-q-tr").unwrap(),
             cell_id: std::sync::Arc::from("test-cell"),
             project_policy_version: 2,
             ownership_version: 1,

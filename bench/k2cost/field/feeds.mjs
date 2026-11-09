@@ -10,8 +10,8 @@
 // reads project usage), and the private key stays in the run's secrets
 // directory so later generators can be given fresh tokens.
 //
-//   node feeds.mjs init  --dir SECRETS --cell-id C --project P --workspace W --credential K
-//   node feeds.mjs token --dir SECRETS --cell-id C --project P --workspace W --credential K
+//   node feeds.mjs init  --dir SECRETS --cell-id C --project P --credential K
+//   node feeds.mjs token --dir SECRETS --cell-id C --project P --credential K
 //                        --ttl SECS --sub NAME --out FILE
 //
 // The bundle is validated against contracts/streams-platform/v1 before
@@ -46,7 +46,6 @@ const secretWrite = (path, text) => {
 const dir = arg("dir");
 const cell = arg("cell-id");
 const project = arg("project");
-const workspace = arg("workspace");
 const credential = arg("credential");
 const keyPath = join(dir, "feeds-key.pem");
 const kidPath = join(dir, "feeds-kid.txt");
@@ -63,15 +62,15 @@ if (cmd === "init") {
     keys: { feed_version: 1, keys: [{ kid, alg: "RS256", aud: "prisma-streams-data", pem: publicKey }] },
     policies: {
       feed_version: 1,
-      projects: [{
-        project_id: project, workspace_id: workspace, cell_id: cell,
-        project_policy_version: 1, ownership_version: 1, status: "active", quotas: {},
+      containers: [{
+        container_id: project, cell_id: cell,
+        policy_version: 1, generation: 1, status: "active", quotas: {},
       }],
     },
     grants: {
       feed_version: 1,
       credentials: [{
-        credential_id: credential, project_id: project, grant_version: 1,
+        credential_id: credential, container_id: project, grant_version: 1,
         status: "active", scopes: SCOPES, expires_at: null,
       }],
     },
@@ -79,7 +78,7 @@ if (cmd === "init") {
   const SCHEMA_DIR = new URL("../../../contracts/streams-platform/v1/", import.meta.url);
   for (const [part, schema] of [
     ["keys", "keys.schema.json"],
-    ["policies", "project-policies.schema.json"],
+    ["policies", "container-policies.schema.json"],
     ["grants", "credential-grants.schema.json"],
   ]) {
     const errs = validateDocument(bundle[part], JSON.parse(readFileSync(new URL(schema, SCHEMA_DIR))));
@@ -100,8 +99,8 @@ if (cmd === "init") {
   const now = Math.floor(Date.now() / 1000) - 60;
   const claims = {
     iss: ISS, aud: "prisma-streams-data", sub: arg("sub", "k2c-generator"),
-    credential_id: credential, project_id: project, workspace_id: workspace, cell_id: cell,
-    ownership_version: 1, grant_version: 1, scope: SCOPES,
+    credential_id: credential, container_id: project, cell_id: cell,
+    generation: 1, grant_version: 1, scope: SCOPES,
     jti: randomBytes(8).toString("hex"), iat: now, nbf: now, exp: now + 60 + ttl,
   };
   const h = b64u(JSON.stringify({ alg: "RS256", typ: "JWT", kid }));
@@ -111,6 +110,6 @@ if (cmd === "init") {
   secretWrite(arg("out"), `${h}.${c}.${s.sign(key, "base64url")}`);
   console.log(`token: project=${project} exp=${new Date(claims.exp * 1000).toISOString()}`);
 } else {
-  console.error("usage: feeds.mjs init|token --dir D --cell-id C --project P --workspace W --credential K ...");
+  console.error("usage: feeds.mjs init|token --dir D --cell-id C --project P --credential K ...");
   process.exit(2);
 }

@@ -13,13 +13,13 @@ use super::fixture_requests::{PRISMA_KEY, preq};
 /// framed body bytes, and a refused page (wrong key) is never debited.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn scan_pages_draw_on_the_read_byte_quota() {
-    let (svc, state, addr) = auth_rig("proj-rv", "ws-rv", &["c-rv"], None).await;
+    let (svc, state, addr) = auth_rig("proj-rv", &["c-rv"], None).await;
     // Policy v2: an 8 B/s read budget, published before the first request
     // so the project's bucket is created from it.
-    let mut policy = rig_policy("proj-rv", "ws-rv", 1, 2);
+    let mut policy = rig_policy("proj-rv", 1, 2);
     policy.quotas.read_bytes_per_sec = 8;
     rig_publish_policy(&svc, policy, 2).unwrap();
-    let bearer = mint_token("c-rv", "proj-rv", "ws-rv", 1, 1, "t", 3600);
+    let bearer = mint_token("c-rv", "proj-rv", 1, 1, "t", 3600);
     let a = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let wrong = (
@@ -99,12 +99,12 @@ async fn scan_pages_draw_on_the_read_byte_quota() {
 /// could keep draining its queues while every page route refused it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn consumer_pulls_draw_on_the_read_byte_quota() {
-    let (svc, state, addr) = auth_rig("proj-rp", "ws-rp", &["c-rp"], None).await;
-    let mut policy = rig_policy("proj-rp", "ws-rp", 1, 2);
+    let (svc, state, addr) = auth_rig("proj-rp", &["c-rp"], None).await;
+    let mut policy = rig_policy("proj-rp", 1, 2);
     policy.quotas.read_bytes_per_sec = 8;
     rig_publish_policy(&svc, policy, 2).unwrap();
     let scopes = format!("{RIG_SCOPES} streams.consumers.configure streams.consumers.pull");
-    let bearer = rig_scoped_bearer(&svc, ("proj-rp", "ws-rp"), "c-rp", &scopes, 2);
+    let bearer = rig_scoped_bearer(&svc, "proj-rp", "c-rp", &scopes, 2);
     let a = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();

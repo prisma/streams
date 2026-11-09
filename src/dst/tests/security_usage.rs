@@ -10,7 +10,7 @@ use crate::tenant::{ProjectId, Scope, ScopeSet, StreamGrant};
 use std::sync::Arc;
 use std::time::Duration;
 
-const PROJECT: (&str, &str) = ("proj-usage", "ws-usage");
+const PROJECT: &str = "proj-usage";
 const USAGE_READ: &str = "streams.usage.read";
 
 /// Grant version 2 of the rig's two credentials: `c-full` holds every
@@ -26,7 +26,7 @@ fn bearers(svc: &crate::auth::AuthService) -> (String, String) {
     let credentials = grants.into_iter().map(|(cred, scopes, grant)| {
         let credential = CredentialGrant {
             credential_id: Arc::from(cred),
-            project_id: ProjectId::new(PROJECT.0).unwrap(),
+            project_id: ProjectId::new(PROJECT).unwrap(),
             grant_version: 2,
             status: CredentialStatus::Active,
             scopes: ScopeSet::parse(scopes).0,
@@ -97,7 +97,7 @@ fn row_of(answer: &serde_json::Value) -> (Option<&str>, Option<u64>) {
 async fn a_usage_stream_id_is_served_only_for_an_incarnation_of_the_url_name() {
     // usage/current is month-sensitive on the real clock.
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &["c-full", "c-pfx"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
@@ -190,7 +190,7 @@ fn previous(month: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &["c-full", "c-pfx"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
@@ -263,7 +263,7 @@ async fn a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     let _clock = crate::billing::billing_clock_lock().read().await;
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &["c-full", "c-pfx"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
@@ -273,7 +273,7 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
     stream_with(addr, &full, "b/secret", 3).await;
     roll_up(&state).await;
 
-    let totals = format!("/v1/projects/{}/usage", PROJECT.0);
+    let totals = format!("/v1/projects/{}/usage", PROJECT);
     let (st, body) = usage(addr, &pfx, &totals).await;
     assert_eq!(
         (st, &body["error"]["code"]),
@@ -295,7 +295,7 @@ async fn project_usage_totals_need_an_unrestricted_stream_grant() {
 /// Now both usage routes answer 400 `invalid_month`, as for "2026-13".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_signed_month_is_refused_on_both_usage_routes() {
-    let (svc, state, addr) = auth_rig(PROJECT.0, PROJECT.1, &["c-full", "c-pfx"], None).await;
+    let (svc, state, addr) = auth_rig(PROJECT, &["c-full", "c-pfx"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
@@ -304,7 +304,7 @@ async fn a_signed_month_is_refused_on_both_usage_routes() {
     stream_with(addr, &full, "a/mine", 0).await;
     let routes = [
         "/v1/streams/a/mine/usage",
-        &format!("/v1/projects/{}/usage", PROJECT.0),
+        &format!("/v1/projects/{}/usage", PROJECT),
     ];
     for route in routes {
         for month in ["2026-+9", "+026-09", "-026-09", "2026-13"] {
