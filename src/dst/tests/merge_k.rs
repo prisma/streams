@@ -476,6 +476,70 @@ async fn a_merge_of_a_retired_half_is_refused() {
     engine_shutdown(&state).await;
 }
 
+/// A clock whose monotonic time jumps 12 s (past the lease and its skew) right after its first
+/// reading, the actor's lease start, and whose sleeps never end, so no renewal lands.
+#[derive(Debug)]
+struct Lapsing {
+    inner: crate::runtime::ManualClock,
+    read: std::sync::atomic::AtomicBool,
+}
+
+impl crate::runtime::Clock for Lapsing {
+    fn now(&self) -> crate::runtime::TrustedNow {
+        self.inner.now()
+    }
+
+    fn monotonic(&self) -> crate::runtime::MonotonicNow {
+        let now = self.inner.monotonic();
+        if !self.read.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.inner.advance(std::time::Duration::from_secs(12));
+        }
+        now
+    }
+
+    fn sleep(&self, _: std::time::Duration) -> futures_util::future::BoxFuture<'static, ()> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// **A merge whose own clock passed its lease, while no claimant took the intent, re-claims it and
+/// runs on to its publish** (S4 §4.3, as the split does). The merge's renewals never land and its
+/// clock is 12 s past the lease at the pause; it re-claims the intent at epoch 2 under its own
+/// owner, publishes, and ends the intent `Reclaimed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_past_its_lease_reclaims_its_own_intent_and_publishes() {
+    let Rig {
+        store,
+        state,
+        parent,
+        ..
+    } = rig().await;
+    split_00(&state, &parent).await;
+    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    let started =
+        crate::topology::merge::start(&state.shards, [&halves[0], &halves[1]], "op-m", "inst-a")
+            .await
+            .expect("the merge starts");
+    let clock = Lapsing {
+        inner: crate::runtime::ManualClock::at(crate::shard::now_ms()),
+        read: std::sync::atomic::AtomicBool::new(false),
+    };
+    let published = started.finish(&clock).await.expect("the merge publishes");
+    let ended = crate::topology::intent::read(&*store)
+        .await
+        .unwrap()
+        .unwrap()
+        .intent;
+    assert_eq!(
+        (ended.state, ended.lease_owner.as_str(), ended.lease_epoch),
+        (crate::topology::intent::State::Reclaimed, "inst-a", 2),
+        "re-claimed once, under its own owner"
+    );
+    let (topology, _) = crate::topology::store::read(&*store).await.unwrap();
+    assert_eq!(topology.version, published.version);
+    engine_shutdown(&state).await;
+}
+
 /// The log at `path`'s checkpoints named `name`.
 async fn checkpoints(store: &Arc<dyn object_store::ObjectStore>, path: &str, name: &str) -> usize {
     let admin = slatedb::admin::AdminBuilder::new(path, store.clone()).build();

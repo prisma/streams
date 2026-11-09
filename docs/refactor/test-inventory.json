@@ -1626,6 +1626,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_past_its_lease_reclaims_its_own_intent_and_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "736b1b5233be006d7986bd48f6e0eafeb918b6004dcf2773d2349eee914aff6a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_that_would_fill_its_instance_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -185,9 +185,9 @@ impl Started {
     }
 }
 
-/// The merge's steps from Preparing to its publish, the actor's ownership checked before `'T'` and
-/// around the clone; a failure before `'T'` is rolled back here (its terminal CAS is the
-/// `finish`'s).
+/// The merge's steps from Preparing to its publish, the actor's ownership checked at the pause and
+/// before `'T'` (`still_owned`: a lease only its own clock saw lapse is re-claimed, S4 §4.3); a
+/// failure before `'T'` is rolled back here (its terminal CAS is the `finish`'s).
 async fn run(
     op: &Op<'_>,
     actor: &super::actor::Actor<'_>,
@@ -201,7 +201,10 @@ async fn run(
     } = *op;
     let [(left, _), (right, _)] = &pair.sources;
     let prepared = prepare(dir, store, pair).await;
-    let prepared = prepared.and_then(|()| actor.owned("the pause"));
+    let prepared = match prepared {
+        Ok(()) => actor.still_owned("the pause").await,
+        Err(e) => Err(e),
+    };
     let holds = match &prepared {
         Ok(()) => {
             let first = left.gc_state().gate.exclusive(QUIESCE).await;
@@ -229,7 +232,10 @@ async fn run(
         (Err(e), _) => Err(e.clone()),
         (_, None) => Err("the quiesce did not complete within its deadline".to_string()),
     };
-    let copied = copied.and_then(|()| actor.owned("'T'"));
+    let copied = match copied {
+        Ok(()) => actor.still_owned("'T'").await,
+        Err(e) => Err(e),
+    };
     let retired = match copied {
         Ok(()) => retire_sources(pair, version, op_id).await,
         Err(e) => Err(e),
