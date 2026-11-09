@@ -106,10 +106,10 @@ mod tests {
         t.shards.homes.get_mut(&1).unwrap().retired_version = Some(2);
         t.shards
             .homes
-            .insert(2, home("shards/10~2", "10", vec![1], 2));
+            .insert(2, home("shards/10-2", "10", vec![1], 2));
         t.shards
             .homes
-            .insert(3, home("shards/11~3", "11", vec![1], 2));
+            .insert(3, home("shards/11-3", "11", vec![1], 2));
         t.shards.leaves.remove("1");
         t.shards.leaves.insert("10".to_string(), 2);
         t.shards.leaves.insert("11".to_string(), 3);

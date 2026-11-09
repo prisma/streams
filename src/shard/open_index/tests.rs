@@ -108,23 +108,23 @@ async fn a_log_whose_path_names_no_shard_is_refused() {
 }
 
 /// **A log at an operation-born home's path takes the home its path names** (S4 route A): a new log
-/// at `shards/10~7` records home 7 and reopens; a log there that records another home is refused;
+/// at `shards/10-7` records home 7 and reopens; a log there that records another home is refused;
 /// a path of neither form names no home and is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_log_at_an_operation_born_home_takes_the_home_its_path_names() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = open(&store, "shards/10~7").await.unwrap();
+    let db = open(&store, "shards/10-7").await.unwrap();
     assert_eq!(super::recorded_home(&db).await.unwrap(), Some(7));
     db.close().await.unwrap();
-    open(&store, "shards/10~7")
+    open(&store, "shards/10-7")
         .await
         .unwrap()
         .close()
         .await
         .unwrap();
     let other: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    seed(&other, "shards/10~7", &[identity(8, 2)]).await;
-    let refusal = open(&other, "shards/10~7").await.err().unwrap();
+    seed(&other, "shards/10-7", &[identity(8, 2)]).await;
+    let refusal = open(&other, "shards/10-7").await.err().unwrap();
     assert!(
         refusal
             .to_string()
@@ -132,11 +132,12 @@ async fn a_log_at_an_operation_born_home_takes_the_home_its_path_names() {
         "{refusal}"
     );
     for path in [
-        "shards/10~x",
-        "shards/1a~3",
-        "shards/~3",
-        "shards/10~",
-        "other/10~3",
+        "shards/10-x",
+        "shards/1a-3",
+        "shards/-3",
+        "shards/10-",
+        "other/10-3",
+        "shards/10~3",
     ] {
         let refusal = open(&store, path)
             .await

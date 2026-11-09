@@ -33,7 +33,7 @@ async fn stream_in_half(state: &State, addr: Addr, half: char, taken: &mut usize
 }
 
 /// The records of `name`, read back.
-async fn records(addr: Addr, name: &str) -> serde_json::Value {
+pub(super) async fn records(addr: Addr, name: &str) -> serde_json::Value {
     let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).unwrap_or_default()
@@ -49,12 +49,12 @@ async fn refcounts(engine: &crate::shard::ShardEngine) -> BTreeMap<ObjectId, (u6
 
 /// A rig whose stored topology is its own, with a stream in each half of the leaf `00` holding two
 /// records each, and the leaf's engine.
-struct Cell {
-    state: State,
-    addr: Addr,
-    low: String,
-    high: String,
-    parent: Arc<crate::shard::ShardEngine>,
+pub(super) struct Cell {
+    pub(super) state: State,
+    pub(super) addr: Addr,
+    pub(super) low: String,
+    pub(super) high: String,
+    pub(super) parent: Arc<crate::shard::ShardEngine>,
 }
 
 /// One record of `n`, padded.
@@ -63,13 +63,13 @@ fn body(n: u32) -> String {
 }
 
 /// An append of `{"n": n}` to `name`: its status and the next offset it reports.
-async fn append(addr: Addr, name: &str, n: u32) -> (u16, Option<String>) {
+pub(super) async fn append(addr: Addr, name: &str, n: u32) -> (u16, Option<String>) {
     let path = format!("/v1/stream/{name}");
     let (status, headers, _) = hreq(addr, "POST", &path, &[JSON], body(n).as_bytes()).await;
     (status, headers.get("stream-next-offset").cloned())
 }
 
-async fn cell() -> Cell {
+pub(super) async fn cell() -> Cell {
     cell_over(mem()).await
 }
 

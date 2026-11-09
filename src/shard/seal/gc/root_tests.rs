@@ -9,7 +9,7 @@ use super::super::gc_tests::gc_rig;
 use crate::topology::model::Snapshot;
 
 /// **A child finds its own objects under its topology path and its parent's under the parent's.**
-/// After a split of `1` into `10` (home 2) and `11` (home 3), an engine placed at `shards/10~2`
+/// After a split of `1` into `10` (home 2) and `11` (home 3), an engine placed at `shards/10-2`
 /// finds its own home's objects there and home 1's under `shards/1`; a home the topology does not
 /// name keeps the static root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -28,11 +28,11 @@ async fn a_child_finds_its_own_and_its_parents_objects_through_the_topology() {
     let own = rig.engine.home();
     let static_root = rig.engine.object_root(77);
     rig.engine.place(
-        "shards/10~2".to_string(),
+        "shards/10-2".to_string(),
         Arc::new(move || Some(snapshot.clone())),
     );
-    assert_eq!(rig.engine.log_path(), "shards/10~2");
-    assert_eq!(rig.engine.object_root(own), "shards/10~2", "its own home");
+    assert_eq!(rig.engine.log_path(), "shards/10-2");
+    assert_eq!(rig.engine.object_root(own), "shards/10-2", "its own home");
     assert_eq!(rig.engine.object_root(1), "shards/1", "its parent's home");
     assert_eq!(
         rig.engine.object_root(77),

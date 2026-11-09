@@ -2777,7 +2777,26 @@ wait's tails. Three readers still answer the old way:
   engine met while it reads an ancestor answers 500. Return
   `StorageFailure`, with the owner's row refresh for that contract.
 
-## 17. Follow-ups from edge change #260 (2026-11-09)
+## 17. Follow-ups from S4's shard split (2026-11-10)
+
+- **SlateDB re-encodes a clone source's percent-encoded path** (found by package 6, 2026-11-10;
+  `pkg6-s6-clone-path-encoding-2026-11-10.md` in the shared notes). A clone records each external
+  DB's path with `Path::to_string()` (the percent-encoded form) and its readers turn it back with
+  `Path::from`, which encodes the `%` again: `manifest/mod.rs:1648` (`external_ssts`), `clone.rs:357`
+  and `:669`, `admin.rs:662` at the pinned rev 735b017. So a clone of a source whose path holds any
+  character object_store encodes cannot read the source's own tables (`shards/001%25257E2/...sst
+  not found`). S4 sidesteps it: an operation-born home lives at `shards/<prefix>-<home>`, which
+  needs no encoding (a prefix is bits only, and the stored topology refuses any other). The fix
+  itself is a fork patch, after #149: `Path::parse` (falling back to `Path::from` when it fails) at
+  the four sites, a new `streams-*` pin tag measured in Streams first (the fork rule), and an
+  upstream slatedb/slatedb issue. Filing that issue is public: it needs the owner's OK in chat.
+- **A child open that fails after the publish is reported as a rollback.** `split::publish` maps
+  an error opening a child (after `'T'` and the topology CAS, so the split rolled forward) to
+  `Refused::RolledBack`, and the route task logs "the split ended". The split is published and its
+  children open on the next request; the label should say so (a `Published` with a failed open, or
+  a distinct refusal), so an operator reading the log does not look for a rollback that never ran.
+
+## 20. Follow-ups from edge change #260 (2026-11-09)
 
 The fleet count's hysteresis (#260) is ratified; its field acceptance,
 package 2's D ramp on a rig that applies both directions at its poll, has

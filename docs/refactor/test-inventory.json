@@ -201,6 +201,17 @@
     ]
   },
   {
+    "name": "a_childs_split_clones_its_own_tables_and_serves_from_its_child",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4760e5e5aa0e278d51742a358f141cda25b4c579ff8e4adf377844f477e7ce12",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_claim_reserves_read_memory_only_for_what_it_returns",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

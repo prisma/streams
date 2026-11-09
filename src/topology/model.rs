@@ -13,7 +13,9 @@
 //!
 //! Initial homes are `shards/<prefix>` (the root `shards/root`), each the prefix read as a
 //! number (`keyspace::home_of`); every home an operation allocates is
-//! `shards/<prefix>~<home>`.
+//! `shards/<prefix>-<home>` (a prefix is bits only, so the `-` is unambiguous, and the path needs
+//! no URL encoding: SlateDB's clone re-encodes a percent-encoded source path when it reads the
+//! source's own tables).
 //!
 //! A topology that does not decode, or whose maps disagree, fails closed: boot aborts rather
 //! than route by a broken map (layout 8 resets every cell, so there is no older form to read).
@@ -162,8 +164,9 @@ struct Unchecked {
 impl TryFrom<Unchecked> for Topology {
     type Error = String;
 
-    /// The maps agree: `shards` lists exactly `leaves`' prefixes, every leaf's home exists and
-    /// serves that prefix, and `next_home` is past every home.
+    /// The maps agree: every leaf's and home's prefix is a binary prefix of at most 24 bits (so a
+    /// born home's path is unambiguous), `shards` lists exactly `leaves`' prefixes, every leaf's
+    /// home exists and serves that prefix, and `next_home` is past every home.
     fn try_from(t: Unchecked) -> Result<Self, String> {
         let set = ShardSet {
             version: t.version,
@@ -172,6 +175,16 @@ impl TryFrom<Unchecked> for Topology {
             leaves: t.leaves,
             next_home: t.next_home,
         };
+        let prefixes = set
+            .leaves
+            .keys()
+            .chain(set.homes.values().map(|h| &h.prefix));
+        if let Some(bad) = prefixes
+            .into_iter()
+            .find(|p| crate::keyspace::range::Range::parse(p).is_none())
+        {
+            return Err(format!("prefix {bad:?} is no binary prefix"));
+        }
         let leaves: Vec<&String> = set.leaves.keys().collect();
         let mut listed: Vec<&String> = set.shards.iter().collect();
         listed.sort();
@@ -206,9 +219,10 @@ impl TryFrom<Unchecked> for Topology {
     }
 }
 
-/// Where an operation-born home's shard log lives: `shards/<prefix>~<home>` (S4-DESIGN §3.1).
+/// Where an operation-born home's shard log lives: `shards/<prefix>-<home>` (S4-DESIGN §3.1). No
+/// character of it needs URL encoding (see the module).
 pub(crate) fn born_home_path(prefix: &str, home: u32) -> String {
-    format!("shards/{prefix}~{home}")
+    format!("shards/{prefix}-{home}")
 }
 
 /// The home reservation of a split.
@@ -342,8 +356,10 @@ mod tests {
     }
 
     /// A stored topology reads back as written, and one whose maps disagree is refused: a
-    /// leaf missing from `shards`, a leaf naming another prefix's or a retired home, and a
-    /// `next_home` that is not past every home.
+    /// leaf missing from `shards`, a leaf naming another prefix's or a retired home, a
+    /// `next_home` that is not past every home, and a leaf's or a home's prefix that is no binary
+    /// prefix of at most 24 bits (an operation-born home's path joins its prefix and its number
+    /// with `-`, so a prefix must never hold one).
     #[test]
     fn a_topology_whose_maps_disagree_is_refused() {
         let t = initial(2);
@@ -372,6 +388,22 @@ mod tests {
         assert_eq!(
             refused(|v| v["next_home"] = serde_json::json!(1)),
             "next_home 1 is not past every home"
+        );
+        assert_eq!(
+            refused(|v| {
+                v["shards"] = serde_json::json!(["0", "1-1"]);
+                v["leaves"] = serde_json::json!({"0": 0, "1-1": 1});
+                v["homes"]["1"]["prefix"] = serde_json::json!("1-1");
+            }),
+            "prefix \"1-1\" is no binary prefix"
+        );
+        assert_eq!(
+            refused(|v| {
+                v["homes"]["5"] = v["homes"]["1"].clone();
+                v["homes"]["5"]["prefix"] = serde_json::json!("1-");
+                v["next_home"] = serde_json::json!(6);
+            }),
+            "prefix \"1-\" is no binary prefix"
         );
     }
 
@@ -411,7 +443,7 @@ mod tests {
 
     /// **A split reserves two homes, then publishes its halves.** On a two-shard cell, the
     /// reservation takes homes 2 and 3 and leaves the version; the split of `"1"` makes version
-    /// 2 with leaves `0`, `10`, `11` at homes 0, 2, 3, the children at `shards/1x~h` with parent
+    /// 2 with leaves `0`, `10`, `11` at homes 0, 2, 3, the children at `shards/1x-h` with parent
     /// home 1, home 1 retired at version 2, and `last_op` naming it. The result decodes through
     /// the checked form unchanged.
     #[test]
@@ -439,7 +471,7 @@ mod tests {
                 child.parents.as_slice(),
                 child.born_version
             ),
-            ("shards/11~3", [1].as_slice(), 2)
+            ("shards/11-3", [1].as_slice(), 2)
         );
         assert_eq!(split.shards.homes[&1].retired_version, Some(2));
         let op = split.last_op.as_ref().unwrap();

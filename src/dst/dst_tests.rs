@@ -48,6 +48,8 @@ mod split_barrier;
 #[path = "tests/split_k.rs"]
 mod split_k;
 
+#[path = "tests/split_generations.rs"]
+mod split_generations;
 #[path = "tests/split_route_refusals.rs"]
 mod split_route_refusals;
 

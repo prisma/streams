@@ -688,7 +688,7 @@ mod directory_tests {
 
     /// **The opener is handed the log path the topology gives the shard's home, and its bare
     /// prefix** (S4 route A). After a split of `1` into `10` (home 2) and `11` (home 3), a resolve in
-    /// `10` opens `shards/10~2` for prefix `10`; one in `0` opens its initial `shards/0`.
+    /// `10` opens `shards/10-2` for prefix `10`; one in `0` opens its initial `shards/0`.
     #[tokio::test]
     async fn the_opener_is_handed_the_path_the_topology_gives_the_home() {
         let topology = crate::config::validation::InitialShards::new(2)
@@ -720,7 +720,7 @@ mod directory_tests {
             assert!(refused.is_err(), "{prefix}");
         }
         let handed = handed.lock().unwrap().clone();
-        let want = [("10", "shards/10~2"), ("0", "shards/0")]
+        let want = [("10", "shards/10-2"), ("0", "shards/0")]
             .map(|(p, path)| (p.to_string(), path.to_string()));
         assert_eq!(handed, want);
     }

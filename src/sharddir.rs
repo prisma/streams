@@ -239,7 +239,7 @@ pub(crate) use open_at::{LogOpener, home_of_db_path};
 pub(crate) type ServingMap = Arc<RwLock<HashMap<String, Resident>>>;
 
 /// What the directory's opener is handed (S4 route A): the shard's prefix, the path its log lives at
-/// in the cell's topology (`shards/<prefix>` for an initial home, `shards/<prefix>~<home>` for one a
+/// in the cell's topology (`shards/<prefix>` for an initial home, `shards/<prefix>-<home>` for one a
 /// split or merge made), and the incarnation the engine's close notification must carry.
 pub(crate) type OpenAt = Box<
     dyn Fn(
