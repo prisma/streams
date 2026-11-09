@@ -592,6 +592,51 @@ async fn roll_back(
     Refused::RolledBack(why)
 }
 
+/// What a claimant of a lapsed merge intent found, once its own opens had fenced **both** sources
+/// (S6 §7.4, L8): a claim that fenced one source could decide while the other's previous writer
+/// still acks writes `M`'s older checkpoint lacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Evidence {
+    /// Whether each source's log holds `'T'` (this merge's).
+    pub(crate) retired: [bool; 2],
+    /// Whether a `topo-<op_id>` checkpoint, or any file under `M`'s path, exists.
+    pub(crate) copy_began: bool,
+    /// Whether `M`'s log is complete (its seeded clone finished: `'Y'` present).
+    pub(crate) merged_complete: bool,
+    /// Whether the stored topology already names this operation as its `last_op`.
+    pub(crate) published: bool,
+}
+
+/// The claimant's decision for a lapsed merge intent (S6 §7.4's table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// `'T'` in neither source, nothing copied: delete `M`'s lists, end the intent `RolledBack`.
+    RollBack,
+    /// `'T'` in neither source, a copy begun: also delete `M`'s clone (its manifest's
+    /// `external_dbs` checkpoints, its files) and both `topo-` checkpoints, then roll back.
+    RollBackWithTakeoverGc,
+    /// `'T'` in one or both sources and `M` complete: write the missing `'T'`, publish (idempotent
+    /// on `last_op`), release any hold with `Retired`, then close both, and end `Reclaimed`.
+    RollForward,
+    /// The topology already names the operation: end the intent `Reclaimed`.
+    Reclaim,
+    /// `'T'` written but `M` not complete cannot arise (`'T'` follows `M`'s seeded clone); the claim
+    /// stops and pages rather than guess.
+    Inconsistent,
+}
+
+/// S6 §7.4's table over `evidence`.
+pub(crate) fn recovery(evidence: Evidence) -> Recovery {
+    let any_retired = evidence.retired.iter().any(|r| *r);
+    match (evidence.published, any_retired, evidence.merged_complete) {
+        (true, _, _) => Recovery::Reclaim,
+        (false, true, true) => Recovery::RollForward,
+        (false, true, false) => Recovery::Inconsistent,
+        (false, false, _) if evidence.copy_began => Recovery::RollBackWithTakeoverGc,
+        (false, false, _) => Recovery::RollBack,
+    }
+}
+
 /// `held`'s intent, ended in `state` with `result`.
 fn terminal(held: &intent::Held, state: intent::State, result: &str) -> intent::Intent {
     let mut ended = held.intent.clone();

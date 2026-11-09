@@ -57,3 +57,40 @@ fn a_merge_of_non_leaves_or_onto_a_used_home_is_refused() {
         "00 and 01 are no leaves now"
     );
 }
+
+/// S6 §7.4's recovery table, row by row: published reclaims; `'T'` in either source rolls forward
+/// once `M` is complete (and is inconsistent otherwise); no `'T'` rolls back, with the takeover GC
+/// when a copy began.
+#[test]
+fn a_claimant_decides_each_row_of_the_recovery_table() {
+    use super::{Evidence, Recovery, recovery};
+    let at = |retired: [bool; 2], copy_began, merged_complete, published| Evidence {
+        retired,
+        copy_began,
+        merged_complete,
+        published,
+    };
+    let rows = [
+        (at([false, false], false, false, false), Recovery::RollBack),
+        (
+            at([false, false], true, false, false),
+            Recovery::RollBackWithTakeoverGc,
+        ),
+        (
+            at([false, false], true, true, false),
+            Recovery::RollBackWithTakeoverGc,
+        ),
+        (at([true, false], true, true, false), Recovery::RollForward),
+        (at([false, true], true, true, false), Recovery::RollForward),
+        (at([true, true], true, true, false), Recovery::RollForward),
+        (
+            at([true, false], true, false, false),
+            Recovery::Inconsistent,
+        ),
+        (at([true, true], true, true, true), Recovery::Reclaim),
+        (at([false, false], false, false, true), Recovery::Reclaim),
+    ];
+    for (evidence, want) in rows {
+        assert_eq!(recovery(evidence), want, "{evidence:?}");
+    }
+}
