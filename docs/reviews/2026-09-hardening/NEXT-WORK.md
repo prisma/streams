@@ -1729,6 +1729,21 @@ before marking it complete."
   niced run) -> 2.48 s, peak RSS 1.4 GB.
 
 ---
+- **The formal job's tool install is not cached.** `rust-quality.yml`'s
+  `formal` shards run `scripts/install-formal-tools.py` on every run. It
+  downloads the pinned TLC jar
+  (`github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar`)
+  and the Kani bundle (`github.com/model-checking/kani/releases/...`).
+  The job's only cache, `Swatinem/rust-cache@v2`, keeps cargo's registry
+  and target dir, not `target/quality-tools`. A GitHub release outage
+  therefore reds every push:
+  - 6f85dffbe (2026-11-09) needed two reruns for HTTP 504s on that step;
+  - 48597a882 (2026-11-08) needed two as well.
+  Fix, cache-first: an `actions/cache` step keyed by
+  `quality-tools.toml`'s pins (the sha256s are already there) restores
+  `target/quality-tools` before the install. The install already skips a
+  tool whose pinned build is present ("Kani … bundle already set up"). A
+  workflow change, so the lead or the owner decides when.
 
 ## 11. Deployment gates (need the owner or the Compute owner)
 
