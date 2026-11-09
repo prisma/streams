@@ -16,13 +16,79 @@ impl From<CreationError> for ProductCreateError {
         Self::Creation(e)
     }
 }
+/// Edge #253: a create makes a stream or a queue, and a container's kind
+/// (the verified policy's, none without one) takes only its own; no
+/// stream create makes a queue's descriptor.
+fn kind_refusal(
+    makes: ContainerKind,
+    content_type: &str,
+    principal: Option<&crate::auth::RequestPrincipal>,
+) -> Option<CreationError> {
+    let message = if makes == ContainerKind::Streams
+        && crate::native_queue::is_queue_kind(content_type)
+    {
+        QUEUE_AS_STREAM
+    } else {
+        match principal.map(|p| p.kind) {
+            Some(held) if held == makes => return None,
+            Some(ContainerKind::Streams) => "this container holds streams; it cannot hold a queue",
+            Some(ContainerKind::Queues) => "this container holds queues; it cannot hold a stream",
+            None => return None,
+        }
+    };
+    Some(kind_mismatch(message))
+}
+
+/// What a stream create carrying the queue content type is told.
+pub(super) const QUEUE_AS_STREAM: &str =
+    "a queue is created with PUT /v1/queues/{name}, not as a stream";
+
+pub(super) fn kind_mismatch(message: &str) -> CreationError {
+    CreationError::new(
+        CreationFailure::Conflict,
+        "container_kind_mismatch",
+        message,
+    )
+}
+
+use crate::project_policy::ContainerKind;
+
 impl CreationService {
+    /// A stream's create (`PUT /v1/streams/{name}`).
     pub(crate) async fn create_product(
         self: &Arc<Self>,
         sref: crate::tenant::TenantStreamRef,
         key: StreamKey,
         cfg: ProductCreateConfig,
-        quotas: Option<&crate::project_policy::ProjectQuotas>,
+        principal: Option<&crate::auth::RequestPrincipal>,
+    ) -> Result<(bool, StreamDesc), ProductCreateError> {
+        if let Some(refusal) = kind_refusal(ContainerKind::Streams, &cfg.content_type, principal) {
+            return Err(refusal.into());
+        }
+        self.create_of_kind(sref, key, cfg, principal).await
+    }
+
+    /// A queue's stream (`PUT /v1/queues/{name}`, queues.rs).
+    pub(crate) async fn create_queue_stream(
+        self: &Arc<Self>,
+        sref: crate::tenant::TenantStreamRef,
+        key: StreamKey,
+        cfg: ProductCreateConfig,
+        principal: Option<&crate::auth::RequestPrincipal>,
+    ) -> Result<(bool, StreamDesc), ProductCreateError> {
+        if let Some(refusal) = kind_refusal(ContainerKind::Queues, &cfg.content_type, principal) {
+            return Err(refusal.into());
+        }
+        self.create_of_kind(sref, key, cfg, principal).await
+    }
+
+    /// A create its kind admits.
+    async fn create_of_kind(
+        self: &Arc<Self>,
+        sref: crate::tenant::TenantStreamRef,
+        key: StreamKey,
+        cfg: ProductCreateConfig,
+        principal: Option<&crate::auth::RequestPrincipal>,
     ) -> Result<(bool, StreamDesc), ProductCreateError> {
         let project = sref.project_id();
         if let Some(refusal) = self.foreign_create(&sref) {
@@ -33,7 +99,7 @@ impl CreationService {
         let existing =
             (self.registry.get(&sref).await).map_err(|e| CreationError::registry_read(&e))?;
         let mut reservation = None;
-        if let Some(quotas) = quotas.filter(|q| q.max_streams > 0)
+        if let Some(quotas) = principal.map(|p| &p.quotas).filter(|q| q.max_streams > 0)
             && !existing.as_ref().is_some_and(|d| desc_alive(d))
         {
             let seed = self

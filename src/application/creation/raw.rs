@@ -43,6 +43,9 @@ impl CreationService {
                 "a queue cannot be forked; use the /v1/queues routes",
             ));
         }
+        if crate::native_queue::is_queue_kind(&prepared.content_type) {
+            return Err(product::kind_mismatch(product::QUEUE_AS_STREAM));
+        }
         let content_type = prepared.content_type;
         let ttl_secs = prepared.ttl_secs;
         let fork_ctx = prepared.context;

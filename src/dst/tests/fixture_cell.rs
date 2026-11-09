@@ -187,10 +187,20 @@ pub(super) struct CellSpec {
     pub(super) bounds: SharedBounds,
     pub(super) store: Arc<dyn object_store::ObjectStore>,
     pub(super) incarnation: u64,
+    /// Each project's container kind (edge #253).
+    pub(super) kind: fn(usize) -> crate::project_policy::ContainerKind,
 }
 
 impl CellSpec {
     /// `projects` projects with no quotas and the default command line.
+    /// `open`, every project a queues container.
+    pub(super) fn queues(projects: usize) -> Self {
+        Self {
+            kind: |_| crate::project_policy::ContainerKind::Queues,
+            ..Self::open(projects)
+        }
+    }
+
     pub(super) fn open(projects: usize) -> Self {
         Self {
             projects,
@@ -202,6 +212,7 @@ impl CellSpec {
             bounds: SharedBounds::default(),
             store: mem(),
             incarnation: 0,
+            kind: |_| crate::project_policy::ContainerKind::Streams,
         }
     }
 }
@@ -252,7 +263,10 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
         .map(|i| {
             (
                 ProjectId::new(&project(i)).unwrap(),
-                policy(i, (spec.quotas)(i)),
+                ProjectPolicy {
+                    kind: (spec.kind)(i),
+                    ..policy(i, (spec.quotas)(i))
+                },
             )
         })
         .collect();

@@ -62,6 +62,9 @@ mod billing_restart;
 #[path = "tests/billing_usage.rs"]
 mod billing_usage;
 
+#[path = "tests/container_kind.rs"]
+mod container_kind;
+
 #[path = "tests/consumer_atomicity.rs"]
 mod consumer_atomicity;
 

@@ -12,6 +12,7 @@ fn principal(i: usize) -> crate::auth::RequestPrincipal {
     crate::auth::RequestPrincipal {
         project_id: crate::tenant::ProjectId::new(&format!("proj-{i}")).unwrap(),
         quotas: crate::project_policy::ProjectQuotas::default(),
+        kind: crate::project_policy::ContainerKind::Streams,
         credential_id: format!("c-{i}").into(),
         ownership_version: 1,
         grant_version: 1,

@@ -17,6 +17,9 @@ const S: usize = 1;
 const T: usize = 2;
 const QUEUE: usize = 3;
 const FLOODER: usize = 4;
+/// The flooder's queue: a container holds streams or queues (edge #253),
+/// so the flooder of appends and the flooder of sends are two tenants.
+const FLOOD_Q: usize = 5;
 
 /// The rig's shed line (MiB), as `fair_shed.rs` sets it.
 const LINE_MB: u64 = 1000;
@@ -103,7 +106,7 @@ fn served() -> Vec<Answer> {
 async fn flooder_refused(cell: &Cell, code: &str, phase: &str) {
     let refused = (429, Some(code.to_string()));
     assert_eq!(append(cell, FLOODER).await, refused, "{phase}: its append");
-    assert_eq!(send(cell, FLOODER).await, refused, "{phase}: its send");
+    assert_eq!(send(cell, FLOOD_Q).await, refused, "{phase}: its send");
 }
 
 /// The records tenant `i` stored in `orders`.
@@ -128,8 +131,9 @@ async fn queue_counts(cell: &Cell, i: usize) -> (u64, u64, u64) {
 
 /// One cell, shared 8 ways, of every class: M at weights (2, 5) appending
 /// 50,000-byte records, S and T unit stream tenants, a unit queue tenant
-/// that sends, claims and acks, and a unit flooder of appends and sends
-/// (200 of the cell's 231 recent requests). Over the RSS shed line and at
+/// that sends, claims and acks, and two unit flooders, one of appends and
+/// one of sends (160 and 40 of the cell's 231 recent requests, each over
+/// its 1/k). Over the RSS shed line and at
 /// the in-flight cap the flooder's appends and sends are refused (`429
 /// project_memory_pressure`, `429 rate_limited`) and every other class is
 /// served, M's large appends and the queue tenant's claims and acks
@@ -206,18 +210,25 @@ async fn a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class() {
         "sent and acked"
     );
     assert_eq!(
-        queue_counts(&cell, FLOODER).await,
+        queue_counts(&cell, FLOOD_Q).await,
         (40, 0, 40),
         "its refused sends stored nothing"
     );
     engine_shutdown(&cell.state).await;
 }
 
-/// The mixed cell: M at (2, 5), S, T, the queue tenant and the flooder,
-/// each with its stream or queue, and the recent load under every line
-/// (the flooder 160 appends and 40 sends; M 20, S 10, T 1 appends).
+/// The mixed cell: M at (2, 5), S, T, the queue tenant and the two
+/// flooders, each with its stream or queue, and the recent load under every
+/// line (the flooders 160 appends and 40 sends; M 20, S 10, T 1 appends).
 async fn mixed_cell() -> Cell {
-    let mut spec = CellSpec::open(5);
+    let mut spec = CellSpec::open(6);
+    spec.kind = |i| {
+        if i == QUEUE || i == FLOOD_Q {
+            crate::project_policy::ContainerKind::Queues
+        } else {
+            crate::project_policy::ContainerKind::Streams
+        }
+    };
     spec.cli = |cli| cli.project_share_k = 8;
     spec.bounds = SharedBounds {
         append_bytes_per_sec: 2_060_000,
@@ -233,7 +244,7 @@ async fn mixed_cell() -> Cell {
         let created = ask(&cell, i, "PUT", "/v1/streams/orders", CREATE).await;
         assert_eq!(created.0, 201, "tenant {i}");
     }
-    for i in [QUEUE, FLOODER] {
+    for i in [QUEUE, FLOOD_Q] {
         let created = ask(&cell, i, "PUT", "/v1/queues/jobs", b"").await;
         assert_eq!(created.0, 201, "tenant {i}'s queue");
     }
@@ -241,7 +252,7 @@ async fn mixed_cell() -> Cell {
         assert_eq!(append(&cell, FLOODER).await, (200, None));
     }
     for _ in 0..40 {
-        assert_eq!(send(&cell, FLOODER).await, (201, None));
+        assert_eq!(send(&cell, FLOOD_Q).await, (201, None));
     }
     for (i, n) in [(M, 20), (S, 10), (T, 1)] {
         for _ in 0..n {

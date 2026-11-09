@@ -451,6 +451,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::container_kind",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Edge #253 commit 3b-2: a container's kind decides what it creates, over real HTTP rigs: a streams container refuses a queue and a queues container a stream (409 container_kind_mismatch), and no stream create, raw or product, with or without a policy, makes a queue's descriptor; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/container_kind.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::weighted_shares",
       "path": "src/dst/dst_tests.rs",
       "reason": "Weighted per-project shares over real HTTP rigs (layout 6A package 1, DESIGN-6A section 4.2): a weighted project's ceilings beside unit projects', fair shedding by weighted share, the weighted memory line, and a mixed cell of stream and queue tenants under pressure, each asserted on the wire answers and the stored records; compiler and the full DST suite exercise the module.",

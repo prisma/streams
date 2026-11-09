@@ -392,6 +392,7 @@ async fn a_served_requests_registry_work_is_weighed_for_its_project() {
     let principal = crate::auth::RequestPrincipal {
         project_id: project.clone(),
         quotas: limits.clone(),
+        kind: crate::project_policy::ContainerKind::Streams,
         credential_id: "c-weigh".into(),
         ownership_version: 1,
         grant_version: 1,

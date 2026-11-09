@@ -447,7 +447,8 @@ In each of these changes, a request that used to succeed can now fail permanentl
      - 3a-2a, 865907392: the HTTP surface says container (paths, codes, messages, JSON keys, the internal header, the SDK).
      - 3a-2b, eb1bd8862: the env names and flags say container.
      - 3a-3, ec89e78f4: the issuer's routes, answers, codes and messages say container; cell-admin's `--workspace-cap` defaults to 1,000; the management contract follows.
-     - 3b-1, this commit: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
+     - 3b-1, 4d58bbf4c: a container's `kind` (`streams` or `queues`) is a required policy field, fixed for its life.
+     - 3b-2, this commit: a create of the other kind is refused `409 container_kind_mismatch`.
      - Pending: 3b (kind and single-name refusals), 3c (internal names, operator fields, docs).
 - **Status (which parts are live at a commit):**
   - From part 1's commit on: no usage answer carries `accountId`, the rollup is `telemetry/usage-rollup/v3/p0`, the artifacts are `telemetry/usage-monthly/{container}/…`, and the ops snapshot has no `segment_identity_drift_total`.
@@ -479,6 +480,9 @@ In each of these changes, a request that used to succeed can now fail permanentl
     - cell-admin's state is `streams-cell-admin/v3` and records each container's kind (a v1 or v2 state is refused: re-initialise the cell); `admit --kind streams|queues` and the issuer's create body `{"displayName","kind"?}` set it, `streams` when absent; the canary is a streams container; the issuer's container view shows `kind`;
     - the emulator's `--fixture id:workspace[:cell[:kind]]` and the bench and campaign feed generators publish `kind`;
     - nothing refuses a create by kind yet: that is 3b-2.
+  - From 3b-2's commit on:
+    - in a streams container `PUT /v1/queues/{name}` answers `409 container_kind_mismatch` ("this container holds streams; it cannot hold a queue"), and in a queues container `PUT /v1/streams/{name}` answers it ("this container holds queues; it cannot hold a stream"), checked against the kind in the policy the request verified against, before any read, reservation or write; not retryable;
+    - a stream create carrying the queue content type (`PUT /v1/streams/{name}` with `contentType` `application/vnd.prisma.queue+json`, or the raw `PUT /v1/stream/{name}`) answers `409 container_kind_mismatch` ("a queue is created with PUT /v1/queues/{name}, not as a stream") in any container and without a policy, so only `/v1/queues` makes a queue's descriptor.
   - Until 3c: the issuer page's copy, cell-admin's flags and state fields (`--max-projects`, `--project`, `projects`, `project_id`), the audit records and the operator fields still say project.
   - Between pushes the wire is half renamed exactly this way. The owner ratified the whole change; the parts are recorded as they land.
 - **Surface:** both.

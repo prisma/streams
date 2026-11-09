@@ -196,6 +196,8 @@ pub(crate) struct RequestPrincipal {
     /// a later snapshot (a project vanishing between the two reads
     /// used to yield unlimited quotas).
     pub quotas: crate::project_policy::ProjectQuotas,
+    /// The container's kind in that same snapshot (edge #253).
+    pub kind: crate::project_policy::ContainerKind,
     pub credential_id: Arc<str>,
     pub ownership_version: u64,
     pub grant_version: u64,
@@ -568,6 +570,7 @@ impl AuthService {
 
         Ok(RequestPrincipal {
             quotas: policy.quotas.clone(),
+            kind: policy.kind,
             project_id,
             credential_id: Arc::from(c.credential_id.as_str()),
             ownership_version: c.ownership_version,

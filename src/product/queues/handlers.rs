@@ -159,8 +159,7 @@ async fn create(c: &Call<'_>) -> Answer {
     let key = decode_key(c.key_header())?;
     let cfg: QueueConfig =
         doc(&c.body).map_err(|f| fail(FailureClass::Invalid, "invalid_config", f.message))?;
-    let quotas = c.principal.map(|p| &p.quotas);
-    match c.svc.create(&c.sref, key, cfg, quotas).await {
+    match c.svc.create(&c.sref, key, cfg, c.principal).await {
         Ok((created, cfg)) => {
             let status = if created {
                 StatusCode::CREATED

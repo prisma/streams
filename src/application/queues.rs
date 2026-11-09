@@ -278,7 +278,7 @@ impl QueueService {
         sref: &TenantStreamRef,
         key: StreamKey,
         cfg: QueueConfig,
-        quotas: Option<&crate::project_policy::ProjectQuotas>,
+        principal: Option<&crate::auth::RequestPrincipal>,
     ) -> Result<(bool, QueueConfig), CreateFailure> {
         cfg.validate()
             .map_err(|m| fail(FailureClass::Invalid, "invalid_config", m))?;
@@ -290,7 +290,7 @@ impl QueueService {
         };
         match self
             .creation
-            .create_product(sref.clone(), key, stream, quotas)
+            .create_queue_stream(sref.clone(), key, stream, principal)
             .await
         {
             Ok(_) => {}

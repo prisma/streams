@@ -53,7 +53,7 @@ const SENT: Answer = (201, None, None);
 /// A shared cell (k = 8) of two projects, each with the queue `jobs`, and
 /// the first project's flood of sends under every line.
 async fn flooded_cell() -> Cell {
-    let mut spec = CellSpec::open(2);
+    let mut spec = CellSpec::queues(2);
     spec.cli = |cli| cli.project_share_k = 8;
     let cell = open_cell(spec).await;
     for i in 0..2 {
@@ -190,7 +190,7 @@ const PROJECT_LINE: u64 = 256 * 1024;
 /// uncharged, so both were sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_queue_write_is_held_to_its_projects_memory_line() {
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     cell.state
         .admission
         .set_project_memory_pressure_bytes(PROJECT_LINE);
@@ -287,7 +287,7 @@ async fn a_queue_write_is_held_to_its_projects_memory_line() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_queue_sends_are_shed_before_their_bodies() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
     assert_eq!(send(&cell, 0, 0).await, SENT, "under the line");
     let admission = &cell.state.admission;
@@ -344,7 +344,7 @@ async fn over_the_shed_line_queue_sends_are_shed_before_their_bodies() {
 /// the cap the send is served. Before: queue writes never met the gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn at_the_inflight_cap_queue_sends_and_settles_are_refused_as_appends_are() {
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
     assert_eq!(send(&cell, 0, 0).await, SENT, "under the cap");
     let admission = &cell.state.admission;
@@ -398,7 +398,7 @@ const COMMIT_QUEUE: usize = 2;
 /// until the committer moved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_queue_operation_on_a_full_committer_is_answered_at_once() {
-    let mut spec = CellSpec::open(1);
+    let mut spec = CellSpec::queues(1);
     spec.shard.queue_reqs = COMMIT_QUEUE;
     let cell = open_cell(spec).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
@@ -468,7 +468,7 @@ async fn parked(admission: &crate::admission::AdmissionController, n: i64) -> bo
 /// was the ninth active and refused `429 rate_limited`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_waiting_claim_parks_and_leaves_the_write_gate_to_sends() {
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/parking", "").await.0, 201);
     let admission = &cell.state.admission;
     admission.set_max_inflight(CAP);
@@ -525,7 +525,7 @@ const READ_MEMORY: u64 = 64 * 1024;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
     use crate::admission::read_memory::ReadHold;
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     let admission = &cell.state.admission;
     admission.set_read_memory_capacity(READ_MEMORY);
     assert_eq!(
@@ -608,7 +608,7 @@ async fn settle_one(cell: &Cell, token: &str, op: &str) -> (Answer, Option<Strin
 /// acked. Before: every settle was refused over the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn over_the_shed_line_a_settle_that_ends_leases_passes_until_the_hard_line() {
-    let cell = open_cell(CellSpec::open(1)).await;
+    let cell = open_cell(CellSpec::queues(1)).await;
     assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
     for n in 0..3 {
         assert_eq!(send(&cell, 0, n).await, SENT);

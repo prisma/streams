@@ -183,7 +183,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e8682155eb76ad18d3430c7b4497e9b7817becce9eba03152135ae9e1535a129",
+    "function_sha256": "bc101cc3bff773dcacdeae8c8bb75ed03bddef684f9235aae48fb10bb14f5c3a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -1441,7 +1441,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4ab5f3aebb7c0c40ed4239bf44a368006640ccbdfee69e9e2f0b06bad370c39d",
+    "function_sha256": "eaa1db6e817eaae490e8567b53082b948eb78e8e7e090532ac2e2bd2bb8564f9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_weighted.rs",
@@ -2050,7 +2050,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "25be1de329bece0315da6740a5a1b6fba983e573c7a84f0177aacc86ca659883",
+    "function_sha256": "cf3e7e5ef0af6cc627cd03e243ccea7f5a5eaf36579695fe97c85478e23aa16e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -2061,7 +2061,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "59cf8e8dbe190cc4d8fba4c87d648573309709cc258d7a0ce769a595bfb74a0c",
+    "function_sha256": "6ff13cf8222d0f7e1ef6220328b2e2863a4ae4a98e1aca2ddd156e24ab61eddf",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -3403,7 +3403,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "cca1210d2f7b103972f93b00d62d619130b3d41a53bd30a0fc3b185d38804c1c",
+    "function_sha256": "ac8aaffc91ca7ffd7461889bd90c8511be02464464403687022da00ef6fee462",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -4401,7 +4401,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "783e20a9e233dfd6dd5435b42d616b3cd2dde512571d9820acf726f61a0dee81",
+    "function_sha256": "26d131d4769df7fe46b370384c7b048efd34b084804c7fae527c76dbcdb7e85b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -5175,6 +5175,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_owners.rs",
+    "scenarios": []
+  },
+  {
+    "name": "each_kind_of_container_creates_only_its_own_kind",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "096681e1dce18f866f0a7ff87b8afb2684ba2cc2cc787077cf63aae21ea29516",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/container_kind.rs",
     "scenarios": []
   },
   {
@@ -6827,6 +6838,17 @@
     "scenarios": []
   },
   {
+    "name": "no_stream_create_makes_a_queue_descriptor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f95c089cfe9856e216e2b936ad6e15a5b919fa39a89d56630d86f664dfe6541f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/container_kind.rs",
+    "scenarios": []
+  },
+  {
     "name": "noisy_neighbor_cannot_degrade_a_compliant_project",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -7194,7 +7216,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a6408862e50fb6495abbd0b4b13c3e920c3db132fab340c2651b4b54cbc99d40",
+    "function_sha256": "6f45b62b5ba47d63261a1eb04ffb72836a4d2c3550b3ec6819654b9ba02a82b6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
@@ -7216,7 +7238,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7ecaa98137e65da59ce7e3c987c8b194812ec867530b898d984848b72996b021",
+    "function_sha256": "772eae49b146c99b19debf51ab227502d2c35ac53bf3b0c5aae3bfc778deeaaf",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
