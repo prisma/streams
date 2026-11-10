@@ -246,3 +246,34 @@ fn the_index_and_marker_keys_are_pinned() {
     assert_eq!(super::dirty_key(&hash), key(b"M", &hash));
     assert_eq!(super::repair_key(), key(b"X", &[]));
 }
+
+/// A repair reports exactly what it changed, per index and direction (its `warn` line is what an
+/// operator reads after calling the route): two streams gain 'W', three billed tails gain 'M', a
+/// 'W' row and two 'M' rows that name no tail go, and rows already right are left alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_repair_counts_each_row_it_adds_and_removes() {
+    let mut rows = Vec::new();
+    for hash in [[1; 16], [2; 16]] {
+        rows.push((crate::shard::tail_key(&hash), tail(4, 10, 300, None)));
+    }
+    for hash in [[3; 16], [4; 16], [5; 16]] {
+        rows.push((crate::shard::tail_key(&hash), tail(5, 5, 0, Some(5))));
+    }
+    rows.push((super::unsealed_key(&[6; 16]), Vec::new()));
+    for hash in [[7; 16], [8; 16]] {
+        rows.push((super::dirty_key(&hash), 9u64.to_be_bytes().to_vec()));
+    }
+    let settled = [9; 16];
+    rows.push((crate::shard::tail_key(&settled), tail(4, 10, 300, Some(2))));
+    rows.push((super::unsealed_key(&settled), Vec::new()));
+    rows.push((super::dirty_key(&settled), 2u64.to_be_bytes().to_vec()));
+    let db = seeded("repair-counts", &rows).await;
+    let repair = super::repair_indexes(&db).await.unwrap();
+    let expected = super::Repair {
+        unsealed_added: 2,
+        unsealed_removed: 1,
+        dirty_set: 3,
+        dirty_removed: 2,
+    };
+    assert_eq!(repair, expected);
+}
