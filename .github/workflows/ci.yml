@@ -245,7 +245,7 @@ jobs:
       - name: Merges, and the seal on a child (S6)
         run: 'scripts/test-leg.sh target/legs/topology-merge.log --min 21 -- --release --lib dst::dst_tests::merge_k:: dst::dst_tests::merge_finish_k:: dst::dst_tests::reads_merged:: dst::dst_tests::seal_convergence::'
       - name: The policy and the fleet's topology (S5)
-        run: 'scripts/test-leg.sh target/legs/topology-policy.log --min 26 --exact dst::dst_tests::topology_policy::a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops -- --release --lib dst::dst_tests::topology_policy:: dst::dst_tests::fleet_topology:: dst::dst_tests::scaler_split_gate:: dst::dst_tests::topology_lifecycle:: dst::dst_tests::topology_scaling:: -- --skip post_split_throughput_scales'
+        run: 'scripts/test-leg.sh target/legs/topology-policy.log --min 28 --exact dst::dst_tests::topology_policy::a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops --exact dst::dst_tests::topology_policy::a_sustained_cold_pair_merges_into_one_stored_leaf_and_keeps_every_stream_whole --exact dst::dst_tests::topology_policy::a_cold_pair_split_across_two_instances_is_colocated_and_merged -- --release --lib dst::dst_tests::topology_policy:: dst::dst_tests::fleet_topology:: dst::dst_tests::scaler_split_gate:: dst::dst_tests::topology_lifecycle:: dst::dst_tests::topology_scaling:: -- --skip post_split_throughput_scales'
 
   mt-cert-1000:
     runs-on: ubuntu-24.04
