@@ -2651,6 +2651,17 @@
     "scenarios": []
   },
   {
+    "name": "a_queue_split_then_merged_delivers_every_message_as_before_and_gives_back_each_chunk_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "bf26a4e751122ac02ab43d2f11c787fcd5461502438c806bfe9bb9a7c745d71c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_queue_write_is_held_to_its_projects_memory_line",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4310,6 +4321,17 @@
       "DUR-007",
       "SEL-011"
     ]
+  },
+  {
+    "name": "a_trim_batch_a_split_waits_out_is_redone_by_the_child_exactly_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5b055547a42501629ee42431146fbdc37a7b3941d228683ffc74ad89190c0f54",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
   },
   {
     "name": "a_usage_stream_id_is_authorized_by_the_name_the_rollup_recorded",

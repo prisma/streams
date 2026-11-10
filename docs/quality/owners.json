@@ -1091,6 +1091,62 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::queue_split",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Native queues across a split and a merge (S4-DESIGN section 6, S3b-DESIGN section 7.3 F7, part 2): a trim batch the split waits out redone by the child exactly once, and a queue with sealed chunks, an open delivery and unsealed pages split then merged, delivering every message as before and giving back each chunk once; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/queue_split.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::three_acked",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue split and merge DSTs (S3b part 2, S3b-DESIGN section 7.3); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::claim",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue split and merge DSTs (S3b part 2, S3b-DESIGN section 7.3); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::ack",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue split and merge DSTs (S3b part 2, S3b-DESIGN section 7.3); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::send",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue split and merge DSTs (S3b part 2, S3b-DESIGN section 7.3); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_queue_split_then_merged_delivers_every_message_as_before_and_gives_back_each_chunk_once",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue split and merge DSTs (S3b part 2, S3b-DESIGN section 7.3); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_trim_batch_a_split_waits_out_is_redone_by_the_child_exactly_once",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "The split, the parent's trim pass and the control that parks and releases them run concurrently in one test task, so the trim's batch waits at the gate the split holds; the compiler checks the join's expansion and the futures borrow the test's cell.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_route_refusals",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split route's refusals split_k does not pin (edge #251, C3): 409 not_ring_owner naming the owning instance, and 422 not_splittable for a leaf at the routing width and for a parent whose log holds 'T'; compiler and the full DST suite exercise the module.",
