@@ -4002,7 +4002,7 @@
       "kind": "tla",
       "title": "Native queue reclamation: a sealed chunk is given back only once nothing needs it, each object's count stays exact, no needed or shared object is deleted, and no hint is lost",
       "status": "pass-with-recorded-scope",
-      "owner": "the native queue's trim pass (gc/trim.rs) over its hints, Trimming row and released intervals, with the committer shrinking the queue's needed set and writing hints, the purge's request, step and F4-ordered reclaim, sealed reads' pins and the collector",
+      "owner": "the native queue's trim pass (gc/trim.rs) over its hints, Trimming row and released intervals, with the committer shrinking the queue's needed set and writing hints, the purge's request, step and F4-ordered reclaim, the index's view of a trimming queue (the folds' kept_entries and the split's recount), consolidation's queue guard, sealed reads' pins, the collector, and its passes over the queues' debt",
       "source_paths": [
         "src/shard/seal/gc/trim.rs",
         "src/native_queue/intervals.rs",
@@ -4010,7 +4010,12 @@
         "src/shard/transaction/native_queue/hints.rs",
         "src/shard/seal/gc/purge.rs",
         "src/shard/seal/gc.rs",
-        "src/spill/gc.rs"
+        "src/spill/gc.rs",
+        "src/shard/seal/fold.rs",
+        "src/shard/seal/consolidate.rs",
+        "src/topology/sentinel.rs",
+        "src/shard/transaction/native_queue/mod.rs",
+        "src/shard/queue_maintenance.rs"
       ],
       "verification_paths": [
         "verification/tla/queue/QueueReclamation.tla",
@@ -4030,12 +4035,14 @@
         "ASM-QUEUE-REPLY-DURABLE",
         "ASM-SEAL-OBJECT-IMMUTABLE"
       ],
-      "input_scope": "one queue in one shard log, one chunk per offset (a queue's chunks tile its offsets and never join); 3 offsets and two seals with object 1 shared with another stream's live chunk, one hint and two chunks a pass, one read, one crash losing a pass in progress (small); 4 offsets and two seals with object 2 shared, two hints and two chunks a pass, one read, no crash (expanded); hint ids bounded by a state constraint; the committer's batches durable as applied (ASM-QUEUE-REPLY-DURABLE); the trim and the purge mutually excluded by refs; the cleaner, folds, the split's recount and the collector's debt are outside this model (part 2 steps 4-5 bring controls 2, 4, 6, 7 and 9 with that code); safety only, EveryHintHandled checked as a safety property",
+      "input_scope": "one queue in one shard log, one chunk per offset (a queue's chunks tile its offsets and never join); 3 offsets and two seals with object 1 shared with another stream's live chunk, one hint and two chunks a pass, one read, one crash losing a pass in progress, with scheduled sends, folds, the split's recount and a consolidation that a broken guard lets move a queue chunk (small); the same without reads or scheduled sends, with acks' debt and the collector's capture, rewrite and ClearDebt, a crash losing a pass (debt); 4 offsets and two seals with object 2 shared, two hints and two chunks a pass, one read, no crash, immediate sends only (expanded); hint ids bounded by a state constraint; the committer's batches durable as applied (ASM-QUEUE-REPLY-DURABLE); the trim and the purge mutually excluded by refs; the folds and the split's recount are modelled in one view, kept_entries' (the 'H' prefix and the 'k' intervals in every 'H' state, since 'k' outlives Trimming until the purge's last decrement), with the recount running between the purge's passes; this obligation is recorded once both apply it (today the fold reads 'k' only while Trimming, and child_counts counts every entry: package 5's chain fix adds the prefix, S3b's 'k' half follows with its red DST); the cleaner (control 9) is outside this model until part 2 step 4; safety only, EveryHintHandled checked as a safety property",
       "regressions": [
         "shard::native_queue_tests::trim::a_pass_retires_exactly_the_unreferenced_chunks_behind_the_frontier",
         "shard::native_queue_tests::trim::released_chunks_above_a_held_one_form_an_interval_the_prefix_absorbs",
         "shard::native_queue_tests::trim::the_purge_leaves_a_trimming_queue_alone_until_a_request_which_keeps_its_prefix",
-        "shard::native_queue_tests::hints::a_group_names_exactly_the_sealed_offsets_it_touched_in_one_hint_row"
+        "shard::native_queue_tests::hints::a_group_names_exactly_the_sealed_offsets_it_touched_in_one_hint_row",
+        "shard::native_queue_tests::trim::a_queue_read_offers_no_chunk_to_consolidation",
+        "shard::native_queue_tests::budgets::debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured"
       ],
       "checks": [
         {
@@ -4059,10 +4066,30 @@
           "timeout_seconds": 3600
         },
         {
+          "id": "TLA-047/baseline-debt",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_debt.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 1800
+        },
+        {
           "id": "TLA-047/nc-unreferenced",
           "role": "negative-control",
           "spec": "verification/tla/queue/MC_QueueReclamation.tla",
           "config": "verification/tla/queue/MC_QueueReclamation_nc_unreferenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoChunkTrimmedWhileReferencedOrAhead"
+          }
+        },
+        {
+          "id": "TLA-047/nc-coarse-counts",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_coarse_counts.cfg",
           "expect": {
             "result": "violation",
             "property": "NoChunkTrimmedWhileReferencedOrAhead"
@@ -4079,6 +4106,16 @@
           }
         },
         {
+          "id": "TLA-047/nc-queue-chunks-move",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_queue_chunks_move.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
           "id": "TLA-047/nc-frontier-after-refs",
           "role": "negative-control",
           "spec": "verification/tla/queue/MC_QueueReclamation.tla",
@@ -4086,6 +4123,36 @@
           "expect": {
             "result": "violation",
             "property": "NoChunkTrimmedWhileReferencedOrAhead"
+          }
+        },
+        {
+          "id": "TLA-047/nc-fold-without-k",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_fold_without_k.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-047/nc-k-view-by-state",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_k_view_by_state.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-047/nc-clear-debt-without-generation",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_clear_debt_without_generation.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "DebtClearedOnlyAfterACoveringPass"
           }
         },
         {

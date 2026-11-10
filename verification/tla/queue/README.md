@@ -68,21 +68,52 @@ S3b-DESIGN §4.3, §5.9, §7.3, §7.4, §11.2).
 | `TrimStart` (the frontier first), `TrimCheck` (references, `Unreferenced` point 1), `TrimCommit` (`CursorAfter` point 10) | `shard/seal/gc/trim.rs` `trim_pass`, `trim_queue`, `queue_refs_in`, `stage_trim_rows`; `native_queue/intervals.rs` `Released` |
 | `PurgeRequest`, `PurgeStep` (`PurgeActsOn` point 3), `PurgeOnTrimming` | `gc/purge.rs` `request_purge` (Trimming → Requested, prefix kept), `purge_due`, `purge_stream_at` |
 | `ReclaimRows` (`KAtReclaim` point 8), `ReclaimDecrement` | `gc/purge.rs` `reclaim_locked`: F4's order (package 6's change in step 5) |
+| `SendScheduled` (a scheduled message's bit references it; `Unreferenced` point 2 counts open deliveries only) | `trim.rs` `queue_refs_in` (the `'d'` rows and the range rows' `sbits`) |
+| `Fold`, `Recount` (`EntryDropped` point 6) | `seal/fold.rs` `kept_entries` (the folds and merges); `topology/sentinel.rs` `child_counts` (the split's seed) |
+| `Consolidate` (`QueueChunksMove` point 4) | `seal/consolidate.rs` (`is_queue_stream`: a queue read offers no chunk) |
+| `PassCapture`, `PassRewrite`, `ClearDebt` (`ClearByGeneration` point 7) | `shard/queue_maintenance.rs` (`capture_debt`, the rewrite, `NqOp::ClearDebt`); `transaction/native_queue/mod.rs` (`nq_debt`, the clear by generation) |
 | `ReadStart`/`ReadEnd`, `Collect`, `Crash` | sealed reads' pins (`gc::pin`); the collector; a lost pass |
 
 One chunk per offset: a queue's chunks tile its offsets and never join, so
 the released intervals are sets of offsets. The trim and the purge exclude
 each other through `refs`; the committer runs beside both. Point 5,
-`FrontierAtCommit`, moves the frontier read after the references. Controls 2
-(retirement by coarse counts), 4 (the cleaner joining queue chunks), 6 (the
-fold ignoring `'k'`), 7 (`ClearDebt` without the generation) and 9
-(`still_live` reading a cached `intervals`) concern the cleaner, the folds'
-and the split recount's view of `'k'` and the collector's debt; they come
-with part 2 steps 4-5, where that code lands. EveryHintHandled is checked
-as a safety property (a chunk no longer needed and not released is named by
-a hint after the cursor, or by the pass in progress), not as liveness.
+`FrontierAtCommit`, moves the frontier read after the references.
 
-Configurations: `small` (3 offsets, object 1 shared, one hint and two
-chunks a pass, one read, one crash) and `expanded` (4 offsets, object 2
-shared, two hints a pass, no crash); hint ids are bounded by the
-`HintBound` constraint.
+The index (`idx`) holds an entry for each sealed chunk. The folds drop the
+released ones, and a split's seed recounts each object from the entries;
+both use one view, `EntryDropped` (`kept_entries`). The view covers the
+prefix and the `'k'` intervals in every `'H'` state, because `'k'` outlives
+Trimming until the purge's last decrement. A split may run between the
+purge's passes. Two controls break the view:
+- point 6 ignores `'k'`, so the recount counts a chunk the trim gave back;
+- its by-state variant reads `'k'` only while Trimming, so a split between
+  the purge's request and its reclaim counts the chunk again.
+
+The code does not apply this view yet. The fold reads `'k'` only while
+Trimming, and `child_counts` counts every entry, so a split after a trim
+rolls back (its children's counts do not sum to the source's). Package 5's
+chain fix adds the prefix, and S3b's `'k'` half follows with its red DST.
+This obligation is recorded only once both are in.
+
+Point 4 lets a consolidation move a queue's chunk into a new object and
+count the old one down without reading `'k'`. An ack's deleted rows are
+debt until a collector pass that captured them has rewritten the log; the
+clear keeps what was recorded after the capture. Point 7 clears the whole
+debt (DebtClearedOnlyAfterACoveringPass). Control 9 (the cleaner's
+`still_live` reading a cached `intervals`) comes with part 2 step 4, where
+the cleaner lands.
+
+EveryHintHandled is checked as a safety property, not as liveness: a chunk
+that is no longer needed and not released is named by a hint after the
+cursor, or by the pass in progress.
+
+Configurations:
+- `small`: 3 offsets, object 1 shared, one hint and two chunks a pass, one
+  read, one crash; scheduled sends, folds, the recount and the consolidation
+  point (`Rich`).
+- `debt`: small's bounds without reads or scheduled sends; the debt and the
+  collector's passes (`Debt`).
+- `expanded`: 4 offsets, object 2 shared, two hints a pass, no crash;
+  immediate sends only.
+
+Hint ids are bounded by the `HintBound` constraint.

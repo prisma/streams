@@ -32,11 +32,19 @@
 (* Reads pin the object of a needed sealed chunk while they run; the       *)
 (* collector deletes an object at refcount zero that no read pins.         *)
 (*                                                                         *)
-(* Mutation points (MC_QueueReclamation.tla): Unreferenced (control 1),    *)
-(* PurgeActsOn (3), FrontierAtCommit (5), KAtReclaim (8), CursorAfter      *)
-(* (10).  Controls 2, 4, 6, 7 and 9 concern the cleaner, the folds' and    *)
-(* recount's view of 'k', and the collector's debt: they come with part 2  *)
-(* steps 4-5, where that code lands.                                       *)
+(* The index (`idx`): a seal gives each chunk an entry; folds and merges    *)
+(* drop the released ones, and a split's seed recounts each object from    *)
+(* the entries, both in kept_entries' view.  No consolidation moves a      *)
+(* queue's chunk.  A scheduled message's bit references it from its send   *)
+(* (`Rich` explores these).  An ack's deleted rows are debt until a        *)
+(* collector pass that captured them has rewritten the log and cleared     *)
+(* them by generation (`Debt` explores these).                             *)
+(*                                                                         *)
+(* Mutation points (MC_QueueReclamation.tla): Unreferenced (controls 1     *)
+(* and 2), PurgeActsOn (3), QueueChunksMove (4), FrontierAtCommit (5),     *)
+(* EntryDropped (6), ClearByGeneration (7), KAtReclaim (8), CursorAfter    *)
+(* (10).  Control 9 (the cleaner's still_live reading a cached intervals)  *)
+(* comes with part 2 step 4, where the cleaner lands.                      *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
@@ -48,15 +56,19 @@ CONSTANTS
     PassChunks,   \* chunks one pass examines at most
     MaxReads,     \* reads at once
     MaxCrashes,
-    MaxHintId     \* hint ids drawn at most (a state constraint)
+    MaxHintId,    \* hint ids drawn at most (a state constraint)
+    Rich,         \* scheduled sends, folds and the split's recount are explored
+    Debt          \* acks' debt and the collector's passes are explored
 
 ASSUME /\ N \in Nat \ {0} /\ MaxObjs \in Nat \ {0} /\ Shared \subseteq 1..MaxObjs
        /\ PassHints \in Nat \ {0} /\ PassChunks \in Nat \ {0}
        /\ MaxReads \in Nat /\ MaxCrashes \in Nat /\ MaxHintId \in Nat
+       /\ Rich \in BOOLEAN /\ Debt \in BOOLEAN
 
 Offs == 0..(N-1)
 Objs == 1..MaxObjs
 NoPass == [phase |-> "none"]
+NoCap == [phase |-> "none"]
 
 VARIABLES
     next, frontier, refs, alive,   \* the committer's queue
@@ -66,11 +78,15 @@ VARIABLES
     hints, nextHint, cursor,       \* 'Z' and the trim's cursor
     tr,                            \* the trim pass in progress
     ph, phead, krel,               \* the purge: phase, head, the 'k' it read
-    crashes
+    crashes,
+    sched,                         \* the references that are scheduled messages' bits
+    idx,                           \* the offsets with an index entry ('K' or a run)
+    debt, dgen, dirty,             \* debt, its generation, rows deleted and not collected
+    cap                            \* the collector's pass in progress
 
 vars == <<next, frontier, refs, alive, sealed, objOf, nobj, R, deleted, pins,
           reads, hstate, reclaimed, rel, hints, nextHint, cursor, tr, ph,
-          phead, krel, crashes>>
+          phead, krel, crashes, sched, idx, debt, dgen, dirty, cap>>
 
 Needed(o) == alive /\ o < next /\ (o >= frontier \/ o \in refs)
 Released(o) == o < reclaimed \/ o \in rel
@@ -80,7 +96,8 @@ Neighbour(b) == IF b \in Shared THEN 1 ELSE 0
 LiveOf(b) == {o \in 0..(sealed-1) : objOf[o] = b /\ ~Released(o)}
 
 \* --- Mutation points (baseline definitions) --------------------------------
-\* Retire a candidate only when nothing references it (trim.rs queue_refs_in).
+\* Retire a candidate only when nothing references it: no open delivery and no
+\* unresolved scheduled bit (trim.rs queue_refs_in).
 Unreferenced(o) == o \notin refs
 \* The purge acts on Requested and Purged rows, never on Trimming (§7.4).
 PurgeActsOn(s) == s \in {"Requested", "Purged"}
@@ -90,6 +107,17 @@ FrontierAtCommit == FALSE
 KAtReclaim == FALSE
 \* The cursor stands at the last hint the pass read.
 CursorAfter(taken) == Max({h[1] : h \in taken})
+\* No queue chunk is moved into another object (consolidate.rs
+\* is_queue_stream; the cleaner never joins queue chunks).
+QueueChunksMove == FALSE
+\* The index's view of a queue's entries (fold.rs kept_entries, which the
+\* folds, the merges and the split's recount share): every released entry is
+\* dropped, below the prefix ('H') and inside the intervals ('k'), whatever
+\* the 'H' state ('k' outlives Trimming until the purge's last decrement).
+EntryDropped(o) == Released(o)
+\* A pass's clear keeps the debt recorded after its capture (ClearDebt's
+\* generation check).
+ClearByGeneration == TRUE
 
 TypeOK ==
     /\ next \in 0..N /\ frontier \in 0..N /\ refs \subseteq Offs
@@ -97,6 +125,9 @@ TypeOK ==
     /\ R \in [Objs -> Nat] /\ deleted \subseteq Objs /\ pins \in [Objs -> Nat]
     /\ hstate \in {"none", "Trimming", "Requested", "Purged"}
     /\ reclaimed \in 0..N /\ rel \subseteq Offs
+    /\ sched \subseteq refs /\ idx \subseteq Offs
+    /\ debt \in Nat /\ dgen \in Nat /\ dirty \subseteq Offs
+    /\ cap.phase \in {"none", "captured", "rewritten"}
 
 Init ==
     /\ next = 0 /\ frontier = 0 /\ refs = {} /\ alive = TRUE
@@ -107,6 +138,8 @@ Init ==
     /\ hints = {} /\ nextHint = 1 /\ cursor = 0
     /\ tr = NoPass /\ ph = "none" /\ phead = 0 /\ krel = {}
     /\ crashes = 0
+    /\ sched = {} /\ idx = {}
+    /\ debt = 0 /\ dgen = 0 /\ dirty = {} /\ cap = NoCap
 
 \* A hint naming [lo, hi) (nothing when empty).
 Hint(lo, hi) ==
@@ -117,6 +150,8 @@ Hint(lo, hi) ==
 
 Gc == <<R, deleted, pins, reads, hstate, reclaimed, rel, cursor, tr, ph, phead,
         krel, crashes>>
+Extra == <<sched, idx>>
+Coll == <<debt, dgen, dirty, cap>>
 
 \* ---------------------------------------------------------------------------
 \* The committer.
@@ -125,7 +160,18 @@ Send ==
     /\ alive /\ next < N
     /\ next' = next + 1
     /\ UNCHANGED <<frontier, refs, alive, sealed, objOf, nobj, hints, nextHint>>
+    /\ UNCHANGED Gc /\ UNCHANGED Extra
+    /\ UNCHANGED Coll
+
+\* A scheduled send: its bit references it from the send until it resolves;
+\* the frontier passes it without leasing it.
+SendScheduled ==
+    /\ Rich /\ alive /\ next < N
+    /\ refs' = refs \cup {next} /\ sched' = sched \cup {next}
+    /\ next' = next + 1
+    /\ UNCHANGED <<frontier, alive, sealed, objOf, nobj, hints, nextHint, idx>>
     /\ UNCHANGED Gc
+    /\ UNCHANGED Coll
 
 Seal ==
     /\ alive /\ sealed < next /\ nobj < MaxObjs
@@ -134,27 +180,35 @@ Seal ==
           /\ objOf' = [o \in Offs |-> IF sealed <= o /\ o < s THEN b ELSE objOf[o]]
           /\ R' = [R EXCEPT ![b] = @ + (s - sealed)]
           /\ nobj' = b /\ sealed' = s
+          /\ idx' = idx \cup {o \in Offs : sealed <= o /\ o < s}
           /\ Hint(sealed, s)
     /\ UNCHANGED <<next, frontier, refs, alive, deleted, pins, reads, hstate,
-                   reclaimed, rel, cursor, tr, ph, phead, krel, crashes>>
+                   reclaimed, rel, cursor, tr, ph, phead, krel, crashes, sched>>
+    /\ UNCHANGED Coll
 
 \* The frontier steps over its offset, leasing it (a reference) or passing it.
 Step ==
     /\ alive /\ frontier < next
     /\ \E lease \in BOOLEAN :
-          refs' = IF lease THEN refs \cup {frontier} ELSE refs
+          /\ lease => frontier \notin sched
+          /\ refs' = IF lease THEN refs \cup {frontier} ELSE refs
     /\ frontier' = frontier + 1
     /\ IF frontier < sealed THEN Hint(frontier, frontier + 1)
        ELSE UNCHANGED <<hints, nextHint>>
     /\ UNCHANGED <<next, alive, sealed, objOf, nobj>>
-    /\ UNCHANGED Gc
+    /\ UNCHANGED Gc /\ UNCHANGED Extra
+    /\ UNCHANGED Coll
 
-\* A reference resolves (an ack, an expiry, a scheduled message's end).
+\* A reference resolves (an ack, an expiry, a scheduled message's end); its
+\* deleted rows are debt (nq_debt: the bytes and the generation).
 Resolve(o) ==
     /\ alive /\ o \in refs
-    /\ refs' = refs \ {o}
+    /\ refs' = refs \ {o} /\ sched' = sched \ {o}
     /\ IF o < sealed THEN Hint(o, o + 1) ELSE UNCHANGED <<hints, nextHint>>
-    /\ UNCHANGED <<next, frontier, alive, sealed, objOf, nobj>>
+    /\ IF Debt
+       THEN /\ debt' = debt + 1 /\ dgen' = dgen + 1 /\ dirty' = dirty \cup {o}
+       ELSE UNCHANGED <<debt, dgen, dirty>>
+    /\ UNCHANGED <<next, frontier, alive, sealed, objOf, nobj, idx, cap>>
     /\ UNCHANGED Gc
 
 \* The queue's delete fences it: nothing of it is needed any more.
@@ -162,9 +216,11 @@ Delete ==
     /\ alive
     /\ alive' = FALSE
     /\ UNCHANGED <<next, frontier, refs, sealed, objOf, nobj, hints, nextHint>>
-    /\ UNCHANGED Gc
+    /\ UNCHANGED Gc /\ UNCHANGED Extra
+    /\ UNCHANGED Coll
 
-Committer == <<next, frontier, refs, alive, sealed, objOf, nobj, hints, nextHint>>
+Committer == <<next, frontier, refs, alive, sealed, objOf, nobj, hints, nextHint,
+               sched, idx>>
 
 \* ---------------------------------------------------------------------------
 \* The trim pass (gc/trim.rs), under `refs`: the purge cannot run beside it.
@@ -187,6 +243,7 @@ TrimStart ==
     /\ UNCHANGED <<ph, phead, krel>>
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, pins, reads, hstate, reclaimed, rel, cursor, crashes>>
+    /\ UNCHANGED Coll
 
 \* The next candidate, in offset order: examined while the cap allows, its
 \* references read now; else left for a new hint.
@@ -200,6 +257,7 @@ TrimCheck ==
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, pins, reads, hstate, reclaimed, rel, cursor, ph,
                    phead, krel, crashes>>
+    /\ UNCHANGED Coll
 
 \* The prefix from `r` once the released offsets `k` are absorbed.
 RECURSIVE Prefix(_, _)
@@ -227,7 +285,8 @@ TrimCommit ==
                   /\ UNCHANGED nextHint
     /\ tr' = NoPass
     /\ UNCHANGED <<next, frontier, refs, alive, sealed, objOf, nobj, deleted, pins,
-                   reads, ph, phead, krel, crashes>>
+                   reads, ph, phead, krel, crashes, sched, idx>>
+    /\ UNCHANGED Coll
 
 \* ---------------------------------------------------------------------------
 \* The purge (§5.9; purge.rs), under `refs`: never beside a pass.
@@ -239,6 +298,7 @@ PurgeRequest ==
     /\ UNCHANGED <<phead, krel>>
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, pins, reads, reclaimed, rel, cursor, tr, crashes>>
+    /\ UNCHANGED Coll
 
 \* Step 1 (the committer): the tail goes; `head` is the sealed end.
 PurgeStep ==
@@ -247,6 +307,7 @@ PurgeStep ==
     /\ UNCHANGED krel
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, pins, reads, reclaimed, rel, cursor, tr, crashes>>
+    /\ UNCHANGED Coll
 
 \* A purge pass acting on a live queue's Trimming row (only a broken
 \* PurgeActsOn allows it): it reclaims [reclaimed, frontier) as if dead.
@@ -258,6 +319,7 @@ PurgeOnTrimming ==
           /\ reclaimed' = Max({reclaimed, frontier}) /\ rel' = {o \in rel : o >= frontier}
     /\ UNCHANGED <<hstate, cursor, tr, ph, phead, krel, deleted, pins, reads, crashes>>
     /\ UNCHANGED Committer
+    /\ UNCHANGED Coll
 
 \* Reclaim, first batch: 'k' read (F4: before the row deletes), the queue's
 \* rows deleted.
@@ -268,6 +330,7 @@ ReclaimRows ==
     /\ UNCHANGED <<phead>>
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, pins, reads, hstate, reclaimed, rel, cursor, tr, crashes>>
+    /\ UNCHANGED Coll
 
 \* Reclaim, last batch: every chunk in [reclaimed, head) outside the 'k' it
 \* read decremented; 'k' deleted with it; the prefix at head.
@@ -279,6 +342,50 @@ ReclaimDecrement ==
     /\ ph' = "done"
     /\ UNCHANGED <<phead, krel, hstate, cursor, tr, deleted, pins, reads, crashes>>
     /\ UNCHANGED Committer
+    /\ UNCHANGED Coll
+
+\* ---------------------------------------------------------------------------
+\* The index's other writers (fold.rs, consolidate.rs, the split's seed).
+
+\* A fold or merge drops the entries of released chunks (kept_entries).
+Fold ==
+    /\ Rich
+    /\ idx' = {o \in idx : ~EntryDropped(o)}
+    /\ idx' # idx
+    /\ UNCHANGED <<next, frontier, refs, alive, sealed, objOf, nobj, hints, nextHint, sched>>
+    /\ UNCHANGED Gc
+    /\ UNCHANGED Coll
+
+\* A consolidation or cleaner copy moves a chunk into a new object and
+\* counts the old one down, without reading 'k' (only a broken guard lets
+\* it take a queue's chunk).
+Consolidate(o) ==
+    /\ QueueChunksMove /\ tr = NoPass /\ ph = "none" /\ nobj < MaxObjs
+    /\ o \in idx /\ objOf[o] # 0 /\ objOf[o] \notin deleted
+    /\ LET b == nobj + 1 IN
+       /\ objOf' = [objOf EXCEPT ![o] = b]
+       /\ R' = [R EXCEPT ![b] = 1, ![objOf[o]] = @ - 1]
+       /\ nobj' = b
+    /\ UNCHANGED <<next, frontier, refs, alive, sealed, hints, nextHint, sched, idx>>
+    /\ UNCHANGED <<deleted, pins, reads, hstate, reclaimed, rel, cursor, tr, ph,
+                   phead, krel, crashes>>
+    /\ UNCHANGED Coll
+
+\* A split's seed recomputes each object's count from the index entries
+\* (topology/sentinel.rs child_counts) in the index's view, so skipping the
+\* released ones. It waits out a trim pass and runs between the purge's
+\* passes (Requested, Purged), never inside the reclaim.
+Recount ==
+    /\ Rich /\ tr = NoPass /\ ph \in {"none", "asked", "purged", "done"}
+    /\ R' = [b \in Objs |->
+                IF b \in 1..nobj /\ b \notin deleted
+                THEN Cardinality({o \in idx : objOf[o] = b /\ ~EntryDropped(o)}) + Neighbour(b)
+                ELSE R[b]]
+    /\ R' # R
+    /\ UNCHANGED Committer
+    /\ UNCHANGED <<deleted, pins, reads, hstate, reclaimed, rel, cursor, tr, ph,
+                   phead, krel, crashes>>
+    /\ UNCHANGED Coll
 
 \* ---------------------------------------------------------------------------
 \* Reads and the collector.
@@ -290,6 +397,7 @@ ReadStart(o) ==
     /\ pins' = [pins EXCEPT ![objOf[o]] = @ + 1]
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, hstate, reclaimed, rel, cursor, tr, ph, phead, krel, crashes>>
+    /\ UNCHANGED Coll
 
 ReadEnd(r) ==
     /\ r \in reads
@@ -297,28 +405,60 @@ ReadEnd(r) ==
     /\ pins' = [pins EXCEPT ![r[2]] = @ - 1]
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, deleted, hstate, reclaimed, rel, cursor, tr, ph, phead, krel, crashes>>
+    /\ UNCHANGED Coll
 
 Collect(b) ==
     /\ b \in 1..nobj /\ b \notin deleted /\ R[b] = 0 /\ pins[b] = 0
     /\ deleted' = deleted \cup {b}
     /\ UNCHANGED Committer
     /\ UNCHANGED <<R, pins, reads, hstate, reclaimed, rel, cursor, tr, ph, phead, krel, crashes>>
+    /\ UNCHANGED Coll
 
-\* A crash loses the pass in progress (its batch was never written).
+\* A crash loses the passes in progress (their batches were never written).
 Crash ==
-    /\ crashes < MaxCrashes /\ tr # NoPass
-    /\ tr' = NoPass /\ crashes' = crashes + 1
-    /\ UNCHANGED Committer
+    /\ crashes < MaxCrashes /\ (tr # NoPass \/ cap # NoCap)
+    /\ tr' = NoPass /\ cap' = NoCap /\ crashes' = crashes + 1
+    /\ UNCHANGED Committer /\ UNCHANGED <<debt, dgen, dirty>>
     /\ UNCHANGED <<R, deleted, pins, reads, hstate, reclaimed, rel, cursor, ph, phead, krel>>
 
+\* ---------------------------------------------------------------------------
+\* The collector's pass over the debt (§7.5, §8.2; queue_maintenance.rs): it
+\* captures each queue's debt and generation, rewrites the shard log (which
+\* covers every deletion it captured), then clears through the committer.
+
+PassCapture ==
+    /\ Debt /\ cap = NoCap /\ debt > 0
+    /\ cap' = [phase |-> "captured", gen |-> dgen, bytes |-> debt, rows |-> dirty]
+    /\ UNCHANGED <<debt, dgen, dirty>>
+    /\ UNCHANGED Committer /\ UNCHANGED Gc
+
+PassRewrite ==
+    /\ cap.phase = "captured"
+    /\ dirty' = dirty \ cap.rows
+    /\ cap' = [cap EXCEPT !.phase = "rewritten"]
+    /\ UNCHANGED <<debt, dgen>>
+    /\ UNCHANGED Committer /\ UNCHANGED Gc
+
+\* ClearDebt: the whole debt when nothing was recorded since the capture,
+\* else the captured bytes (saturating).
+ClearDebt ==
+    /\ cap.phase = "rewritten"
+    /\ debt' = IF ClearByGeneration /\ dgen # cap.gen
+               THEN Max({0, debt - cap.bytes}) ELSE 0
+    /\ cap' = NoCap
+    /\ UNCHANGED <<dgen, dirty>>
+    /\ UNCHANGED Committer /\ UNCHANGED Gc
+
 Next ==
-    \/ Send \/ Seal \/ Step \/ Delete \/ \E o \in Offs : Resolve(o)
+    \/ Send \/ SendScheduled \/ Seal \/ Step \/ Delete \/ \E o \in Offs : Resolve(o)
+    \/ Fold \/ Recount \/ \E o \in Offs : Consolidate(o)
     \/ TrimStart \/ TrimCheck \/ TrimCommit
     \/ PurgeRequest \/ PurgeStep \/ PurgeOnTrimming \/ ReclaimRows \/ ReclaimDecrement
     \/ \E o \in Offs : ReadStart(o)
     \/ \E r \in reads : ReadEnd(r)
     \/ \E b \in Objs : Collect(b)
     \/ Crash
+    \/ PassCapture \/ PassRewrite \/ ClearDebt
 
 Spec == Init /\ [][Next]_vars
 
@@ -354,6 +494,10 @@ ReclaimedIsABoundary == reclaimed <= sealed
 \* The released offsets lie above the prefix, which has absorbed them.
 IntervalsDisjointAndAboveReclaimed ==
     \A o \in rel : o > reclaimed
+
+\* Every deletion no pass has covered is still owed: a clear gives up only
+\* the debt its pass captured and covered.
+DebtClearedOnlyAfterACoveringPass == Cardinality(dirty) <= debt
 
 \* No hint at or below the cursor waits (the cursor never passes one).
 CursorBehindEveryHint == \A h \in hints : h[1] > cursor

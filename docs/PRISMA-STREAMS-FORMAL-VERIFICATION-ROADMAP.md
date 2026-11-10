@@ -1294,7 +1294,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 ### TLA-047 — Native queue reclamation: chunks given back only when nothing needs them, counts exact, no hint lost
 
-**Status:** pass-with-recorded-scope (S3b part 2 step 3, 2026-11-10; manifest entry TLA-047, `verification/tla/queue/QueueReclamation.tla`, 2 baselines, 5 negative controls and 5 witnesses; S3b-DESIGN rev 3 §4.3, §5.9, §7.3-§7.4, §11.2).
+**Status:** pass-with-recorded-scope (S3b part 2 step 3, 2026-11-10; manifest entry TLA-047, `verification/tla/queue/QueueReclamation.tla`, 3 baselines, 10 negative controls and 5 witnesses; S3b-DESIGN rev 3 §4.3, §5.9, §7.3-§7.4, §7.5, §8.2, §11.2). It is recorded once the fold and the split's recount both apply `kept_entries` in every `'H'` state (a red DST pins today's rollback).
 
 **Priority:** P0 · **Requirement anchors:** F5, F6, R4, Q6  
 **Source owners:** [`src/shard/seal/gc/trim.rs`](src/shard/seal/gc/trim.rs); [`src/native_queue/intervals.rs`](src/native_queue/intervals.rs); [`src/native_queue/hints.rs`](src/native_queue/hints.rs); [`src/shard/seal/gc/purge.rs`](src/shard/seal/gc/purge.rs)
@@ -1303,9 +1303,9 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 **Why valuable.** The trim runs beside the committer with no lock against it, on the keystone that the needed set only shrinks; a wrong read order, a missed reference or a purge that reads `'k'` late loses another stream's or a lease's body.
 
-**Negative controls.** Retirement without the reference check (1); `purge_due` acting on Trimming (3); the frontier read after the references (5); the purge reading `'k'` after its row deletes (8); the cursor past an unconsumed hint (10). Controls 2, 4, 6, 7 and 9 (coarse counts, the cleaner joining queue chunks, the fold ignoring `'k'`, `ClearDebt` without the generation, a cached `intervals`) come with part 2 steps 4-5.
+**Negative controls.** Retirement without the reference check (1); retirement by coarse counts, a scheduled message's bit not holding its chunk (2); `purge_due` acting on Trimming (3); a consolidation moving a queue chunk (4); the frontier read after the references (5); the fold ignoring `'k'`, or reading it only while Trimming, so the split's recount counts a released chunk (6, and its by-state variant); `ClearDebt` without the generation (7); the purge reading `'k'` after its row deletes (8); the cursor past an unconsumed hint (10). Control 9 (the cleaner's `still_live` reading a cached `intervals`) comes with part 2 step 4.
 
-**Scope.** One chunk per offset; 3 or 4 offsets, two seals, one object shared with another stream; one or two hints and two chunks a pass; one read; a crash losing a pass; hint ids bounded. The cleaner, folds, the split's recount and the collector's debt are outside the model.
+**Scope.** One chunk per offset; 3 or 4 offsets, two seals, one object shared with another stream; one or two hints and two chunks a pass; one read; a crash losing a pass; hint ids bounded. Scheduled sends, folds, the split's recount and consolidation are explored in the small configuration, the debt and the collector's passes in their own. The cleaner is outside the model until part 2 step 4.
 
 **Related work:** TLA-019 (the purge and the collector); TLA-046 (delivery, the sealed lane); KANI-111 (hint keys and ranges).
 
