@@ -803,3 +803,44 @@ async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
         "roster deadline {at} is not the retention end"
     );
 }
+
+/// The invariant `stage_index_rows` relies on (S3a §4.1): every native-queue writer leaves the
+/// queue's tail sealed (absorbed == next), so a queue never enters the unsealed index. Through
+/// each writer in turn, the create, a send and a delete run to its end, the stored tail is sealed
+/// and no 'W' row names the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn every_queue_writer_leaves_its_tail_sealed_and_out_of_the_unsealed_index() {
+    let (e, db) = engine("nq-sealed-tail").await;
+    create(&e, QueueConfig::default()).await;
+    assert_queue_tail_sealed(&db, "after the create").await;
+    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
+        .await
+        .unwrap();
+    assert_queue_tail_sealed(&db, "after a send").await;
+    op(&e, NqOp::BeginDelete).await.unwrap();
+    let mut done = false;
+    for _ in 0..100 {
+        if let NqOut::DeleteStepped { remaining: false } =
+            op(&e, NqOp::DeleteStep { max_rows: 2 }).await.unwrap()
+        {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the delete never finished");
+    assert_queue_tail_sealed(&db, "after the delete's last step").await;
+}
+
+/// The stored queue tail, if any, is sealed, and the unsealed index does not name the queue.
+async fn assert_queue_tail_sealed(db: &Db, when: &str) {
+    let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
+    if let Some(raw) = raw {
+        let tail = decode_tail_for_tests(&raw).unwrap();
+        assert_eq!(tail.absorbed, tail.next, "the queue tail is sealed {when}");
+    }
+    let row = db
+        .get(crate::shard::open_index::unsealed_key(&HASH))
+        .await
+        .unwrap();
+    assert_eq!(row, None, "no unsealed-index row names the queue {when}");
+}
