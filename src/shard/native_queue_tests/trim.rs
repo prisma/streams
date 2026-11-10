@@ -248,3 +248,117 @@ async fn a_queue_read_offers_no_chunk_to_consolidation() {
     let offered = offered.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(offered, 0);
 }
+
+/// Make every message of the queue sealed, leased and acked: `n` chunks,
+/// one each, nothing holding them.
+async fn n_acked_chunks(e: &Arc<ShardEngine>, n: usize) {
+    for i in 0..n {
+        send_sealed(e, msg(&format!("m{i}"))).await;
+    }
+    let leased = claim(e, n).await;
+    assert_eq!(leased.len(), n);
+    ack(e, &leased).await;
+}
+
+/// A pass examines at most `trim_chunks` chunks and hints the rest again
+/// (§7.3): four retirable chunks with a cap of two take two passes, the
+/// first leaving exactly one new hint, the second none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_pass_over_its_chunk_cap_hints_the_rest_again() {
+    let (e, _db, _c) = clocked("nq-trim-cap", QueueConfig::default()).await;
+    e.gc_state().configure(|s| s.trim_chunks = 2);
+    n_acked_chunks(&e, 4).await;
+    let first = e.trim_pass().await.unwrap();
+    assert_eq!((first.examined, first.released), (2, 2));
+    assert_eq!(hint_count(&e).await, 1, "the two left, hinted again");
+    assert_eq!(head(&e).await, Some(Head::trimming(4, 2)));
+    let second = e.trim_pass().await.unwrap();
+    assert_eq!((second.hints, second.examined, second.released), (1, 2, 2));
+    assert_eq!(
+        (hint_count(&e).await, head(&e).await),
+        (0, Some(Head::trimming(4, 4)))
+    );
+}
+
+/// A pass whose batch fails after its reads writes nothing: the engine
+/// closes, and a fresh engine on the same log redoes it from the same rows
+/// to the same result, its objects counted down exactly once (§7.3: no
+/// state of a pass lives outside its batch).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_pass_whose_batch_fails_is_redone_from_its_rows_alone() {
+    const NAME: &str = "nq-trim-crash";
+    let (e, db, _c) = clocked(NAME, QueueConfig::default()).await;
+    n_acked_chunks(&e, 2).await;
+    let before = chunks(&e).await;
+    let hints = hint_count(&e).await;
+    let fold = &e.layout.seal.fold.hooks;
+    fold.fail_next_batch
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(e.trim_pass().await.is_err(), "the batch fails");
+    assert_eq!(
+        (hint_count(&e).await, head(&e).await),
+        (hints, None),
+        "nothing written"
+    );
+    let store = e.data_store().clone();
+    drop(e);
+    let e = ShardEngine::start(
+        NAME.to_owned(),
+        db.clone(),
+        store,
+        crate::shard::ShardConfig::default(),
+        None,
+        Default::default(),
+    );
+    e.seal_ready().await.expect("the open's rebuild");
+    assert_eq!(chunks(&e).await, before, "the counts as they were");
+    let report = e.trim_pass().await.unwrap();
+    assert_eq!(report.released, 2);
+    assert_eq!(chunks(&e).await, [((0, 0), 0), ((1, 1), 0)]);
+    assert_eq!(e.trim_pass().await.unwrap().released, 0, "once");
+}
+
+/// A seal in flight (its entries published, its commit not yet applied)
+/// holds a chunk whose object counts nothing yet: a pass that names it,
+/// even at the prefix, leaves it alone (else its decrement finds no `'R'`
+/// row and the whole batch is refused as inexact); once the seal commits,
+/// its own hint lets the next pass give it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_chunk_of_a_seal_in_flight_is_never_given_back() {
+    let (e, _db, _c) = clocked("nq-trim-flight", QueueConfig::default()).await;
+    n_acked_chunks(&e, 1).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(head(&e).await, Some(Head::trimming(1, 1)));
+    op(&e, send_op(vec![msg("late")])).await.unwrap();
+    let leased = claim(&e, 1).await;
+    ack(&e, &leased).await;
+    let hold = crate::shard::seal::test_hooks::Hold::new();
+    *e.layout.seal.hooks.after_publish.lock().unwrap() = Some(hold.clone());
+    let pass = async {
+        hold.wait_entered().await;
+        // A hint naming the in-flight chunk at the prefix (as a racing
+        // batch could leave one), drawn from the shard's sequence.
+        let row = hints::encode(&[(1, 2)]);
+        let gseq = e.next_trim_seq();
+        e.db.put(hints::key(gseq, &HASH), row).await.unwrap();
+        e.db.flush().await.unwrap();
+        let report = e.trim_pass().await.unwrap();
+        *e.layout.seal.hooks.after_publish.lock().unwrap() = None;
+        hold.release();
+        report
+    };
+    let (sealed, report) = tokio::join!(seal(&e), pass);
+    let () = sealed;
+    assert_eq!(
+        (report.examined, report.released),
+        (0, 0),
+        "nothing of it examined"
+    );
+    assert_eq!(head(&e).await, Some(Head::trimming(1, 1)));
+    assert_eq!(
+        e.trim_pass().await.unwrap().released,
+        1,
+        "the seal's own hint"
+    );
+    assert_eq!(head(&e).await, Some(Head::trimming(2, 2)));
+}

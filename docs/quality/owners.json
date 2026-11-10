@@ -1089,6 +1089,14 @@
       "syntax": "path = \"tests/split_k.rs\""
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_chunk_of_a_seal_in_flight_is_never_given_back",
+      "path": "src/shard/native_queue_tests/trim.rs",
+      "reason": "The seal parked after its publish and the trim pass that runs while it is parked run concurrently in one test task; the compiler checks the join's expansion and both borrow the test's engine.",
+      "syntax": "tokio::join"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::queue_split",

@@ -83,6 +83,10 @@ pub(crate) struct GcSettings {
     pub(crate) auto: bool,
     /// The cleaner's rewrite rule (`clean::clean_pays`).
     pub(crate) clean_pays: clean::Rule,
+    /// Hint rows one trim pass reads, and chunks it examines (the rest are
+    /// hinted again), at most (`trim`).
+    pub(crate) trim_hints: usize,
+    pub(crate) trim_chunks: usize,
 }
 
 impl Default for GcSettings {
@@ -99,6 +103,8 @@ impl Default for GcSettings {
             wrap_every: Duration::from_secs(24 * 3600),
             auto: true,
             clean_pays: clean::clean_pays,
+            trim_hints: 4_096,
+            trim_chunks: 4_096,
         }
     }
 }

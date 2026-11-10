@@ -30,11 +30,6 @@ use crate::shard::ShardEngine;
 use crate::spill::directory::DirEntry;
 use crate::spill::gc::{self as sgc, Decrements, Head, HeadState};
 
-/// The hint rows one pass consumes at most.
-const PASS_HINTS: usize = 4_096;
-/// The chunks one pass examines at most; the rest are hinted again.
-const PASS_CHUNKS: usize = 4_096;
-
 /// What one trim pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TrimReport {
@@ -53,6 +48,8 @@ struct Pass {
     report: TrimReport,
     /// A Trimming row was written: folds read heads from now on.
     heads: bool,
+    /// The chunks it may examine.
+    chunks: u64,
 }
 
 /// The hints a pass consumes for one queue: their keys and their ranges.
@@ -118,9 +115,9 @@ impl ShardEngine {
     }
 
     /// One trim pass (S3b-DESIGN §7.3), under `refs`: the hints after the
-    /// cursor, at most `PASS_HINTS`, grouped by queue; for each queue its
+    /// cursor, at most `trim_hints`, grouped by queue; for each queue its
     /// chunks the hints name (and the first one at its prefix), at most
-    /// `PASS_CHUNKS` in all, each retired when it lies behind the frontier
+    /// `trim_chunks` in all (both 4,096 by default), each retired when it lies behind the frontier
     /// and holds no reference; then one batch through `write_index_batch`
     /// (the gate shared around it alone): the decrements, each queue's
     /// Trimming row and interval changes, the consumed hints deleted, the
@@ -140,6 +137,7 @@ impl ShardEngine {
             decrements: Decrements::new(),
             report: TrimReport::default(),
             heads: false,
+            chunks: gc.settings().trim_chunks.max(1) as u64,
         };
         for (hash, (consumed, ranges)) in queues {
             pass.report.hints += consumed.len() as u64;
@@ -159,7 +157,7 @@ impl ShardEngine {
         Ok(pass.report)
     }
 
-    /// The hint rows after the cursor, at most `PASS_HINTS`, by queue, and
+    /// The hint rows after the cursor, at most `trim_hints`, by queue, and
     /// the last key read (`None`: no hint). A row that does not decode is
     /// counted and consumed: losing a hint leaks chunks, never a body.
     async fn trim_hints(&self) -> Result<(QueueHints, Option<Vec<u8>>), GcError> {
@@ -173,8 +171,8 @@ impl ShardEngine {
             .await
             .map_err(store)?;
         let (mut out, mut last) = (QueueHints::new(), None);
-        let mut n = 0;
-        while n < PASS_HINTS
+        let (mut n, most) = (0, self.gc_state().settings().trim_hints.max(1));
+        while n < most
             && let Some(kv) = rows.next().await.map_err(store)?
         {
             n += 1;
@@ -229,7 +227,7 @@ impl ShardEngine {
         let mut released = before.clone();
         let mut again = HintRanges::default();
         for c in self.trim_candidates(hash, ranges, &before).await? {
-            if pass.report.examined >= PASS_CHUNKS as u64 {
+            if pass.report.examined >= pass.chunks {
                 again.add(c.first, c.last.saturating_add(1));
                 continue;
             }
