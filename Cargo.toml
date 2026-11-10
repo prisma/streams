@@ -120,16 +120,17 @@ path = "src/bin/cryptobench.rs"
 
 [patch.crates-io]
 # Prisma's public SlateDB fork (prisma/slatedb, owner's direction 2026-11-01),
-# tag streams-20261110-735b017: upstream main 0c22c032 (our merged #2193 and
+# tag streams-20261110-857840b: upstream main 0c22c032 (our merged #2193 and
 # #2208; #2181; #2120; #2063) plus FORK.md and the patches it lists: #2190,
 # #2191, #2010, the uncached-run coalescing of issue #2211, the bounded
 # point-lookup lookahead of issue #2213, the single WAL freeze per explicit
 # flush of issue #2215, a clone's initial rows as its own L0 table (issue
 # #2239, S4's C4), a fresh clone's final checkpoint through the manifest it
-# loaded (issue #2240, C3), and FORK.md as on the fork's main.
+# loaded (issue #2240, C3), the writer-ownership check after WAL replay
+# (upstream #2231, merged after the base), and FORK.md as on the fork's main.
 # Every change goes upstream; FORK.md says how a pin moves.
-slatedb = { git = "https://github.com/prisma/slatedb.git", rev = "735b017170bb321b0e3d5226ef1dc14c0436b229" }
-slatedb-common = { git = "https://github.com/prisma/slatedb.git", rev = "735b017170bb321b0e3d5226ef1dc14c0436b229" }
+slatedb = { git = "https://github.com/prisma/slatedb.git", rev = "857840b6007bce0f8d0488ac62e57f53e40c558a" }
+slatedb-common = { git = "https://github.com/prisma/slatedb.git", rev = "857840b6007bce0f8d0488ac62e57f53e40c558a" }
 # foyer v0.22.6 plus exactly two unreleased upstream fixes, carried on a
 # fork until a foyer release has both (then `cargo update -p foyer` and drop
 # these lines): foyer-rs/foyer#1345 (release the inflight lock before

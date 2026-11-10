@@ -11,10 +11,10 @@ cargo-mutants = "27.1.0"
 
 [slatedb]
 git = "https://github.com/prisma/slatedb.git"
-rev = "735b017170bb321b0e3d5226ef1dc14c0436b229"
+rev = "857840b6007bce0f8d0488ac62e57f53e40c558a"
 upstream = "https://github.com/slatedb/slatedb.git"
 base = "0c22c032bb1af4e53d92b2098c83a34b11d2d710"
-# Tag streams-20261110-735b017: FORK.md, the eight patches it lists, then FORK.md as on main.
+# Tag streams-20261110-857840b: FORK.md, the nine patches it lists, then FORK.md as on main.
 carries = [
   { docs = true, fork = "ab50eaf52c6a244d806ab58c6f6e564773e76e10" },
   { pr = 2190, pr_diff = true, fork = "609038fdb2ce137ebf90a75e1c173717fb2e4c32" },
@@ -26,6 +26,10 @@ carries = [
   { issue = 2239, fork = "c0a7476bfbf7ac09322683f140ce34aae95d3670" },
   { issue = 2240, fork = "5196d6d622b7500c32f3a1711efd0ef93e27a491" },
   { docs = true, fork = "735b017170bb321b0e3d5226ef1dc14c0436b229" },
+  # #2231 merged upstream as squash 617dacb (patch-id equal); its PR branch merged main, so
+  # pr_diff cannot match and the fork commit is named.
+  { pr = 2231, fork = "30bae5fe24d682efa5437c3cc5136e9db8d0435d" },
+  { docs = true, fork = "857840b6007bce0f8d0488ac62e57f53e40c558a" },
 ]
 
 # A fork pin (docs/quality/dependencies.md): `rev` must be `base` plus exactly
