@@ -11,10 +11,12 @@ use super::engine;
 use crate::native_queue::rows::StateRow;
 use crate::native_queue::{NqOp, NqOut, NqRefusal, QueueConfig, WakeRequest, keys};
 
-/// Due roster rows naming no queue, ahead of the real due queues in deadline
-/// order: one page's worth (`ROSTER_PAGE`). A sweep of one is refused, so
-/// they stay.
-const NOT_DUE: u16 = 4_096;
+/// The hash range of the not-yet-due real queues (`..REAL_NOT_DUE`) and of the
+/// due roster rows naming no queue (`REAL_NOT_DUE..`), which fill the first
+/// page whole (`ROSTER_PAGE`), ahead of the real due queues in deadline order.
+/// A sweep of a row naming no queue is refused, so they stay, and the due
+/// queues are reached only by the next tick reading the page after.
+const NOT_DUE: u16 = 4_096 + REAL_NOT_DUE;
 /// Queues due now, after them.
 const DUE: u16 = 40;
 /// Real queues not yet due, at the roster's end.
