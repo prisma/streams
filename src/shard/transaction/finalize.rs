@@ -294,16 +294,16 @@ fn stage_billing_rows(
 }
 
 /// A stream's open-index rows for this group (S3a §4.1), from its base and staged tails: `'W'`
-/// when the stream gains or loses unsealed pages (stream tails only: a native queue seals
-/// nothing), and `'M'` at the staged usage version whenever the group changes it.
+/// when the stream gains or loses unsealed pages (a native queue's tail never does: its send and
+/// admin writers keep `absorbed == next`), and `'M'` at the staged usage version whenever the
+/// group changes it.
 fn stage_index_rows(batch: &mut WriteBatch, local: &StreamOverlay, b: &TailFields, f: &TailFields) {
     use crate::shard::open_index::{IndexOp, dirty_key, unsealed_key, unsealed_op};
     let hash = &local.handle.hash;
-    let stream_tail = crate::keyspace::tail_hash(&local.handle.tail_row_key()).is_some();
     match unsealed_op((b.absorbed, b.next), (f.absorbed, f.next)) {
-        Some(IndexOp::Put) if stream_tail => batch.put(unsealed_key(hash), []),
-        Some(IndexOp::Delete) if stream_tail => batch.delete(unsealed_key(hash)),
-        _ => {}
+        Some(IndexOp::Put) => batch.put(unsealed_key(hash), []),
+        Some(IndexOp::Delete) => batch.delete(unsealed_key(hash)),
+        None => {}
     }
     let version = |t: &TailFields| t.usage.as_ref().map(|u| u.usage_version);
     if let Some(staged) = version(f).filter(|v| version(b) != Some(*v)) {
