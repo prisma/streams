@@ -55,3 +55,34 @@ offsets over two range rows of two, a shorter clock, no unreadable body or
 crash). The design's 6 offsets did not converge: 3 offsets with clock 0..3
 passed 18 million distinct states at depth 18 in 9 minutes with the queue
 still growing.
+
+## TLA-047: `QueueReclamation.tla`
+
+A native queue's sealed chunks given back (S3b part 2 step 3,
+S3b-DESIGN §4.3, §5.9, §7.3, §7.4, §11.2).
+
+| Model | Code |
+|---|---|
+| `Seal` (a new object per seal; `Shared` objects also hold another stream's chunk) | `shard/seal/steps.rs`; `transaction/seal.rs` `stage_seal_hint` |
+| `Step`, `Resolve`, `Delete`: the needed set shrinks; `Hint` | the committer's queue operations; `transaction/native_queue/hints.rs` `nq_flush_hints` |
+| `TrimStart` (the frontier first), `TrimCheck` (references, `Unreferenced` point 1), `TrimCommit` (`CursorAfter` point 10) | `shard/seal/gc/trim.rs` `trim_pass`, `trim_queue`, `queue_refs_in`, `stage_trim_rows`; `native_queue/intervals.rs` `Released` |
+| `PurgeRequest`, `PurgeStep` (`PurgeActsOn` point 3), `PurgeOnTrimming` | `gc/purge.rs` `request_purge` (Trimming → Requested, prefix kept), `purge_due`, `purge_stream_at` |
+| `ReclaimRows` (`KAtReclaim` point 8), `ReclaimDecrement` | `gc/purge.rs` `reclaim_locked`: F4's order (package 6's change in step 5) |
+| `ReadStart`/`ReadEnd`, `Collect`, `Crash` | sealed reads' pins (`gc::pin`); the collector; a lost pass |
+
+One chunk per offset: a queue's chunks tile its offsets and never join, so
+the released intervals are sets of offsets. The trim and the purge exclude
+each other through `refs`; the committer runs beside both. Point 5,
+`FrontierAtCommit`, moves the frontier read after the references. Controls 2
+(retirement by coarse counts), 4 (the cleaner joining queue chunks), 6 (the
+fold ignoring `'k'`), 7 (`ClearDebt` without the generation) and 9
+(`still_live` reading a cached `intervals`) concern the cleaner, the folds'
+and the split recount's view of `'k'` and the collector's debt; they come
+with part 2 steps 4-5, where that code lands. EveryHintHandled is checked
+as a safety property (a chunk no longer needed and not released is named by
+a hint after the cursor, or by the pass in progress), not as liveness.
+
+Configurations: `small` (3 offsets, object 1 shared, one hint and two
+chunks a pass, one read, one crash) and `expanded` (4 offsets, object 2
+shared, two hints a pass, no crash); hint ids are bounded by the
+`HintBound` constraint.

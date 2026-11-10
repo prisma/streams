@@ -3998,6 +3998,169 @@
       ]
     },
     {
+      "id": "TLA-047",
+      "kind": "tla",
+      "title": "Native queue reclamation: a sealed chunk is given back only once nothing needs it, each object's count stays exact, no needed or shared object is deleted, and no hint is lost",
+      "status": "pass-with-recorded-scope",
+      "owner": "the native queue's trim pass (gc/trim.rs) over its hints, Trimming row and released intervals, with the committer shrinking the queue's needed set and writing hints, the purge's request, step and F4-ordered reclaim, sealed reads' pins and the collector",
+      "source_paths": [
+        "src/shard/seal/gc/trim.rs",
+        "src/native_queue/intervals.rs",
+        "src/native_queue/hints.rs",
+        "src/shard/transaction/native_queue/hints.rs",
+        "src/shard/seal/gc/purge.rs",
+        "src/shard/seal/gc.rs",
+        "src/spill/gc.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/queue/QueueReclamation.tla",
+        "verification/tla/queue/MC_QueueReclamation.tla"
+      ],
+      "requirements": [
+        "F5",
+        "F6",
+        "R4",
+        "Q6"
+      ],
+      "models": [
+        "TLA-019",
+        "TLA-046"
+      ],
+      "assumptions": [
+        "ASM-QUEUE-REPLY-DURABLE",
+        "ASM-SEAL-OBJECT-IMMUTABLE"
+      ],
+      "input_scope": "one queue in one shard log, one chunk per offset (a queue's chunks tile its offsets and never join); 3 offsets and two seals with object 1 shared with another stream's live chunk, one hint and two chunks a pass, one read, one crash losing a pass in progress (small); 4 offsets and two seals with object 2 shared, two hints and two chunks a pass, one read, no crash (expanded); hint ids bounded by a state constraint; the committer's batches durable as applied (ASM-QUEUE-REPLY-DURABLE); the trim and the purge mutually excluded by refs; the cleaner, folds, the split's recount and the collector's debt are outside this model (part 2 steps 4-5 bring controls 2, 4, 6, 7 and 9 with that code); safety only, EveryHintHandled checked as a safety property",
+      "regressions": [
+        "shard::native_queue_tests::trim::a_pass_retires_exactly_the_unreferenced_chunks_behind_the_frontier",
+        "shard::native_queue_tests::trim::released_chunks_above_a_held_one_form_an_interval_the_prefix_absorbs",
+        "shard::native_queue_tests::trim::the_purge_leaves_a_trimming_queue_alone_until_a_request_which_keeps_its_prefix",
+        "shard::native_queue_tests::hints::a_group_names_exactly_the_sealed_offsets_it_touched_in_one_hint_row"
+      ],
+      "checks": [
+        {
+          "id": "TLA-047/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-047/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-047/nc-unreferenced",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_unreferenced.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoChunkTrimmedWhileReferencedOrAhead"
+          }
+        },
+        {
+          "id": "TLA-047/nc-purge-on-trimming",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_purge_on_trimming.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoChunkTrimmedWhileReferencedOrAhead"
+          }
+        },
+        {
+          "id": "TLA-047/nc-frontier-after-refs",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_frontier_after_refs.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoChunkTrimmedWhileReferencedOrAhead"
+          }
+        },
+        {
+          "id": "TLA-047/nc-k-after-rows",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_k_after_rows.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-047/nc-cursor-past-hint",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_cursor_past_hint.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CursorBehindEveryHint"
+          }
+        },
+        {
+          "id": "TLA-047/witness-ChunkRetired",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_ChunkRetired.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ChunkRetired"
+          }
+        },
+        {
+          "id": "TLA-047/witness-IntervalAboveHeld",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_IntervalAboveHeld.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_IntervalAboveHeld"
+          }
+        },
+        {
+          "id": "TLA-047/witness-SharedObjectKept",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_SharedObjectKept.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SharedObjectKept"
+          }
+        },
+        {
+          "id": "TLA-047/witness-ObjectCollected",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_ObjectCollected.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ObjectCollected"
+          }
+        },
+        {
+          "id": "TLA-047/witness-PurgeReclaimed",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_PurgeReclaimed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_PurgeReclaimed"
+          }
+        }
+      ]
+    },
+    {
       "id": "TLA-001",
       "kind": "tla",
       "title": "Registry CAS, attempt-local outcomes, and incarnation fencing",

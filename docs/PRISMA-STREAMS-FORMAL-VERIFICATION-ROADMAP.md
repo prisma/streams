@@ -1291,6 +1291,24 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Related work:** TLA-022–023; KANI-110 (the frontier step), KANI-109 (the range rows), KANI-111 (the ids and fixed-layout entries).
 
 
+
+### TLA-047 — Native queue reclamation: chunks given back only when nothing needs them, counts exact, no hint lost
+
+**Status:** pass-with-recorded-scope (S3b part 2 step 3, 2026-11-10; manifest entry TLA-047, `verification/tla/queue/QueueReclamation.tla`, 2 baselines, 5 negative controls and 5 witnesses; S3b-DESIGN rev 3 §4.3, §5.9, §7.3-§7.4, §11.2).
+
+**Priority:** P0 · **Requirement anchors:** F5, F6, R4, Q6  
+**Source owners:** [`src/shard/seal/gc/trim.rs`](src/shard/seal/gc/trim.rs); [`src/native_queue/intervals.rs`](src/native_queue/intervals.rs); [`src/native_queue/hints.rs`](src/native_queue/hints.rs); [`src/shard/seal/gc/purge.rs`](src/shard/seal/gc/purge.rs)
+
+**Validate.** The trim pass, reading the frontier before the references, gives a sealed chunk back only once it lies behind the frontier and nothing references it; each live object's count is exactly its unreleased chunks plus another stream's; no object is deleted while a chunk of it is needed, another stream holds it, or a read pins it; the prefix and the released intervals stay disjoint and absorbed; the cursor never passes an unconsumed hint, and every chunk no longer needed is named by a hint after the cursor or the pass in progress; the purge leaves a live queue's Trimming row alone and reclaims in F4's order.
+
+**Why valuable.** The trim runs beside the committer with no lock against it, on the keystone that the needed set only shrinks; a wrong read order, a missed reference or a purge that reads `'k'` late loses another stream's or a lease's body.
+
+**Negative controls.** Retirement without the reference check (1); `purge_due` acting on Trimming (3); the frontier read after the references (5); the purge reading `'k'` after its row deletes (8); the cursor past an unconsumed hint (10). Controls 2, 4, 6, 7 and 9 (coarse counts, the cleaner joining queue chunks, the fold ignoring `'k'`, `ClearDebt` without the generation, a cached `intervals`) come with part 2 steps 4-5.
+
+**Scope.** One chunk per offset; 3 or 4 offsets, two seals, one object shared with another stream; one or two hints and two chunks a pass; one read; a crash losing a pass; hint ids bounded. The cleaner, folds, the split's recount and the collector's debt are outside the model.
+
+**Related work:** TLA-019 (the purge and the collector); TLA-046 (delivery, the sealed lane); KANI-111 (hint keys and ranges).
+
 ## 5. Kani proof catalog
 
 Except the proofs [§0](#0-implementation-record) lists, all proof families are **planned**. Each must call the actual production owner after any reviewed extraction; each needs explicit semantic assertions, meaningful reachability checks, and at least one relevant negative control. The build-route labels below are feasibility estimates, not completed compiler tests.
