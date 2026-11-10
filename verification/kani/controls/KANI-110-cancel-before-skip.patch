@@ -1,0 +1,19 @@
+diff --git a/src/native_queue/frontier.rs b/src/native_queue/frontier.rs
+--- a/src/native_queue/frontier.rs
++++ b/src/native_queue/frontier.rs
+@@ -27,12 +27,12 @@
+     t: i64,
+ ) -> AtFrontier {
+     let (offset, ts) = page;
+-    if range.skip.contains(offset) {
++    if range.cancel.contains(offset) {
++        AtFrontier::Cancelled
++    } else if range.skip.contains(offset) {
+         AtFrontier::Scheduled {
+             resolved: !range.sbits.contains(offset),
+         }
+-    } else if range.cancel.contains(offset) {
+-        AtFrontier::Cancelled
+     } else if ts.saturating_add(retention_ms) <= t {
+         AtFrontier::Expired
+     } else {

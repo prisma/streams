@@ -5,10 +5,10 @@
 //! into the gap (the frontier passing them, S3b-DESIGN §5.5), failed
 //! messages past their failure expiry deleted, and dedup entries past their
 //! window deleted. It writes only when something moved.
-use super::lane::{AtFrontier, at_frontier};
 use super::stage::{NativeStage, key_time};
 use super::*;
 use crate::native_queue::SWEEP_STEP;
+use crate::native_queue::frontier::{AtFrontier, at_frontier};
 use crate::native_queue::rows::{Cause, DState, decode_dedup, decode_scheduled};
 
 impl CommitTransaction<'_> {
@@ -206,7 +206,7 @@ impl CommitTransaction<'_> {
         let mut moved = 0;
         for (i, page) in pages.iter().enumerate() {
             let mut range = self.nq_range(hash, st, page.offset).await?;
-            let step = at_frontier(&range, page, st.state.cfg.retention_ms, t);
+            let step = at_frontier(&range, (page.offset, page.ts), st.state.cfg.retention_ms, t);
             if step == AtFrontier::Live {
                 st.state.lane_expire_at = page.ts.saturating_add(st.state.cfg.retention_ms);
                 st.state_dirty = true;

@@ -3610,6 +3610,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::kani_110_the_frontier_takes_one_arm_and_never_leases_a_passed_offset",
+      "path": "src/native_queue/frontier/proofs.rs",
+      "reason": "Kani proof harness for KANI-110 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
       "path": "src/native_queue/range/proofs.rs",

@@ -14,10 +14,11 @@
 //! clock, and the claim then raises each index's floor to the first entry
 //! it left: the first due one it did not consume, else that later entry.
 use super::deliveries::{first_delivery, view};
-use super::lane::{AtFrontier, LanePage, at_frontier};
+use super::lane::LanePage;
 use super::stage::NativeStage;
 use super::*;
 use crate::native_queue::DeliveryView;
+use crate::native_queue::frontier::{AtFrontier, at_frontier};
 use crate::native_queue::rows::{Cause, DState, decode_scheduled};
 use crate::shard::layout::queue_gauges;
 
@@ -302,7 +303,7 @@ impl CommitTransaction<'_> {
         }
         let t = budget.t;
         let mut range = self.nq_range(hash, st, page.offset).await?;
-        let step = at_frontier(&range, page, st.state.cfg.retention_ms, t);
+        let step = at_frontier(&range, (page.offset, page.ts), st.state.cfg.retention_ms, t);
         if step == AtFrontier::Live && !budget.fits(page.bytes()) {
             return Ok(None);
         }

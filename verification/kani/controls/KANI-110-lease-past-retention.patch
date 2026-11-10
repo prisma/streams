@@ -1,0 +1,12 @@
+diff --git a/src/native_queue/frontier.rs b/src/native_queue/frontier.rs
+--- a/src/native_queue/frontier.rs
++++ b/src/native_queue/frontier.rs
+@@ -33,7 +33,7 @@
+         }
+     } else if range.cancel.contains(offset) {
+         AtFrontier::Cancelled
+-    } else if ts.saturating_add(retention_ms) <= t {
++    } else if false {
+         AtFrontier::Expired
+     } else {
+         AtFrontier::Live

@@ -29,40 +29,6 @@ impl LanePage {
     }
 }
 
-/// What the frontier does at a page it reaches (S3b-DESIGN §5.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AtFrontier {
-    /// A scheduled offset: pass it; its page goes too when the scheduled
-    /// message is already resolved.
-    Scheduled { resolved: bool },
-    /// Cancelled untaken: pass it, its page and its bytes go.
-    Cancelled,
-    /// Untaken past its retention end: into the gap.
-    Expired,
-    /// Untaken and live: lease it, or stop.
-    Live,
-}
-
-/// The frontier's step at one page, from its range row and the clock.
-pub(super) fn at_frontier(
-    range: &RangeRow,
-    page: &LanePage,
-    retention_ms: i64,
-    t: i64,
-) -> AtFrontier {
-    if range.skip.contains(page.offset) {
-        AtFrontier::Scheduled {
-            resolved: !range.sbits.contains(page.offset),
-        }
-    } else if range.cancel.contains(page.offset) {
-        AtFrontier::Cancelled
-    } else if page.ts.saturating_add(retention_ms) <= t {
-        AtFrontier::Expired
-    } else {
-        AtFrontier::Live
-    }
-}
-
 impl CommitTransaction<'_> {
     /// The range row holding `offset` (empty when absent), through the
     /// stage's cache so a group's operations see each other's changes.

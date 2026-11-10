@@ -2949,6 +2949,15 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 **Why valuable.** The frontier passes, cancels and resolves offsets by these bits, and the codec refuses a row whose `sched` differs from the `sbits` count: an aliased or sticky bit leases a cancelled message or skips a live one.
 
+<a id="kani-110"></a>
+### KANI-110 — Native queue frontier step: one arm per page, no marked offset leased, no lease past the retention end
+
+**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-110, 1 baseline and 3 negative controls: an untaken message leased past its retention end, the cancel bit read before the skip bit, and a wrapping retention end).
+
+**Validate.** The frontier's step at the page it stands at takes exactly one arm from the page's bits and the clock: a scheduled offset is passed, resolved exactly when its `sbits` bit is clear; a cancelled one is passed and never leased; an unmarked one is leased before its retention end and enters the gap from it on, for any times, the saturating end included.
+
+**Why valuable.** The step is the one place an untaken message is leased, passed or expired: a wrong arm leases a cancelled message, passes a live one into the gap, or leases one past its retention.
+
 ## 6. Cross-layer assurance cases
 
 Individual leaf checks are not a substitute for a composed argument. Maintain these small assurance cases alongside the implemented inventory. Each must name the remaining assumptions and executable evidence; none is currently discharged by this roadmap.

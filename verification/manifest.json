@@ -1580,6 +1580,77 @@
       "input_scope": "merged_refcount over every pair of Refcount rows (each field any u64): the merged row exists only for one object_len and sums that fit in u64, equals the u128 sum of live_bytes and live_chunks, keeps the earlier created_ms and the length; a refusal only for two lengths or an overflow."
     },
     {
+      "id": "KANI-110",
+      "kind": "kani",
+      "title": "Native queue frontier step: one arm per page, no marked offset leased, no lease past the retention end",
+      "status": "pass-with-recorded-scope",
+      "owner": "the native queue's frontier step (native_queue::frontier::at_frontier)",
+      "source_paths": [
+        "src/native_queue/frontier.rs",
+        "src/native_queue/range.rs"
+      ],
+      "verification_paths": [
+        "src/native_queue/frontier/proofs.rs"
+      ],
+      "requirements": [
+        "Q1",
+        "Q2"
+      ],
+      "models": [
+        "TLA-046"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "at_frontier over any page offset, send time, retention and clock (i64, the saturating retention end included) and any setting of the page's skip, cancel and sbits bits in an otherwise empty range row. Where the committer acts on the step (claim.rs nq_claim_lane and nq_frontier_step, sweep.rs nq_sweep_lane), and that the range row holds the page's bits, are outside the proof; TLA-046 models the walk, and shard::native_queue_tests pin it",
+      "regressions": [
+        "shard::native_queue_tests::avail::a_claim_leases_the_lane_from_its_page_and_moves_the_frontier",
+        "shard::native_queue_tests::sweeps::an_untaken_message_enters_the_gap_at_its_retention_end_exactly",
+        "shard::native_queue_tests::cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_failed_ones"
+      ],
+      "checks": [
+        {
+          "id": "KANI-110/frontier",
+          "role": "baseline",
+          "harness": "native_queue::frontier::proofs::kani_110_the_frontier_takes_one_arm_and_never_leases_a_passed_offset",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-110/nc-lease-past-retention",
+          "role": "negative-control",
+          "harness": "native_queue::frontier::proofs::kani_110_the_frontier_takes_one_arm_and_never_leases_a_passed_offset",
+          "patch": "verification/kani/controls/KANI-110-lease-past-retention.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a message is leased only before its retention end"
+          }
+        },
+        {
+          "id": "KANI-110/nc-cancel-before-skip",
+          "role": "negative-control",
+          "harness": "native_queue::frontier::proofs::kani_110_the_frontier_takes_one_arm_and_never_leases_a_passed_offset",
+          "patch": "verification/kani/controls/KANI-110-cancel-before-skip.patch",
+          "expect": {
+            "result": "fail",
+            "property": "only a cancel bit, and no skip bit, passes it as cancelled"
+          }
+        },
+        {
+          "id": "KANI-110/nc-wrapping-retention-end",
+          "role": "negative-control",
+          "harness": "native_queue::frontier::proofs::kani_110_the_frontier_takes_one_arm_and_never_leases_a_passed_offset",
+          "patch": "verification/kani/controls/KANI-110-wrapping-retention-end.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a message enters the gap only from its retention end"
+          }
+        }
+      ]
+    },
+    {
       "id": "KANI-109",
       "kind": "kani",
       "title": "Native queue range rows: a bitmap holds exactly its last set offsets, and its count and emptiness agree",
