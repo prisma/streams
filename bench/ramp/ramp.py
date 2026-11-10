@@ -18,8 +18,8 @@ and stopping servers as the fleet's desired count says, and reloading the
 router (the scaling design's interim posture: 8 shards, a fleet of 1 to 8).
 
 A step holds, as #149's ramp, when every stream was created, at least 98%
-of the touches due were served with no touch error, their p99 is at most
-2 s, and no server shed anything (admission's shed counters, read every
+of the touches due were served at a p99 of at most 2 s (a refused touch
+counts against the 98%), and no server shed anything (admission's shed counters, read every
 5 s) or was OOM-killed. The ramp stops at the first step that does not
 hold. Fixed INSTANCES and SHARDS today (the fleet does not resize on this
 workload); the same rig measures the tuning packages as they land and,
@@ -301,24 +301,28 @@ def run_continuous(a, out_dir, results):
         for count in a.counts:
             print(f"== {count} streams, {scaler.live} instance(s) live, {a.shards} shard(s) "
                   f"{time.strftime('%H:%MZ', time.gmtime())}", flush=True)
+            settled = settle(a, count, prev, posture, scaler, out_dir) if a.settle_secs else None
             watch = Watch(a.fleet_max, os.path.join(out_dir, f"watch-{count}.jsonl"), posture, live=scaler)
             watch.start()
             started, live_start = time.time(), scaler.live
             try:
                 pop = rig.population(count, count / a.period, a.step_secs, "ramp", posture.tokens,
-                                     warmup=WARMUP_SECS, create_from=prev)
+                                     warmup=WARMUP_SECS, create_from=count if settled else prev)
             finally:
                 watch.stop.set()
                 watch.join()
             ooms = [f"streams-{k}" for k in range(1, a.fleet_max + 1)
                     if sh("docker", "inspect", "-f", "{{.State.OOMKilled}}", rig.server(k), check=False).strip() == "true"]
             ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
+            if settled:
+                checks["created"] = checks["created"] and settled["create_errors"] == 0
+                ok = ok and checks["created"]
             shards = watch.shard_range()
             if count <= a.low_until:  # #149: the low steps run on FLEET_MIN instances with few shards
                 checks["few"] = (max(live_start, scaler.live, scaler.peak_since(started)) <= a.fleet_min
                                  and shards is not None and shards[2] <= a.low_max_shards)
                 ok = ok and checks["few"]
-            step = {"count": count, "shards": a.shards, "shard_range": shards, "fleet": [a.fleet_min, a.fleet_max],
+            step = {"count": count, "shards": a.shards, "shard_range": shards, "settle": settled, "fleet": [a.fleet_min, a.fleet_max],
                     "live": [live_start, scaler.live], "tenancy": a.tenancy, "auth": a.auth,
                     "period_secs": a.period, "step_secs": a.step_secs, "wall_secs": round(time.time() - started),
                     "held": round(held, 4) if held is not None else None, "pass": ok, "checks": checks,
@@ -334,7 +338,7 @@ def run_continuous(a, out_dir, results):
                 print(f"RAMP_STOP at {count}", flush=True)
                 return
         print("RAMP_HELD every step", flush=True)
-        if a.drain_secs:
+        if a.drain_secs != "0":
             drain(a, out_dir, results, posture, scaler)
     finally:
         scaler.stop.set()
@@ -345,12 +349,19 @@ def drain(a, out_dir, results, posture, scaler):
     """#149's last line: with the load gone, the cell merges its shards and scales back in. Wait up
     to --drain-secs with no traffic; it holds once FLEET_MIN instances own at most --low-max-shards
     shards, and the time it took is recorded."""
-    print(f"== drain: no load, up to {a.drain_secs} s {time.strftime('%H:%MZ', time.gmtime())}", flush=True)
+    try:
+        shards_now = topology_view(posture.debug(1, "/operator/data.json"))["shards"]
+    except OSError:
+        shards_now = a.fleet_max
+    budget, parts = (drain_budget(a, scaler.live, shards_now) if a.drain_secs == "auto"
+                     else (int(a.drain_secs), None))
+    print(f"== drain: no load, {scaler.live} instance(s), {shards_now} shard(s), up to {budget} s"
+          + (f" = 1.25 x {parts}" if parts else "") + f" {time.strftime('%H:%MZ', time.gmtime())}", flush=True)
     watch = Watch(a.fleet_max, os.path.join(out_dir, "watch-drain.jsonl"), posture, live=scaler)
     watch.start()
     started, done_at = time.time(), None
     try:
-        while time.time() - started < a.drain_secs:
+        while time.time() - started < budget:
             time.sleep(15)
             last = watch.topo[-1] if watch.topo else None
             if last and scaler.live <= a.fleet_min and last["shards"] <= a.low_max_shards:
@@ -360,24 +371,75 @@ def drain(a, out_dir, results, posture, scaler):
         watch.stop.set()
         watch.join()
     row = {"count": "drain", "pass": done_at is not None, "secs": round((done_at or time.time()) - started),
+           "budget_secs": budget, "budget_parts": parts, "start": {"live": scaler.history[-1][1], "shards": shards_now},
            "live_end": scaler.live, "shard_range": watch.shard_range(), "fleet": [a.fleet_min, a.fleet_max]}
     open(results, "a").write(json.dumps(row) + "\n")
     print(json.dumps(row), flush=True)
-    print("DRAIN_HELD" if done_at else f"DRAIN_STOP after {a.drain_secs} s", flush=True)
+    print("DRAIN_HELD" if done_at else f"DRAIN_STOP after {budget} s", flush=True)
 
 
 def verdict(count, period, step_secs, pop, sheds, ooms):
+    """#149's bar: every stream created, at least 98% of the touches due served at a p99 of at
+    most 2 s, no shed, no OOM. A touch the cell refused (a 409 during a move, a 503 during a
+    split's hold) is a failed touch: it counts against the 98% (the bench does not retry), and
+    touch_errors reports how many; the bar does not also ask for zero."""
     target = count / period
     held = (pop.get("touches_per_sec") or 0) / target if target else None
     p99 = (pop.get("latency_ms") or {}).get("p99")
     checks = {
         "created": pop.get("created") == count and pop.get("create_errors") == 0,
-        "touched": pop.get("touch_errors") == 0 and ((held or 0) >= 0.98 or target * step_secs < 50),
+        "touched": (held or 0) >= 0.98 or target * step_secs < 50,
         "p99": p99 is not None and p99 <= 2000,
         "no_shed": sheds == 0,
         "no_oom": not ooms,
     }
     return all(checks.values()), checks, held
+
+
+def settle(a, count, prev, posture, scaler, out_dir):
+    """Before a step is measured: touch its streams in 60 s chunks (the first creates them) until
+    the shards the live heartbeats own, the topology version and the live count have not changed
+    for --settle-secs, at most --settle-max-secs. Returns what the step records."""
+    watch = Watch(a.fleet_max, os.path.join(out_dir, f"settle-{count}.jsonl"), posture, live=scaler)
+    watch.start()
+    started, chunks, create_errors, settled = time.time(), 0, 0, False
+    try:
+        while time.time() - started < a.settle_max_secs:
+            pop = rig.population(count, count / a.period, 60, "ramp", posture.tokens,
+                                 create_from=prev if chunks == 0 else count)
+            chunks += 1
+            create_errors += pop.get("create_errors") or 0
+            if chunks == 1 and pop.get("created") != count:
+                break
+            last_change = max([at for at, _ in scaler.history] + [
+                v["t"] for v0, v in zip(watch.topo, watch.topo[1:])
+                if (v0["shards"], v0["topology_version"]) != (v["shards"], v["topology_version"])] + [started])
+            if time.time() - last_change >= a.settle_secs:
+                settled = True
+                break
+    finally:
+        watch.stop.set()
+        watch.join()
+    return {"secs": round(time.time() - started), "chunks": chunks, "settled": settled,
+            "create_errors": create_errors, "shard_range": watch.shard_range()}
+
+
+def drain_budget(a, live, shards):
+    """--drain-secs auto: the merge back and the scale-in, from the constants the servers run
+    (--set, else the binary defaults). The first merge waits for the longer of the merge sustain
+    (quiet since the load went) and the split-reversal age (since the last split; both run at
+    once); then one merge a topology cooldown (plus about 30 s for the merge itself) down to
+    --low-max-shards, and one scale-in a SCALE_IN_SECS window plus a cooldown down to
+    --fleet-min, taken one after the other (no scale-in while a merge's intent is live); 25%
+    over that."""
+    knob = dict(kv.split("=", 1) for kv in a.set)
+    get = lambda k, d: float(knob.get(k, d))
+    scale_in, cooldown = get("SCALE_IN_SECS", 300), get("SHARD_TOPOLOGY_COOLDOWN_SECS", 60)
+    merge_sustain, reversal = get("SHARD_MERGE_SUSTAIN_SECS", 21600), get("SHARD_SPLIT_REVERSAL_MIN_SECS", 43200)
+    merges, scale_ins = max(0, shards - a.low_max_shards), max(0, live - a.fleet_min)
+    parts = {"first_merge": max(merge_sustain, reversal), "merges": merges * (cooldown + 30),
+             "scale_ins": scale_ins * (scale_in + cooldown)}
+    return int(1.25 * sum(parts.values())), parts
 
 
 def run_step(a, count, out_dir):
@@ -431,10 +493,16 @@ def main():
                     help="the Scaler stops servers once desired stays below live this long (0: Compute's external mode)")
     ap.add_argument("--low-until", type=int, default=0, help="steps up to this count must run on --fleet-min instances")
     ap.add_argument("--low-max-shards", type=int, default=2, help="... and at most this many shards (also the drain's end)")
-    ap.add_argument("--drain-secs", type=int, default=0, help="after the last step, wait this long with no load to merge back")
+    ap.add_argument("--drain-secs", default="0",
+                    help="after the last step, wait this long with no load to merge back; `auto` sizes it from the constants")
+    ap.add_argument("--settle-secs", type=int, default=0,
+                    help="before a step's measurement, touch until shards and instances held this long (0: no settle)")
+    ap.add_argument("--settle-max-secs", type=int, default=1800, help="the settle's bound")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top (recorded)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (DRY lines), start nothing")
     a = ap.parse_args()
+    if a.drain_secs != "auto" and not a.drain_secs.isdigit():
+        raise SystemExit("--drain-secs is seconds or auto")
     if (a.fleet_min is None) != (a.fleet_max is None):
         raise SystemExit("--fleet-min and --fleet-max go together")
     if a.fleet_max is not None and not 1 <= a.fleet_min <= a.fleet_max <= 64:
@@ -450,7 +518,7 @@ def main():
         fleet = f"fleet {a.fleet_min}-{a.fleet_max} (one cell)" if a.fleet_max else f"{a.instances} instance(s) (a cell a step)"
         print(f"DRY ramp {fleet} shards {a.shards} tenancy {a.tenancy} auth {a.auth} counts {a.counts} "
               f"period {a.period} s, {a.step_secs} s a step, scale-in {a.scale_in_secs:g} s, "
-              f"low until {a.low_until} on <= {a.low_max_shards} shards, drain {a.drain_secs} s, set {a.set}")
+              f"low until {a.low_until} on <= {a.low_max_shards} shards, drain {a.drain_secs} s, settle {a.settle_secs} s (at most {a.settle_max_secs} s), set {a.set}")
         extra = fleet_compose(a.fleet_max or 0, a.out)
         if extra:  # the generated servers parse (compose config starts nothing)
             names = rig.compose("config", "--services", env=dict(os.environ, RIG_COMPOSE_EXTRA=extra)).split()

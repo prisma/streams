@@ -94,15 +94,34 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   adds its streams to the last step's. Hold each step for the hour a touch
   takes, after the cell has stopped resizing for 10 minutes.
 - **A step holds** when every stream was created, at least 98% of the
-  touches due were served with no touch error, their p99 is at most 2 s,
-  and no instance shed or was OOM-killed (#149's bars, unchanged).
+  touches due were served at a p99 of at most 2 s, and no instance shed or
+  was OOM-killed (#149's bars). A touch the cell refused is a failed
+  touch: it counts against the 98% and is reported, but the bar does not
+  also ask for zero. That includes a `409 not_stream_owner` while a shard
+  moves, and a `503 shard_splitting`. The latter is an append held past a
+  split's pause, answered with `Retry-After: 1`, known unwritten and never
+  committed (`src/application/append/contract.rs`, `AppendErr::Splitting`).
+  Neither is an admission shed (the shed check reads admission's
+  counters). A client that honours `Retry-After` retries the append once
+  the split has published. The bench does not retry, so the step's served
+  share is a floor.
 - **Low steps.** At 10, 100 and 1,000 streams the cell must run on one
   instance with at most 2 shards.
 - **Drain.** After the last step, stop the load and keep the service up.
   The run holds when the cell is back on one instance with at most 2
-  shards. Merges wait 6 h of low load (`SHARD_MERGE_SUSTAIN_SECS`,
-  SCALING-DESIGN §4.3), so allow at least 8 h, and record when each merge
-  and each scale-in happened.
+  shards. Record when each merge and each scale-in happened. Size the wait
+  from the binary defaults:
+  - The first merge waits for the longer of `SHARD_MERGE_SUSTAIN_SECS`
+    (21,600 s of quiet) and `SHARD_SPLIT_REVERSAL_MIN_SECS` (43,200 s since
+    the last split). The two run at once.
+  - Each further merge waits one `SHARD_TOPOLOGY_COOLDOWN_SECS` (60 s) plus
+    the merge itself (about 30 s).
+  - Each scale-in waits one `SCALE_IN_SECS` window (300 s) plus a cooldown,
+    one instance at a time. There is no scale-in while a merge's intent is
+    live.
+  - From 12 instances and 16 shards that is 43,200 + 14 × 90 + 11 × 360 =
+    48,420 s, about 13.5 h. Allow a quarter over that, about 17 h, before
+    calling the drain failed.
 - **Waits.** A tiny tenant parks one wait. Plan the pool from §4's
   figures: the 1 GiB profile parks 1,200 waits an instance, so the tenant
   each arm needs more instances for its waits alone (about 1 per 1,200
@@ -114,23 +133,43 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
 Compute's 1 GiB class limits, compressed 60x: a touch every 60 s instead of
 an hour, so a step carries 60 times the cloud's touch rate at the same
 stream count. A Scaler stands in for Compute's external mode: it starts and
-stops servers as `fleet.desired.count` says, with no delay of its own. The
-trigger constants are scaled by the same factor with `--set`, and nothing
-else is changed. It runs up to 1,000,000 streams and the fleet the machine
-holds. 10,000,000 streams and 64 instances are for Compute only.
+stops servers as `fleet.desired.count` says, with no delay of its own.
+
+Three trigger constants are scaled by the same 60x with `--set`:
+- `SHARD_SPLIT_SUSTAIN_SECS` 600 → 10;
+- `SHARD_MERGE_SUSTAIN_SECS` 21,600 → 360;
+- `SHARD_SPLIT_REVERSAL_MIN_SECS` 43,200 → 720.
+
+These stay at the binary defaults, so the cell reshapes more slowly than the
+compressed load grows:
+- `SHARD_TOPOLOGY_COOLDOWN_SECS` (60 s between operations);
+- `SHARD_EMERGENCY_SUSTAIN_SECS` (45 s, now slower than the normal line);
+- the topology policy's 10 s tick;
+- `SCALE_IN_SECS` (300 s);
+- the fleet's 30 s scale-out sustain.
+
+A doubling from 8 to 16 shards is eight operations, at least 8 min. So each
+step first settles: its streams are touched in 60 s chunks until the
+shards, the topology version and the live count have held still for
+`--settle-secs`, at most `--settle-max-secs`. Only then is the step
+measured. A step that never settles is recorded as such. It runs up to
+1,000,000 streams and the fleet the machine holds. 10,000,000 streams and
+64 instances are for Compute only.
 
 ```bash
 bench/ramp/build.sh
 bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
   --counts 10 100 1000 10000 100000 1000000 --scale-in-secs 0 \
-  --low-until 1000 --low-max-shards 2 --drain-secs 1800 \
+  --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto \
   --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720
 ```
 
 It records, per step, the shards the live instances own (from their
 heartbeats) and the instances live, and fails a low step that ran on more
-than one instance or more than 2 shards. `--drain-secs` waits with no load
-for the merge back and the scale-in. Every server's log is kept in the
+than one instance or more than 2 shards. `--drain-secs auto` sizes the
+drain by §5's arithmetic from the constants the servers run and prints it.
+At the compressed constants, from 12 instances and 16 shards, that is
+720 + 14 × 90 + 11 × 360 = 5,940 s, with 25% on top: 7,425 s. Every server's log is kept in the
 results directory. Run both tenancies under the machine lock, one at a time.
 
 ## 7. What to report

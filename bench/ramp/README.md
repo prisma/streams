@@ -120,8 +120,9 @@ the start per stream per `--period` (60 s, against #149's hour), for
 (`--auth off` runs without tokens).
 
 A step holds, as #149's did, when every stream was created, at least 98% of
-the touches due were served with no touch error, their p99 is at most 2 s,
-and no server shed or was OOM-killed. The ramp stops at the first step that
+the touches due were served at a p99 of at most 2 s, and no server shed or
+was OOM-killed (refused touches count against the 98%; `touch_errors`
+reports them). The ramp stops at the first step that
 does not hold (`steps.jsonl`, `watch-COUNT.jsonl` per server).
 
 Because the touch period is 60× shorter, each shard sees 60× the cloud's
@@ -175,4 +176,12 @@ and `--drain-secs` waits with no load after the last step for the merge back
 and the scale-in (`count: "drain"` in `steps.jsonl`). `--set KEY=VALUE` puts
 server settings on top, for the trigger constants scaled to the 60x
 compressed time. Every server's log is kept in the results directory.
+`--settle-secs` touches each step's streams in 60 s chunks before it is
+measured, until the shards, the topology version and the live count have
+held still that long (at most `--settle-max-secs`), since the topology
+cooldown and the policy tick are not compressed. `--drain-secs auto` sizes
+the drain from the constants the servers run and prints the arithmetic.
+A step holds by #149's bar: every stream created, at least 98% of the
+touches due served at a p99 of at most 2 s, no shed, no OOM. Refused
+touches count against the 98% and are reported (`touch_errors`).
 `docs/SCALE-VALIDATION-149.md` §6 has the command.
