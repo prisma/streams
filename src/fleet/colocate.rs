@@ -42,3 +42,6 @@ pub(crate) async fn colocate(
     }
     true
 }
+
+#[cfg(test)]
+mod tests;

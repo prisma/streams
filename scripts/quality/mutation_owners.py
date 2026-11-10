@@ -390,8 +390,9 @@ OWNERS = (
           'fleet::hysteresis:: dst_tests::fleet_controller::desired::'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
-    owner('fleet_colocate', 'src/fleet/colocate.rs',
-          'dst_tests::topology_colocation::a_cold_pair_split_across_two_instances_is_colocated_and_merged'),
+    # The CAS over an in-memory fleet store (owner 2026-11-10: "Approve (1)+(2)"); the policy's
+    # co-location DSTs pin it end to end.
+    owner('fleet_colocate', 'src/fleet/colocate.rs', 'fleet::colocate::'),
     # Overrides that name no stored leaf, dropped by the writers that rewrite the document.
     owner('fleet_stale', 'src/fleet/stale.rs',
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
