@@ -212,6 +212,19 @@
     "scenarios": []
   },
   {
+    "name": "a_child_whose_first_holding_lands_after_the_plan_opens",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3afdb73a079c7775372db3dff18da10ccbce4ef79f70482931c1413458b2e121",
+    "mechanisms": [],
+    "configuration": [
+      "let faults = FaultStore::uniform(mem(), 0x5eed, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/split_lists.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_childs_split_clones_its_own_tables_and_serves_from_its_child",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

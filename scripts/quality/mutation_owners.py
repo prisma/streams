@@ -170,7 +170,7 @@ OWNERS = (
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: shard::seal::gc::lineage_tests::the_open_path_fence'),
     owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
-    owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k::'),
+    owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists::'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that_would_fill dst_tests::merge_k::a_merge_waits'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),

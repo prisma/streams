@@ -482,12 +482,13 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
     sentinel::check_sums(&rows, &counts).map_err(|e| e.to_string())?;
     for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(prepared) {
         let now = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
-        let added = supplements(put, &now);
+        let (first, more) = pause_lists(put, supplements(put, &now));
+        put_lists(store, parent, child, &first, lineage::reference_list_path).await?;
         put_lists(
             store,
             parent,
             child,
-            &added,
+            &more,
             lineage::supplementary_list_path,
         )
         .await?;
@@ -544,8 +545,8 @@ async fn sentinel_rows(parent: &ShardEngine) -> Result<Vec<Row>, String> {
 /// A child's lists: per ancestor home, the objects of that home it holds (`sentinel::child_lists`).
 type Lists = BTreeMap<u32, Vec<sentinel::ListEntry>>;
 
-/// Per ancestor home, the holdings `now` lists that `put` lacks (S4-DESIGN §7.3): what the pause's
-/// `-d` lists hold. A home with none has no `-d` list.
+/// Per ancestor home, the holdings `now` lists that `put` lacks (S4-DESIGN §7.3): what the pause
+/// lists (`pause_lists`). A home with none has no list from the pause.
 fn supplements(put: &Lists, now: &Lists) -> Lists {
     let mut added = Lists::new();
     for (home, entries) in now {
@@ -560,6 +561,18 @@ fn supplements(put: &Lists, now: &Lists) -> Lists {
         }
     }
     added
+}
+
+/// The pause's lists from `added` (`supplements`), split by whether Preparing listed the home:
+/// the homes it did not (the child's first holding of the home landed after Preparing's plan) get
+/// their reference list now, the others a `-d` list beside theirs. S6's readers (the open-time
+/// detector, the lineage sweep's `held_by`) require a reference list for every ancestor home a
+/// child holds, and the parent is a live leaf until the publish, so no sweep has yet decided on
+/// one's absence.
+fn pause_lists(put: &Lists, added: Lists) -> (Lists, Lists) {
+    added
+        .into_iter()
+        .partition(|(home, _)| !put.contains_key(home))
 }
 
 /// `child`'s lists, one under each ancestor home's root in `lists`, at `path_of(root, child.home)`:

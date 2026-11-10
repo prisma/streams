@@ -53,6 +53,8 @@ mod purge_lifecycle;
 mod split_barrier;
 #[path = "tests/split_k.rs"]
 mod split_k;
+#[path = "tests/split_lists.rs"]
+mod split_lists;
 
 #[path = "tests/split_generations.rs"]
 mod split_generations;

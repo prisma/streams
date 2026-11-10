@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use bytes::Bytes;
 
-use super::{Lists, key_bounds, seed_rows, supplements};
+use super::{Lists, key_bounds, pause_lists, seed_rows, supplements};
 use crate::keyspace::SENTINEL;
 use crate::spill::gc::ObjectKind;
 use crate::topology::sentinel::Counts;
@@ -103,4 +103,22 @@ fn the_pauses_supplements_hold_exactly_what_preparing_lacks() {
     let want = Lists::from([(0, vec![(seg, 1, 3)]), (3, vec![(run, 2, 9)])]);
     assert_eq!(supplements(&put, &now), want);
     assert_eq!(supplements(&now, &now), Lists::new());
+}
+
+/// **A home the child first holds in the pause gets its reference list, not a `-d` list** (S4-DESIGN
+/// §7.3; S6's readers require a reference list for every ancestor home). Of the pause's additions
+/// above, the segment of home 0 (which Preparing listed) goes to home 0's `-d` list, and the run
+/// index of home 3 (which it did not) to home 3's reference list.
+#[test]
+fn a_home_first_held_in_the_pause_gets_its_reference_list() {
+    let (seg, run) = (ObjectKind::Segment, ObjectKind::RunIndex);
+    let put = Lists::from([(0, vec![(seg, 1, 1)])]);
+    let added = Lists::from([(0, vec![(seg, 1, 3)]), (3, vec![(run, 2, 9)])]);
+    let (first, more) = pause_lists(&put, added);
+    assert_eq!(first, Lists::from([(3, vec![(run, 2, 9)])]));
+    assert_eq!(more, Lists::from([(0, vec![(seg, 1, 3)])]));
+    assert_eq!(
+        pause_lists(&Lists::new(), Lists::new()),
+        (Lists::new(), Lists::new())
+    );
 }

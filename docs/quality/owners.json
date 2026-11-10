@@ -995,6 +995,22 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_lists",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split's child lists every ancestor home it holds (S4 7.3, S6 3.3): a first holding that lands between Preparing's plan and the quiesce gets its reference list in the pause, so the child opens instead of being refused lineage_list_missing; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_lists.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::split_with_a_late_seal",
+      "path": "src/dst/tests/split_lists.rs",
+      "reason": "The held seal, the split and the control that releases the seal between Preparing's plan and the quiesce run concurrently in one test task (the outer join: the seal and the split; the inner: the split and its control), so the seal lands inside the window; the compiler checks both expansions and all futures borrow the test's cell.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::topology_reclaim",
       "path": "src/dst/dst_tests.rs",
       "reason": "A topology operation whose actor died between its publish and its terminal CAS (TLA-045 OperationCompletes): a split's start, a merge's and the heartbeat's intent watch end the left-live intent Reclaimed; compiler and the full DST suite exercise the module.",
