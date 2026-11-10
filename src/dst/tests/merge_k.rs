@@ -60,8 +60,16 @@ pub(super) struct Rig {
 }
 
 pub(super) async fn rig() -> Rig {
+    rig_named(None).await
+}
+
+/// `rig`, its instance named `instance` (so the ring's ownership is real) when one is given.
+pub(super) async fn rig_named(instance: Option<&str>) -> Rig {
     let store = mem();
-    let (state, addr) = http_rig(store.clone()).await;
+    let (state, addr) = match instance {
+        Some(name) => http_rig_named(store.clone(), name).await,
+        None => http_rig(store.clone()).await,
+    };
     let topology = crate::topology::model::Topology {
         version: 1,
         shards: state.shards.prefixes().shards.clone(),

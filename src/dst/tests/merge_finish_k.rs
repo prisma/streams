@@ -155,61 +155,110 @@ async fn append_answer(
     (status, headers.get("retry-after").cloned(), code)
 }
 
-/// The records of `name`.
-async fn records(addr: std::net::SocketAddr, name: &str) -> Vec<serde_json::Value> {
-    let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+/// The records of `name` and the stream's next offset.
+async fn records_and_next(
+    addr: std::net::SocketAddr,
+    name: &str,
+) -> (Vec<serde_json::Value>, Option<String>) {
+    let (status, headers, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
     let read: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-    read.as_array().cloned().unwrap_or_default()
+    let records = read.as_array().cloned().unwrap_or_default();
+    (records, headers.get("stream-next-offset").cloned())
 }
 
-/// **A merge pauses both its sources as a split pauses its parent** (S6 §7.2, edge #249 B3). At
-/// the merge's park both sources' committers are parked: an append to a stream of either source
-/// is answered after the 2 s hold, `503 shard_splitting` with `Retry-After: 1`, and so is a later
-/// one, at once. Released, the merge publishes, and an append to each stream is served by the
-/// merged leaf; neither stream holds a refused record.
+/// An append of `{"n": n}` to `name`: its status, `Stream-Next-Offset` and error code.
+async fn append_at(
+    addr: std::net::SocketAddr,
+    name: &str,
+    n: u32,
+) -> (u16, Option<String>, Option<String>) {
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    let path = format!("/v1/stream/{name}");
+    let (status, headers, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let code = error["error"]["code"].as_str().map(str::to_string);
+    (status, headers.get("stream-next-offset").cloned(), code)
+}
+
+/// One record appended to `records`.
+fn with(records: &[serde_json::Value], n: u32) -> Vec<serde_json::Value> {
+    let mut grown = records.to_vec();
+    grown.push(serde_json::json!({ "n": n }));
+    grown
+}
+
+/// A rig past a split of `00`, its two halves opened here, and each stream's records and next
+/// offset.
+struct Pair {
+    rig: Rig,
+    halves: [Arc<crate::shard::ShardEngine>; 2],
+    before: [(Vec<serde_json::Value>, Option<String>); 2],
+}
+
+async fn pair(instance: Option<&str>) -> Pair {
+    let rig = super::merge_k::rig_named(instance).await;
+    split_00(&rig.state, &rig.parent).await;
+    let halves = halves_of_00(&rig.state).await;
+    let before = [
+        records_and_next(rig.addr, &rig.low).await,
+        records_and_next(rig.addr, &rig.high).await,
+    ];
+    Pair {
+        rig,
+        halves,
+        before,
+    }
+}
+
+/// **A merge pauses both its sources as a split pauses its parent** (S6 §7.2, edge #249 B3;
+/// Fable's points 1, 2 and 4). At the merge's park both sources' committers are parked: an
+/// append to a stream of each source, sent together, is answered no sooner than 2 s after, exactly
+/// `503 shard_splitting` with `Retry-After: 1` and no `outcome_unknown`, and a later one to each at
+/// once; a read of each stream is 200 meanwhile. Released, the merge publishes at the next
+/// version, `00` its one leaf for the range, its intent `Reclaimed` (`published`); neither stream
+/// holds a refused record, and a new append to each is acked by the merged leaf at the stream's
+/// exact next offset.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_pauses_both_sources_with_503_shard_splitting_and_serves_after_its_publish() {
-    let Rig {
-        state,
-        addr,
-        low,
-        high,
-        parent,
-        ..
-    } = rig().await;
-    split_00(&state, &parent).await;
-    let halves = halves_of_00(&state).await;
-    let before = (records(addr, &low).await, records(addr, &high).await);
+    let Pair {
+        rig,
+        halves,
+        before,
+    } = pair(None).await;
+    let (addr, names) = (rig.addr, [rig.low.clone(), rig.high.clone()]);
     let splitting = (
         503,
         Some("1".to_string()),
         Some("shard_splitting".to_string()),
     );
-    let answers = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let (seen, names) = (answers.clone(), [low.clone(), high.clone()]);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (answers, held_names) = (seen.clone(), names.clone());
     let paused = move || async move {
-        // Both sources parked at once: their held appends go out together, each waits its hold.
         let sent_at = Instant::now();
-        let (held_low, held_high) = futures_util::future::join(
-            append_answer(addr, &names[0], 10),
-            append_answer(addr, &names[1], 11),
+        let held = futures_util::future::join(
+            append_answer(addr, &held_names[0], 10),
+            append_answer(addr, &held_names[1], 11),
         )
         .await;
         let waited = sent_at.elapsed();
-        for (name, held, n) in [(&names[0], held_low, 20), (&names[1], held_high, 21)] {
+        for (name, held, n) in [(&held_names[0], held.0, 20), (&held_names[1], held.1, 21)] {
             let sent_at = Instant::now();
             let later = append_answer(addr, name, n).await;
             let at_once = sent_at.elapsed();
-            seen.lock()
+            let (read, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+            answers
+                .lock()
                 .unwrap()
-                .push((name.clone(), held, waited, later, at_once));
+                .push((name.clone(), held, waited, later, at_once, read));
         }
     };
-    let merged = merge_paused_at_park(&state, &halves, "op-p", paused).await;
-    merged.expect("the merge publishes");
-    for (name, held, waited, later, at_once) in answers.lock().unwrap().iter() {
-        assert_eq!(held, &splitting, "{name}: held");
+    let merged = merge_paused_at_park(&rig.state, &halves, "op-p", paused).await;
+    let published = merged.expect("the merge publishes");
+    let answers = seen.lock().unwrap().clone();
+    assert_eq!(answers.len(), 2, "both sources answered");
+    for (name, held, waited, later, at_once, read) in &answers {
+        assert_eq!(held, &splitting, "{name}: held past the hold");
         assert!(
             waited >= &Duration::from_secs(2),
             "{name} held for the hold: {waited:?}"
@@ -219,21 +268,211 @@ async fn a_merge_pauses_both_sources_with_503_shard_splitting_and_serves_after_i
             at_once < &Duration::from_secs(1),
             "{name} answered at once: {at_once:?}"
         );
+        assert_eq!(read, &200, "{name} is read during the pause");
     }
-    assert_eq!(answers.lock().unwrap().len(), 2, "both sources answered");
-    for (name, n) in [(&low, 30), (&high, 31)] {
+    let stored = crate::topology::store::read(&*rig.store).await.unwrap().0;
+    assert_eq!(stored.version, published.version);
+    assert_eq!(stored.shards.leaves.get("00"), Some(&published.merged.1));
+    let ended = crate::topology::intent::read(&*rig.store)
+        .await
+        .unwrap()
+        .unwrap()
+        .intent;
+    assert_eq!(ended.state, crate::topology::intent::State::Reclaimed);
+    assert_eq!(
+        ended.outcome.map(|o| o.result).as_deref(),
+        Some("published")
+    );
+    for (i, name) in names.iter().enumerate() {
+        let (records, next) = records_and_next(addr, name).await;
+        assert_eq!(records, before[i].0, "{name}: nothing refused was written");
+        assert_eq!(next, before[i].1, "{name}: the tail did not move");
+        let n = 30 + u32::try_from(i).unwrap();
+        let (status, acked_at, _) = append_at(addr, name, n).await;
+        assert_eq!(status, 204, "{name} after the publish");
+        let (records, next) = records_and_next(addr, name).await;
         assert_eq!(
-            append_answer(addr, name, n).await.0,
-            204,
-            "{name} after the publish"
+            records,
+            with(&before[i].0, n),
+            "{name} holds the new record once"
         );
+        assert_eq!(acked_at, next, "{name}: acked at its exact next offset");
     }
-    let after = (records(addr, &low).await, records(addr, &high).await);
-    let grown = |was: &Vec<serde_json::Value>, n: u32| {
-        let mut want = was.clone();
-        want.push(serde_json::json!({ "n": n }));
-        want
+    engine_shutdown(&rig.state).await;
+}
+
+/// **A merge released within its hold acks the held appends from the merged leaf** (S6 §7.2,
+/// edge #249 B3; Fable's point 3). An append to a stream of each source waits at the park; the
+/// merge is let go at once, so it publishes before either hold ends: each held append is acked
+/// (204) by `M` at its stream's exact next offset, and each stream reads back its records with the
+/// held one, once, last.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_released_within_its_hold_acks_the_held_appends_from_the_merged_leaf() {
+    let Pair {
+        rig,
+        halves,
+        before,
+    } = pair(None).await;
+    let (addr, names) = (rig.addr, [rig.low.clone(), rig.high.clone()]);
+    let (merge, parked, go) = paused_merge(&rig.state, &halves, "op-w");
+    let appends = async {
+        parked.notified().await;
+        futures_util::future::join(
+            append_at(addr, &names[0], 40),
+            append_at(addr, &names[1], 41),
+        )
+        .await
     };
-    assert_eq!(after, (grown(&before.0, 30), grown(&before.1, 31)));
-    engine_shutdown(&state).await;
+    // Let the merge go as soon as both appends wait in the parked committers, well within the hold.
+    let release = async {
+        parked.notified().await;
+        let t0 = Instant::now();
+        while halves.iter().any(|half| half.queued_ops() == 0) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(1),
+                "both appends wait at the park"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        go();
+    };
+    let (merged, (low, high), ()) = futures_util::future::join3(merge, appends, release).await;
+    merged.expect("the merge publishes");
+    for (i, (name, (status, acked_at, code))) in names.iter().zip([low, high]).enumerate() {
+        assert_eq!(
+            (status, code),
+            (204, None),
+            "{name}: the held append is acked by M"
+        );
+        let (records, next) = records_and_next(addr, name).await;
+        let n = 40 + u32::try_from(i).unwrap();
+        assert_eq!(
+            records,
+            with(&before[i].0, n),
+            "{name}: the held record, once, last"
+        );
+        assert_eq!(acked_at, next, "{name}: acked at its exact next offset");
+    }
+    engine_shutdown(&rig.state).await;
+}
+
+/// The merge of `halves` as operation `op_id`, paused at its park; a notice each waiter gets once
+/// the park is reached; and the release.
+fn paused_merge<'a>(
+    state: &'a State,
+    halves: &'a [Arc<crate::shard::ShardEngine>; 2],
+    op_id: &'a str,
+) -> (
+    impl std::future::Future<
+        Output = Result<crate::topology::merge::Published, crate::topology::merge::Refused>,
+    > + 'a,
+    Arc<Parked>,
+    impl FnOnce() + 'a,
+) {
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    halves[0].gc_state().gate.pause_at_park(point);
+    let parked = Arc::new(Parked::default());
+    let notice = parked.clone();
+    let clock = state.runtime.clock.clone();
+    let merge = async move {
+        let merge = crate::topology::merge::merge(
+            &state.shards,
+            [&halves[0], &halves[1]],
+            op_id,
+            "inst-a",
+            &*clock,
+        );
+        let watch = async {
+            reached_rx.await.expect("the merge paused at its park");
+            notice.reach();
+        };
+        futures_util::future::join(merge, watch).await.0
+    };
+    let release = move || assert!(go_tx.send(()).is_ok(), "the merge waits for go");
+    (merge, parked, release)
+}
+
+/// The park, once reached: every waiter, early or late, is let through.
+#[derive(Default)]
+struct Parked {
+    reached: std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Parked {
+    fn reach(&self) {
+        self.reached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    async fn notified(&self) {
+        loop {
+            let waiting = self.notify.notified();
+            if self.reached.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            waiting.await;
+        }
+    }
+}
+
+/// **A held append whose merged leaf is another instance's is answered by that owner** (S6 §7.2,
+/// edge #249 B3 and #250; Fable's point 5). The halves are this instance's (`inst-a`); the ring
+/// gives the merged prefix `00` to `inst-b`. An append waits at the park; the merge publishes, `M`
+/// does not open here, and the held append is re-resolved under the new topology: exactly `409
+/// not_ring_owner` with `Streams-Replay-To: inst-b`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_held_append_whose_merged_leaf_is_another_instances_is_answered_by_its_owner() {
+    let Pair { rig, halves, .. } = pair(Some("inst-a")).await;
+    let (merge, parked, go) = paused_merge(&rig.state, &halves, "op-o");
+    let held = async {
+        parked.notified().await;
+        replayed(rig.addr, &rig.low, 50).await
+    };
+    let release = async {
+        parked.notified().await;
+        let members = ["inst-a", "inst-b"].map(str::to_string).to_vec();
+        let mut overrides = std::collections::HashMap::new();
+        for half in ["000", "001"] {
+            overrides.insert(half.to_string(), "inst-a".to_string());
+        }
+        overrides.insert("00".to_string(), "inst-b".to_string());
+        rig.state.ownership.set_view(members, overrides);
+        let t0 = Instant::now();
+        while halves[0].queued_ops() == 0 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(1),
+                "the append waits at the park"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        go();
+    };
+    let (merged, held, ()) = futures_util::future::join3(merge, held, release).await;
+    let merged = merged.expect("the merge publishes");
+    assert!(merged.merged.2.is_none(), "M is inst-b's, not opened here");
+    let moved = (
+        409,
+        Some("inst-b".to_string()),
+        Some("not_ring_owner".to_string()),
+    );
+    assert_eq!(held, moved, "the held append");
+    engine_shutdown(&rig.state).await;
+}
+
+/// An append of `{"n": n}` to `name`: its status, `Streams-Replay-To` and error code.
+async fn replayed(
+    addr: std::net::SocketAddr,
+    name: &str,
+    n: u32,
+) -> (u16, Option<String>, Option<String>) {
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    let path = format!("/v1/stream/{name}");
+    let (status, headers, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let code = error["error"]["code"].as_str().map(str::to_string);
+    (status, headers.get("streams-replay-to").cloned(), code)
 }

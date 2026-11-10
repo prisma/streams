@@ -1248,6 +1248,17 @@
     "scenarios": []
   },
   {
+    "name": "a_held_append_whose_merged_leaf_is_another_instances_is_answered_by_its_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "1ec8c65c6e956aa1da9b6ecc1a436d83564f0970b0d21fdf987ee5ebdcc71524",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_held_heartbeat_does_not_stop_the_tick",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1652,7 +1663,18 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a6ee1e9748c9f53bb91cfc34588bf6e6728b32d7004c395768817c0bda75cea4",
+    "function_sha256": "9e6036f3bab313797ba2d54d878d9cb63dbe11bfe55876c0b7a7a9e3e4476f88",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_released_within_its_hold_acks_the_held_appends_from_the_merged_leaf",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "bdb5bed52c90b055cd1d247030d939e20ce11e6a4a543fada3c219731e8f24ad",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
