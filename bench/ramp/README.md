@@ -194,4 +194,8 @@ errors by code and sheds are kept in the step's `settle.chunk_rows`
 the drain runs after a failed step too and reads back `--readback` streams
 before and after it (equal counts required), and `--queues N` adds a small
 queue arm per step, reported and not gating.
+Each step also records the driver itself (`driver`): the bench container's
+peak CPU, memory and open descriptors, its workers (async tasks on one
+runtime sharing one connection pool, not threads), and the bench's own late
+ticks (`late`, ticks over 100 ms late), so a driver bottleneck shows as one.
 

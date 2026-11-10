@@ -144,6 +144,7 @@ class Watch(threading.Thread):
         self.first, self.last, self.rss_max = {}, {}, {}
         self.topo = []  # topology_view rows, one a sample
         self.live_gb_max = 0.0  # the host store's live bytes, GB
+        self.driver = {"cpu_pct_max": 0.0, "mem_mb_max": 0.0, "fds_max": 0, "samples": 0}  # the bench container
 
     def poll(self, k):
         name = f"streams-{k}"
@@ -172,6 +173,7 @@ class Watch(threading.Thread):
                     self.last[name] = row["shed"]
                 if "rss_mb" in row:
                     self.rss_max[name] = max(self.rss_max.get(name, 0), row["rss_mb"])
+            self.sample_driver()
             if STORE:
                 try:
                     gb = round(STORE[0].live_gb(), 3)
@@ -190,6 +192,28 @@ class Watch(threading.Thread):
             self.out.flush()
             if self.stop.wait(5):
                 return
+
+    def sample_driver(self):
+        """The driver's own load (the running bench container: CPU, memory, open descriptors), so a
+        driver bottleneck cannot pass for a cell failure."""
+        names = sh("docker", "ps", "--filter", f"name={rig.PROJECT}-bench-", "--format", "{{.Names}}", check=False).split()
+        for name in names:
+            stats = sh("docker", "stats", "--no-stream", "--format", "{{.CPUPerc}} {{.MemUsage}}", name, check=False).split()
+            fds = sh("docker", "exec", name, "sh", "-c", "ls /proc/1/fd | wc -l", check=False).strip()
+            try:
+                cpu = float(stats[0].rstrip("%"))
+                mem = stats[1]
+                mem_mb = float(mem[:-3]) * {"KiB": 1 / 1024, "MiB": 1, "GiB": 1024}.get(mem[-3:], 1)
+            except (IndexError, ValueError):
+                continue
+            row = {"t": round(time.time(), 1), "driver": name, "cpu_pct": cpu, "mem_mb": round(mem_mb, 1),
+                   "fds": int(fds) if fds.isdigit() else None}
+            self.out.write(json.dumps(row) + "\n")
+            d = self.driver
+            d["cpu_pct_max"] = max(d["cpu_pct_max"], cpu)
+            d["mem_mb_max"] = max(d["mem_mb_max"], round(mem_mb, 1))
+            d["fds_max"] = max(d["fds_max"], row["fds"] or 0)
+            d["samples"] += 1
 
     def shard_range(self):
         """[first, last, max] shards the samples saw, or None."""
@@ -343,7 +367,8 @@ def run_continuous(a, out_dir, results):
                                  and shards is not None and shards[2] <= a.low_max_shards)
                 ok = ok and checks["few"]
             step = {"count": count, "shards": a.shards, "shard_range": shards, "settle": settled,
-                    "store_live_gb_max": watch.live_gb_max, "fleet": [a.fleet_min, a.fleet_max],
+                    "store_live_gb_max": watch.live_gb_max,
+                    "driver": dict(watch.driver, late=pop.get("late"), workers=rig.population_workers(count, count / a.period)), "fleet": [a.fleet_min, a.fleet_max],
                     "live": [live_start, scaler.live], "tenancy": a.tenancy, "auth": a.auth,
                     "period_secs": a.period, "step_secs": a.step_secs, "wall_secs": round(time.time() - started),
                     "held": round(held, 4) if held is not None else None, "pass": ok, "checks": checks,
@@ -354,7 +379,7 @@ def run_continuous(a, out_dir, results):
                 print(json.dumps({"count": count, "settle": {k: settled[k] for k in
                                   ("secs", "budget_secs", "settled", "chunks", "min_held", "max_p99_ms", "sheds", "shard_range")}}),
                       flush=True)
-            print(json.dumps({k: step[k] for k in ("count", "pass", "held", "live", "checks", "sheds", "rss_mb_max")}
+            print(json.dumps({k: step[k] for k in ("count", "pass", "held", "live", "checks", "sheds", "rss_mb_max", "driver")}
                              | {"p99_ms": (pop.get("latency_ms") or {}).get("p99"),
                                 "errors": dict(list((pop.get("errors") or {}).items())[:3]) or pop.get("error")}),
                   flush=True)
@@ -455,7 +480,7 @@ def settle(a, count, prev, posture, scaler, out_dir):
             rows.append({"chunk": chunks, "t": round(time.time()),
                          "held": round((pop.get("touches_per_sec") or 0) / target, 4) if target else None,
                          "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "touch_errors": pop.get("touch_errors"),
-                         "errors": errors_by_code(pop.get("errors")), "sheds": watch.sheds() - shed_before,
+                         "late": pop.get("late"), "errors": errors_by_code(pop.get("errors")), "sheds": watch.sheds() - shed_before,
                          "shards": watch.topo[-1]["shards"] if watch.topo else None, "live": scaler.live})
             if chunks == 1 and pop.get("created") != count:
                 break
@@ -609,6 +634,7 @@ def run_step(a, count, out_dir):
         open(os.path.join(out_dir, f"server-{count}-{k}.log"), "w").write(sh("docker", "logs", rig.server(k), check=False))
     ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
     return {"store_live_gb_max": watch.live_gb_max,
+            "driver": dict(watch.driver, late=pop.get("late"), workers=rig.population_workers(count, count / a.period)),
         "count": count, "instances": a.instances, "shards": a.shards, "tenancy": a.tenancy, "auth": a.auth,
         "period_secs": a.period, "step_secs": a.step_secs, "wall_secs": round(time.time() - started),
         "held": round(held, 4) if held is not None else None, "pass": ok, "checks": checks,
@@ -682,7 +708,7 @@ def main():
             step = run_step(a, count, a.out)
             open(results, "a").write(json.dumps(step) + "\n")
             pop = step["population"]
-            print(json.dumps({k: step[k] for k in ("count", "pass", "held", "checks", "sheds", "rss_mb_max")}
+            print(json.dumps({k: step[k] for k in ("count", "pass", "held", "checks", "sheds", "rss_mb_max", "driver")}
                              | {"p99_ms": (pop.get("latency_ms") or {}).get("p99"),
                                 "errors": dict(list((pop.get("errors") or {}).items())[:3]) or pop.get("error")}),
                   flush=True)

@@ -255,6 +255,11 @@ def bench(*args, env=(), mounts=(), url="http://router:8080", timeout=None):
     return json.loads(lines[-1]) if lines else {"error": out[-800:]}
 
 
+def population_workers(count, rate):
+    """The driver's workers for COUNT entities at RATE a second (see population)."""
+    return max(4, min(count, int(rate * 8) + 4))
+
+
 def population(count, rate, secs, label, tokens=None, warmup=0, url="http://router:8080", creators=None,
                create_from=0, payload_bytes=400, appends_only=False, queues=False):
     """Creates COUNT streams, then touches them (an append and a read) at RATE
@@ -265,7 +270,7 @@ def population(count, rate, secs, label, tokens=None, warmup=0, url="http://rout
     # worker keeps a slow touch (an append past the 100 ms WAL gap, its read, a refusal's
     # retry-after) from costing ticks: about rate x 8 workers, never more than there are
     # entities. At 1,000,000 streams and a 60 s period that is 133,000 workers.
-    workers = max(4, min(count, int(rate * 8) + 4))
+    workers = population_workers(count, rate)
     env, mounts = [f"BENCH_POP_RATE={rate}", "BENCH_POP_START=0"], []
     if creators:
         env.append(f"BENCH_POP_CREATORS={creators}")
