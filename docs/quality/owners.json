@@ -578,11 +578,27 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 8,
       "owner": "crate::topology_merge",
       "path": "src/operator.rs",
-      "reason": "The operator merge route's 501 not_implemented answer until S6 (edge change #251); serde macro output is compiled and the split route DST asserts the status.",
+      "reason": "The operator merge route's eight JSON answers (edge change #251): 202 {op_id, version}, 400 bad_request, 404 unknown_prefix, 409 topology_busy, instance_full and not_ring_owner, 422 not_mergeable, 503 topology_unavailable; serde macro output is compiled and the merge DSTs assert each body.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::a_merge_waits_for_the_fleet_to_settle",
+      "path": "src/dst/tests/merge_k.rs",
+      "reason": "The merge fleet-wait DST's fleet documents (a desired count and an override, each at a chosen age) and its expected 409 body; serde macro output is compiled and the DST asserts the route's answer for each.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::Started::finish",
+      "path": "src/topology/merge.rs",
+      "reason": "The merge's steps and the actor's lease renewals are pinned on the stack and raced, as the split's are, so the renewals run for exactly as long as the steps and stop before the intent's terminal write; the compiler checks the pin's expansion.",
+      "syntax": "std::pin::pin"
     },
     {
       "category": "macro-dsl",
