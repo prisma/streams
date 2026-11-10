@@ -9163,6 +9163,18 @@
     "scenarios": []
   },
   {
+    "name": "reset_refuses_while_in_flight",
+    "attributes": [
+      "#[tokio::test(crate = \"crate::test_rt\")]",
+      "#[should_panic(expected = \"while operations are active\")]"
+    ],
+    "function_sha256": "8dbca7724f55e7f2f2d9c3a7fdad5701e038a944e2bdd39d259839d152c0ce70",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
     "name": "restart_invalidates_process_local_touch_cursors",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

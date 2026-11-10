@@ -8,12 +8,12 @@ use object_store::{ObjectStore, PutOptions, PutPayload};
 
 /// reset() refuses to run while an operation is in flight — the
 /// alternative is silent misattribution of the late completion.
-#[tokio::test(crate = "crate::test_rt")]
-#[should_panic(expected = "while operations are active")]
 #[expect(
     clippy::disallowed_methods,
     reason = "reset_refuses_while_in_flight; the fixture leaks the abandoned stream on purpose so its guard never runs and the operation stays in flight; dropping it would finish the very operation the refusal is about"
 )]
+#[tokio::test(crate = "crate::test_rt")]
+#[should_panic(expected = "while operations are active")]
 async fn reset_refuses_while_in_flight() {
     use futures_util::StreamExt;
     let s = TraceStore::new(mem());
