@@ -187,7 +187,11 @@ served at a p99 of at most 2 s, no shed, no OOM; `settled_window` and
 `reshaping` report the two windows apart. `--queue-gate` makes the queue
 arm's verdict part of the step's. Refused
 touches count against the 98% and are reported (`touch_errors`).
-`docs/SCALE-VALIDATION-149.md` §6 has the command.
+`docs/SCALE-VALIDATION-149.md` §6 has the command. Its top step is 100,000
+streams. At 1,000,000 the 60x compression asks 16,667 touches a second,
+which the driver, the router and the Mac's cores do not carry
+(`meas-149-rig`, 2026-11-10). The local run therefore reaches about 4 leaves,
+and §6.1 says what it cannot show.
 
 The driver sizes its workers from the rate (about 8 s a worker, never more
 than the entities), s3lite runs on the host (`rig.HostStore`, its live size

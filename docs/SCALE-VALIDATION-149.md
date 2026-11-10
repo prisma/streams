@@ -188,7 +188,7 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   |---:|---|---|
   | 10,000 | 1 | 1 |
   | 100,000 | 4 | 4 |
-  | 1,000,000 | 32 | 32 |
+  | 1,000,000 | 32 | not run (§6.1) |
   | 10,000,000 | 64, every leaf full: expect `topology_at_max` | not run |
 
   At 10,000,000 streams `topology_at_max` is the expected outcome, not a
@@ -235,7 +235,7 @@ Each step first settles. Its streams are touched in 60 s chunks until the
 shards, the topology version and the live count have held still for
 `--settle-secs`, then the step is measured. The bound, `--settle-max-secs
 auto`, is 300 s plus one cooldown and 30 s per leaf the step adds, by the
-table above: 1,540 s at 1,000,000 streams with a 10 s cooldown. Every
+table above: 420 s at 100,000 streams with a 10 s cooldown. Every
 chunk's served share, p99, errors by code and sheds are kept beside the
 settled figures. The bar applies to the chunks too: the step's served share
 counts every chunk's touches and the measured window's, against the touches
@@ -244,18 +244,49 @@ windows'. The step reports `settled_window` and `reshaping` apart.
 
 Two rig limits matter at the top step:
 - **The driver.** It paces touches over workers sized from the rate,
-  about 8 s per worker. At 1,000,000 streams a 2,000-worker cap left each
-  worker 120 ms, below the append p99, so healthy touches were skipped.
-- **The store.** s3lite runs on the host, so a top step's tens of GB stay
-  out of the container VM. Its live size is recorded per step.
+  about 8 s per worker (an earlier 2,000-worker cap left each worker 120 ms
+  at 1,000,000 streams, below the append p99, and skipped healthy touches).
+  Compressed 60x, a step's touch rate is its count over 60 s: 1,667 a
+  second at 100,000 streams, 16,667 at 1,000,000.
+- **The store.** s3lite runs on the host, so a top step's GBs stay out of
+  the container VM. Its live size is recorded per step.
 
-It runs up to 1,000,000 streams, provided `meas-149-rig` (a fixed 8
-instances at 100,000 and 1,000,000 streams) shows the rig holds that step.
-The fleet is what the machine holds. 10,000,000 streams and 64 instances
-are Compute's, through Habanero (§1 to §5).
+The local ramp's top step is **100,000 streams** (owner's proviso,
+2026-11-10: 1,000,000 only if `meas-149-rig` held it, and it did not).
+`meas-149-rig` (a fixed 8 instances, 8 shards, one tenant, slate dbfed12ca,
+2026-11-10) gave:
+- **100,000: held.** 1.000 served, p99 273 ms, 0 sheds. The driver used 29%
+  CPU, 100 MB and 559 descriptors, with no late ticks.
+- **1,000,000: failed on the driver and the cell's envelope.**
+  - Every stream was created (5,228 a second, 0 errors). Then 3 of 151,431
+    touches reached the cell, and the rest were `error sending request`
+    to the router.
+  - The driver was at 599% CPU, 2.7 GB and 29,784 descriptors, the
+    container's ephemeral port range, with every tick late.
+  - 16,667 touches a second is also past the fixed cell's envelope (8 ×
+    `CELL_ENVELOPE_REQUESTS_PER_SEC` 1,411 = 11,288). It is past the Mac's
+    cores too: about 32 one-vCPU servers at that step, beside the driver.
+
+1,000,000 and 10,000,000 streams, and 32 to 64 instances, are Compute's,
+through Habanero (§1 to §5).
+
+### 6.1 What the local run cannot show
+
+At 100,000 streams with a 10 s idle-out about 16,700 streams are resident,
+so the cell reaches about **4 leaves** (§5's table). The local run shows the
+whole loop at that depth: one shard and one instance at the low steps,
+splits and scale-outs by the cell's own triggers, the merge back and the
+scale-in after the load. It cannot show:
+- depth: 32 to 64 leaves, `topology_at_max` and 32 to 64 instances;
+- the 1,000,000 and 10,000,000 steps.
+
+Those come from Habanero's Compute run. Multi-split growth in a local run
+comes from the topology DSTs in CI's `topology` job (the split, merge and
+convergence legs), not from this ramp.
 
 **Order** (owner, 2026-11-10):
-1. `meas-149-rig` on slate.
+1. `meas-149-rig` on slate: done 2026-11-10 (above), so the top local step
+   is 100,000.
 2. The official streams ramp, `meas-149`: both tenancies, on push 4's
    pushed sha once it is `CI_GREEN`, before queue parts 1 and 2.
 3. After S3b lands, a short confirmation run closes #149: one tenancy to
@@ -265,9 +296,9 @@ are Compute's, through Habanero (§1 to §5).
 
 ```bash
 bench/ramp/build.sh
-# meas-149: --tenancy one to 1,000,000 (below), then --tenancy each to 100,000 (the largest cached tenant set), each in its own lock leg
+# meas-149: --tenancy one, then --tenancy each, both to 100,000 (the top local step, §6.1), each in its own lock leg
 bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
-  --counts 10 100 1000 10000 100000 1000000 --scale-in-secs 0 \
+  --counts 10 100 1000 10000 100000 --scale-in-secs 0 \
   --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto \
   --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
         HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10
@@ -283,9 +314,9 @@ It records, per step, the shards the live instances own (from their
 heartbeats) and the instances live, and fails a low step that ran on more
 than one instance or more than 2 shards. `--drain-secs auto` sizes the
 drain by §5's arithmetic from the constants the servers run and prints it.
-At the compressed constants with a 10 s cooldown, from 32 leaves and 12
-instances, that is 720 + 30 × 40 + 11 × 310 = 5,330 s, so 6,662 s with the
-margin.
+At the compressed constants with a 10 s cooldown, from 4 leaves and at
+most 12 instances, that is 720 + 3 × 40 + 11 × 310 = 4,250 s, so 5,312 s
+with the margin. Fewer instances shorten it by 310 s each.
 
 The drain runs after a failed step too. Before it and after it, the ramp
 reads back `--readback` streams (200), spread over all it created. With no
