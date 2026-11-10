@@ -476,3 +476,52 @@ async fn replayed(
     let code = error["error"]["code"].as_str().map(str::to_string);
     (status, headers.get("streams-replay-to").cloned(), code)
 }
+
+/// **A claimant's completeness check leaves a merged leaf that serves serving** (S6 §7.4). A
+/// merge publishes and its `M` serves an append here. A lapsed source's opener that rolls a
+/// merge forward from `'T'` alone (no live intent, its instance still on the earlier topology)
+/// checks `M`'s `'Y'` row. That check opened `M` with a writer, whose epoch bump fenced the `M`
+/// that serves: its next append failed `Closed(Fenced)` and the stream answered 500
+/// `shard_open_failed`. The check reads `M` without a writer, and the next append is acked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claimants_completeness_check_leaves_a_serving_merged_leaf_serving() {
+    let Rig {
+        store,
+        state,
+        addr,
+        low,
+        parent,
+        ..
+    } = rig().await;
+    split_00(&state, &parent).await;
+    let halves = halves_of_00(&state).await;
+    let clock = state.runtime.clock.clone();
+    let published = crate::topology::merge::merge(
+        &state.shards,
+        [&halves[0], &halves[1]],
+        "op-m",
+        "inst-a",
+        &*clock,
+    )
+    .await;
+    let Ok(crate::topology::merge::Published {
+        merged: (prefix, home, Some(_)),
+        ..
+    }) = published
+    else {
+        panic!("the merge publishes and M opens here");
+    };
+    assert_eq!(super::merge_k::append_to(addr, &low, 7).await.0, 204);
+    let path = crate::topology::model::born_home_path(&prefix, home);
+    assert!(
+        crate::topology::recover::merge::merged_is_complete(&store, &path, home).await,
+        "M is complete"
+    );
+    let after = super::merge_k::append_to(addr, &low, 8).await;
+    assert_eq!(
+        after,
+        (204, String::new()),
+        "M still serves after the check"
+    );
+    engine_shutdown(&state).await;
+}

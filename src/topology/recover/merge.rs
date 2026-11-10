@@ -303,13 +303,15 @@ async fn decide(
         }
         checkpoints |= has_checkpoint(store, source, &merge.op_id).await;
     }
-    let path = born_home_path(&merge.prefix, merge.home);
-    let files = has_files(store, &path).await;
-    let merged_complete = files && merged_is_complete(store, &path, merge.home).await;
+    // A published merge is reclaimed whatever `M` holds (`recovery`), so it is read first and
+    // `M` is not looked at again once it may serve.
     let published = store::read(&**store)
         .await
         .map(|(topology, _)| topology.last_op.is_some_and(|op| op.op_id == merge.op_id))
         .unwrap_or(false);
+    let path = born_home_path(&merge.prefix, merge.home);
+    let files = has_files(store, &path).await;
+    let merged_complete = !published && files && merged_is_complete(store, &path, merge.home).await;
     let evidence = Evidence {
         retired,
         copy_began: checkpoints || files,
@@ -466,20 +468,28 @@ async fn has_files(store: &Arc<dyn ObjectStore>, path: &str) -> bool {
 }
 
 /// Whether `M`'s log at `path` is complete: its fresh `'Y'` naming `home` is there.
-async fn merged_is_complete(store: &Arc<dyn ObjectStore>, path: &str, home: u32) -> bool {
-    let Ok(db) = crate::keyspace::db_builder(path, store.clone())
+pub(crate) async fn merged_is_complete(
+    store: &Arc<dyn ObjectStore>,
+    path: &str,
+    home: u32,
+) -> bool {
+    // A reader that writes nothing: a writer's open would bump `M`'s epoch and fence an `M`
+    // that already serves (a source's opener rolling forward from `'T'` alone after the publish).
+    let reader = slatedb::DbReader::builder(path, store.clone())
+        .with_merge_operator(crate::spill::pending::merge_operator())
+        .with_reader_mode(slatedb::DbReaderMode::FollowLatest)
         .build()
-        .await
-    else {
+        .await;
+    let Ok(reader) = reader else {
         return false;
     };
     let (key, value) = crate::shard::open_index::identity_row(home);
-    let complete = db
+    let complete = reader
         .get(&key)
         .await
         .ok()
         .flatten()
         .is_some_and(|v| v.as_ref() == value.as_slice());
-    drop(db.close().await);
+    drop(reader.close().await);
     complete
 }

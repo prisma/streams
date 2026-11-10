@@ -258,6 +258,17 @@
     "scenarios": []
   },
   {
+    "name": "a_claimants_completeness_check_leaves_a_serving_merged_leaf_serving",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f03282654f6bcc41e1610b7ed7f35cbc1adb38cb5d9673c191f137f383397f08",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_claimants_roll_forward_completes_under_traffic_on_the_other_source",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
