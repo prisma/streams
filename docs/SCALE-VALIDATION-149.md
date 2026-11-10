@@ -23,8 +23,10 @@ and §1.6's forwarding rules all apply.
   (`scripts/dev/ci-status.sh <sha>` prints `CI_GREEN`). A commit without
   split and merge cannot pass this run: an instance beyond the shard count
   owns nothing (#149 §2).
-- **The local gate.** The compressed ramp (§6) must have held on the same
-  commit before the Compute run starts.
+- **The local gate.** This Compute run, Habanero's, starts only once #149
+  is closed, after the local runs of §6 have held, the confirmation run
+  last. It does not start early, and nothing is posted on #149 before then
+  (owner, 2026-11-10).
 - **Names.** Once edge change #253's API part is on the commit, a stored
   tenant is a **container**: the usage route is
   `/v1/containers/{container}/usage`, the wait route
@@ -210,6 +212,8 @@ are Compute's, through Habanero (§1 to §5).
    pushed sha once it is `CI_GREEN`, before queue parts 1 and 2.
 3. After S3b lands, a short confirmation run closes #149: one tenancy to
    100,000 streams, with the drain and the queue arm gating.
+4. Only then, Habanero's Compute run (§1 to §5). Nothing is posted on #149
+   before the close.
 
 ```bash
 bench/ramp/build.sh
