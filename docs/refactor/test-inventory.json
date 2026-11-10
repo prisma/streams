@@ -201,6 +201,17 @@
     ]
   },
   {
+    "name": "a_child_that_fails_to_open_after_the_publish_leaves_the_split_published",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "39135364de4c52b1ef2f58c31dfb1962f1ff2a489ee52c27ff3ba97db217c913",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_childs_split_clones_its_own_tables_and_serves_from_its_child",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3240,6 +3251,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_publish_fails_after_t_is_left_to_roll_forward",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f5953af5728bd2521dd92909aa7c1c4dc1a997f0f87872f4456b0f7c64a10ca4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
     "scenarios": []
   },
   {

@@ -126,6 +126,9 @@ pub(crate) enum Refused {
     UnknownPrefix,
     /// The split started and rolled back before `'T'`.
     RolledBack(String),
+    /// The split wrote `'T'` but its publish failed: it only rolls forward, so its intent stays
+    /// live for the next opener of the parent to claim and roll forward from `'T'` (S4-DESIGN §6.4).
+    Unfinished(String),
 }
 
 impl std::fmt::Display for Refused {
@@ -143,6 +146,12 @@ impl std::fmt::Display for Refused {
             Self::NotSplittable(why) => write!(f, "not_splittable: {why}"),
             Self::UnknownPrefix => f.write_str("unknown_prefix"),
             Self::RolledBack(why) => write!(f, "rolled back: {why}"),
+            Self::Unfinished(why) => {
+                write!(
+                    f,
+                    "past 'T', unpublished: {why}; the next open of the parent rolls it forward"
+                )
+            }
         }
     }
 }
@@ -258,6 +267,8 @@ impl Started {
                 recover::drop_checkpoint(&self.parent, &self.op_id).await;
             }
             Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
+            // Past 'T' (Unfinished) the split only rolls forward: its intent stays live, and
+            // lapses for the next opener of the parent to claim and roll forward from 'T'.
             Err(_) => {}
         }
         ran
@@ -324,7 +335,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
             published
         });
     drop(hold);
-    published.map_err(Refused::RolledBack)
+    published.map_err(Refused::Unfinished)
 }
 
 /// The parent's `'T'` (S4-DESIGN §6.2 step 3.1), written and flushed while the actor still owns its
@@ -647,9 +658,14 @@ async fn publish(
             .map_err(|e| format!("open {}: {e:?}", child.prefix))?;
         Ok::<_, String>((child.prefix.clone(), child.home, engine))
     });
+    // The split is published: a child that fails to open here opens on its next request, and the
+    // split goes on to retire its parent.
     let mut opened = Vec::with_capacity(children.len());
     for open in futures_util::future::join_all(opens).await {
-        opened.push(open?);
+        match open {
+            Ok(child) => opened.push(child),
+            Err(error) => tracing::warn!(op_id, "a published split's child did not open: {error}"),
+        }
     }
     let drained = tokio::time::Instant::now() + DRAIN;
     while parent.queued_ops() > 0 && tokio::time::Instant::now() < drained {

@@ -2790,11 +2790,6 @@ wait's tails. Three readers still answer the old way:
   itself is a fork patch, after #149: `Path::parse` (falling back to `Path::from` when it fails) at
   the four sites, a new `streams-*` pin tag measured in Streams first (the fork rule), and an
   upstream slatedb/slatedb issue. Filing that issue is public: it needs the owner's OK in chat.
-- **A child open that fails after the publish is reported as a rollback.** `split::publish` maps
-  an error opening a child (after `'T'` and the topology CAS, so the split rolled forward) to
-  `Refused::RolledBack`, and the route task logs "the split ended". The split is published and its
-  children open on the next request; the label should say so (a `Published` with a failed open, or
-  a distinct refusal), so an operator reading the log does not look for a rollback that never ran.
 
 ## 20. Follow-ups from edge change #260 (2026-11-09)
 
