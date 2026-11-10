@@ -194,7 +194,8 @@ pub(super) struct Loads {
     pub(super) tracked_projects: u64,
     /// The topology's shards: a fleet larger than them adds nothing.
     pub(super) shards: u64,
-    /// A member reports a live topology intent: no shrink (S4-DESIGN §10.1).
+    /// A member reports a live topology intent (S4-DESIGN §10.1), or a split ready on it that
+    /// waits for the fleet to settle (`fleet_settling`, #261 amendment): no shrink.
     pub(super) topology_busy: bool,
     /// The most ring-resident shards of a member whose split waits for an instance (its
     /// topology policy's `instance_full`, S5 and Q4); `None` while no split waits.
@@ -217,8 +218,12 @@ impl Loads {
         self.cached_streams = self.cached_streams.saturating_add(beat.cached_streams);
         self.tracked_projects = self.tracked_projects.saturating_add(beat.tracked_projects);
         self.topology_busy |= beat.topology_intent.is_some();
-        if beat.split_refused.as_deref() == Some(crate::topology::policy_loop::INSTANCE_FULL) {
-            self.instance_full = self.instance_full.max(Some(beat.shards_resident));
+        match beat.split_refused.as_deref() {
+            Some(crate::topology::policy_loop::INSTANCE_FULL) => {
+                self.instance_full = self.instance_full.max(Some(beat.shards_resident));
+            }
+            Some(crate::topology::policy_loop::FLEET_SETTLING) => self.topology_busy = true,
+            _ => {}
         }
         if beat.rps >= 5.0 {
             let store = beat.store_read_p50_ms as f64;

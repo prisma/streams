@@ -18,6 +18,10 @@ use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 /// The heartbeat's `split_refused` while a split waits for an instance (Q4).
 pub(crate) const INSTANCE_FULL: &str = "instance_full";
 
+/// The heartbeat's `split_refused` while a split ready on this instance waits for the fleet to
+/// settle (#261 amendment): the fleet does not shrink while a member reports it.
+pub(crate) const FLEET_SETTLING: &str = "fleet_settling";
+
 /// The policy's cadence.
 pub(crate) const PERIOD: Duration = Duration::from_secs(10);
 
@@ -161,17 +165,31 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
 
 /// One pass: the view, the decision, and the split it starts. A refused split is a hold, or an
 /// ask for an instance.
-/// The beat publishes what the pass left: a split waiting for an instance, and the shards the
+/// The beat publishes what the pass left: a split waiting (`split_refused`), and the shards the
 /// ring gives this one.
 pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> Decision {
     let live = intent_live(&*cell.store).await;
     let view = view(cell, seen, live);
-    let decision = act(cell, &view, policy.decide(&view, &cell.limits)).await;
-    let waiting = matches!(decision, Decision::AskInstance { .. }).then_some(INSTANCE_FULL);
+    let decided = policy.decide(&view, &cell.limits);
+    let decision = act(cell, &view, decided).await;
+    let waiting = split_refused(&decision, policy.decided_split());
     let standing = cell.fleet.standing();
     standing.set_topology(waiting, resident(&view, &cell.me));
     standing.set_topology_decision(decision.reason());
     decision
+}
+
+/// What a split waits for, for the beat's `split_refused`: an instance (an ask), or the fleet's
+/// settle when a ready split of this instance (`split`, the policy's candidate) is held by the
+/// policy's gate or S4's entry for a young count or override. A merge held so waits for nothing
+/// the fleet must keep: shrinks are finite.
+fn split_refused(decision: &Decision, split: bool) -> Option<&'static str> {
+    use super::policy::Hold;
+    match decision {
+        Decision::AskInstance { .. } => Some(INSTANCE_FULL),
+        Decision::Hold(Hold::FleetSettling | Hold::OverrideRecent) if split => Some(FLEET_SETTLING),
+        _ => None,
+    }
 }
 
 /// `decision`, after the split or merge entry's answer to the operation it names. A refused
@@ -477,8 +495,11 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
 
 #[cfg(test)]
 mod tests {
-    use super::{NOT_RING_OWNER, hold_for, intent_live, merge_refusal_code, refusal_code};
-    use crate::topology::policy::Hold;
+    use super::{
+        FLEET_SETTLING, INSTANCE_FULL, NOT_RING_OWNER, hold_for, intent_live, merge_refusal_code,
+        refusal_code, split_refused,
+    };
+    use crate::topology::policy::{Decision, Hold};
     use crate::topology::split::Refused as S4;
 
     /// S4's refusals answer the policy's holds: its two reasons for being busy apart, a parent
@@ -504,6 +525,48 @@ mod tests {
                 max: 7
             }),
             "instance_full"
+        );
+    }
+
+    /// The beat's `split_refused` (#261 amendment): an ask is `instance_full`, a split held for
+    /// the fleet's settle or a young override is `fleet_settling` whether the policy's gate or
+    /// S4's refusal held it, and a merge held so, or any other hold, publishes nothing.
+    #[test]
+    fn a_split_held_for_the_fleets_settle_tells_the_fleet_and_a_merge_does_not() {
+        let ask = Decision::AskInstance {
+            resident: 3,
+            max: 3,
+        };
+        assert_eq!(split_refused(&ask, true), Some(INSTANCE_FULL));
+        assert_eq!(split_refused(&ask, false), Some(INSTANCE_FULL));
+        let settling = [Hold::FleetSettling, Hold::OverrideRecent];
+        for hold in settling {
+            assert_eq!(
+                split_refused(&Decision::Hold(hold), true),
+                Some(FLEET_SETTLING)
+            );
+            assert_eq!(split_refused(&Decision::Hold(hold), false), None);
+        }
+        for hold in [
+            Hold::Steady,
+            Hold::PeerActs,
+            Hold::IntentLive,
+            Hold::Cooldown,
+            Hold::HotEntity,
+            Hold::MaxDepth,
+            Hold::TopologyAtMax,
+            Hold::Congested,
+            Hold::BeatsStale,
+        ] {
+            assert_eq!(split_refused(&Decision::Hold(hold), true), None, "{hold:?}");
+        }
+        let started = Decision::Merge {
+            parent: String::new(),
+        };
+        assert_eq!(split_refused(&started, true), None);
+        assert_eq!(
+            hold_for(refusal_code(&S4::Busy("fleet"))),
+            Hold::FleetSettling
         );
     }
 

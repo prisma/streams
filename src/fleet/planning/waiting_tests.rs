@@ -69,3 +69,33 @@ fn a_split_waiting_for_an_instance_wants_one_more_and_names_the_ceiling() {
     ));
     assert_eq!(loads.instance_full, Some(6));
 }
+
+/// A split held while the fleet settles keeps what it asked for and asks nothing more (#261
+/// amendment): a member's `fleet_settling` blocks the shrink as a live intent does (the sentinel)
+/// and leaves the grow and the split demand where the same beat without it puts them, so a
+/// one-shard cell's second instance stays until the split can use it and no third is asked
+/// for. `instance_full` still asks for one past the shards and no further.
+#[test]
+fn a_split_waiting_for_the_fleet_to_settle_keeps_the_count_and_asks_for_nothing() {
+    let plan = |refused: &str, shards: u64| {
+        let mut loads = Loads {
+            shards,
+            ..Loads::default()
+        };
+        let beat = format!(
+            r#"{{"instance":"streams-1","ts_ms":1,"rps":0.0,"owned_shards":[""],"draining":false,"split_refused":"{refused}","shards_resident":1}}"#
+        );
+        loads.fold(&serde_json::from_str(&beat).unwrap());
+        n(&Demand::default().plan(&loads, &thresholds(), Instant::now()))
+    };
+    for shards in [1, 3] {
+        let (need, shrink, split) = plan("none", shards);
+        assert!(shrink < thresholds().max, "{shards}: {shrink}");
+        assert_eq!(
+            plan("fleet_settling", shards),
+            (need, thresholds().max, split),
+            "{shards} shards"
+        );
+    }
+    assert_eq!(plan("instance_full", 1), (2, 2, 1));
+}

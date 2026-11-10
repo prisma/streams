@@ -184,6 +184,8 @@ pub(crate) struct Policy {
     /// sustain, which no topology operation restarts.
     fleet: Option<i64>,
     doubling: Option<Doubling>,
+    /// The last decision's candidate was a split: its hold is a split's (#261 amendment).
+    split: bool,
 }
 
 /// What a tick would start, before the gates.
@@ -197,8 +199,12 @@ impl Policy {
     /// The decision for `view`, advancing the sustains to its clock.
     pub(crate) fn decide(&mut self, view: &View, at: &Limits) -> Decision {
         self.observe(view, at);
+        self.split = false;
         let held = match self.split_candidate(view, at) {
-            Some(Ok(split)) => return act(view, at, split),
+            Some(Ok(split)) => {
+                self.split = true;
+                return act(view, at, split);
+            }
             Some(Err(held)) => held,
             None => Hold::Steady,
         };
@@ -209,6 +215,12 @@ impl Policy {
             Some(merge) => act(view, at, merge),
             None => Decision::Hold(held),
         }
+    }
+
+    /// Whether the last decision's candidate was a split, not a merge or none: a hold it ended in
+    /// is a ready split's, which the loop tells the fleet about when it is the fleet's own settle.
+    pub(crate) fn decided_split(&self) -> bool {
+        self.split
     }
 
     /// Advances every sustain to `view`'s clock and forgets leaves and pairs that are gone.

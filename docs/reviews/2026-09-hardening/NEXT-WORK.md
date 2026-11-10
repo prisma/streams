@@ -2816,6 +2816,13 @@ EDGE-261-RATIFICATION.md) left these:
 - **An `actor_full` name for a split whose actor is full while a peer has
   room** (EDGE-261-RATIFICATION §2): today it asks for an instance, bounded by
   rule 4's + 1; S6's placement work can name it and move a shard instead.
+- **One settle, one value** (DESIGN-DECISION-settle-scalein-2026-11-10.md, after
+  #261 amendment B2). S4's `ops::fleet_settled` waits a fixed
+  `FLEET_SETTLE_MS` (60 s), documented as `SHARD_TOPOLOGY_COOLDOWN_SECS`, while
+  the policy's gate reads the configured cooldown: one knob, two values (a DST
+  sets the knob to 1 and S4 still waits 60). The stricter wins, so it is
+  harmless, but it should be one source. It changes the operator split and
+  merge routes' wait, so it is its own edge change.
 
 ## 19. Follow-ups from S6, the merge (2026-11-10)
 

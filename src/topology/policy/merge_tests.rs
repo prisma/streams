@@ -225,3 +225,36 @@ fn stale_cached_beats_block_a_merge_and_restart_its_sustain_but_never_block_a_sp
         split("1", SplitKind::Normal)
     );
 }
+
+/// The policy names its candidate's kind for the beat (#261 amendment): a split held by the
+/// fleet's settle is a split's hold, as is the split it then decides; a merge held the same way
+/// is not, and neither is a pass with no candidate.
+#[test]
+fn only_a_split_candidates_hold_is_a_splits() {
+    let (mut policy, mut view) = sustained();
+    assert!(!policy.decided_split());
+    view.desired_computed_ms = Some(READY - 59_999);
+    assert_eq!(
+        tick(&mut policy, &mut view, READY),
+        Decision::Hold(Hold::FleetSettling)
+    );
+    assert!(policy.decided_split());
+    view.desired_computed_ms = None;
+    assert_eq!(
+        tick(&mut policy, &mut view, READY),
+        split("1", SplitKind::Normal)
+    );
+    assert!(policy.decided_split());
+
+    let (mut policy, mut view) = (Policy::default(), cold_pair(10, 10));
+    assert_eq!(
+        tick(&mut policy, &mut view, T0),
+        Decision::Hold(Hold::Steady)
+    );
+    view.desired_computed_ms = Some(QUIET - 59_999);
+    assert_eq!(
+        tick(&mut policy, &mut view, QUIET),
+        Decision::Hold(Hold::FleetSettling)
+    );
+    assert!(!policy.decided_split());
+}

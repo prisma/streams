@@ -127,7 +127,9 @@ pub(crate) struct Heartbeat {
     #[serde(default)]
     pub split_demand: u64,
     /// Why the topology policy's split waits (`instance_full`: no room for both children
-    /// beside the parent, or no other instance with room for one); absent while none waits.
+    /// beside the parent, or no other instance with room for one; `fleet_settling`: a split
+    /// ready here is held until the fleet settles, and the fleet does not shrink meanwhile,
+    /// #261 amendment); absent while none waits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split_refused: Option<String>,
     /// The shards the ring gives this instance, as its topology policy counts them.
