@@ -285,20 +285,6 @@ pub(crate) async fn check_identity(db: &Db, path: &str) -> Result<(), slatedb::E
     Ok(())
 }
 
-/// The home a log's `'Y'` row records; `None` for a log without one, which only a log opened
-/// without `check_identity` can be (a test's `keyspace::db_builder` rig).
-pub(super) async fn recorded_home(db: &Db) -> Result<Option<u32>, slatedb::Error> {
-    let Some(value) = db.get(&identity_key()).await? else {
-        return Ok(None);
-    };
-    let home = value
-        .get(4..8)
-        .and_then(|b| b.try_into().ok())
-        .map(u32::from_be_bytes);
-    home.map(Some)
-        .ok_or_else(|| slatedb::Error::data("shard log identity row is short".to_string()))
-}
-
 /// This shard's maintenance ledger, rebuilt before the engine starts serving (layout 6: the
 /// ledger lives in memory only): the unsealed bytes the durable tails of the unsealed index's
 /// members hold, which by its invariant are every stream with unsealed bytes. A tail that does not

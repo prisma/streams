@@ -26,8 +26,8 @@ impl ShardEngine {
         #[cfg(test)]
         self.injected_open_fault()?;
         self.gc_state().note_opened();
-        let home = crate::shard::open_index::recorded_home(&self.db).await?;
-        let home = home.unwrap_or_else(|| crate::keyspace::home_of(&self.prefix).unwrap_or(0));
+        // The log's 'Y' row records this same home: check_identity refused the open otherwise.
+        let home = crate::keyspace::home_of(&self.prefix).unwrap_or(0);
         self.layout
             .seal
             .home
