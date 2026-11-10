@@ -602,6 +602,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::with",
+      "path": "src/dst/tests/merge_finish_k.rs",
+      "reason": "The merge pause DSTs' expected record (#249 B3): one JSON record appended to a stream's expected records, which the DSTs compare byte-exact with the merged leaf's read-back.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::pinned",
+      "path": "src/dst/tests/topology_colocation.rs",
+      "reason": "The co-location DSTs' overrides document (#261 B1): each leaf pinned to its instance by an aged override entry, the shape count balance writes; the DSTs assert the policy's moves of these entries.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::Started::finish",
       "path": "src/topology/merge.rs",
