@@ -216,7 +216,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3afdb73a079c7775372db3dff18da10ccbce4ef79f70482931c1413458b2e121",
+    "function_sha256": "416d2984842a615f0a10c88cbd7e771e9c0c6c9a35a8899940dd94da27b69964",
     "mechanisms": [],
     "configuration": [
       "let faults = FaultStore::uniform(mem(), 0x5eed, FaultPlan::CLEAN);"
@@ -10690,9 +10690,11 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "82570bf190d6880df8a047a9224339db69898d42dee73daf22f477b46337ec97",
+    "function_sha256": "372b2b7a93290282f3821c2332627bbaa2139e511cd329ede39a8ba3ab9b2cd6",
     "mechanisms": [],
-    "configuration": [],
+    "configuration": [
+      "let faults = FaultStore::uniform(mem(), 0xf01d, FaultPlan::CLEAN);"
+    ],
     "file": "src/dst/tests/split_k.rs",
     "scenarios": []
   },

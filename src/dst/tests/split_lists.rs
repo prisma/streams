@@ -9,7 +9,7 @@
 
 use super::fixture_http::engine_shutdown;
 use super::fixture_storage::mem;
-use super::split_k::{Cell, cell_over, records};
+use super::split_k::{Cell, cell_over, records, tagged};
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::spill::lineage;
 use std::sync::Arc;
@@ -148,5 +148,49 @@ async fn a_child_whose_first_holding_lands_after_the_plan_opens() {
         (records(*addr, low).await, records(*addr, high).await),
         want
     );
+    inherited_rows_fold_away(&published, *addr, (low, high), &want).await;
     engine_shutdown(state).await;
+}
+
+/// K-SPLIT-DECISION-2026-11-09 §5's first case, end to end: the late seal's `'K'` rows reached both
+/// children byte for byte (the sibling's entries included; each child admits only its own range at
+/// open and at its fold, `shard::seal::range_tests`), each child's own fold then folds them into its
+/// run index, and both streams still read back `want`.
+async fn inherited_rows_fold_away(
+    published: &crate::topology::split::Published,
+    addr: std::net::SocketAddr,
+    (low, high): (&str, &str),
+    want: &(serde_json::Value, serde_json::Value),
+) {
+    use crate::keyspace::tag::DIRECTORY;
+    let children: Vec<_> = published
+        .children
+        .iter()
+        .map(|(_, _, c)| c.clone())
+        .collect();
+    let rows = tagged(&children[0], DIRECTORY).await;
+    assert!(!rows.is_empty(), "the late seal's 'K' rows were copied");
+    assert_eq!(
+        tagged(&children[1], DIRECTORY).await,
+        rows,
+        "to both children"
+    );
+    for child in &children {
+        for _ in 0..8 {
+            match child.fold_once().await {
+                Ok(report) if report.more => {}
+                done => {
+                    done.expect("the child's fold");
+                    break;
+                }
+            }
+        }
+        let left = tagged(child, DIRECTORY).await;
+        assert!(
+            left.is_empty(),
+            "{}: its fold took the inherited rows",
+            child.prefix
+        );
+    }
+    assert_eq!((records(addr, low).await, records(addr, high).await), *want);
 }

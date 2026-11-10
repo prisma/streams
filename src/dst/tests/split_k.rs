@@ -374,7 +374,7 @@ async fn until_queued(engine: &crate::shard::ShardEngine) {
 }
 
 /// The sentinel rows of `tag` in `engine`'s log, keys only.
-async fn tagged(engine: &crate::shard::ShardEngine, tag: u8) -> Vec<Vec<u8>> {
+pub(super) async fn tagged(engine: &crate::shard::ShardEngine, tag: u8) -> Vec<Vec<u8>> {
     let prefix = crate::spill::runindex::sentinel_prefix(tag);
     let mut scan = engine.db.scan_prefix(&prefix[..], ..).await.unwrap();
     let mut keys = Vec::new();
@@ -387,17 +387,24 @@ async fn tagged(engine: &crate::shard::ShardEngine, tag: u8) -> Vec<Vec<u8>> {
 /// **The Preparing fold leaves no parent `'K'` row to copy** (K-SPLIT-DECISION-2026-11-09 §5's second
 /// case): with sealed `'K'` rows in the parent's log, the split's Preparing fold folds them into the
 /// run index, so neither child's seed holds a `'K'` row and both hold the parent's `'I'` rows; both
-/// streams read back as before.
+/// streams read back as before. Every segment PUT after that seal parks until the split published,
+/// so no later seal (the cell's background sealer) lands a `'K'` row after the fold: that case,
+/// K-SPLIT §5's first, is `split_lists`'s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_preparing_fold_leaves_the_children_no_parent_k_rows() {
+    use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
+    let faults = FaultStore::uniform(mem(), 0xf01d, FaultPlan::CLEAN);
     let Cell {
         state,
         addr,
         low,
         high,
         parent,
-    } = cell().await;
+    } = cell_over(faults.clone()).await;
     parent.seal_requested().await.expect("seal");
+    let home = state.shards.prefixes().shards.leaves["00"];
+    let segments = format!("{}/hseg/", parent.object_root(home));
+    drop(faults.hold_class_under(StoreOp::Put, ObjClass::Other, &segments, u64::MAX));
     use crate::keyspace::tag::{DIRECTORY, POINTER};
     assert!(
         !tagged(&parent, DIRECTORY).await.is_empty(),
@@ -409,6 +416,7 @@ async fn the_preparing_fold_leaves_the_children_no_parent_k_rows() {
         crate::topology::split::split(&state.shards, &parent, "op-fold", "inst-a", &*clock)
             .await
             .expect("the split publishes");
+    faults.release_hold();
     let pointers = tagged(&published.children[0].2, POINTER).await;
     assert!(!pointers.is_empty(), "the fold's 'I' rows");
     for (prefix, _, child) in &published.children {
