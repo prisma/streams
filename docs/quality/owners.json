@@ -1025,6 +1025,14 @@
       "syntax": "path = \"tests/split_override.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::merge_claim_traffic",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A merge claimant's roll forward under client traffic on its other source (TLA-048 option (b), change 1): the other instance's reopen holds before it opens while the claim is fresh, so the claimant's maintenance writer is never fenced and it publishes under its own claim; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/merge_claim_traffic.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::split_with_a_late_seal",

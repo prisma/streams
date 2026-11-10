@@ -37,6 +37,8 @@ mod latch_calibration;
 mod fleet_topology;
 #[path = "tests/l0_watermark.rs"]
 mod l0_watermark;
+#[path = "tests/merge_claim_traffic.rs"]
+mod merge_claim_traffic;
 #[path = "tests/merge_finish_k.rs"]
 mod merge_finish_k;
 #[path = "tests/merge_k.rs"]

@@ -35,7 +35,7 @@ async fn stream_in_half(state: &State, addr: Addr, half: char, taken: &mut usize
     }
 }
 
-async fn records(addr: Addr, name: &str) -> serde_json::Value {
+pub(super) async fn records(addr: Addr, name: &str) -> serde_json::Value {
     let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
     serde_json::from_slice(&body).unwrap_or_default()
@@ -750,7 +750,7 @@ async fn a_lapsed_merge_is_rolled_back_by_a_sources_opener_that_fences_both_sour
 }
 
 /// An append of `{"n": n}` to `name` through `addr`: its status and error code.
-async fn append_to(addr: Addr, name: &str, n: u32) -> (u16, String) {
+pub(super) async fn append_to(addr: Addr, name: &str, n: u32) -> (u16, String) {
     let path = format!("/v1/stream/{name}");
     let body = format!(r#"[{{"n":{n}}}]"#);
     let (status, _, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
@@ -761,7 +761,12 @@ async fn append_to(addr: Addr, name: &str, n: u32) -> (u16, String) {
 }
 
 /// Append to `name` through `addr` until it is acknowledged, within `bound`.
-async fn append_until_served(addr: Addr, name: &str, n: u32, bound: std::time::Duration) {
+pub(super) async fn append_until_served(
+    addr: Addr,
+    name: &str,
+    n: u32,
+    bound: std::time::Duration,
+) {
     let t0 = std::time::Instant::now();
     loop {
         let (status, error) = append_to(addr, name, n).await;
@@ -780,7 +785,7 @@ async fn append_until_served(addr: Addr, name: &str, n: u32, bound: std::time::D
 /// serves `001` (`high`), each having acknowledged a record since the split (`inst-a`'s engines of
 /// the split are closed first); `inst-a`'s engines are then shut down, so its next touch of `000`
 /// reopens it.
-async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr, u64) {
+pub(super) async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr, u64) {
     let shared: Arc<dyn object_store::ObjectStore> = store.clone();
     let (state, addr) = http_rig_named(shared.clone(), "inst-a").await;
     let (state_b, addr_b) =

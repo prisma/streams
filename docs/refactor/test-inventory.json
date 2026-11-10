@@ -258,6 +258,19 @@
     "scenarios": []
   },
   {
+    "name": "a_claimants_roll_forward_completes_under_traffic_on_the_other_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "840b7a7cecdfd6dcd9e7648b4f02b54ee298e6436337f16c042f879c8a5c094a",
+    "mechanisms": [],
+    "configuration": [
+      "let faults = FaultStore::uniform(super::fixture_storage::mem(), 7, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/merge_claim_traffic.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_clean_pass_copies_every_live_chunk_its_shard_serves",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

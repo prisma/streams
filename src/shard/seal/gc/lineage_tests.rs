@@ -254,7 +254,7 @@ async fn the_open_path_fence_fails_a_shard_whose_ancestor_list_is_missing() {
             installed_at: None,
         }))
     });
-    let held = crate::topology::fence::hold_until_served(&rig.engine, &snapshot).await;
+    let held = crate::topology::fence::hold_until_served(&rig.engine, &snapshot, None).await;
     let error = held.expect_err("refused").to_string();
     assert!(
         error.contains("lineage_list_missing") && error.contains("home 7"),
@@ -265,7 +265,7 @@ async fn the_open_path_fence_fails_a_shard_whose_ancestor_list_is_missing() {
     row(&rig, crate::spill::directory::REFCOUNT_TAG, 7, 1).await;
     let list = lineage::reference_list_path(&rig.engine.object_root(7), rig.engine.home());
     put(&rig, list, lineage::encode(&[])).await;
-    crate::topology::fence::hold_until_served(&rig.engine, &snapshot)
+    crate::topology::fence::hold_until_served(&rig.engine, &snapshot, None)
         .await
         .expect("served");
     assert!(!rig.engine.gc_state().gate.collection_off());

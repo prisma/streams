@@ -11,6 +11,13 @@
 //! | yes | lapsed, terminal or absent | snapshot < `T.version` | roll forward (the claimant) |
 //! | yes | any | snapshot ≥ `T.version` | retired: the parent never serves again |
 //!
+//! **An open of a source is held before it opens** (TLA-048 option (b), change 1): while a live
+//! intent names the prefix as a source and is fresh by the opener's own observations, the open
+//! waits without opening the log, so its writer-epoch bump never fences a live actor or a
+//! claimant's maintenance writer; it opens once the intent is absent, terminal or lapsed, and the
+//! table below runs after the open as before. A claimant's maintenance open of its other source
+//! opens the log directly and is never held here.
+//!
 //! **A held open waits inside the open** ([`fenced`]): it re-reads the fence every [`RECHECK`] with
 //! its collection passes off, and the engine is published only once it may serve. A request meanwhile
 //! meets the open gate's retryable `503 shard_opening`, reads included. Past [`FENCE_WAIT`] the open
@@ -24,8 +31,10 @@
 //! holds and reads again. With `'T'` and no live intent it rolls forward without a claim: the
 //! publish is idempotent.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+
+use object_store::ObjectStore;
 
 use serde::{Deserialize, Serialize};
 
@@ -110,16 +119,18 @@ async fn read(engine: &ShardEngine, snapshot: &Snapshot) -> Result<Found, String
     let held = intent::read(&**engine.data_store())
         .await
         .map_err(|e| e.to_string())?;
-    let home = snapshot.shards.leaves.get(&engine.prefix).copied();
-    let live = held.filter(|held| {
-        let intent = &held.intent;
-        !intent.is_terminal()
-            && intent
-                .sources
-                .iter()
-                .any(|(prefix, h)| *prefix == engine.prefix && Some(*h) == home)
-    });
+    let live = held.filter(|held| names_source(&held.intent, &engine.prefix, snapshot));
     Ok(Found { retired, live })
+}
+
+/// Whether `intent` is live and names `prefix`, at its leaf home in `snapshot`, as a source.
+fn names_source(intent: &intent::Intent, prefix: &str, snapshot: &Snapshot) -> bool {
+    let home = snapshot.shards.leaves.get(prefix).copied();
+    !intent.is_terminal()
+        && intent
+            .sources
+            .iter()
+            .any(|(p, h)| p == prefix && Some(*h) == home)
 }
 
 /// The directory's topology as the fence reads it at each check.
@@ -133,16 +144,68 @@ pub(crate) fn fenced(
     snapshot: SnapshotFn,
 ) -> crate::sharddir::OpenFn {
     let open = Arc::new(open.0);
+    // The cell's data store, which holds the intent: every engine this opener opens carries it, so
+    // it is known from the first open on, and every later open is held before it opens. Stated
+    // limit: a process's first open is not held, so it can fence a fresh claimant or actor once
+    // per process start (bootstrap::run, which builds the opener and holds the store, is frozen);
+    // restarts are finite, so the liveness argument (TLA-048 option (b)) holds.
+    let intents: Arc<OnceLock<Arc<dyn ObjectStore>>> = Arc::default();
     Box::new(move |prefix, incarnation| {
-        let (open, snapshot) = (open.clone(), snapshot.clone());
+        let (open, snapshot, intents) = (open.clone(), snapshot.clone(), intents.clone());
         Box::pin(async move {
+            let lapse = match intents.get() {
+                Some(store) => hold_before_open(&prefix, &snapshot, &**store).await?,
+                None => None,
+            };
             let path = log_path(snapshot().as_deref(), &prefix);
             let engine = open(prefix, path.clone(), incarnation).await?;
+            intents.get_or_init(|| engine.data_store().clone());
             engine.place(path, snapshot.clone());
-            hold_until_served(&engine, &snapshot).await?;
+            hold_until_served(&engine, &snapshot, lapse).await?;
             Ok(engine)
         })
     })
+}
+
+/// The hold before the open (TLA-048 option (b), change 1): while a live intent names `prefix` as
+/// a source and is fresh by this opener's own observations (`intent::Lapse`), the open waits
+/// without opening the log, so it fences no writer of a live actor or of a claimant (whose
+/// maintenance open of its other source opens the log directly, never through here). It opens once
+/// the intent is absent, terminal, names other sources, or lapsed, and hands the fence its
+/// observation, so a lapsed intent is claimed at once. A read that fails holds (fail closed); past
+/// [`FENCE_WAIT`] the open fails.
+async fn hold_before_open(
+    prefix: &str,
+    snapshot: &SnapshotFn,
+    store: &dyn ObjectStore,
+) -> anyhow::Result<Option<Lapse>> {
+    let started = Instant::now();
+    let clock = crate::runtime::SystemClock::default();
+    let mut lapse: Option<Lapse> = None;
+    loop {
+        let read = intent::read(store).await;
+        match (snapshot(), read) {
+            (Some(snapshot), Ok(held)) => {
+                let Some(held) = held.filter(|h| names_source(&h.intent, prefix, &snapshot)) else {
+                    return Ok(lapse);
+                };
+                let now = clock.monotonic();
+                let observed = lapse.get_or_insert_with(|| Lapse::first(&held.etag, now));
+                if observed.observe(&held.etag, now).is_some() {
+                    return Ok(lapse);
+                }
+            }
+            (None, _) => {}
+            (Some(_), Err(error)) => {
+                tracing::warn!(shard = %prefix, "the open's pre-open hold could not read: {error}");
+            }
+        }
+        if started.elapsed() >= FENCE_WAIT {
+            anyhow::bail!("held before its open by a live intent for {FENCE_WAIT:?}");
+        }
+        tracing::info!(shard = %prefix, "a live intent holds the open before it opens");
+        tokio::time::sleep(RECHECK).await;
+    }
 }
 
 /// The path of `prefix`'s log: its leaf home's in `snapshot`, else its static path.
@@ -157,15 +220,17 @@ pub(crate) fn log_path(snapshot: Option<&Snapshot>, prefix: &str) -> String {
 
 /// Re-read the fence every [`RECHECK`] until it lets `engine` serve, its collection passes off
 /// meanwhile, and recover a lapsed split as its claimant (see the module); past [`FENCE_WAIT`],
-/// close it and fail the open.
+/// close it and fail the open. `lapse` is the observation of the live intent the hold before the
+/// open made, if any.
 pub(crate) async fn hold_until_served(
     engine: &ShardEngine,
     snapshot: &SnapshotFn,
+    lapse: Option<Lapse>,
 ) -> anyhow::Result<()> {
     let gate = &engine.gc_state().gate;
     let started = Instant::now();
     let clock = crate::runtime::SystemClock::default();
-    let mut lapse: Option<Lapse> = None;
+    let mut lapse = lapse;
     loop {
         let verdict = match snapshot() {
             Some(snapshot) => match read(engine, &snapshot).await {
