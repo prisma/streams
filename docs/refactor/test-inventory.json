@@ -1850,6 +1850,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_whose_clone_clock_runs_behind_its_sources_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4fb2bb65793b847aa2fe93056e90df8f8f1f00ac70160c1df8cb3b82dd94339b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_clone_clock.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_whose_leaf_fails_to_open_after_the_publish_stays_published",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3622,6 +3633,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_reclaim.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_clone_clock_runs_behind_its_parent_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "02af0eb70a7fb324c69ac9af4cd52941bb6cc5b22341721e97f077d183ebdd4e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_clone_clock.rs",
     "scenarios": []
   },
   {

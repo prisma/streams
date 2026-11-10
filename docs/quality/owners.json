@@ -1057,6 +1057,14 @@
       "syntax": "path = \"tests/merge_claim_traffic.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_clone_clock",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split's or a merge's seeded clone whose clock runs behind its sources' (topology::clone): the fork's L0 ULID cutoff refuses the seed, and the clone is built again past the skew so the operation publishes; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/topology_clone_clock.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::split_with_a_late_seal",
@@ -3191,6 +3199,14 @@
       "path": "src/shard/test_support.rs",
       "reason": "Test-only fault injection for the durable dirty-index scan, keyed by shard prefix so concurrent tests cannot poison each other; nothing outside cfg(test) reads it.",
       "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LAGS",
+      "path": "src/topology/clone/test_lag.rs",
+      "reason": "Test-only clock lag for seeded clones (topology::clone): the DST that pins the clone retry gives the clones in its own object store a SlateDB clock running behind, keyed by that store's address and removed when its guard drops, so concurrent tests cannot see each other's lag; nothing outside cfg(test) reads it.",
+      "syntax": "Mutex < Vec < (usize , Duration) > >"
     },
     {
       "category": "global",

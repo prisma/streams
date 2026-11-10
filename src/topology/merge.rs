@@ -498,33 +498,37 @@ async fn clone_merged(
     seed: Vec<Row>,
 ) -> Result<(), String> {
     let path = born_home_path(&pair.prefix, pair.home);
-    let mut sources = pair
-        .sources
-        .iter()
-        .zip(checkpoints)
-        .map(|((source, _), checkpoint)| {
-            slatedb::CloneSourceSpec::with_checkpoint(source.log_path(), checkpoint.id)
-                .with_projection_range(key_bounds(&source.prefix))
-        });
-    let (Some(first), Some(second)) = (sources.next(), sources.next()) else {
-        return Err("a merge has two sources".to_string());
-    };
     let (identity, value) = crate::shard::open_index::identity_row(pair.home);
     let mut rows: BTreeMap<Vec<u8>, Vec<u8>> = seed.into_iter().collect();
     rows.insert(identity, value);
-    let rows = rows
+    let rows: Vec<(bytes::Bytes, bytes::Bytes)> = rows
         .into_iter()
         .map(|(key, value)| (bytes::Bytes::from(key), bytes::Bytes::from(value)))
         .collect();
     let store = pair.sources[0].0.data_store().clone();
-    slatedb::admin::AdminBuilder::new(path.as_str(), store)
-        .build()
-        .create_clone_builder_from_source(first)
-        .with_source(second)
-        .with_initial_rows(rows)
-        .build()
-        .await
-        .map_err(|e| format!("clone {path}: {e}"))
+    let sources: Vec<_> = pair
+        .sources
+        .iter()
+        .zip(checkpoints)
+        .map(|((source, _), checkpoint)| (source.log_path(), checkpoint.id, source.prefix.clone()))
+        .collect();
+    let [first, second] = <[_; 2]>::try_from(sources).map_err(|_| "a merge has two sources")?;
+    let spec = |(log, id, prefix): &(String, _, String)| {
+        slatedb::CloneSourceSpec::with_checkpoint(log.clone(), *id)
+            .with_projection_range(key_bounds(prefix))
+    };
+    // A clock-skew refusal is built again (`topology::clone`), adding at most its budget to the
+    // pause.
+    super::clone::seeded(&*store, &path, |clock| {
+        slatedb::admin::AdminBuilder::new(path.as_str(), store.clone())
+            .with_system_clock(clock)
+            .build()
+            .create_clone_builder_from_source(spec(&first))
+            .with_source(spec(&second))
+            .with_initial_rows(rows.clone())
+            .build()
+    })
+    .await
 }
 
 /// SourcesRetired: one `'T'` into each source, naming `M`, and flushed. The sources stay open,

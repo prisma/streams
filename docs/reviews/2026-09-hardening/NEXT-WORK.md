@@ -2817,6 +2817,30 @@ EDGE-261-RATIFICATION.md) left these:
   room** (EDGE-261-RATIFICATION §2): today it asks for an instance, bounded by
   rule 4's + 1; S6's placement work can name it and move a shard instead.
 
+## 19. Follow-ups from S6, the merge (2026-11-10)
+
+- **Why SlateDB refuses a seeded clone with "invalid clock tick"** (found by package 6,
+  2026-11-10; `pkg6-merge-flakes-diagnosis-2026-11-10.md` in the shared notes). The cause is
+  not confirmed; report it before #149 closes.
+  - **The failure:** a merge's clone of `M` is refused with `invalid clock tick, must be
+    monotonic. last_tick=…389, next_tick=…388`, which is the fork's `l0_ulid_cutoff`
+    manifest invariant. It was seen 1 time in 12 under load, in
+    `topology_policy::a_merge_whose_actor_died_while_preparing_is_rolled_back_with_no_request`.
+    The operation rolls back, which is safe.
+  - **Since push 4:** `topology::clone::seeded` builds a clone refused this way again,
+    within 1 s, for splits and merges. That retry is defensive.
+  - **Not the cause:** a clone whose SlateDB clock runs behind its sources' (300 ms, 5 s)
+    still publishes, so this is not the seed table's ULID.
+  - **Candidate, unverified:** the clone's write of the final checkpoint into a source's own
+    manifest (`create_clone_manifest`, its external-db loop) works from a manifest loaded
+    when the clone started, while the still-open source flushes or compacts.
+  - **Next:** name the refused manifest under stress (appends during the pause, SlateDB's
+    manifest logging). Then add a red test that parks that write, and fix it where the
+    race is. If it is the fork's, that is a fork patch and a `streams-*` pin measured in
+    Streams first, after #149. A fork patch that mints a seed's ULID at or above the
+    watermark helps only if the seed is involved.
+  - Nothing is filed upstream without the owner's OK in chat.
+
 ## 20. Follow-ups from edge change #260 (2026-11-09)
 
 The fleet count's hysteresis (#260) is ratified; its field acceptance,

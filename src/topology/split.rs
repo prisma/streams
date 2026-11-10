@@ -610,19 +610,23 @@ async fn clone_child(
     seed: Vec<Row>,
 ) -> Result<(), String> {
     let path = super::model::born_home_path(&child.prefix, child.home);
-    let source = slatedb::CloneSourceSpec::with_checkpoint(parent.log_path(), checkpoint.id)
-        .with_projection_range(key_bounds(&child.prefix));
-    let rows = seed
+    let rows: Vec<(Bytes, Bytes)> = seed
         .into_iter()
         .map(|(key, value)| (Bytes::from(key), Bytes::from(value)))
         .collect();
-    slatedb::admin::AdminBuilder::new(path.as_str(), parent.data_store().clone())
-        .build()
-        .create_clone_builder_from_source(source)
-        .with_initial_rows(rows)
-        .build()
-        .await
-        .map_err(|e| format!("clone {path}: {e}"))
+    // A clock-skew refusal is built again (`topology::clone`), adding at most its budget to the
+    // pause.
+    super::clone::seeded(&**parent.data_store(), &path, |clock| {
+        let source = slatedb::CloneSourceSpec::with_checkpoint(parent.log_path(), checkpoint.id)
+            .with_projection_range(key_bounds(&child.prefix));
+        slatedb::admin::AdminBuilder::new(path.as_str(), parent.data_store().clone())
+            .with_system_clock(clock)
+            .build()
+            .create_clone_builder_from_source(source)
+            .with_initial_rows(rows.clone())
+            .build()
+    })
+    .await
 }
 
 /// Published (S4-DESIGN §6.2 step 4): the topology CAS and its install, then at once the barrier
