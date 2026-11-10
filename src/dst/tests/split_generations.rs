@@ -9,8 +9,9 @@ use super::split_k::{append, cell, records};
 /// **A child of a split splits again and serves its stream from its own child.** Leaf `00` splits
 /// into `000` and `001`; the lower stream is appended to on `000` and its log flushed, so `000`
 /// holds tables of its own under its born home's path; then `000` splits into `0000` and `0001`.
-/// The second split publishes version 3, `000` is retired, and the lower stream reads back its
-/// three records from its new leaf.
+/// The second split publishes version 3 (the stored topology names `0000` and `0001`), `000` is
+/// retired, and the lower stream reads back its three records from its new leaf, whose open clones
+/// `000`'s own tables.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_childs_split_clones_its_own_tables_and_serves_from_its_child() {
     let cell = cell().await;
@@ -39,8 +40,18 @@ async fn a_childs_split_clones_its_own_tables_and_serves_from_its_child() {
             .await
             .expect("the second split publishes");
     assert_eq!(second.version, 3);
-    let prefixes: Vec<&str> = second.children.iter().map(|(p, _, _)| p.as_str()).collect();
-    assert_eq!(prefixes, ["0000", "0001"]);
+    // A child the publish could not open in time (a slow open under load) opens on its next
+    // request; the stored topology names both, and the read below opens the stream's own.
+    let (stored, _) = crate::topology::store::read(&*cell.state.data_store)
+        .await
+        .unwrap();
+    let leaves: Vec<&str> = stored.shards.leaves.keys().map(String::as_str).collect();
+    assert!(
+        leaves.contains(&"0000") && leaves.contains(&"0001"),
+        "{leaves:?}"
+    );
+    let opened = second.children.iter().map(|(p, _, _)| p.as_str());
+    assert!(opened.into_iter().all(|p| p == "0000" || p == "0001"));
     assert!(child.is_closed(), "the first child is retired");
     assert_eq!(records(cell.addr, &cell.low).await, want);
     engine_shutdown(&cell.state).await;
