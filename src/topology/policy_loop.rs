@@ -206,27 +206,72 @@ async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
     }
 }
 
-/// A merge refused because another instance holds a half (S6-DESIGN §7.2 step 0): this instance,
-/// the merge's actor, moves both halves to itself and holds `override_recent` while the move's
-/// cooldown runs, after which the next pass merges. It needs room for the half it takes and the
-/// merged leaf beside its own shards; without room, or with the overrides CAS lost, it holds
-/// steady and the next pass decides again.
+/// A merge refused because another instance holds a half (S6-DESIGN §7.2 step 0, #261 B1): both
+/// halves move, in one overrides CAS, onto the first instance with room for them and the merged
+/// leaf (`colocation_target`): this instance (the merge's actor), the instance holding `…1`, then
+/// any other accepting instance, fewest shards first. Whichever then owns `…0` is the actor and
+/// merges once the move's cooldown has passed (`override_recent` meanwhile). With no instance that
+/// has room it asks the fleet for one, as a split does (the beat's `instance_full`; the count grows
+/// within its clamp), and the next pass decides again. A lost CAS holds steady.
 async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
     use super::policy::Hold;
-    let room = resident(view, &cell.me).saturating_add(2) <= cell.limits.shards_per_instance_max;
     let halves = [format!("{parent}0"), format!("{parent}1")];
-    if room
-        && crate::fleet::colocate::colocate(&cell.fleet, &cell.ownership, &halves, &cell.me).await
-    {
-        tracing::info!(parent, "topology merge: moving both halves here first");
+    let max = cell.limits.shards_per_instance_max;
+    let Some(target) = colocation_target(view, max, &cell.me, &halves[1]) else {
+        tracing::info!(
+            parent,
+            "topology merge: no instance has room for its halves"
+        );
+        return Decision::AskInstance {
+            resident: resident(view, &cell.me),
+            max,
+        };
+    };
+    if crate::fleet::colocate::colocate(&cell.fleet, &cell.ownership, &halves, &target).await {
+        tracing::info!(parent, %target, "topology merge: moving both halves onto one instance first");
         return Decision::Hold(Hold::OverrideRecent);
     }
-    tracing::info!(
-        parent,
-        room,
-        "topology merge: its halves could not be moved here"
-    );
+    tracing::info!(parent, "topology merge: the overrides CAS was lost");
     Decision::Hold(Hold::Steady)
+}
+
+/// Where a pair split across instances goes before its merge (see `colocate`): the first of this
+/// instance `me`, the owner of the half `one` (`…1`) and every other accepting instance, fewest
+/// shards first, with room under `max` for what it would hold until the merge publishes. The
+/// holder of a half takes the other half and the merged leaf (its shards + 2); any other instance
+/// takes both halves and the merged leaf (+ 3). The partner and the others must be accepting.
+fn colocation_target(view: &View, max: u32, me: &str, one: &str) -> Option<String> {
+    let partner = view
+        .leaves
+        .iter()
+        .find(|leaf| leaf.prefix == one)
+        .map(|leaf| leaf.owner.clone())
+        .filter(|owner| owner != me);
+    let accepting = |id: &str| view.instances.iter().any(|i| i.id == id && i.accepting);
+    let room = |id: &str, takes: u32| resident(view, id).saturating_add(takes) <= max;
+    if room(me, 2) {
+        return Some(me.to_string());
+    }
+    if let Some(partner) = partner.filter(|p| accepting(p) && room(p, 2)) {
+        return Some(partner);
+    }
+    let mut others: Vec<&Instance> = view
+        .instances
+        .iter()
+        .filter(|i| {
+            i.accepting
+                && i.id != me
+                && view
+                    .leaves
+                    .iter()
+                    .all(|l| l.prefix != one || l.owner != i.id)
+        })
+        .collect();
+    others.sort_by_key(|i| (i.resident_shards, i.id.clone()));
+    others
+        .into_iter()
+        .find(|i| room(&i.id, 3))
+        .map(|i| i.id.clone())
 }
 
 fn resident(view: &View, me: &str) -> u32 {
@@ -488,6 +533,75 @@ mod tests {
                 max: 7
             }),
             "instance_full"
+        );
+    }
+
+    /// A split pair's co-location target (`colocation_target`): the actor when it has room for the
+    /// other half and the merged leaf (+2), else the partner holding `…1` (+2) when it accepts,
+    /// else the accepting instance with the fewest shards that has room for both halves and the
+    /// merged leaf (+3); none when no instance has room.
+    #[test]
+    fn a_split_pairs_halves_go_to_the_first_instance_with_room() {
+        use crate::topology::policy::{Instance, Leaf, View};
+        let instance = |id: &str, resident_shards: u32, accepting: bool| Instance {
+            id: id.into(),
+            resident_shards,
+            accepting,
+        };
+        let leaf = |prefix: &str, owner: &str| Leaf {
+            prefix: prefix.into(),
+            born_ms: 0,
+            owner: owner.into(),
+            beat_ms: None,
+            load: std::collections::BTreeMap::new(),
+        };
+        let view = |a: u32, b: u32, c: Option<(u32, bool)>, b_accepting: bool| View {
+            now_ms: 0,
+            me: "a".into(),
+            instances: [instance("a", a, true), instance("b", b, b_accepting)]
+                .into_iter()
+                .chain(c.map(|(n, ok)| instance("c", n, ok)))
+                .collect(),
+            leaves: vec![leaf("00", "a"), leaf("01", "b")],
+            split_demand: 0,
+            live: 3,
+            beats_fresh: true,
+            intent_live: false,
+            last_op_end_ms: None,
+            desired_computed_ms: None,
+            youngest_override_ms: None,
+            congested: false,
+        };
+        let target = |v: &View| super::colocation_target(v, 3, "a", "01");
+        assert_eq!(
+            target(&view(1, 3, None, true)).as_deref(),
+            Some("a"),
+            "the actor has room"
+        );
+        assert_eq!(
+            target(&view(2, 1, None, true)).as_deref(),
+            Some("b"),
+            "the partner has room"
+        );
+        assert_eq!(
+            target(&view(2, 1, None, false)),
+            None,
+            "a partner that does not accept"
+        );
+        assert_eq!(
+            target(&view(2, 2, Some((0, true)), true)).as_deref(),
+            Some("c"),
+            "a third with +3"
+        );
+        assert_eq!(
+            target(&view(2, 2, Some((1, true)), true)),
+            None,
+            "a third with 1 + 3 > 3"
+        );
+        assert_eq!(
+            target(&view(2, 2, Some((0, false)), true)),
+            None,
+            "a third that does not accept"
         );
     }
 

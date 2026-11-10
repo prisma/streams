@@ -3355,6 +3355,28 @@
     "scenarios": []
   },
   {
+    "name": "a_split_pair_whose_actor_is_full_is_merged_on_its_partner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ea037b397ec081e538bb990776dbc216235660485541164221f7a889cd17dd33",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_merged_there",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "38026c7641d813890dc4b6bcd07b7f9e901273b7fc5bb55d4b4a9fa1f382c486",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_renews_its_intent_while_it_runs",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
