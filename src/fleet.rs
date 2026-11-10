@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 mod count_balance;
 // A merge's co-location of its two halves on its actor (S6-DESIGN §7.2 step 0).
 pub(crate) mod colocate;
+// Overrides that name no leaf, dropped by the writers that rewrite the document.
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;
 mod hysteresis;
 mod outbox;
 mod planning;
+mod stale;
 use planning::Reservations as _;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.

@@ -395,3 +395,53 @@ async fn a_fresh_override_anywhere_holds_the_count_move() {
     moves_00(&rig, &aged).await;
     stop(rig).await;
 }
+
+/// **A count move prunes every override that names no leaf** (edge #251 amendment R3's carry,
+/// before #149's ramp): beside the two seeded moves, the document holds what a split of `1` and a
+/// merge of `000` and `001` leave behind (an entry for each, aged as the moves), none of them a
+/// leaf of the cell's stored topology. The move of 00 to `streams-2` writes the document with only
+/// the stored leaves' entries: 00, 10 and 11.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_count_move_prunes_every_override_that_names_no_leaf() {
+    let inner = mem();
+    seed_count(&inner, 2, 1).await;
+    let now = now_ms();
+    let entry = |to: &str| crate::fleet::OverrideEntry {
+        to: to.to_string(),
+        ms: now - AGED_MS,
+    };
+    let overrides = crate::fleet::Overrides {
+        entries: [
+            ("10", entry("streams-1")),
+            ("11", entry("streams-1")),
+            ("1", entry("streams-1")),
+            ("000", entry("streams-2")),
+            ("001", entry("streams-2")),
+        ]
+        .into_iter()
+        .map(|(prefix, entry)| (prefix.to_string(), entry))
+        .collect(),
+        ..Default::default()
+    };
+    let body = serde_json::to_vec(&overrides).unwrap();
+    put(&inner, "fleet/overrides.json", body).await;
+    beat(&inner, "streams-2", 0).await;
+    let rig = started(inner, 2, |_| {}).await;
+    let topology = crate::topology::model::Topology {
+        version: 1,
+        shards: rig.state.shards.prefixes().shards.clone(),
+        last_op: None,
+        max_request_body_bytes: None,
+    };
+    let raw = serde_json::to_vec(&topology).unwrap();
+    put(&rig.state.data_store, "topology.json", raw).await;
+    rig.clock.advance_monotonic(Duration::from_secs(61));
+    let deadline = tokio::time::Instant::now() + MOVE_BUDGET;
+    while !entries(&rig).await.contains_key("00") && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let stored = entries(&rig).await;
+    let named: Vec<&str> = stored.keys().map(String::as_str).collect();
+    assert_eq!(named, ["00", "10", "11"], "only the stored leaves' entries");
+    stop(rig).await;
+}

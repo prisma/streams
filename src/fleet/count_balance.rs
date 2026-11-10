@@ -353,10 +353,11 @@ impl FleetRead {
             .min()
     }
 
-    /// CAS-replace the overrides document with `prefix` moved to `to`.
-    /// Whether it committed.
+    /// CAS-replace the overrides document with `prefix` moved to `to`, the entries that name no
+    /// stored leaf dropped (`stale`). Whether it committed.
     async fn commit(self, state: &AppState, prefix: &str, to: &str) -> bool {
-        let next = moved_document(self.overrides, prefix, to, now_ms());
+        let current = super::stale::pruned(self.overrides, &*state.data_store).await;
+        let next = moved_document(current, prefix, to, now_ms());
         match serde_json::to_vec(&next) {
             Ok(body) => {
                 state

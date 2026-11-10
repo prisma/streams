@@ -403,6 +403,17 @@
     "scenarios": []
   },
   {
+    "name": "a_count_move_prunes_every_override_that_names_no_leaf",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9b31b03059824d9d5512b1cc021947f2b71d41d948f37fe3d80ab7fee5f5bd45",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_count_move_waits_out_the_boot_cooldown_then_moves_one_shard",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

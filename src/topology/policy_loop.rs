@@ -226,7 +226,15 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
             max,
         };
     };
-    if crate::fleet::colocate::colocate(&cell.fleet, &cell.ownership, &halves, &target).await {
+    if crate::fleet::colocate::colocate(
+        &cell.fleet,
+        &cell.ownership,
+        &*cell.store,
+        &halves,
+        &target,
+    )
+    .await
+    {
         tracing::info!(parent, %target, "topology merge: moving both halves onto one instance first");
         return Decision::Hold(Hold::OverrideRecent);
     }
