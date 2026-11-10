@@ -476,7 +476,7 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
 
 #[cfg(test)]
 mod tests {
-    use super::{hold_for, intent_live, merge_refusal_code, refusal_code};
+    use super::{NOT_RING_OWNER, hold_for, intent_live, merge_refusal_code, refusal_code};
     use crate::topology::policy::Hold;
     use crate::topology::split::Refused as S4;
 
@@ -506,16 +506,20 @@ mod tests {
         );
     }
 
-    /// S6's merge refusals answer the same holds: busy for its two reasons apart, a half another
-    /// instance holds, and the rest (instance_full and not_mergeable among them) steady, so the
-    /// next pass decides again.
+    /// S6's merge refusals answer the same holds: busy for its two reasons apart, and the rest
+    /// (instance_full and not_mergeable among them) steady, so the next pass decides again. A half
+    /// another instance holds is the code `act` sends to the co-location.
     #[test]
     fn s6s_merge_refusals_become_the_policys_holds() {
         use crate::topology::merge::Refused as S6;
         let held = |refused: S6| hold_for(merge_refusal_code(&refused));
         assert_eq!(held(S6::Busy("fleet")), Hold::FleetSettling);
         assert_eq!(held(S6::Busy("intent")), Hold::IntentLive);
-        assert_eq!(held(S6::NotOwner("streams-2".into())), Hold::PeerActs);
+        // `act` routes this code to the co-location, never to a hold.
+        assert_eq!(
+            merge_refusal_code(&S6::NotOwner("streams-2".into())),
+            NOT_RING_OWNER
+        );
         for steady in [
             S6::InstanceFull {
                 resident: 8,
