@@ -277,3 +277,22 @@ async fn a_repair_counts_each_row_it_adds_and_removes() {
     };
     assert_eq!(repair, expected);
 }
+
+/// An open whose one stale unsealed-index member is a sealed tail (absorbed == next, its tail
+/// still there) repairs: the row goes, though no member is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_open_repairs_an_index_row_whose_tail_is_sealed() {
+    let sealed = [4; 16];
+    let rows = vec![
+        (crate::shard::tail_key(&sealed), tail(10, 10, 0, None)),
+        (super::unsealed_key(&sealed), Vec::new()),
+    ];
+    let db = seeded("repair-sealed-only", &rows).await;
+    super::load_or_rebuild_maintenance(&db).await.unwrap();
+    let members = super::unsealed_members(&db).await.unwrap();
+    assert_eq!(
+        members,
+        Vec::<[u8; 16]>::new(),
+        "the sealed member's row goes"
+    );
+}
