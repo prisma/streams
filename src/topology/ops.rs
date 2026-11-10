@@ -72,12 +72,11 @@ impl Handle {
     }
 }
 
-/// What the loop starts splits with: the directory, the ring's overrides, the fleet's documents
-/// and its move cooldown, the clock, this instance's name (the actor's lease owner) and the shards
-/// it may hold (`SHARDS_PER_INSTANCE_MAX`).
+/// What the loop starts splits with: the directory (whose resolve applies the ring and its
+/// overrides), the fleet's documents and its move cooldown, the clock, this instance's name (the
+/// actor's lease owner) and the shards it may hold (`SHARDS_PER_INSTANCE_MAX`).
 pub(crate) struct Parts {
     pub dir: ShardDirectory,
-    pub ownership: crate::ownership::OwnershipService,
     pub fleet: crate::fleet::FleetRepository,
     pub move_cooldown_ms: i64,
     pub clock: Arc<dyn Clock>,
@@ -160,18 +159,18 @@ fn finish(started: split::Started, clock: Arc<dyn Clock>, tasks: &TaskSupervisor
 }
 
 impl Parts {
-    /// Start the split of leaf `prefix` (S4-DESIGN §6.2 step 0): refused for no leaf, an override on
-    /// it, a fleet that has not settled (`fleet_settled`), another instance holding it, or an
-    /// instance the split would fill past `shards_max` at its peak (its open shards, the parent among
-    /// them, plus two: the parent stays open beside both children until the publish, S4-DESIGN §10,
-    /// #261); else the parent is opened here and the split started.
+    /// Start the split of leaf `prefix` (S4-DESIGN §6.2 step 0): refused for no leaf, a fleet that
+    /// has not settled (`fleet_settled`: a move younger than its cooldown among them), another
+    /// instance holding it (an override placing it elsewhere among them), or an instance the split
+    /// would fill past `shards_max` at its peak (its open shards, the parent among them, plus two:
+    /// the parent stays open beside both children until the publish, S4-DESIGN §10, #261); else the
+    /// parent is opened here and the split started. An override placing the leaf here does not
+    /// refuse it: count balance moves leaves by overrides, and a moved leaf must still split
+    /// (#251 amendment R3, as S6's B4 for the merge).
     async fn start(&self, prefix: &str) -> Result<split::Started, Refused> {
         let snapshot = self.dir.prefixes();
         if !snapshot.shards.leaves.contains_key(prefix) {
             return Err(Refused::UnknownPrefix);
-        }
-        if self.ownership.overrides().contains_key(prefix) {
-            return Err(Refused::Busy("override"));
         }
         self.fleet_settled().await?;
         let parent = self

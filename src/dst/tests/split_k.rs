@@ -610,7 +610,6 @@ pub(super) fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::Task
     let tasks = crate::tasks::TaskSupervisor::new();
     let parts = crate::topology::ops::Parts {
         dir: state.shards.clone(),
-        ownership: state.ownership.clone(),
         fleet: state.fleet.clone(),
         move_cooldown_ms: 600_000,
         clock: state.runtime.clock.clone(),
@@ -701,7 +700,7 @@ async fn the_split_route_starts_a_split_that_runs_on_to_its_publish() {
 
 /// **The split route's refusals** (S4-DESIGN §11, edge #251). Before its loop runs: 503
 /// `topology_unavailable`. Then: a body that is not `{"prefix"}`, 400 `bad_request`; no leaf, 404
-/// `unknown_prefix`; an override on the leaf, 409 `topology_busy {reason: "override"}`; a live
+/// `unknown_prefix`; a live
 /// intent, 409 `topology_busy {reason: "intent"}`. Nothing was split: the stored topology stays at version 1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_split_routes_refusals() {
@@ -726,16 +725,6 @@ async fn the_split_routes_refusals() {
         code(&post_split(cell.addr, r#"{"prefix":"0110"}"#).await),
         (404, "unknown_prefix".into())
     );
-    let overrides = std::collections::HashMap::from([("00".to_string(), "inst-b".to_string())]);
-    cell.state.ownership.set_overrides(overrides);
-    let refused = post_split(cell.addr, leaf).await;
-    assert_eq!(
-        (code(&refused), refused.1["reason"].clone()),
-        ((409, "topology_busy".into()), "override".into())
-    );
-    cell.state
-        .ownership
-        .set_overrides(std::collections::HashMap::new());
     let live = crate::topology::intent::Intent {
         kind: "split".to_string(),
         op_id: "op-other".to_string(),

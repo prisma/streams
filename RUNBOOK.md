@@ -900,9 +900,8 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   publish; reads are served throughout. Refusals: 409 `topology_busy`
   `fleet` — the fleet's count is younger than 60 s or a move younger than
   `REBALANCE_MOVE_COOLDOWN_SECS`: wait and retry; `intent` — one operation
-  per cell, follow it; `override` — a move names the parent: wait for
-  return-home or drop the override; 409 `not_ring_owner {owner}` — call
-  that instance (operator routes are not forwarded); 409
+  per cell, follow it; 409 `not_ring_owner {owner}` (by the ring or by an
+  override) — call that instance (operator routes are not forwarded); 409
   `instance_full {resident, max}` — at its peak (the parent open beside
   both children) the instance would hold more than
   `SHARDS_PER_INSTANCE_MAX` shards; 422 `not_splittable` — 24 bits, or

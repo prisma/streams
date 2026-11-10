@@ -374,7 +374,6 @@ impl FleetCfg {
 pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskSupervisor) -> bool {
     let topology = crate::topology::ops::Parts {
         dir: state.shards.clone(),
-        ownership: state.ownership.clone(),
         fleet: state.fleet.clone(),
         move_cooldown_ms: i64::try_from(state.config.fleet.rebalance_move_cooldown_secs)
             .unwrap_or(i64::MAX)

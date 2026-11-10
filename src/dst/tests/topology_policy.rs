@@ -67,7 +67,7 @@ pub(super) fn split_double(
 
 /// Appends to fresh streams at about `per_sec` a second, each to its own stream so the load
 /// spreads over the hash space as the leaves split, until `stop`.
-async fn load(addr: std::net::SocketAddr, per_sec: u64, stop: Arc<AtomicBool>) {
+pub(super) async fn load(addr: std::net::SocketAddr, per_sec: u64, stop: Arc<AtomicBool>) {
     let pause = Duration::from_millis(1_000 / per_sec);
     let mut n = 0_u64;
     while !stop.load(Ordering::Relaxed) {
@@ -83,7 +83,7 @@ async fn load(addr: std::net::SocketAddr, per_sec: u64, stop: Arc<AtomicBool>) {
 }
 
 /// The directory's leaves now.
-fn leaves(state: &crate::http::AppState) -> Vec<String> {
+pub(super) fn leaves(state: &crate::http::AppState) -> Vec<String> {
     state.shards.prefixes().iter().cloned().collect()
 }
 
@@ -151,7 +151,7 @@ pub(super) fn lines(cli: &mut crate::config::CliArgs) {
 /// it was asked for.
 type Entry = fn(&Arc<crate::http::AppState>, Arc<Mutex<Vec<String>>>) -> SplitFn;
 
-async fn policy_rig(
+pub(super) async fn policy_rig(
     fleet: Arc<dyn ObjectStore>,
     cli: fn(&mut crate::config::CliArgs),
     entry: Entry,
@@ -317,7 +317,7 @@ async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_be
 
 /// Another instance's live beat, outside the ring (no ordinal the count names), holding no
 /// shard: the destination a split's reservation needs.
-async fn destination(fleet: &Arc<dyn ObjectStore>) {
+pub(super) async fn destination(fleet: &Arc<dyn ObjectStore>) {
     peer(fleet, "streams-9").await;
 }
 
@@ -406,7 +406,10 @@ async fn a_live_intent_holds_the_split_until_it_is_terminal() {
 }
 
 /// S4's split behind the seam, recording each split that published.
-fn real_split(state: &Arc<crate::http::AppState>, asked: Arc<Mutex<Vec<String>>>) -> SplitFn {
+pub(super) fn real_split(
+    state: &Arc<crate::http::AppState>,
+    asked: Arc<Mutex<Vec<String>>>,
+) -> SplitFn {
     let entry = crate::topology::policy_loop::split_entry(state.shards.clone());
     Arc::new(move |prefix: String| {
         let (entry, asked) = (entry.clone(), asked.clone());

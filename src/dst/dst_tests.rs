@@ -55,6 +55,8 @@ mod split_barrier;
 mod split_k;
 #[path = "tests/split_lists.rs"]
 mod split_lists;
+#[path = "tests/split_override.rs"]
+mod split_override;
 
 #[path = "tests/split_generations.rs"]
 mod split_generations;

@@ -172,7 +172,7 @@ OWNERS = (
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
     owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists::'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
-    owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that_would_fill dst_tests::merge_k::a_merge_waits'),
+    owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that_would_fill dst_tests::merge_k::a_merge_waits'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
     owner('topology_view', 'src/topology/view.rs', 'dst_tests::split_k:: dst_tests::never_leaf_k::'),
     # The policy (S5): its rules are unit tests per edge; the loop that feeds it the tick's

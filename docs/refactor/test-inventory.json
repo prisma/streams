@@ -1413,6 +1413,28 @@
     "scenarios": []
   },
   {
+    "name": "a_leaf_an_override_places_elsewhere_is_refused_naming_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "66113d8de57232ce2dabfa12576a0cda148a488d86cfa5b24bdb3d617083f548",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_route_refusals.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_leaf_an_override_places_here_splits_here",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "403ad2cf3a2c02127cab31d2264fb15626073c81cfc1b021a439563a24acedb9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_route_refusals.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_leaf_at_the_routing_width_is_not_splittable",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1421,6 +1443,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_route_refusals.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_leaf_the_balancer_moved_here_splits_here_under_load",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "88a89004bd9d765e139059e63202b06c4b3cd527cba42466c4a2a1dc108dbdb2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_override.rs",
     "scenarios": []
   },
   {
@@ -10766,7 +10799,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ec4098a35e586363e080344023a5eeb3630aebaa1544c287ce5cc055fe9bbfb2",
+    "function_sha256": "29f8ab7a9851990936e07fd43b6a4b2d93842dcecab5b80f2ecf52b64f4e8e6a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",

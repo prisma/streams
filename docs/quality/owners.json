@@ -787,6 +787,22 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::a_leaf_an_override_places_elsewhere_is_refused_naming_it",
+      "path": "src/dst/tests/split_route_refusals.rs",
+      "reason": "The exact 409 not_ring_owner body the route must answer for a leaf an override places on another instance (#251 amendment R3), built as JSON; serde macro output is compiled and the DST compares the whole body.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_leaf_the_balancer_moved_here_splits_here_under_load",
+      "path": "src/dst/tests/split_override.rs",
+      "reason": "The load generator and the wait for the policy's split run concurrently in one test task until the wait stops the load (no spawned task to join); the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::post_split",
       "path": "src/dst/tests/split_route_refusals.rs",
       "reason": "The split route's request body, built as JSON for the prefix under test; serde macro output is compiled and each DST asserts the route's answer.",
@@ -999,6 +1015,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "A split's child lists every ancestor home it holds (S4 7.3, S6 3.3): a first holding that lands between Preparing's plan and the quiesce gets its reference list in the pause, so the child opens instead of being refused lineage_list_missing; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/split_lists.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::split_override",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A leaf count balance moved by an override splits where the override places it (#251 amendment R3): the policy's split under sustained load is not held by an aged override; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_override.rs\""
     },
     {
       "category": "macro-dsl",

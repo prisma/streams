@@ -21,8 +21,8 @@ pub(crate) const INSTANCE_FULL: &str = "instance_full";
 /// The policy's cadence.
 pub(crate) const PERIOD: Duration = Duration::from_secs(10);
 
-/// Why S4's split entry did not split: its refusal's reason code (`fleet_settling`,
-/// `override_recent` and `topology_busy` for its three reasons to be busy, `not_ring_owner`,
+/// Why S4's split entry did not split: its refusal's reason code (`fleet_settling` and
+/// `topology_busy` for its two reasons to be busy, `not_ring_owner`,
 /// `instance_full`, `unavailable`, `not_splittable`, `unknown_prefix`, `rolled_back`,
 /// `unfinished`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +86,6 @@ fn refusal_code(refused: &super::split::Refused) -> &'static str {
     use super::split::Refused as S4;
     match refused {
         S4::Busy("fleet") => "fleet_settling",
-        S4::Busy("override") => "override_recent",
         S4::Busy(_) => "topology_busy",
         S4::NotOwner(_) => NOT_RING_OWNER,
         S4::InstanceFull { .. } => INSTANCE_FULL,
@@ -101,13 +100,13 @@ fn refusal_code(refused: &super::split::Refused) -> &'static str {
 /// S4's refusal of a split whose parent another instance holds.
 const NOT_RING_OWNER: &str = "not_ring_owner";
 
-/// The hold a refused split answers, by S4's code: the fleet unsettled, a recent override, a live
-/// intent, a parent another instance holds; any other refusal holds steady.
+/// The hold a refused split answers, by S4's code: the fleet unsettled, a live intent, a parent
+/// another instance holds; any other refusal holds steady (an override is no refusal of its own:
+/// S5's own rule holds `override_recent` on the overrides it reads).
 fn hold_for(code: &str) -> super::policy::Hold {
     use super::policy::Hold;
     match code {
         "fleet_settling" => Hold::FleetSettling,
-        "override_recent" => Hold::OverrideRecent,
         "topology_busy" => Hold::IntentLive,
         NOT_RING_OWNER => Hold::PeerActs,
         _ => Hold::Steady,
@@ -473,13 +472,12 @@ mod tests {
     use crate::topology::policy::Hold;
     use crate::topology::split::Refused as S4;
 
-    /// S4's refusals answer the policy's holds: its three reasons for being busy apart, a parent
+    /// S4's refusals answer the policy's holds: its two reasons for being busy apart, a parent
     /// another instance holds, and the rest steady.
     #[test]
     fn s4s_refusals_become_the_policys_holds() {
         let held = |refused: S4| hold_for(refusal_code(&refused));
         assert_eq!(held(S4::Busy("fleet")), Hold::FleetSettling);
-        assert_eq!(held(S4::Busy("override")), Hold::OverrideRecent);
         assert_eq!(held(S4::Busy("intent")), Hold::IntentLive);
         assert_eq!(held(S4::NotOwner("streams-2".into())), Hold::PeerActs);
         for steady in [
