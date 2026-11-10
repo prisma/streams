@@ -268,3 +268,81 @@ fn a_child_lists_every_ancestor_object_it_holds_per_home_once() {
     ]);
     assert_eq!(lists, want);
 }
+
+/// `'H'` rows saying `hash`'s stream released every entry ending below `reclaimed`.
+fn released(hash: [u8; 16], reclaimed: u64) -> Row {
+    let head = gc::Head {
+        state: gc::HeadState::Purged,
+        not_before_ms: 0,
+        head: reclaimed,
+        reclaimed,
+    };
+    (gc::head_key(&hash), gc::encode_head(&head))
+}
+
+/// **A child counts no entry its stream already released.** The two-stream `'K'` row of `OBJECT`,
+/// and a run-index object `OTHER` naming one chunk of each stream, after the lower stream's purge:
+/// its `'H'` row puts `reclaimed` past its entries, and the parent's `'R'` rows count only the
+/// upper stream's chunks. The lower child counts nothing, the upper counts the upper stream's
+/// chunk of each object, and the two sum to the parent's. An entry ending at `reclaimed` is not
+/// released (the fold keeps it too), and an `'H'` row that does not decode is refused.
+#[test]
+fn a_child_counts_no_entry_its_stream_already_released() {
+    let (low, high) = ([0x10; 16], [0x90; 16]);
+    let inputs = [chunk(low), chunk(high)];
+    let object = encode(&inputs).unwrap();
+    let summaries: Vec<_> = inputs.iter().map(|c| KeySummary::of(c).unwrap()).collect();
+    let k = encode_row(&[
+        (&object.chunks[0], &summaries[0]),
+        (&object.chunks[1], &summaries[1]),
+    ]);
+    let decoded = decode_row_in_range(OBJECT, &k, Range::ALL).unwrap();
+    let run: Vec<_> = decoded
+        .iter()
+        .cloned()
+        .map(|(hash, mut entry)| {
+            entry.object = OTHER;
+            (hash, entry)
+        })
+        .collect();
+    let high_len = u64::from(object.chunks[1].entry.len);
+    let only_high = |object_len| Refcount {
+        live_bytes: high_len,
+        live_chunks: 1,
+        created_ms: 7,
+        object_len,
+    };
+    let last = decoded[0].1.last;
+    let rows = [
+        (directory_key(OBJECT), k),
+        (
+            gc::refcount_key(OBJECT),
+            gc::encode_refcount(&only_high(900)),
+        ),
+        (
+            gc::refcount_key(OTHER),
+            gc::encode_refcount(&only_high(800)),
+        ),
+        released(low, last + 1),
+    ];
+    let (lower, upper) = (Range::of("0"), Range::of("1"));
+    let lo = child_counts(&rows, &run, lower).unwrap();
+    let hi = child_counts(&rows, &run, upper).unwrap();
+    assert_eq!(lo.refcounts, [], "the lower stream's entries are released");
+    assert_eq!(
+        hi.refcounts,
+        [(OBJECT, only_high(900)), (OTHER, only_high(800))]
+    );
+    assert_eq!(check_sums(&rows, &[lo, hi]), Ok(()));
+    let mut at_reclaimed = rows.clone();
+    at_reclaimed[3] = released(low, last);
+    let kept = child_counts(&at_reclaimed, &run, lower).unwrap();
+    let ids: Vec<ObjectId> = kept.refcounts.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, [OBJECT, OTHER], "an entry ending at reclaimed is live");
+    let mut corrupt = rows;
+    corrupt[3].1 = vec![9];
+    assert_eq!(
+        child_counts(&corrupt, &run, lower),
+        Err(PlanError::Corrupt(gc::head_key(&low)))
+    );
+}

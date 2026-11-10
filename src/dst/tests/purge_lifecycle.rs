@@ -32,7 +32,7 @@ type Addr = std::net::SocketAddr;
 
 /// The collector of `engine` driven by the test, with no purge delay or
 /// grace.
-fn drive(engine: &Engine) {
+pub(super) fn drive(engine: &Engine) {
     engine.gc_state().configure(|s| {
         s.auto = false;
         s.purge_delay = Duration::ZERO;
@@ -53,7 +53,7 @@ async fn sealed_records(addr: Addr, engine: &Engine, name: &str) {
 /// Runs the production sweep, a drain round (the purge waits until the
 /// close reached the ledger) and the collector until `id` is purged and
 /// reclaimed on `engine`.
-async fn sweep_until_purged(state: &State, engine: &Engine, id: [u8; 16]) {
+pub(super) async fn sweep_until_purged(state: &State, engine: &Engine, id: [u8; 16]) {
     let mut drain = DrainWait::default();
     for _ in 0..40 {
         crate::billing::sweep_owned_outboxes(state).await;
@@ -81,7 +81,7 @@ async fn refcounts(engine: &Engine) -> BTreeMap<ObjectId, u64> {
 
 /// Runs the sweep and the drain until `id`'s billing row is closed and
 /// acknowledged; the collector is not driven, so no purge runs here.
-async fn loop_closed(
+pub(super) async fn loop_closed(
     state: &State,
     engine: &Engine,
     id: [u8; 16],

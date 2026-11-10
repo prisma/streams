@@ -3469,6 +3469,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_after_a_purge_of_folded_chunks_counts_only_live_entries",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f7998353f5b36006b2b053d725df59f91b1ff1464100f29d1881f4ac5e5bf9f7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_purged.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -6,7 +6,8 @@
 //!   its range's entries, K-SPLIT-DECISION-2026-11-09); the rows keyed by an entity hash go to the
 //!   child whose range holds it; `'G'`, `'L'`, `'E'` and `'C'` go to none.
 //! - **Built for the child, not routed:** `'R'` and `'O'` are recomputed from the child's own
-//!   entries, `'N'` from its queues' state rows, and `'Y'` is written fresh.
+//!   entries, less those their stream already released ([`Released`]), `'N'` from its queues'
+//!   state rows, and `'Y'` is written fresh.
 //! - **Refused:** a source holding `'T'` (a retired parent is never a source), a sentinel tag with
 //!   no rule, a key that is no sentinel row, or a routed hash no child holds.
 
@@ -34,7 +35,7 @@ pub(crate) enum PlanError {
     Retired,
     /// A routed row whose hash no child's range holds, or whose key is too short to name one.
     Unrouted(Vec<u8>),
-    /// A `'K'`, `'R'` or `'O'` row that does not decode.
+    /// A `'K'`, `'R'`, `'O'` or `'H'` row that does not decode.
     Corrupt(Vec<u8>),
     /// The children's counts of an object do not sum to the source's (S4-DESIGN §6.2 step 2.2):
     /// the split rolls back.
@@ -102,15 +103,55 @@ pub(crate) struct Counts {
     pub orphans: Vec<(ObjectId, Orphans)>,
 }
 
-/// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'` and `'O'`)
-/// and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'` rows
-/// name): the entries whose entity hash the range holds, each `'K'` row decoded whole so every kept
-/// chunk keeps the offset the row gives it (K-SPLIT-DECISION-2026-11-09).
+/// The entries a source's streams already released: every one its stream's `'H'` row puts below
+/// `reclaimed` was decremented in the source's `'R'` (`spill::gc`), though a `'K'` row or a
+/// run-index object written before the release may still name it until a fold or merge drops it
+/// (the fold's `kept_entries` rule). A recount drops them too, so the children's `'R'` rows sum to
+/// the source's. Each release a source records is one arm of [`Released::of`] and one clause of
+/// [`Released::holds`].
+#[derive(Debug, Default)]
+pub(crate) struct Released {
+    /// Per dead stream, its `'H'` row's `reclaimed`: every entry ending below it is released.
+    below: BTreeMap<[u8; 16], u64>,
+}
+
+impl Released {
+    /// The releases a source's sentinel `rows` record.
+    pub(crate) fn of(rows: &[Row]) -> Result<Self, PlanError> {
+        let mut released = Self::default();
+        for (key, value) in rows {
+            let corrupt = || PlanError::Corrupt(key.clone());
+            if key.get(SENTINEL.len()) == Some(&tag::HEAD) {
+                let hash = gc::parse_head_key(key).ok_or_else(corrupt)?;
+                let head = gc::decode_head(value).ok_or_else(corrupt)?;
+                released.below.insert(hash, head.reclaimed);
+            }
+        }
+        Ok(released)
+    }
+
+    /// Whether the stream of `hash` already released `entry`.
+    pub(crate) fn holds(&self, hash: &[u8; 16], entry: &DirEntry) -> bool {
+        self.below
+            .get(hash)
+            .is_some_and(|reclaimed| entry.last < *reclaimed)
+    }
+}
+
+/// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'`, `'O'` and
+/// `'H'`) and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'`
+/// rows name): the entries whose entity hash the range holds and whose stream has not released
+/// them ([`Released`]), each `'K'` row decoded whole so every kept chunk keeps the offset the row
+/// gives it (K-SPLIT-DECISION-2026-11-09).
 pub(crate) fn child_counts(
     rows: &[Row],
     run_entries: &[([u8; 16], DirEntry)],
     range: Range,
 ) -> Result<Counts, PlanError> {
+    let released = Released::of(rows)?;
+    let live = |hash: &[u8; 16], entry: &DirEntry| {
+        range.contains(EntityHash::from_stored(*hash)) && !released.holds(hash, entry)
+    };
     let mut parent: BTreeMap<ObjectId, Refcount> = BTreeMap::new();
     let mut orphans: BTreeMap<ObjectId, Orphans> = BTreeMap::new();
     let mut entries: Vec<DirEntry> = Vec::new();
@@ -124,9 +165,7 @@ pub(crate) fn child_counts(
                 if let Some((hash, _)) = whole.first() {
                     first.entry(id).or_insert(*hash);
                 }
-                let kept = whole
-                    .into_iter()
-                    .filter(|(hash, _)| range.contains(EntityHash::from_stored(*hash)));
+                let kept = whole.into_iter().filter(|(hash, entry)| live(hash, entry));
                 entries.extend(kept.map(|(_, entry)| entry));
             }
             Some(tag::REFCOUNT) => {
@@ -145,7 +184,7 @@ pub(crate) fn child_counts(
     }
     let in_range = run_entries
         .iter()
-        .filter(|(hash, _)| range.contains(EntityHash::from_stored(*hash)))
+        .filter(|(hash, entry)| live(hash, entry))
         .map(|(_, entry)| entry);
     entries.extend(in_range.cloned());
     let refcounts = gc::recompute::recompute(&entries, &parent);

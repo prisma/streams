@@ -1035,6 +1035,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_purged",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split of a shard whose dead stream was purged after its chunks were folded into a run (S4 6.2 step 2.2, S3a 2.8): the children's recount drops the entries the stream's 'H' row released, so their 'R' rows sum to the parent's and the split publishes instead of rolling back; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_purged.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_override",
       "path": "src/dst/dst_tests.rs",
       "reason": "A leaf count balance moved by an override splits where the override places it (#251 amendment R3): the policy's split under sustained load is not held by an aged override; compiler and the full DST suite exercise the module.",
