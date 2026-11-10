@@ -228,6 +228,25 @@ jobs:
   # 1,000-project posture (48 noisy, shared workspaces, same-name
   # streams, suspension/revocation cutoffs, reconciliation, journaled
   # denials) on every push so the at-scale posture cannot rot.
+  # Job: the topology (S7, SCALING-DECISIONS §2; prisma/streams#149): the
+  # split (S4), merge (S6) and policy (S5) DSTs, each leg named by its
+  # modules with the count the tree holds as its floor (scripts/test-leg.sh
+  # fails a leg that runs fewer) and its convergence DSTs by name. The
+  # capacity test keeps its own leg in `rust`.
+  topology:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Splits (S4)
+        run: 'scripts/test-leg.sh target/legs/topology-split.log --min 26 -- --release --lib dst::dst_tests::split_k:: dst::dst_tests::split_barrier:: dst::dst_tests::split_generations:: dst::dst_tests::split_route_refusals::'
+      - name: Merges, and the seal on a child (S6)
+        run: 'scripts/test-leg.sh target/legs/topology-merge.log --min 21 -- --release --lib dst::dst_tests::merge_k:: dst::dst_tests::merge_finish_k:: dst::dst_tests::reads_merged:: dst::dst_tests::seal_convergence::'
+      - name: The policy and the fleet's topology (S5)
+        run: 'scripts/test-leg.sh target/legs/topology-policy.log --min 26 --exact dst::dst_tests::topology_policy::a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops -- --release --lib dst::dst_tests::topology_policy:: dst::dst_tests::fleet_topology:: dst::dst_tests::scaler_split_gate:: dst::dst_tests::topology_lifecycle:: dst::dst_tests::topology_scaling:: -- --skip post_split_throughput_scales'
+
   mt-cert-1000:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
