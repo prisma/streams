@@ -1,0 +1,12 @@
+diff --git a/src/native_queue/range.rs b/src/native_queue/range.rs
+--- a/src/native_queue/range.rs
++++ b/src/native_queue/range.rs
+@@ -65,7 +65,7 @@
+     }
+     pub(crate) fn clear(&mut self, offset: u64) {
+         let b = bit_of(offset);
+-        self.0[b / 64] &= !(1 << (b % 64));
++        let _ = b;
+     }
+     pub(crate) fn is_empty(&self) -> bool {
+         self.0.iter().all(|w| *w == 0)

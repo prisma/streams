@@ -1,0 +1,11 @@
+diff --git a/src/native_queue/range.rs b/src/native_queue/range.rs
+--- a/src/native_queue/range.rs
++++ b/src/native_queue/range.rs
+@@ -167,7 +167,6 @@
+         self.open == 0
+             && self.sched == 0
+             && self.skip.is_empty()
+-            && self.cancel.is_empty()
+             && self.sbits.is_empty()
+     }
+ 

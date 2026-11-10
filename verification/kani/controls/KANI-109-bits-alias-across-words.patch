@@ -1,0 +1,12 @@
+diff --git a/src/native_queue/range.rs b/src/native_queue/range.rs
+--- a/src/native_queue/range.rs
++++ b/src/native_queue/range.rs
+@@ -35,7 +35,7 @@
+ 
+ /// The bit of an offset within its row.
+ fn bit_of(offset: u64) -> usize {
+-    usize::try_from(offset & (SPAN - 1)).unwrap_or(0)
++    usize::try_from(offset & 63).unwrap_or(0)
+ }
+ 
+ /// A set of the [`SPAN`] offsets of one row.

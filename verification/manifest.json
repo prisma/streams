@@ -1580,6 +1580,94 @@
       "input_scope": "merged_refcount over every pair of Refcount rows (each field any u64): the merged row exists only for one object_len and sums that fit in u64, equals the u128 sum of live_bytes and live_chunks, keeps the earlier created_ms and the length; a refusal only for two lengths or an overflow."
     },
     {
+      "id": "KANI-109",
+      "kind": "kani",
+      "title": "Native queue range rows: a bitmap holds exactly its last set offsets, and its count and emptiness agree",
+      "status": "pass-with-recorded-scope",
+      "owner": "the native queue's range rows (native_queue::range::Bits set, clear, contains, count, is_empty; RangeRow::is_empty)",
+      "source_paths": [
+        "src/native_queue/range.rs"
+      ],
+      "verification_paths": [
+        "src/native_queue/range/proofs.rs"
+      ],
+      "requirements": [
+        "Q1",
+        "Q2"
+      ],
+      "models": [
+        "TLA-046"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "Bits over any three set or clear operations at any offsets of one row (any row of the u64 offset space) and any probe offset of the row; RangeRow::is_empty over any open and sched counts and any marking of one offset in each bitmap. The bitmap codec (Bits::put and read, the runs and raw forms) and the transaction code that keeps sched equal to the sbits count are outside the proof: native_queue::range::tests and TLA-046's RangeRowsMatch pin them",
+      "regressions": [
+        "native_queue::range::tests::a_range_row_round_trips_in_the_shorter_form",
+        "native_queue::range::tests::a_range_row_refuses_what_it_did_not_write",
+        "native_queue::range::tests::offsets_map_to_rows_and_bits"
+      ],
+      "checks": [
+        {
+          "id": "KANI-109/bitmap",
+          "role": "baseline",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-109/empty",
+          "role": "baseline",
+          "harness": "native_queue::range::proofs::kani_109_a_range_row_is_empty_exactly_when_it_holds_nothing",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-109/nc-bits-alias-across-words",
+          "role": "negative-control",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+          "patch": "verification/kani/controls/KANI-109-bits-alias-across-words.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the bitmap holds exactly the offsets its last operations set"
+          }
+        },
+        {
+          "id": "KANI-109/nc-clear-keeps-the-bit",
+          "role": "negative-control",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+          "patch": "verification/kani/controls/KANI-109-clear-keeps-the-bit.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the bitmap holds exactly the offsets its last operations set"
+          }
+        },
+        {
+          "id": "KANI-109/nc-count-first-word",
+          "role": "negative-control",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+          "patch": "verification/kani/controls/KANI-109-count-first-word.patch",
+          "expect": {
+            "result": "fail",
+            "property": "count is the number of offsets held"
+          }
+        },
+        {
+          "id": "KANI-109/nc-empty-ignores-cancel",
+          "role": "negative-control",
+          "harness": "native_queue::range::proofs::kani_109_a_range_row_is_empty_exactly_when_it_holds_nothing",
+          "patch": "verification/kani/controls/KANI-109-empty-ignores-cancel.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a row is empty exactly when it holds nothing"
+          }
+        }
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

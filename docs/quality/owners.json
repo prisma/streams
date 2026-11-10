@@ -3610,6 +3610,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+      "path": "src/native_queue/range/proofs.rs",
+      "reason": "Kani proof harness for KANI-109 (verification/manifest.json), compiled only under cfg(kani); kani::cover records the reachability witnesses the formal driver requires to be satisfied and produces no service state.",
+      "syntax": "kani::cover"
+    },
+    {
+      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::kani_003_tokens_are_injective_and_ordered",
       "path": "src/offsets/proofs.rs",

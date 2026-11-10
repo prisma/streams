@@ -2940,6 +2940,15 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 
 **Why valuable.** A wrapped sum frees an object a leaf still holds (its count reaches zero early); a merged row that keeps the later creation makes the object look younger than it is to anything that ages objects by `created_ms`. TLA-019's LineageGC models the merge's counts above this, assuming the sum is exact.
 
+<a id="kani-109"></a>
+### KANI-109 — Native queue range rows: a bitmap holds exactly its last set offsets, and its count and emptiness agree
+
+**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-109, 2 baselines and 4 negative controls: bits that alias across words, a clear that keeps the bit, a count of the first word only, and an emptiness test that ignores the cancel bitmap).
+
+**Validate.** A range row's three bitmaps are kept with set, clear, contains and count alone: after any three operations at offsets of one row the bitmap holds exactly the offsets whose last operation set them, an untouched offset is clear, the count is their number, and a row is deleted (empty) exactly when its counts are zero and its bitmaps empty.
+
+**Why valuable.** The frontier passes, cancels and resolves offsets by these bits, and the codec refuses a row whose `sched` differs from the `sbits` count: an aliased or sticky bit leases a cancelled message or skips a live one.
+
 ## 6. Cross-layer assurance cases
 
 Individual leaf checks are not a substitute for a composed argument. Maintain these small assurance cases alongside the implemented inventory. Each must name the remaining assumptions and executable evidence; none is currently discharged by this roadmap.

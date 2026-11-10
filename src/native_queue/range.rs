@@ -226,6 +226,9 @@ fn as_u16(n: usize) -> u16 {
     u16::try_from(n).unwrap_or(u16::MAX)
 }
 
+#[cfg(kani)]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     use super::*;
