@@ -971,6 +971,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::topology_reclaim",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A topology operation whose actor died between its publish and its terminal CAS (TLA-045 OperationCompletes): a split's start, a merge's and the heartbeat's intent watch end the left-live intent Reclaimed; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/topology_reclaim.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_generations",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split of a split's child (S4-DESIGN 3.1, 6.2): the second-generation parent at an operation-born home's path clones its own tables into its children; compiler and the full DST suite exercise the module.",

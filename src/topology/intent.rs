@@ -6,7 +6,9 @@
 //!   refuses the new operation (`409 topology_busy {reason: "intent"}` at the route).
 //! - **Never deleted.** An operation ends by a CAS to a terminal state, `Reclaimed` or
 //!   `RolledBack`, carrying the lease epoch it ran under: a stale actor's late write loses its
-//!   CAS. The fence and the busy check treat a terminal intent as none.
+//!   CAS. The fence and the busy check treat a terminal intent as none. An operation the stored
+//!   topology published whose actor never ended it is ended `Reclaimed` by its next reader
+//!   (`reclaim`).
 //! - **Leased.** The actor renews `lease_until_ms` by CAS every third of [`LEASE`] (3.3 s). A renewal that
 //!   fails on the store is retried at the next renewal; only a CAS mismatch (a claimant), its
 //!   parent `Db` reporting fenced, or its own monotonic clock passing [`LEASE`] + [`SKEW`] since
@@ -245,16 +247,19 @@ impl Live {
 }
 
 impl Watch {
-    /// The live intent, if the cell has one: none for an absent or terminal intent. A read that
-    /// fails, or an intent that does not decode, reports one whose `op_id` is [`UNREADABLE`] (fail
-    /// closed) and is read again next time.
+    /// The live intent, if the cell has one: none for an absent or terminal intent, or for one
+    /// whose operation the stored topology published, which it ends `Reclaimed` (`reclaim`). A read
+    /// that fails, or an intent that does not decode, reports one whose `op_id` is [`UNREADABLE`]
+    /// (fail closed) and is read again next time.
     pub(crate) async fn live(&mut self, store: &dyn ObjectStore) -> Option<Live> {
         let opts = object_store::GetOptions {
             if_none_match: self.etag.clone(),
             ..Default::default()
         };
         let read = match store.get_opts(&path(), opts).await {
-            Err(object_store::Error::NotModified { .. }) => return self.live.clone(),
+            Err(object_store::Error::NotModified { .. }) => {
+                Ok((self.etag.take(), self.live.take()))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok((None, None)),
             Err(e) => Err(e.to_string()),
             Ok(got) => {
@@ -277,7 +282,25 @@ impl Watch {
             };
             (None, Some(unknown))
         });
+        self.reclaim_published(store).await;
         self.live.clone()
+    }
+
+    /// While a live intent is seen: if the stored topology published its operation, end it
+    /// `Reclaimed` (`reclaim::read`), and none is live.
+    async fn reclaim_published(&mut self, store: &dyn ObjectStore) {
+        if self
+            .live
+            .as_ref()
+            .is_none_or(|live| live.op_id == UNREADABLE)
+        {
+            return;
+        }
+        if let Ok(Some(held)) = super::reclaim::read(store).await
+            && held.intent.is_terminal()
+        {
+            (self.etag, self.live) = (Some(held.etag), None);
+        }
     }
 }
 

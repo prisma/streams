@@ -376,7 +376,7 @@ async fn refuse(dir: &ShardDirectory, parent: &ShardEngine) -> Result<u32, Refus
         Ok(Some(_)) => return Err(Refused::NotSplittable("a retired parent".to_string())),
         Err(e) => return Err(Refused::RolledBack(format!("'T': {e}"))),
     }
-    match intent::read(&**parent.data_store()).await {
+    match super::reclaim::read(&**parent.data_store()).await {
         Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy("intent")),
         Ok(_) => Ok(home),
         Err(e) => Err(Refused::RolledBack(e.to_string())),

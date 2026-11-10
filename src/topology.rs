@@ -13,6 +13,8 @@ pub(crate) mod model;
 pub(crate) mod ops;
 pub(crate) mod policy;
 pub(crate) mod policy_loop;
+// A published operation's intent its actor left live, ended `Reclaimed` by its next reader.
+pub(crate) mod reclaim;
 pub(crate) mod recover;
 pub(crate) mod revalidate;
 // The split's sentinel helper.

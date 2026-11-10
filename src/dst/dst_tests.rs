@@ -58,6 +58,8 @@ mod split_k;
 mod split_generations;
 #[path = "tests/split_route_refusals.rs"]
 mod split_route_refusals;
+#[path = "tests/topology_reclaim.rs"]
+mod topology_reclaim;
 
 #[path = "tests/billing_walk_custody.rs"]
 mod billing_walk_custody;

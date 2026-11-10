@@ -317,7 +317,7 @@ async fn refuse(
             Err(e) => return Err(Refused::RolledBack(format!("'T': {e}"))),
         }
     }
-    match intent::read(&**left.data_store()).await {
+    match super::reclaim::read(&**left.data_store()).await {
         Ok(Some(held)) if !held.intent.is_terminal() => Err(Refused::Busy("intent")),
         Ok(_) => Ok((prefix, homes)),
         Err(e) => Err(Refused::RolledBack(e.to_string())),

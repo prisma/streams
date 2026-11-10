@@ -1692,6 +1692,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_whose_actor_died_after_its_publish_holds_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "809db170eef9a95a1abdf6b42ba67390953f3c11df4c0a1872dd5a75eb6685de",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_reclaim.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_whose_leaf_fails_to_open_after_the_publish_stays_published",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3407,6 +3418,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_actor_died_after_its_publish_leaves_the_cell_free_to_split_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b4b4cf5cd58a251b3964c6965ac90600ef66f3825354dbc1d44738a0d6f9c045",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_reclaim.rs",
     "scenarios": []
   },
   {
@@ -10373,6 +10395,17 @@
     "scenarios": [
       "DUR-001"
     ]
+  },
+  {
+    "name": "the_intent_watch_ends_a_published_split_its_actor_left_live",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8df277ff4cb6fbf7c22e47a727bda9aef3992f65f7d25c319cde26808a72d6ed",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_reclaim.rs",
+    "scenarios": []
   },
   {
     "name": "the_l0_watermark_sheds_writes_before_the_stall_and_resumes_after_catch_up",
