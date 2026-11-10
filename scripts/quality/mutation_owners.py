@@ -184,7 +184,7 @@ OWNERS = (
     owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
-    owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index::'),
+    owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index:: topology::lineage::never_leaf::'),
     owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),
     owner('crypto', 'src/crypto.rs', 'crypto::'),
     owner('tail_ring', 'src/shard/tail_ring.rs', 'shard:: dst_tests::reads_ring::'),

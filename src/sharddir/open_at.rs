@@ -23,13 +23,15 @@ impl From<OpenFn> for LogOpener {
 
 /// The home a shard log's path names: an initial home's `shards/<prefix>` (`shards/root`) names
 /// the prefix read as a number (`keyspace::home_of`); an operation-born home's
-/// `shards/<prefix>-<home>` names its home. `None` for a path of neither form.
+/// `shards/<prefix>-<home>` (`shards/root-<home>` for the root, which only a merge gives birth to)
+/// names its home. `None` for a path of neither form.
 pub(crate) fn home_of_db_path(path: &str) -> Option<u32> {
     let named = prefix_of_db_path(path);
     let Some((prefix, home)) = named.split_once('-') else {
         return crate::keyspace::home_of(named);
     };
-    let bits = !prefix.is_empty() && prefix.bytes().all(|b| b == b'0' || b == b'1');
+    let bits =
+        prefix == "root" || !prefix.is_empty() && prefix.bytes().all(|b| b == b'0' || b == b'1');
     let digits = !home.is_empty() && home.bytes().all(|b| b.is_ascii_digit());
     (path.starts_with("shards/") && bits && digits)
         .then(|| home.parse().ok())

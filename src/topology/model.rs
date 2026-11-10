@@ -219,10 +219,12 @@ impl TryFrom<Unchecked> for Topology {
     }
 }
 
-/// Where an operation-born home's shard log lives: `shards/<prefix>-<home>` (S4-DESIGN §3.1). No
-/// character of it needs URL encoding (see the module).
+/// Where an operation-born home's shard log lives: `shards/<prefix>-<home>` (S4-DESIGN §3.1), and
+/// for the root (a merge of `0` and `1`, S6 §7) `shards/root-<home>`, as the initial root is
+/// `shards/root`. No character of it needs URL encoding (see the module).
 pub(crate) fn born_home_path(prefix: &str, home: u32) -> String {
-    format!("shards/{prefix}-{home}")
+    let named = if prefix.is_empty() { "root" } else { prefix };
+    format!("shards/{named}-{home}")
 }
 
 /// The home reservation of a split.

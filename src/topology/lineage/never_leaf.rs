@@ -50,11 +50,13 @@ pub(crate) async fn paths(store: &dyn ObjectStore) -> Result<Vec<(u32, String)>,
 }
 
 /// The home and path a `shards/` directory names, when it is an operation-born home's
-/// (`shards/<binary prefix>-<decimal home>`).
+/// (`shards/<binary prefix>-<decimal home>`, or `shards/root-<decimal home>` for the root).
 fn born_home_of(dir: &str) -> Option<(u32, String)> {
     let name = dir.strip_prefix("shards/")?;
-    let (prefix, home) = name.rsplit_once('-')?;
-    let binary = !prefix.is_empty() && prefix.bytes().all(|b| b == b'0' || b == b'1');
+    let (named, home) = name.rsplit_once('-')?;
+    let prefix = if named == "root" { "" } else { named };
+    let binary =
+        named == "root" || !prefix.is_empty() && prefix.bytes().all(|b| b == b'0' || b == b'1');
     let home: u32 = home.parse().ok()?;
     let path = born_home_path(prefix, home);
     (binary && path == dir).then_some((home, path))
@@ -84,6 +86,11 @@ mod tests {
             born_home_of("shards/1-12"),
             Some((12, "shards/1-12".to_string()))
         );
+        // A merge into the root (`""`) is born at `shards/root-<h>`, beside the initial `shards/root`.
+        let root = crate::topology::model::born_home_path("", 3);
+        assert_eq!(root, "shards/root-3");
+        assert_eq!(born_home_of(&root), Some((3, root.clone())));
+        assert_eq!(crate::sharddir::home_of_db_path(&root), Some(3));
         for not in [
             "shards/00",
             "shards/-7",
@@ -92,6 +99,8 @@ mod tests {
             "shards/000-07",
             "shards/000~7",
             "other/000-7",
+            "shards/root",
+            "shards/-7",
         ] {
             assert_eq!(born_home_of(not), None, "{not}");
         }
