@@ -41,6 +41,8 @@ mod l0_watermark;
 mod merge_finish_k;
 #[path = "tests/merge_k.rs"]
 mod merge_k;
+#[path = "tests/never_leaf_k.rs"]
+mod never_leaf_k;
 #[path = "tests/open_fence.rs"]
 mod open_fence;
 #[path = "tests/purge_gate.rs"]

@@ -256,8 +256,8 @@ async fn a_split_that_rolls_back_leaves_nothing_of_its_children() {
     );
     let view = topology_view(addr).await;
     assert_eq!(
-        view["never_leaf_paths"], 2,
-        "the rolled-back attempt's two homes"
+        view["never_leaf_paths"], 0,
+        "the rollback deleted both children's paths, so no never-leaf path is left to sweep"
     );
     engine_shutdown(&state).await;
 }

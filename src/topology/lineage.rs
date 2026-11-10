@@ -19,6 +19,8 @@
 //!   source is never swept. A child it names counts as a holder: its reference
 //!   list was written before the operation's CAS, and if the operation publishes,
 //!   it is a leaf holding exactly that.
+//! - **Never-leaf paths.** Each pass then deletes the paths of homes no
+//!   operation published (`never_leaf`, §4 step 5).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -211,8 +213,15 @@ async fn run(
             Ok((ran, deleted)) => tracing::info!(ran, deleted, "lineage sweep"),
             Err(e) => tracing::warn!("lineage sweep stopped: {e}"),
         }
+        match never_leaf::sweep(&store).await {
+            Ok(0) => {}
+            Ok(swept) => tracing::info!(swept, "never-leaf paths swept"),
+            Err(e) => tracing::warn!("never-leaf sweep stopped: {e}"),
+        }
     }
 }
 
+// The never-leaf child-path sweep (§4 step 5): the paths of homes no operation published.
+pub(crate) mod never_leaf;
 #[cfg(test)]
 mod tests;

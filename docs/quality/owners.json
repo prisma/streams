@@ -937,6 +937,14 @@
       "syntax": "path = \"tests/merge_finish_k.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::never_leaf_k",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The never-leaf child-path sweep DST (S6 §4 step 5, S4 §15 N1): a rolled-back split's late-clone paths and their final checkpoints swept, the view's never_leaf_paths 2 to 0, the live leaf's tables kept.",
+      "syntax": "path = \"tests/never_leaf_k.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::merge_paused_at_park",

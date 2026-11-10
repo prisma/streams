@@ -12,9 +12,10 @@
 //! | `Preparing` | none of the above |
 //!
 //! `never_leaf_paths` (S4-DESIGN §15, the never-leaf path contract) counts the homes of the stored
-//! topology below its `next_home` that were never published and that no live intent names as a
-//! child: an abandoned attempt's homes, whose paths S6's sweeper deletes (null when the stored
-//! topology is unreadable).
+//! topology below its `next_home` that were never published, that no live intent names as a
+//! child, and whose `shards/<prefix>-<h>` path still holds files: an abandoned attempt's paths,
+//! which the lineage loop's never-leaf sweep deletes (`lineage::never_leaf`; null when the stored
+//! topology, the intent or the listing is unreadable).
 
 use std::sync::Arc;
 
@@ -56,7 +57,10 @@ pub(crate) async fn topology(
             })
         })
         .collect();
-    let never_leaf = never_leaf_paths(store, live).await;
+    let never_leaf = super::lineage::never_leaf::paths(&**store)
+        .await
+        .ok()
+        .map(|found| found.len());
     let intent = match read {
         Ok(None) => Value::Null,
         Ok(Some(held)) => {
@@ -81,16 +85,6 @@ pub(crate) async fn topology(
         "intent": intent,
         "never_leaf_paths": never_leaf,
     })
-}
-
-/// The stored topology's never-leaf homes (see the module), with `live` the live intent if any.
-async fn never_leaf_paths(store: &Arc<dyn ObjectStore>, live: Option<&Intent>) -> Option<usize> {
-    let (stored, _) = store::read(&**store).await.ok()?;
-    let named = |h: &u32| live.is_some_and(|intent| intent.children.contains(h));
-    let never = (0..stored.shards.next_home)
-        .filter(|h| !stored.shards.homes.contains_key(h) && !named(h))
-        .count();
-    Some(never)
 }
 
 /// The intent's state from its witnesses (see the module).
