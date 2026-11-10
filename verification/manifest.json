@@ -1521,6 +1521,65 @@
       ]
     },
     {
+      "id": "KANI-108",
+      "kind": "kani",
+      "title": "A merge's refcount row is the exact sum of its sources', refusing two lengths or an overflow",
+      "status": "pass-with-recorded-scope",
+      "owner": "S6 merge counts (spill::gc::merged_refcount)",
+      "source_paths": [
+        "src/spill/gc.rs"
+      ],
+      "verification_paths": [
+        "src/spill/gc/proofs.rs"
+      ],
+      "requirements": [
+        "F5"
+      ],
+      "models": [
+        "TLA-019"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "regressions": [
+        "spill::gc::merge::tests::an_objects_counts_sum_and_two_lengths_refuse",
+        "spill::gc::merge::tests::counts_that_would_overflow_refuse_the_merge",
+        "dst::dst_tests::merge_k::a_merge_of_two_children_serves_both_streams_with_the_parents_counts"
+      ],
+      "checks": [
+        {
+          "id": "KANI-108/exact-sum",
+          "role": "baseline",
+          "harness": "spill::gc::proofs::kani_108_a_merged_refcount_is_the_exact_sum_or_refused",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-108/nc-wrapping-sum",
+          "role": "negative-control",
+          "harness": "spill::gc::proofs::kani_108_a_merged_refcount_is_the_exact_sum_or_refused",
+          "patch": "verification/kani/controls/KANI-108-wrapping-sum.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a merged row only for one length and a sum that fits"
+          }
+        },
+        {
+          "id": "KANI-108/nc-later-creation",
+          "role": "negative-control",
+          "harness": "spill::gc::proofs::kani_108_a_merged_refcount_is_the_exact_sum_or_refused",
+          "patch": "verification/kani/controls/KANI-108-later-creation.patch",
+          "expect": {
+            "result": "fail",
+            "property": "the merged row keeps the earlier creation"
+          }
+        }
+      ],
+      "input_scope": "merged_refcount over every pair of Refcount rows (each field any u64): the merged row exists only for one object_len and sums that fit in u64, equals the u128 sum of live_bytes and live_chunks, keeps the earlier created_ms and the length; a refusal only for two lengths or an overflow."
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",
