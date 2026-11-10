@@ -1272,6 +1272,24 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 **Related work:** TLA-011, 019, 045; KANI-108.
 
+<a id="tla-046"></a>
+### TLA-046 — Native queue delivery on page rows: the frontier, range rows, leases and poison bodies
+
+**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry TLA-046, `verification/tla/queue/QueueDelivery.tla`, 3 baselines, 7 negative controls and 6 witnesses; S3b-DESIGN rev 3 §11.1).
+
+**Priority:** P0 · **Requirement anchors:** Q1–Q6  
+**Source owners:** [`src/shard/transaction/native_queue/claim.rs`](src/shard/transaction/native_queue/claim.rs); [`lane.rs`](src/shard/transaction/native_queue/lane.rs); [`settle.rs`](src/shard/transaction/native_queue/settle.rs); [`send.rs`](src/shard/transaction/native_queue/send.rs); [`sweep.rs`](src/shard/transaction/native_queue/sweep.rs); [`src/native_queue/range.rs`](src/native_queue/range.rs); [`src/application/queues/delivery.rs`](src/application/queues/delivery.rs)
+
+**Validate.** An untaken immediate message has no row but its page: the frontier walks the pages, passing scheduled, cancelled and expired offsets and leasing a live one, and the range rows hold the sparse unresolved state. No message is lost, none at or below the frontier is sent, the frontier never passes a live immediate message, a cancelled one is never leased, a replayed settle changes nothing, no lease or failure outlives the hard expiry, the gauges and range rows are exact, an internal unlease keeps the attempts and releases, and a body that never opens is failed within MaxAttempts + UnleaseLimit leases.
+
+**Why valuable.** The lane removes every per-message row an untaken message used to cost, so the frontier and the range rows are all that stands between a backlog and a lost or doubly leased message.
+
+**Negative controls.** A lane lease without the range row's reference; the frontier passing a live offset; a cancel that marks nothing; the scheduled claim clearing its sbits bit; a settle without the generation check; an internal unlease spending a release; an internal unlease with no row counter. §11.1's control 7 (a prepared candidate below the frontier) waits for part 2's handler-prepared window.
+
+**Scope.** 2 offsets (one range row, or two of one) with an unreadable body and a crash, and 3 offsets over two range rows with a shorter clock; claims of one message; no dedup, budgets, pause or redrive. I9 is checked as its bound, not as liveness. The design's 6 offsets do not converge in TLC.
+
+**Related work:** TLA-022–023; KANI-110 (the frontier step), KANI-109 (the range rows), KANI-111 (the ids and fixed-layout entries).
+
 
 ## 5. Kani proof catalog
 

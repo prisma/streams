@@ -3696,6 +3696,234 @@
       ]
     },
     {
+      "id": "TLA-046",
+      "kind": "tla",
+      "title": "Native queue delivery on page rows: the frontier, range rows, leases, settles, sweeps and poison bodies",
+      "status": "pass-with-recorded-scope",
+      "owner": "the native queue's committer operations (send, claim with its lane frontier, settle, internal unlease, cancel, the sweeps) over the queue's page rows, range rows, delivery rows and scheduled index, and the claim handler's hand-out, unreadable fail and internal unlease",
+      "source_paths": [
+        "src/shard/transaction/native_queue/send.rs",
+        "src/shard/transaction/native_queue/claim.rs",
+        "src/native_queue/frontier.rs",
+        "src/shard/transaction/native_queue/lane.rs",
+        "src/shard/transaction/native_queue/settle.rs",
+        "src/shard/transaction/native_queue/deliveries.rs",
+        "src/shard/transaction/native_queue/sweep.rs",
+        "src/shard/transaction/native_queue/admin.rs",
+        "src/native_queue/range.rs",
+        "src/native_queue/rows.rs",
+        "src/application/queues/delivery.rs",
+        "src/shard/commit_plan.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/queue/QueueDelivery.tla",
+        "verification/tla/queue/MC_QueueDelivery.tla"
+      ],
+      "requirements": [
+        "Q1",
+        "Q2",
+        "Q3",
+        "Q4",
+        "Q5",
+        "Q6"
+      ],
+      "models": [
+        "TLA-023"
+      ],
+      "assumptions": [
+        "ASM-QUEUE-REPLY-DURABLE"
+      ],
+      "regressions": [
+        "shard::native_queue_tests::avail::an_untaken_immediate_message_has_no_row_but_its_page",
+        "shard::native_queue_tests::avail::a_claim_leases_the_lane_from_its_page_and_moves_the_frontier",
+        "shard::native_queue_tests::unlease::an_internal_unlease_gives_the_lease_back_and_spends_no_budget",
+        "shard::native_queue_tests::unlease::the_eighth_internal_unlease_fails_the_delivery_as_unreadable",
+        "shard::native_queue_tests::unlease::an_unreadable_settle_fails_the_delivery_alone_and_spends_no_budget",
+        "shard::native_queue_tests::cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_failed_ones",
+        "shard::native_queue_tests::release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_deadline",
+        "shard::native_queue_tests::sweeps::an_untaken_message_enters_the_gap_at_its_retention_end_exactly"
+      ],
+      "input_scope": "one queue in one shard log; 2 offsets in one range row of 2 (small) or two range rows of 1 (ranges), each with clock 0..3, retention 2, failure retention 1, lease 1, one body that never opens and one crash losing the handlers' replies; 3 offsets over two range rows of 2 with clock 0..2 and retention 1, no unreadable body and no crash (expanded); 2 attempts, 1 free release, an unlease limit of 2 (8 in code), claims of one message, bodies of one byte; every committer operation one durable group (ASM-QUEUE-REPLY-DURABLE); the client settles with the newest receipt it holds per offset; no dedup, no pause, no redrive, no budgets or slices, no handler-prepared window (part 2); I9 checked as its bound (leases of a poison body <= MaxAttempts + UnleaseLimit), not as liveness; safety only, no symmetry",
+      "checks": [
+        {
+          "id": "TLA-046/baseline-small",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_small.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-046/baseline-ranges",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_ranges.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-046/baseline-expanded",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_expanded.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-046/nc-lane-open",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_lane_open.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RangeRowsMatch"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-head-live",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_head_live.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "FrontierNeverPassesALiveImmediate"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-cancel-marks",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_cancel_marks.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CancelledNeverLeased"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-scheduled-claim-sbits",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_scheduled_claim_sbits.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoMessageLost"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-gen-ok",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_gen_ok.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ReplayedSettleChangesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-unlease-releases",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_unlease_releases.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "UnleaseKeepsBudgets"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-unlease-counts",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_unlease_counts.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "PoisonBounded"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-UnreadableFailed",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_UnreadableFailed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnreadableFailed"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-UnleasedThenFailed",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_UnleasedThenFailed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnleasedThenFailed"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-CancelledPassed",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_CancelledPassed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CancelledPassed"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-ExpiredIntoGap",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_ExpiredIntoGap.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ExpiredIntoGap"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-ScheduledLeasedAndPassed",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_ScheduledLeasedAndPassed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ScheduledLeasedAndPassed"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-StaleReceiptHeld",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_StaleReceiptHeld.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleReceiptHeld"
+          },
+          "deadlock_check": false
+        }
+      ]
+    },
+    {
       "id": "TLA-001",
       "kind": "tla",
       "title": "Registry CAS, attempt-local outcomes, and incarnation fencing",

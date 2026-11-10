@@ -861,6 +861,24 @@ actions to these contracts.
   separates the two steps for one fence group (durable, lost with its engine,
   or rejected without a retirement); those configurations pass too.
 
+### ASM-QUEUE-REPLY-DURABLE
+
+- **Scope:** TLA-046.
+- **Statement:** the shard committer releases a native queue operation's
+  reply only after its group is durable (`DurableEffects::native_acks`). A
+  rejected group stages nothing and answers `Internal`; a group stranded by
+  an engine close may still become durable while its reply says it failed.
+  The model's committer actions are therefore atomic and durable, and the
+  stranded case is a claim whose leases reach no handler (`Crash`).
+- **Origin:** `src/shard/commit_plan.rs` `DurableEffects` (`reply`,
+  `reject`); `src/shard/transaction/native_queue/mod.rs` (the pushes to
+  `native_acks`); `src/shard/transaction/finalize.rs`.
+- **Enforcement / evidence:** source inspection; the same release path as
+  ASM-SEAL-REPLY-ORDER's acknowledgements.
+- **Invalidation:** a native queue reply sent at staging, or a refusal that
+  rests on staged state answered before durability.
+- **Standing:** established (source inspection).
+
 ### ASM-SEAL-ENGINE-HANDOFF
 
 - **Scope:** TLA-002, TLA-003.
