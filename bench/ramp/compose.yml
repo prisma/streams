@@ -9,6 +9,9 @@ x-server: &server
   command: ["streams-slate", "--listen", "0.0.0.0:8080"]
   # AUTH_ENV: the run's posture file from rig.Posture (auth, billing, the
   # rollup, and the fleet's peer identity when more than one server runs).
+  # Only streams-1 runs the usage rollup (RUNBOOK: one designated ROLLUP=1
+  # instance): the others set ROLLUP=0 over the posture's, since two rollup
+  # owners fence each other's DB and a fenced one fails at boot.
   env_file: [../../deploy/profiles/compute-1g.env, "${AUTH_ENV:-./auth-off.env}"]
   volumes: ["${FEEDS_DIR:-./bin}:/feeds:ro"]
   extra_hosts: ["host.docker.internal:host-gateway"]  # the host store (rig.HostStore)
@@ -44,31 +47,31 @@ services:
     ports: ["127.0.0.1:8201:8080"]
   streams-2:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-2, SELF_URL: "http://streams-2:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-2, ROLLUP: "0", SELF_URL: "http://streams-2:8080" }
     ports: ["127.0.0.1:8202:8080"]
   streams-3:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-3, SELF_URL: "http://streams-3:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-3, ROLLUP: "0", SELF_URL: "http://streams-3:8080" }
     ports: ["127.0.0.1:8203:8080"]
   streams-4:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-4, SELF_URL: "http://streams-4:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-4, ROLLUP: "0", SELF_URL: "http://streams-4:8080" }
     ports: ["127.0.0.1:8204:8080"]
   streams-5:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-5, SELF_URL: "http://streams-5:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-5, ROLLUP: "0", SELF_URL: "http://streams-5:8080" }
     ports: ["127.0.0.1:8205:8080"]
   streams-6:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-6, SELF_URL: "http://streams-6:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-6, ROLLUP: "0", SELF_URL: "http://streams-6:8080" }
     ports: ["127.0.0.1:8206:8080"]
   streams-7:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-7, SELF_URL: "http://streams-7:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-7, ROLLUP: "0", SELF_URL: "http://streams-7:8080" }
     ports: ["127.0.0.1:8207:8080"]
   streams-8:
     <<: *server
-    environment: { <<: *env, INSTANCE_NAME: streams-8, SELF_URL: "http://streams-8:8080" }
+    environment: { <<: *env, INSTANCE_NAME: streams-8, ROLLUP: "0", SELF_URL: "http://streams-8:8080" }
     ports: ["127.0.0.1:8208:8080"]
   # The edge: a request carrying `compute-instance: k` goes to streams-(k+1),
   # as Compute's edge pins it; any other is spread over the live servers.

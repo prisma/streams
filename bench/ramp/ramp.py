@@ -114,7 +114,7 @@ def fleet_compose(n, out_dir):
     head = base[base.index("x-server:"):base.index("\nservices:")]
     servers = "".join(
         f"  streams-{k}:\n    <<: *server\n"
-        f"    environment: {{ <<: *env, INSTANCE_NAME: streams-{k}, SELF_URL: \"http://streams-{k}:8080\" }}\n"
+        f"    environment: {{ <<: *env, INSTANCE_NAME: streams-{k}, ROLLUP: \"0\", SELF_URL: \"http://streams-{k}:8080\" }}\n"
         f"    ports: [\"127.0.0.1:{8200 + k}:8080\"]\n" for k in range(BASE_SERVERS + 1, n + 1))
     path = os.path.abspath(os.path.join(out_dir, f"compose-fleet-{n}.yml"))
     # Relative paths in the copied anchors (env_file) resolve against compose.yml's directory.
