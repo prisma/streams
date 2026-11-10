@@ -318,6 +318,35 @@ pub(super) async fn split_00(state: &State, parent: &Arc<crate::shard::ShardEngi
         .version
 }
 
+/// The leaf `prefix`'s engine on `state`, opened here if the split left it unopened (a child that
+/// fails to open at the publish opens on its next request), within 10 s.
+pub(super) async fn opened(state: &State, prefix: &str) -> Arc<crate::shard::ShardEngine> {
+    let bits = u128::from_str_radix(prefix, 2).unwrap_or(0);
+    let shift = 128 - u32::try_from(prefix.len()).unwrap_or(0).min(128);
+    let route = bits.checked_shl(shift).unwrap_or(0).to_be_bytes();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let resolved = state
+            .shards
+            .resolve(&route, crate::shard_directory::Adoption::Internal)
+            .await;
+        match resolved {
+            Ok(engine) if engine.prefix == prefix => return engine,
+            other => assert!(
+                tokio::time::Instant::now() < deadline,
+                "{prefix} opens here: {:?}",
+                other.map(|e| e.prefix.clone())
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Both halves of `00`, opened here.
+pub(super) async fn halves_of_00(state: &State) -> [Arc<crate::shard::ShardEngine>; 2] {
+    [opened(state, "000").await, opened(state, "001").await]
+}
+
 /// Write `state`'s own topology as the stored version 1.
 async fn store_topology(state: &State) {
     let topology = crate::topology::model::Topology {
@@ -461,7 +490,7 @@ async fn a_merge_of_a_retired_half_is_refused() {
     } = rig().await;
     let version = split_00(&state, &parent).await;
     let tasks = super::split_k::start_ops_on(&state, 7);
-    let half = state.shards.open("001").expect("001 is open here");
+    let half = opened(&state, "001").await;
     half.db
         .put(crate::topology::fence::retired_key(), b"{}")
         .await
@@ -516,7 +545,7 @@ async fn a_merge_past_its_lease_reclaims_its_own_intent_and_publishes() {
         ..
     } = rig().await;
     split_00(&state, &parent).await;
-    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    let halves = halves_of_00(&state).await;
     let started =
         crate::topology::merge::start(&state.shards, [&halves[0], &halves[1]], "op-m", "inst-a")
             .await
@@ -562,7 +591,7 @@ async fn a_merge_serves_what_its_sources_wrote_after_the_split() {
         let (status, _, _) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
         assert_eq!(status, 204, "append to {name} after the split");
     }
-    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    let halves = halves_of_00(&state).await;
     for half in &halves {
         half.db
             .flush()

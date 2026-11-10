@@ -159,8 +159,15 @@ impl ShardEngine {
     /// without its reference list under that home's root. A list's absence
     /// cannot be healed by a late PUT (a sweep may have decided on it), so
     /// S4's open-path fence (`topology::fence::hold_until_served`) fails the
-    /// open with it.
+    /// open with it. It records the shard's home from its log's `'Y'` row
+    /// first (`record_home`): the fence runs beside the sealer's open, which
+    /// does the same, and until one has, `home()` reads 0, so the shard's own
+    /// home and `object_root` would both be wrong.
     pub(crate) async fn lineage_refusal(&self) -> Result<Option<String>, GcError> {
+        let own = self
+            .record_home()
+            .await
+            .map_err(|e| GcError::Store(format!("'Y': {e}")))?;
         let mut homes = BTreeSet::new();
         let tags = [
             crate::spill::directory::REFCOUNT_TAG,
@@ -170,9 +177,9 @@ impl ShardEngine {
         for tag in tags {
             homes.extend(self.homes_under(tag).await?);
         }
-        homes.remove(&self.home());
+        homes.remove(&own);
         for home in homes {
-            let path = lineage::reference_list_path(&self.object_root(home), self.home());
+            let path = lineage::reference_list_path(&self.object_root(home), own);
             match self.data_store.head(&Path::from(path.as_str())).await {
                 Ok(_) => {}
                 Err(object_store::Error::NotFound { .. }) => {

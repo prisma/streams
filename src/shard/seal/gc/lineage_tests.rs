@@ -206,6 +206,32 @@ async fn a_shard_holding_an_ancestors_rows_without_its_list_refuses_to_serve() {
     rig.engine.begin_close();
 }
 
+/// **The detector checks the lists of the home the log's `'Y'` row records, not the engine's
+/// home before the open recorded it.** The fence runs the detector beside the sealer's open, which
+/// sets the engine's home from `'Y'`; until then it is 0. A merge into the root holds rows of homes
+/// 0 and 1 (the cell's first leaves) and has its lists, `refs/5`, under both: it serves, though
+/// the engine's home still reads 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_detector_reads_its_home_from_the_logs_identity_row() {
+    use crate::spill::directory::REFCOUNT_TAG;
+    use std::sync::atomic::Ordering::Relaxed;
+    let rig = gc_rig("lineage-detect-home").await;
+    let (key, value) = crate::shard::open_index::identity_row(5);
+    rig.engine.db.put(&key, &value).await.unwrap();
+    let home = &rig.engine.layout.seal.home;
+    home.store(5, Relaxed);
+    for ancestor in [0, 1] {
+        row(&rig, REFCOUNT_TAG, ancestor, 1).await;
+        let list = lineage::reference_list_path(&rig.engine.object_root(ancestor), 5);
+        put(&rig, list, lineage::encode(&[])).await;
+    }
+    // The open's rebuild has not recorded the home yet.
+    home.store(0, Relaxed);
+    assert_eq!(rig.engine.lineage_refusal().await.unwrap(), None);
+    assert_eq!(rig.engine.home(), 5, "the check recorded it");
+    rig.engine.begin_close();
+}
+
 /// The open-path fence fails an open whose shard holds an ancestor's rows
 /// without its reference list, naming the home, and serves it once the list
 /// exists.

@@ -19,6 +19,20 @@ fn store_failed(error: &slatedb::Error) -> bool {
 }
 
 impl ShardEngine {
+    /// Record this shard's home (`home()`) from its log's `'Y'` row, or its prefix's for a log
+    /// without one (a test's `keyspace::db_builder` rig), and return it. The open's rebuild does
+    /// it first; the open-path fence's lineage check does it too, since it runs beside the rebuild
+    /// and `home()` reads 0 until one of them has.
+    pub(super) async fn record_home(&self) -> Result<u32, slatedb::Error> {
+        let home = crate::shard::open_index::recorded_home(&self.db).await?;
+        let home = home.unwrap_or_else(|| crate::keyspace::home_of(&self.prefix).unwrap_or(0));
+        self.layout
+            .seal
+            .home
+            .store(home, std::sync::atomic::Ordering::Relaxed);
+        Ok(home)
+    }
+
     /// The open's rebuild. Until it finishes (the sealer's loop marks the
     /// state ready once it returns), sealed reads and the usage drain wait
     /// (`seal_ready`) and no seal starts.
@@ -26,12 +40,7 @@ impl ShardEngine {
         #[cfg(test)]
         self.injected_open_fault()?;
         self.gc_state().note_opened();
-        let home = crate::shard::open_index::recorded_home(&self.db).await?;
-        let home = home.unwrap_or_else(|| crate::keyspace::home_of(&self.prefix).unwrap_or(0));
-        self.layout
-            .seal
-            .home
-            .store(home, std::sync::atomic::Ordering::Relaxed);
+        self.record_home().await?;
         self.probe_heads().await?;
         let dir = self.rebuild_directory().await?;
         self.rebuild_run_index().await?;

@@ -4,7 +4,7 @@
 //! that fails leaves the intent live for a claimant. Its rig is `merge_k`'s.
 
 use super::fixture_http::engine_shutdown;
-use super::merge_k::{Rig, State, rig, split_00};
+use super::merge_k::{Rig, State, halves_of_00, rig, split_00};
 use std::sync::Arc;
 
 /// Pause the merge of `halves` at its park (the left half's gate), run `control` there, and let it
@@ -50,7 +50,7 @@ async fn a_merge_whose_leaf_fails_to_open_after_the_publish_stays_published() {
         ..
     } = rig().await;
     let version = split_00(&state, &parent).await;
-    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    let halves = halves_of_00(&state).await;
     let home = state.shards.prefixes().shards.next_home;
     let merged_path = crate::topology::model::born_home_path("00", home);
     let planted = || async {
@@ -102,7 +102,7 @@ async fn a_merge_whose_publish_fails_after_t_is_left_live() {
         .path
         .clone();
     split_00(&state, &parent).await;
-    let halves = ["000", "001"].map(|p| state.shards.open(p).expect("the half is open here"));
+    let halves = halves_of_00(&state).await;
     let home = state.shards.prefixes().shards.next_home;
     let corrupt = || async {
         let junk = b"{".to_vec();
