@@ -73,6 +73,54 @@ cell's.
 Record every change of the desired count with its published `reason`, and
 every change of the live count, with timestamps (§7).
 
+### 3.1 One service per ordinal, each with its own environment
+
+The fleet names its members by ordinal. For a published count N, the ring's
+active set is exactly the instances named `streams-1` to `streams-N`, less
+any dark, stalled or draining one (`planning::active_members`,
+`src/fleet/planning.rs`). An instance named anything else never joins the
+ring. The desired set is therefore always the first N ordinals, and
+`streams-1` is always in it, since the count is floored at 1 and at
+`FLEET_MIN`. Deploy the cell as up to `FLEET_MAX` services, one per ordinal
+(as `bench/k2cost/field/deploy.py` and `bench/fleet/deploy-fleet.sh` do).
+Give each its own environment, on top of SCALE-VALIDATION.md §1.4:
+
+| Variable | `streams-1` | `streams-i`, i ≥ 2 |
+|---|---|---|
+| `INSTANCE_NAME` | `streams-1` | `streams-i` |
+| `SELF_URL`, or the resolved `fleet/urls.json` | its own address | its own address |
+| `ROLLUP` | `1` | `0` |
+
+Under external mode, Compute must start and stop **ordinals**: on a count of
+N it runs `streams-1` to `streams-N`, and on a scale-in it stops the highest
+ordinal first. It must never stop `streams-1` while the cell runs. The
+ring drops an instance above N on its own, but `streams-1` alone runs the
+usage rollup (RUNBOOK, "ROLLUP=0 on ingestion instances"). If Compute
+cannot start ordinals but only identical replicas of one service, this
+guide cannot be run: stop and report it. The fleet then has neither names
+nor a rollup owner.
+
+**Do not paste `deploy/profiles/shared-cell.env`'s `ROLLUP=1` onto every
+ordinal.** The rollup's database is one path per cell (`<PATH_PREFIX>/rollup`).
+Each instance that opens it fences the one that opened it before, and
+nothing reopens a fenced rollup. What follows:
+
+- The instance that booted last owns the rollup. Every other one logs
+  `rollup step: Closed error: detected newer DB client` every 2 s for the
+  rest of its life (P5.0's fleet ramp, 2026-11-08: seven of eight).
+- Instances that boot together can fence each other while they open. Under
+  `BILLING_MODE=required` the fenced one exits before serving, with
+  `Error: BILLING_MODE=required: rollup DB must open before serving: Closed
+  error: detected newer DB client`. Six of eight did so on the local rig on
+  2026-11-10, booting within 0.53 s. Each restart fences the owner again.
+- Once the owner is scaled in, no instance runs the rollup. Usage stops
+  being applied, the stored cap stops moving, months stop closing, and
+  `rollup.lastApplyAgeSecs` grows until the alert at 600 s (RUNBOOK, "What
+  to alert on"). Meters read in that window are not the cell's.
+
+Before the first step, check the env of every ordinal: `ROLLUP=1` on exactly
+one, `streams-1`.
+
 ## 4. Held waits: what binds first
 
 A held wait's memory, measured idle over HTTP/2 at 16,000 waits
