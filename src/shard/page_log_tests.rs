@@ -9,7 +9,6 @@ use super::{
     StreamHandle, TailFields, read_frames,
 };
 use crate::crypto_page::{CheckedPage, PageCipher, PageLane, stamped};
-use crate::shard::seal::Trigger;
 use crate::spill::pending::{concat_pages, parse_pages, pending_key};
 use bytes::Bytes;
 use object_store::ObjectStore;
@@ -64,7 +63,7 @@ async fn engine_on(store: Arc<dyn ObjectStore>, name: &str, ring_bytes: usize) -
 
 /// Seal every durable unsealed page of the engine's streams.
 async fn seal(engine: &Arc<ShardEngine>) {
-    engine.seal_once(Trigger::Requested).await.unwrap();
+    super::test_support::seal_bounded(engine).await;
 }
 
 /// One request of `records` under the fixture lane; the receiver is its
@@ -672,7 +671,7 @@ async fn a_commit_that_stores_no_page_publishes_nothing_to_the_ring() {
     assert_eq!(ring(), published);
     // A group's ring publications run when it turns durable, before its
     // durable tail moves; a seal returns once its tails are durable.
-    let report = engine.seal_once(Trigger::Requested).await.unwrap();
+    let report = super::test_support::seal_bounded(&engine).await;
     assert_eq!((report.pages, report.page_bytes), (2, stored as u64));
     assert_eq!(handle.state.lock().unwrap().durable.absorbed, 20);
     assert_eq!(ring(), published, "the seal published to the ring");

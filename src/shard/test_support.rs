@@ -315,3 +315,14 @@ pub(crate) fn billing_row_io_on(db: &Arc<Db>) -> (u64, u64) {
         .copied()
         .unwrap_or_default()
 }
+
+/// A requested seal, bounded: a seal that cannot finish (its remainder commit never applies) fails
+/// the test at 30 s instead of hanging it.
+pub(crate) async fn seal_bounded(engine: &Arc<ShardEngine>) -> seal::SealReport {
+    let seal = engine.seal_once(seal::Trigger::Requested);
+    let bound = std::time::Duration::from_secs(30);
+    let finished = tokio::time::timeout(bound, seal).await;
+    finished
+        .expect("the requested seal did not finish within 30 s")
+        .unwrap()
+}

@@ -4,7 +4,6 @@
 use crate::application::read::read_merged;
 use crate::crypto::{FrameCompression, StreamKey, derive_subkey};
 use crate::crypto_page::{PageCipher, PageLane, SealError};
-use crate::shard::seal::Trigger;
 use crate::shard::{
     Deliver, RingBatch, ShardConfig, ShardEngine, TailFields, encode_tail, tail_key,
 };
@@ -181,7 +180,7 @@ async fn mixed_fixture(
     let (sealed, next) = (history as u64, records.len() as u64);
     if history > 0 {
         let first = planted_engine(&store, "r06a-mixed", &pages[..history], (0, sealed), 0).await;
-        let report = first.seal_once(Trigger::Requested).await.unwrap();
+        let report = super::test_support::seal_bounded(&first).await;
         assert_eq!(report.pages, sealed);
         first.begin_close();
         first

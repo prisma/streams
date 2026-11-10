@@ -6,7 +6,6 @@ use super::{
     read_frames, record::RangeReadError, tail_key,
 };
 use crate::crypto_page::{PageCipher, PageLane};
-use crate::shard::seal::Trigger;
 use crate::spill::pending::{concat_pages, pending_key};
 use bytes::Bytes;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -116,7 +115,7 @@ async fn corrupt_sealed_page(
     page: &Bytes,
     replacement: &[u8],
 ) {
-    engine.seal_once(Trigger::Requested).await.unwrap();
+    super::test_support::seal_bounded(engine).await;
     let entry = engine
         .layout
         .seal
@@ -244,7 +243,7 @@ async fn r08a_valid_filtered_miss_keeps_legitimate_progress() {
     let handle = engine.stream_handle(STREAM).await.unwrap();
     for sealed in [false, true] {
         if sealed {
-            engine.seal_once(Trigger::Requested).await.unwrap();
+            super::test_support::seal_bounded(&engine).await;
         }
         let page = read_frames(&engine, &handle, 0, Some("wanted"), 1024, Deliver::Durable)
             .await
@@ -313,7 +312,7 @@ async fn r08a_invalid_ring_copy_retries_storage_without_false_filtered_progress(
     let wanted = encoded_record(1, "wanted");
     let pages = [encoded_record(0, "other"), wanted.clone()];
     let (engine, _store) = scan_fixture("r08a-ring", &pages, 2, 1 << 20).await;
-    engine.seal_once(Trigger::Requested).await.unwrap();
+    super::test_support::seal_bounded(&engine).await;
     let handle = engine.stream_handle(STREAM).await.unwrap();
     handle
         .ring
