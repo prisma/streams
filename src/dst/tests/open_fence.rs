@@ -362,3 +362,61 @@ async fn a_lapsed_intent_whose_parent_holds_t_is_rolled_forward_and_the_parent_n
     assert_eq!(pause_checkpoints(&store, &log).await, 0, "the checkpoint");
     engine_shutdown(&state).await;
 }
+
+/// **A held open that another opener fences reopens and serves, not after the fence's whole
+/// wait** (a claimant's maintenance open fencing a sibling mid-open; the lead's option (a),
+/// 2026-11-10). The leaf's log holds `'T'` for version 2 with no stored topology to publish into,
+/// so its reopen is held after the open. A second open of the log then removes the `'T'` (as a
+/// claimant's maintenance writer would act on it) and closes, fencing the held engine, whose next
+/// read fails `Closed(Fenced)`. The held open closes its engine, re-enters the hold before the
+/// open, reopens and serves: the append is acknowledged within 10 s of the fencing, far inside
+/// `FENCE_WAIT`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_held_open_another_opener_fences_reopens_and_serves() {
+    let store = mem();
+    let (state, addr) = http_rig(store.clone()).await;
+    let leaves = state.shards.prefixes().shards.leaves.clone();
+    let (prefix, _) = leaves.iter().next().expect("a leaf");
+    let name = stream_in(&state, addr, prefix).await;
+    let engine = state.shards.open(prefix).expect("its engine");
+    let log = engine.log_path();
+    let retired = crate::topology::fence::Retired {
+        version: 2,
+        op_id: "op-t".to_string(),
+        children: vec![(format!("{prefix}0"), 90), (format!("{prefix}1"), 91)],
+    };
+    let row = serde_json::to_vec(&retired).unwrap();
+    engine
+        .db
+        .put(crate::topology::fence::retired_key(), row)
+        .await
+        .unwrap();
+    engine.db.flush().await.unwrap();
+    drop(engine);
+    engine_shutdown(&state).await;
+    let held_from = Instant::now();
+    while state.shards.open(prefix).is_some() || held_from.elapsed() < Duration::from_secs(2) {
+        assert_eq!(append(addr, &name).await, 503, "the reopen is held on 'T'");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let other = crate::keyspace::db_builder(log.as_str(), store.clone())
+        .build()
+        .await
+        .unwrap();
+    other
+        .delete(crate::topology::fence::retired_key())
+        .await
+        .unwrap();
+    other.flush().await.unwrap();
+    other.close().await.unwrap();
+    let fenced_at = Instant::now();
+    let status = loop {
+        let status = append(addr, &name).await;
+        if status == 204 || fenced_at.elapsed() >= Duration::from_secs(10) {
+            break status;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(status, 204, "served within 10 s of the fencing");
+    engine_shutdown(&state).await;
+}

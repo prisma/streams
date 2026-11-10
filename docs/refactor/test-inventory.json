@@ -1307,6 +1307,17 @@
     "scenarios": []
   },
   {
+    "name": "a_held_open_another_opener_fences_reopens_and_serves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ace5cdefa6bd85a1f8f61071cf4f466d70574f0bba4bb0e8dbc77061b5ac5a93",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/open_fence.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_hot_stream_on_a_one_server_ring_never_splits_so_a_grown_ring_keeps_it_on_its_owner",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

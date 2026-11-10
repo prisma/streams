@@ -110,17 +110,38 @@ struct Found {
 
 /// One read of the fence on `engine` under `snapshot`: one point read of `'T'`, one GET of the
 /// intent.
-async fn read(engine: &ShardEngine, snapshot: &Snapshot) -> Result<Found, String> {
+async fn read(engine: &ShardEngine, snapshot: &Snapshot) -> Result<Found, ReadFailure> {
     let retired = match engine.db.get(retired_key()).await {
-        Ok(Some(raw)) => Some(serde_json::from_slice(&raw).map_err(|e| format!("'T': {e}"))?),
+        Ok(Some(raw)) => Some(
+            serde_json::from_slice(&raw).map_err(|e| ReadFailure::Other(format!("'T': {e}")))?,
+        ),
         Ok(None) => None,
-        Err(e) => return Err(format!("'T': {e}")),
+        Err(e) if e.kind() == slatedb::ErrorKind::Closed(slatedb::CloseReason::Fenced) => {
+            return Err(ReadFailure::Fenced);
+        }
+        Err(e) => return Err(ReadFailure::Other(format!("'T': {e}"))),
     };
     let held = intent::read(&**engine.data_store())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ReadFailure::Other(e.to_string()))?;
     let live = held.filter(|held| names_source(&held.intent, &engine.prefix, snapshot));
     Ok(Found { retired, live })
+}
+
+/// Why a read of the fence failed: the engine's log was opened by a newer writer (a claimant's
+/// maintenance open of a sibling mid-open, say), which no later read on this engine survives; or
+/// anything else, which the fence holds on and reads again.
+enum ReadFailure {
+    Fenced,
+    Other(String),
+}
+
+/// How a held open ended without failing: the engine may serve, or a newer writer fenced it
+/// (`ReadFailure::Fenced`) and it was closed, so the open re-enters the hold before the open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HoldEnd {
+    Served,
+    Fenced,
 }
 
 /// Whether `intent` is live and names `prefix`, at its leaf home in `snapshot`, as a source.
@@ -152,19 +173,44 @@ pub(crate) fn fenced(
     let intents: Arc<OnceLock<Arc<dyn ObjectStore>>> = Arc::default();
     Box::new(move |prefix, incarnation| {
         let (open, snapshot, intents) = (open.clone(), snapshot.clone(), intents.clone());
-        Box::pin(async move {
-            let lapse = match intents.get() {
-                Some(store) => hold_before_open(&prefix, &snapshot, &**store).await?,
-                None => None,
-            };
-            let path = log_path(snapshot().as_deref(), &prefix);
-            let engine = open(prefix, path.clone(), incarnation).await?;
-            intents.get_or_init(|| engine.data_store().clone());
-            engine.place(path, snapshot.clone());
-            hold_until_served(&engine, &snapshot, lapse).await?;
-            Ok(engine)
-        })
+        Box::pin(async move { open_held(&open, prefix, incarnation, &snapshot, &intents).await })
     })
+}
+
+/// The fenced open of `prefix` (see [`fenced`]): the hold before the open, the open, the hold after
+/// it. An engine a newer writer fenced while it was held (the lead's option (a), 2026-11-10: a
+/// claimant's maintenance open of a sibling mid-open) is closed, its termination awaited (so its
+/// close notification, carrying this incarnation, lands before any replacement is published), and
+/// the open re-enters the hold before the open, which waits on the claimant's fresh claim and
+/// reopens once the intent ended or lapsed; all within twice [`FENCE_WAIT`].
+async fn open_held(
+    open: &crate::sharddir::OpenAt,
+    prefix: String,
+    incarnation: crate::sharddir::EngineIncarnation,
+    snapshot: &SnapshotFn,
+    intents: &OnceLock<Arc<dyn ObjectStore>>,
+) -> anyhow::Result<Arc<ShardEngine>> {
+    let started = Instant::now();
+    loop {
+        let lapse = match intents.get() {
+            Some(store) => hold_before_open(&prefix, snapshot, &**store).await?,
+            None => None,
+        };
+        let path = log_path(snapshot().as_deref(), &prefix);
+        let engine = open(prefix.clone(), path.clone(), incarnation).await?;
+        intents.get_or_init(|| engine.data_store().clone());
+        engine.place(path, snapshot.clone());
+        match hold_until_served(&engine, snapshot, lapse).await? {
+            HoldEnd::Served => return Ok(engine),
+            HoldEnd::Fenced => {
+                drop(engine.shutdown_handle().wait(FENCE_WAIT).await);
+                if started.elapsed() >= FENCE_WAIT * 2 {
+                    anyhow::bail!("fenced while held, again past {:?}", FENCE_WAIT * 2);
+                }
+                tracing::info!(shard = %prefix, "a newer writer fenced the held open; it reopens");
+            }
+        }
+    }
 }
 
 /// The hold before the open (TLA-048 option (b), change 1): while a live intent names `prefix` as
@@ -221,12 +267,12 @@ pub(crate) fn log_path(snapshot: Option<&Snapshot>, prefix: &str) -> String {
 /// Re-read the fence every [`RECHECK`] until it lets `engine` serve, its collection passes off
 /// meanwhile, and recover a lapsed split as its claimant (see the module); past [`FENCE_WAIT`],
 /// close it and fail the open. `lapse` is the observation of the live intent the hold before the
-/// open made, if any.
+/// open made, if any. A read a newer writer fenced closes the engine and answers [`HoldEnd::Fenced`].
 pub(crate) async fn hold_until_served(
     engine: &ShardEngine,
     snapshot: &SnapshotFn,
     lapse: Option<Lapse>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<HoldEnd> {
     let gate = &engine.gc_state().gate;
     let started = Instant::now();
     let clock = crate::runtime::SystemClock::default();
@@ -239,7 +285,11 @@ pub(crate) async fn hold_until_served(
                     let verdict = decide_and_recover(engine, &snapshot, found, &mut lapse, now);
                     verdict.await
                 }
-                Err(error) => {
+                Err(ReadFailure::Fenced) => {
+                    engine.begin_close();
+                    return Ok(HoldEnd::Fenced);
+                }
+                Err(ReadFailure::Other(error)) => {
                     tracing::warn!(shard = %engine.prefix, "the open's fence could not read: {error}");
                     Verdict::Hold
                 }
@@ -253,7 +303,7 @@ pub(crate) async fn hold_until_served(
             match engine.lineage_refusal().await {
                 Ok(None) => {
                     gate.set_collection_off(false);
-                    return Ok(());
+                    return Ok(HoldEnd::Served);
                 }
                 Ok(Some(reason)) => {
                     engine.begin_close();

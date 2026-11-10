@@ -703,9 +703,11 @@ async fn terminal_intent(store: &Arc<dyn ObjectStore>) -> crate::topology::inten
 /// Merge the root's halves through S6's entry, and wait for that merge's intent to end
 /// `Reclaimed`: the cell is then the one leaf `""`.
 async fn merges_after(rig: &super::fixture_http::HttpRig) {
-    // A half still finishing its open answers 503, which an operator retries.
+    // A half still finishing its open answers 503, which an operator retries. A half the
+    // claimant's maintenance open fenced mid-open re-enters the hold and reopens once the intent
+    // ended, within a few rechecks (`fence::fenced`), not after the fence's whole wait.
     let t0 = tokio::time::Instant::now();
-    let deadline = t0 + Duration::from_secs(60);
+    let deadline = t0 + Duration::from_secs(10);
     let op_id = loop {
         match rig.state.shards.topology_ops().merge(String::new()).await {
             Ok(started) => break started.op_id,
