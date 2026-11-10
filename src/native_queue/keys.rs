@@ -256,3 +256,6 @@ fn unbase32(s: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+#[cfg(kani)]
+mod proofs;

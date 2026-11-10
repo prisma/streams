@@ -795,3 +795,6 @@ impl<'a> Reader<'a> {
         }
     }
 }
+
+#[cfg(kani)]
+mod proofs;

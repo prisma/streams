@@ -1739,6 +1739,127 @@
       ]
     },
     {
+      "id": "KANI-111",
+      "kind": "kani",
+      "title": "Native queue ids and fixed-layout entries: message ids, lease tokens, dedup and scheduled entries round-trip and refuse what they did not write",
+      "status": "pass-with-recorded-scope",
+      "owner": "the native queue's public ids (native_queue::keys message_id, parse_message_id, lease_token, parse_lease_token) and fixed-layout entries (native_queue::rows encode_dedup, decode_dedup, encode_scheduled, decode_scheduled)",
+      "source_paths": [
+        "src/native_queue/keys.rs",
+        "src/native_queue/rows.rs"
+      ],
+      "verification_paths": [
+        "src/native_queue/keys/proofs.rs",
+        "src/native_queue/rows/proofs.rs"
+      ],
+      "requirements": [
+        "Q2",
+        "Q4"
+      ],
+      "models": [
+        "TLA-046"
+      ],
+      "assumptions": [
+        "ASM-KANI-SCOPE",
+        "ASM-KANI-COMPILER"
+      ],
+      "input_scope": "message ids and lease tokens over any entity hash, offset and lease generation, against any hash that differs in its incarnation tag (bytes 12-15) and any lane but lane 0; the dedup entry over any offset, expiry and trailing byte, one byte short, one long or of any other lane; the scheduled entry over any send time, stored length and availableAt at inline lengths 0 and 4, cut to any length below its 12 fixed bytes. The state row (StateRow, with its webhook strings) and the delivery row (DeliveryRow, with its code string) are outside the proof (UTF-8 validation and String error paths are beyond Kani here, verification/README.md); native_queue::tests pin their encodings and refusals byte for byte, the range row's codec likewise",
+      "regressions": [
+        "native_queue::tests::every_queue_key_is_pinned",
+        "native_queue::tests::the_queue_families_are_distinct"
+      ],
+      "checks": [
+        {
+          "id": "KANI-111/message-id",
+          "role": "baseline",
+          "harness": "native_queue::keys::proofs::kani_111_a_message_id_names_its_offset_under_its_own_incarnation_only",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/lease-token",
+          "role": "baseline",
+          "harness": "native_queue::keys::proofs::kani_111_a_lease_token_names_its_lease_under_its_own_incarnation_only",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/lane",
+          "role": "baseline",
+          "harness": "native_queue::keys::proofs::kani_111_an_id_of_another_lane_names_nothing",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/dedup",
+          "role": "baseline",
+          "harness": "native_queue::rows::proofs::kani_111_a_dedup_entry_round_trips_and_refuses_other_lengths_and_lanes",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/scheduled-0",
+          "role": "baseline",
+          "harness": "native_queue::rows::proofs::kani_111_a_scheduled_entry_round_trips_with_no_inline_page",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/scheduled-4",
+          "role": "baseline",
+          "harness": "native_queue::rows::proofs::kani_111_a_scheduled_entry_round_trips_with_an_inline_page",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/nc-id-without-incarnation",
+          "role": "negative-control",
+          "harness": "native_queue::keys::proofs::kani_111_a_message_id_names_its_offset_under_its_own_incarnation_only",
+          "patch": "verification/kani/controls/KANI-111-id-without-incarnation.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an id names nothing under another incarnation"
+          }
+        },
+        {
+          "id": "KANI-111/nc-id-without-lane",
+          "role": "negative-control",
+          "harness": "native_queue::keys::proofs::kani_111_an_id_of_another_lane_names_nothing",
+          "patch": "verification/kani/controls/KANI-111-id-without-lane.patch",
+          "expect": {
+            "result": "fail",
+            "property": "an id of another lane names nothing"
+          }
+        },
+        {
+          "id": "KANI-111/nc-token-reads-the-offset-as-gen",
+          "role": "negative-control",
+          "harness": "native_queue::keys::proofs::kani_111_a_lease_token_names_its_lease_under_its_own_incarnation_only",
+          "patch": "verification/kani/controls/KANI-111-token-reads-the-offset-as-gen.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a lease token parses back to its lease"
+          }
+        },
+        {
+          "id": "KANI-111/nc-dedup-takes-trailing-bytes",
+          "role": "negative-control",
+          "harness": "native_queue::rows::proofs::kani_111_a_dedup_entry_round_trips_and_refuses_other_lengths_and_lanes",
+          "patch": "verification/kani/controls/KANI-111-dedup-takes-trailing-bytes.patch",
+          "expect": {
+            "result": "fail",
+            "property": "a long dedup entry is refused"
+          }
+        }
+      ]
+    },
+    {
       "id": "TLA-005",
       "kind": "tla",
       "title": "Commit groups, dependency barriers, and observable replies",

@@ -1,0 +1,11 @@
+diff --git a/src/native_queue/rows.rs b/src/native_queue/rows.rs
+--- a/src/native_queue/rows.rs
++++ b/src/native_queue/rows.rs
+@@ -742,7 +742,6 @@
+     let off = r.u64()?;
+     let at = r.i64()?;
+     let lane = r.u8()?;
+-    r.end()?;
+     if lane != super::keys::LANE {
+         return Err(format!("queue dedup row: lane {lane}"));
+     }
