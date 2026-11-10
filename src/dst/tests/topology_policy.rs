@@ -727,7 +727,12 @@ async fn merges_after(rig: &super::fixture_http::HttpRig) {
             .unwrap()
             .unwrap();
         if held.intent.op_id == op_id && held.intent.is_terminal() {
-            assert_eq!(held.intent.state, crate::topology::intent::State::Reclaimed);
+            assert_eq!(
+                held.intent.state,
+                crate::topology::intent::State::Reclaimed,
+                "the later merge: {:?}",
+                held.intent
+            );
             break;
         }
         assert!(
@@ -810,7 +815,8 @@ async fn a_merge_left_unfinished_is_rolled_forward_with_no_request() {
         super::merge_finish_k::merge_paused_at_park(&rig.state, &halves, "op-u", corrupt).await;
     assert!(
         matches!(merged, Err(crate::topology::merge::Refused::Unfinished(_))),
-        "the publish fails after 'T'"
+        "the publish fails after 'T': {:?}",
+        merged.as_ref().map(|published| published.version)
     );
     let doc = reserved
         .lock()

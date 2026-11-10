@@ -1711,7 +1711,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "fb6edd7c41726e6a26124f4424e05b2fbe64dbd2a5691fc6fb9dac05ff219878",
+    "function_sha256": "a20e5ff51592760e05ef2fbcd9891b48feffe4393f689ccb495643a2643fad32",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_policy.rs",
