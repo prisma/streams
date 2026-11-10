@@ -311,6 +311,17 @@
     "scenarios": []
   },
   {
+    "name": "a_cold_pair_split_across_two_instances_is_colocated_and_merged",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "01d4e53a40659078db770de801d22432fec3f242a508b03d537950a6e7ccf55a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_committed_but_unsettled_dead_letter_copy_settles_on_the_next_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -10423,7 +10434,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8269e556f64ebdf683c91bf2dba7533adaca7e9f659d68657a7d05e62b63a7e8",
+    "function_sha256": "fdd0c80ae1d0a21b54b5a0c1cb17fedee9faab70a0084d45d4396d9ba78624d6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",

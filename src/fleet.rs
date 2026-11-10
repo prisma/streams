@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 mod count_balance;
+// A merge's co-location of its two halves on its actor (S6-DESIGN §7.2 step 0).
+pub(crate) mod colocate;
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;

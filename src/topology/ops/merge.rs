@@ -13,10 +13,12 @@ use crate::topology::split;
 
 impl Parts {
     /// Start the merge of `prefix`'s halves (S6 §7.2 step 0) and finish it under `tasks`: refused for
-    /// halves that are not both leaves, an override on either, a fleet that has not settled
-    /// (`fleet_settled`, S4 §10.1), a half another instance holds, or an instance the merge would
-    /// fill past `shards_max` (its open shards, both halves among them, plus `M`: the actor holds
-    /// all three until the publish); else both are opened here and the merge started.
+    /// halves that are not both leaves, a fleet that has not settled (`fleet_settled`, S4 §10.1: a
+    /// move younger than its cooldown among them), a half another instance holds (an override
+    /// placing it elsewhere among them), or an instance the merge would fill past `shards_max` (its
+    /// open shards, both halves among them, plus `M`: the actor holds all three until the
+    /// publish); else both are opened here and the merge started. An override placing a half here
+    /// does not refuse it: that is the co-location a merge of a split pair needs (`fleet::colocate`).
     pub(super) async fn start_merge(
         &self,
         prefix: &str,
@@ -29,10 +31,6 @@ impl Parts {
             .all(|h| snapshot.shards.leaves.contains_key(h))
         {
             return Err(Refused::UnknownPrefix);
-        }
-        let overrides = self.ownership.overrides();
-        if halves.iter().any(|h| overrides.contains_key(h)) {
-            return Err(Refused::Busy("override"));
         }
         self.fleet_settled()
             .await

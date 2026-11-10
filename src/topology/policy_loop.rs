@@ -70,7 +70,6 @@ fn merge_refusal_code(refused: &super::merge::Refused) -> &'static str {
     use super::merge::Refused as S6;
     match refused {
         S6::Busy("fleet") => "fleet_settling",
-        S6::Busy("override") => "override_recent",
         S6::Busy(_) => "topology_busy",
         S6::NotOwner(_) => NOT_RING_OWNER,
         S6::InstanceFull { .. } => INSTANCE_FULL,
@@ -182,6 +181,7 @@ async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
     if let Decision::Merge { parent } = &decision {
         return match (cell.merge)(parent.clone()).await {
             Ok(()) => decision,
+            Err(Refused(NOT_RING_OWNER)) => colocate(cell, view, parent).await,
             Err(refused) => {
                 tracing::info!(?refused, parent, "topology merge refused");
                 Decision::Hold(hold_for(refused.0))
@@ -204,6 +204,29 @@ async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
             }
         }
     }
+}
+
+/// A merge refused because another instance holds a half (S6-DESIGN §7.2 step 0): this instance,
+/// the merge's actor, moves both halves to itself and holds `override_recent` while the move's
+/// cooldown runs, after which the next pass merges. It needs room for the half it takes and the
+/// merged leaf beside its own shards; without room, or with the overrides CAS lost, it holds
+/// steady and the next pass decides again.
+async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
+    use super::policy::Hold;
+    let room = resident(view, &cell.me).saturating_add(2) <= cell.limits.shards_per_instance_max;
+    let halves = [format!("{parent}0"), format!("{parent}1")];
+    if room
+        && crate::fleet::colocate::colocate(&cell.fleet, &cell.ownership, &halves, &cell.me).await
+    {
+        tracing::info!(parent, "topology merge: moving both halves here first");
+        return Decision::Hold(Hold::OverrideRecent);
+    }
+    tracing::info!(
+        parent,
+        room,
+        "topology merge: its halves could not be moved here"
+    );
+    Decision::Hold(Hold::Steady)
 }
 
 fn resident(view: &View, me: &str) -> u32 {
@@ -432,7 +455,7 @@ mod tests {
         );
     }
 
-    /// S6's merge refusals answer the same holds: busy for its three reasons apart, a half another
+    /// S6's merge refusals answer the same holds: busy for its two reasons apart, a half another
     /// instance holds, and the rest (instance_full and not_mergeable among them) steady, so the
     /// next pass decides again.
     #[test]
@@ -440,7 +463,6 @@ mod tests {
         use crate::topology::merge::Refused as S6;
         let held = |refused: S6| hold_for(merge_refusal_code(&refused));
         assert_eq!(held(S6::Busy("fleet")), Hold::FleetSettling);
-        assert_eq!(held(S6::Busy("override")), Hold::OverrideRecent);
         assert_eq!(held(S6::Busy("intent")), Hold::IntentLive);
         assert_eq!(held(S6::NotOwner("streams-2".into())), Hold::PeerActs);
         for steady in [

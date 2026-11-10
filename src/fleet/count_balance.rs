@@ -232,7 +232,12 @@ fn fold(heartbeats: Vec<Heartbeat>, now: i64) -> Folded {
 
 /// `overrides` with `prefix` moved to `to` at `now_ms` and its
 /// `rebalance_move` event, within the outbox bound, as a lag move writes them.
-fn moved_document(mut overrides: Overrides, prefix: &str, to: &str, now_ms: i64) -> Overrides {
+pub(super) fn moved_document(
+    mut overrides: Overrides,
+    prefix: &str,
+    to: &str,
+    now_ms: i64,
+) -> Overrides {
     if overrides.pending_events.len() < MAX_PENDING_EVENTS {
         overrides.pending_events.push(
             crate::ops::OpsEvent::new("rebalance_move", format!("move/{prefix}/{}", now_ms / 1000))

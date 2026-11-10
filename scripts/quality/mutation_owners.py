@@ -389,6 +389,8 @@ OWNERS = (
           'fleet::hysteresis:: dst_tests::fleet_controller::desired::'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
+    owner('fleet_colocate', 'src/fleet/colocate.rs',
+          'dst_tests::topology_policy::a_cold_pair_split_across_two_instances_is_colocated_and_merged'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet:: dst_tests::fleet_topology::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',

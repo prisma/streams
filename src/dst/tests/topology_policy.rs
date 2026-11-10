@@ -163,12 +163,38 @@ async fn policy_rig_at(
     entry: Entry,
     prefixes: Vec<String>,
 ) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
+    let on = On {
+        data: mem(),
+        instance: "streams-1",
+        runtime: RigRuntime::first(),
+        split_sustain_ms: 1_000,
+    };
+    policy_rig_on(fleet, on, cli, entry, prefixes).await
+}
+
+/// Where a policy rig runs: its cell's data store, its instance and its process incarnation, and
+/// the split sustain of the test's own loop (a second, unless a scenario must never split).
+struct On {
+    data: Arc<dyn ObjectStore>,
+    instance: &'static str,
+    runtime: RigRuntime,
+    split_sustain_ms: i64,
+}
+
+/// `policy_rig_at`, run as `on.instance` over `on.data`, so two instances can share a cell.
+async fn policy_rig_on(
+    fleet: Arc<dyn ObjectStore>,
+    on: On,
+    cli: fn(&mut crate::config::CliArgs),
+    entry: Entry,
+    prefixes: Vec<String>,
+) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
     let rig = http_rig_build(
-        mem(),
-        RigRuntime::first(),
+        on.data,
+        on.runtime,
         HttpRigOptions {
             fleet_store: Some(fleet),
-            instance: Some("streams-1".into()),
+            instance: Some(on.instance.into()),
             cli,
             prefixes,
             ..Default::default()
@@ -181,13 +207,13 @@ async fn policy_rig_at(
     ));
     let asked = Arc::new(Mutex::new(Vec::new()));
     let cell = Cell {
-        me: "streams-1".into(),
+        me: on.instance.into(),
         fleet: rig.state.fleet.clone(),
         shards: rig.state.shards.clone(),
         ownership: rig.state.ownership.clone(),
         store: rig.state.data_store.clone(),
         limits: crate::topology::policy::Limits {
-            split_sustain_ms: 1_000,
+            split_sustain_ms: on.split_sustain_ms,
             ..crate::topology::policy_loop::limits(&rig.state.config)
         },
         appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
@@ -626,4 +652,128 @@ async fn served(addr: std::net::SocketAddr, name: &str) -> serde_json::Value {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The leaves of the cell's stored topology.
+async fn stored_leaves(store: &Arc<dyn ObjectStore>) -> Vec<String> {
+    let (stored, _) = crate::topology::store::read(&**store).await.unwrap();
+    stored.shards.leaves.keys().cloned().collect()
+}
+
+/// **A cold pair split across two instances is co-located and merged into one stored leaf**
+/// (S6-DESIGN §7.2 step 0, edge #261 B1). `streams-1` alone takes a record on each of 12
+/// streams of the cell `0` + `1`; `streams-2` then beats, the ring gives it both halves, and a
+/// move (count balance's, as an aged override) gives `1` back to `streams-1`. Both halves go
+/// cold past the merge sustain. The merge's actor, `0`'s owner `streams-2`, cannot merge a half
+/// another instance holds: it moves `1` to itself, waits out the move's cooldown, and merges. The stored topology ends as the one leaf `""`, its owner serves it, and every stream
+/// reads back the same records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
+    let fleet = seeded().await;
+    let data = mem();
+    // The merge sustain outlasts the setup, so `streams-1` alone never merges the pair before
+    // `streams-2` beats and the pair is split. Nothing splits (a loaded test host can push the
+    // committer axis over the line; a split here would only be the double's, in one directory).
+    const NEVER: i64 = 1_000_000_000;
+    let cold = |cli: &mut crate::config::CliArgs| {
+        lines(cli);
+        cli.shard_merge_sustain_secs = 20;
+        cli.shard_split_reversal_min_secs = 1;
+    };
+    let halves = vec!["0".to_string(), "1".to_string()];
+    let one = On {
+        data: data.clone(),
+        instance: "streams-1",
+        runtime: RigRuntime::first(),
+        split_sustain_ms: NEVER,
+    };
+    let (a, _) = policy_rig_on(fleet.clone(), one, cold, split_double, halves.clone()).await;
+    store_topology(&a).await;
+    let json = [("content-type", "application/json")];
+    let mut kept = Vec::new();
+    for i in 0..12 {
+        let path = format!("/v1/stream/pair-{i}");
+        hreq(a.addr, "PUT", &path, &json, b"").await;
+        let body = format!(r#"[{{"stream":{i}}}]"#);
+        let (status, _, _) = hreq(a.addr, "POST", &path, &json, body.as_bytes()).await;
+        assert_eq!(status, 204, "append to pair-{i}");
+        kept.push((
+            format!("pair-{i}"),
+            records(a.addr, &format!("pair-{i}")).await,
+        ));
+    }
+    // A count of two computed now: the shrink's hysteresis keeps the ring at two members for the
+    // test (a count computed at 0 is old enough to shrink at the next tick).
+    let now = crate::shard::now_ms();
+    let desired = format!(r#"{{"count":2,"epoch":2,"reason":"test","computed_at_ms":{now}}}"#);
+    fleet
+        .put(&Path::from("fleet/desired.json"), PutPayload::from(desired))
+        .await
+        .unwrap();
+    let two = On {
+        data: data.clone(),
+        instance: "streams-2",
+        runtime: RigRuntime::incarnation(1),
+        split_sustain_ms: NEVER,
+    };
+    let (b, _) = policy_rig_on(fleet.clone(), two, cold, split_double, halves).await;
+    for rig in [&a, &b] {
+        rig.state
+            .peer
+            .set_peer("streams-1", &format!("http://{}", a.addr));
+        rig.state
+            .peer
+            .set_peer("streams-2", &format!("http://{}", b.addr));
+    }
+    // The ring gives both halves to `streams-2` (rendezvous over FNV-1a keeps siblings
+    // together); count balance's fair-share move split them, as this aged override records.
+    let moved_ms = crate::shard::now_ms() - 120_000;
+    let split_pair = format!(r#"{{"entries":{{"1":{{"to":"streams-1","ms":{moved_ms}}}}}}}"#);
+    fleet
+        .put(
+            &Path::from("fleet/overrides.json"),
+            PutPayload::from(split_pair),
+        )
+        .await
+        .unwrap();
+    let owner = |prefix: &str| a.state.ownership.effective_owner(prefix);
+    let split = || {
+        (owner("0"), owner("1")) == (Some("streams-2".to_string()), Some("streams-1".to_string()))
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !split() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(split(), "the pair is split: {:?}", (owner("0"), owner("1")));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    while stored_leaves(&data).await != [""] && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let decisions = (
+        document(&fleet, "streams-1").await["topology_decision"].clone(),
+        document(&fleet, "streams-2").await["topology_decision"].clone(),
+    );
+    assert_eq!(stored_leaves(&data).await, [""], "decisions {decisions:?}");
+    let moved = document(&fleet, "overrides").await;
+    assert_eq!(
+        (&moved["entries"]["0"]["to"], &moved["entries"]["1"]["to"]),
+        (&"streams-2".into(), &"streams-2".into()),
+        "the actor moved both halves to itself first: {moved}"
+    );
+    let root = owner("").expect("the ring owns the merged root");
+    let serving = if root == "streams-1" { a.addr } else { b.addr };
+    for (name, before) in &kept {
+        assert_eq!(
+            &served(serving, name).await,
+            before,
+            "{name} after the merge"
+        );
+    }
+    for rig in [&a, &b] {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+    }
+    engine_shutdown(&a.state).await;
+    engine_shutdown(&b.state).await;
 }

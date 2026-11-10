@@ -237,8 +237,10 @@ async fn the_merge_route_starts_a_merge_that_runs_on_to_its_publish() {
 
 /// **The merge route's refusals** (S6 §7, edge #251). Before its loop runs: 503
 /// `topology_unavailable`. Then: a body that is not `{"prefix"}`, 400 `bad_request`; a prefix whose
-/// halves are not both leaves, 404 `unknown_prefix`; after the split, an override on a half, 409
-/// `topology_busy {reason: "override"}`; a live intent, 409 `topology_busy {reason: "intent"}`.
+/// halves are not both leaves, 404 `unknown_prefix`; after the split, a live intent, 409
+/// `topology_busy {reason: "intent"}`. An override is no refusal of its own (#251 B4): one placing
+/// a half elsewhere answers `not_ring_owner` (`a_merge_of_halves_another_instance_holds_*`), a
+/// young one the fleet's wait (`a_merge_waits_for_the_fleet_to_settle`).
 /// Nothing was merged: the stored topology stays at the split's version.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_merge_routes_refusals() {
@@ -272,13 +274,7 @@ async fn the_merge_routes_refusals() {
     let split = crate::topology::split::split(&state.shards, &parent, "op-s", "inst-a", &*clock)
         .await
         .expect("the split publishes");
-    let overrides = std::collections::HashMap::from([("001".to_string(), "inst-b".to_string())]);
-    state.ownership.set_overrides(overrides);
     let busy = |reason: &str| (409, "topology_busy".to_string(), reason.into());
-    assert_eq!(post(halves).await, busy("override"));
-    state
-        .ownership
-        .set_overrides(std::collections::HashMap::new());
     let live = crate::topology::intent::Intent {
         kind: "split".to_string(),
         op_id: "op-other".to_string(),
