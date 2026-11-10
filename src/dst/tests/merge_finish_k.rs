@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// Pause the merge of `halves` at its park (the left half's gate), run `control` there, and let it
 /// go: the merge's result.
-async fn merge_paused_at_park<F: std::future::Future<Output = ()>>(
+pub(super) async fn merge_paused_at_park<F: std::future::Future<Output = ()>>(
     state: &State,
     halves: &[Arc<crate::shard::ShardEngine>; 2],
     op_id: &str,

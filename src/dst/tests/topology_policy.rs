@@ -656,3 +656,180 @@ pub(super) async fn served(addr: std::net::SocketAddr, name: &str) -> serde_json
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// A one-instance fleet cell of two leaves, `0` and `1`, with its stored topology, twelve streams
+/// of one record each, and the policy never merging (its merge sustain is the default six hours).
+async fn local_pair() -> (
+    super::fixture_http::HttpRig,
+    Vec<(String, serde_json::Value)>,
+) {
+    let fleet = seeded().await;
+    let one = |cli: &mut crate::config::CliArgs| {
+        cli.fleet_max = 1;
+        lines(cli);
+    };
+    let halves = vec!["0".to_string(), "1".to_string()];
+    let (rig, _) = policy_rig_at(fleet, one, split_double, halves).await;
+    store_topology(&rig).await;
+    let kept = super::topology_colocation::streams_with_a_record(rig.addr, "lost", 12).await;
+    (rig, kept)
+}
+
+/// The cell's intent once it is terminal, within 45 s: lapse (10 s) and skew (1 s), a beat, the
+/// fence's own lapse and claim, and slack.
+async fn terminal_intent(store: &Arc<dyn ObjectStore>) -> crate::topology::intent::Intent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let held = crate::topology::intent::read(&**store)
+            .await
+            .unwrap()
+            .unwrap();
+        if held.intent.is_terminal() {
+            return held.intent;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the intent ends with no request: still {:?} under {}",
+            held.intent.state,
+            held.intent.lease_owner
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Merge the root's halves through S6's entry, and wait for that merge's intent to end
+/// `Reclaimed`: the cell is then the one leaf `""`.
+async fn merges_after(rig: &super::fixture_http::HttpRig) {
+    // A half still finishing its open answers 503, which an operator retries.
+    let t0 = tokio::time::Instant::now();
+    let deadline = t0 + Duration::from_secs(60);
+    let op_id = loop {
+        match rig.state.shards.topology_ops().merge(String::new()).await {
+            Ok(started) => break started.op_id,
+            Err(crate::topology::merge::Refused::Unavailable(why))
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tracing::debug!(why, "the later merge waits for its halves to open");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(refused) => panic!("a later merge starts: {refused}"),
+        }
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let held = crate::topology::intent::read(&*rig.state.data_store)
+            .await
+            .unwrap()
+            .unwrap();
+        if held.intent.op_id == op_id && held.intent.is_terminal() {
+            assert_eq!(held.intent.state, crate::topology::intent::State::Reclaimed);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the later merge ends"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// **A merge whose actor died while Preparing is rolled back with no request** (TLA-048
+/// `liveness_local`). The cell's pair is on this one instance; the merge's intent is live, its
+/// lease lapsed, its actor gone, and no engine of either half is open. No client request comes.
+/// Each half's owner opens it from its heartbeat, so its open-path fence claims the lapsed intent
+/// and rolls it back: `RolledBack` at the next lease epoch. A merge of the same pair then starts
+/// and publishes, and every stream reads back the record it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_whose_actor_died_while_preparing_is_rolled_back_with_no_request() {
+    use crate::topology::intent::{Intent, State};
+    let (rig, kept) = local_pair().await;
+    let snapshot = rig.state.shards.prefixes();
+    let homes = [snapshot.shards.leaves["0"], snapshot.shards.leaves["1"]];
+    let lost = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-lost".to_string(),
+        sources: vec![("0".to_string(), homes[0]), ("1".to_string(), homes[1])],
+        children: vec![snapshot.shards.next_home],
+        version_seen: snapshot.shards.version,
+        state: State::Preparing,
+        lease_owner: "inst-gone".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    engine_shutdown(&rig.state).await;
+    crate::topology::intent::create(&*rig.state.data_store, &lost)
+        .await
+        .unwrap();
+    let ended = terminal_intent(&rig.state.data_store).await;
+    assert_eq!(
+        (ended.op_id.as_str(), ended.state),
+        ("op-lost", State::RolledBack)
+    );
+    assert_eq!(ended.lease_epoch, 2, "claimed once");
+    merges_after(&rig).await;
+    for (name, before) in &kept {
+        assert_eq!(&served(rig.addr, name).await, before, "{name}");
+    }
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// **A merge left `Unfinished` is rolled forward with no request** (TLA-048, the variant with
+/// the actor alive). The publish of a merge of this instance's pair fails after both `'T'`s (the
+/// stored topology unreadable at the park): the merge ends `Unfinished`, its dropped barriers
+/// close both halves, and its intent stays live. The topology is readable again, and no client
+/// request comes. Each half's owner opens it from its heartbeat; once the lease lapsed its fence
+/// claims the intent and rolls the merge forward from `'T'`: `Reclaimed`, the stored topology the
+/// one leaf `""`, and every stream reads back the record it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_left_unfinished_is_rolled_forward_with_no_request() {
+    use crate::topology::intent::State;
+    let (rig, kept) = local_pair().await;
+    let halves = ["0", "1"].map(|p| rig.state.shards.open(p).expect("the half is open here"));
+    let store = rig.state.data_store.clone();
+    let reserved = Arc::new(Mutex::new(None));
+    let kept_doc = reserved.clone();
+    let corrupt = || async move {
+        let path = Path::from("topology.json");
+        let doc = store.get(&path).await.unwrap().bytes().await.unwrap();
+        *kept_doc.lock().unwrap() = Some(doc);
+        store
+            .put(&path, PutPayload::from_static(b"{"))
+            .await
+            .unwrap();
+    };
+    let merged =
+        super::merge_finish_k::merge_paused_at_park(&rig.state, &halves, "op-u", corrupt).await;
+    assert!(
+        matches!(merged, Err(crate::topology::merge::Refused::Unfinished(_))),
+        "the publish fails after 'T'"
+    );
+    let doc = reserved
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the topology was read at the park");
+    rig.state
+        .data_store
+        .put(&Path::from("topology.json"), PutPayload::from(doc))
+        .await
+        .unwrap();
+    let ended = terminal_intent(&rig.state.data_store).await;
+    assert_eq!(
+        (ended.op_id.as_str(), ended.state),
+        ("op-u", State::Reclaimed)
+    );
+    let (stored, _) = crate::topology::store::read(&*rig.state.data_store)
+        .await
+        .unwrap();
+    assert_eq!(stored.shards.leaves.keys().collect::<Vec<_>>(), [""]);
+    for (name, before) in &kept {
+        assert_eq!(&served(rig.addr, name).await, before, "{name}");
+    }
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}

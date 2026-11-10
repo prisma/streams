@@ -251,6 +251,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             _ = cancel.cancelled() => break,
             live = intent.live(&*state.data_store) => live,
         };
+        open_unopened_sources(&state, live.as_ref()).await;
         let sources = live.as_ref().map(|l| l.sources.clone()).unwrap_or_default();
         state.fleet.standing().set_topology_sources(sources);
         let reserved_shards = reserved_by(live.as_ref(), &instance);
@@ -293,6 +294,34 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 /// The shards `instance` holds in reserve for `live` (S4-DESIGN §4.4, §10): a split's two
 /// children while the instance is its actor, none for a merge (it lowers the count) or another
 /// instance's operation.
+/// Open each source of the live intent `live` that this instance owns and does not hold open
+/// (TLA-048's liveness): only a source's opener claims a lapsed intent, and a source no request
+/// reaches is otherwise never opened again (a merge's halves are cold by the policy's rule; an
+/// actor that died, or ended `Unfinished` and dropped its barriers, left them closed). The open's
+/// fence holds while the intent's lease is fresh, so nothing is decided under a live actor, whose
+/// sources are open on its own instance anyway; once the lease lapsed it claims the intent and
+/// rolls it back or forward. A prefix that is no leaf here (a published split's parent) is left
+/// to the intent's reclaim.
+async fn open_unopened_sources(state: &AppState, live: Option<&crate::topology::intent::Live>) {
+    let Some(live) = live.filter(|live| live.op_id != crate::topology::intent::UNREADABLE) else {
+        return;
+    };
+    let leaves = state.shards.prefixes();
+    for prefix in &live.sources {
+        let unopened = leaves.shards.leaves.contains_key(prefix)
+            && state.ownership.is_mine(prefix)
+            && !state.shards.is_open(prefix);
+        if unopened {
+            let outcome = state
+                .shards
+                .open_or_wait(prefix, Duration::from_secs(1))
+                .await;
+            let ready = matches!(outcome, crate::sharddir::OpenOutcome::Ready(_));
+            tracing::info!(shard = %prefix, op_id = %live.op_id, ready, "opening a live intent's source for its fence");
+        }
+    }
+}
+
 fn reserved_by(live: Option<&crate::topology::intent::Live>, instance: &str) -> u32 {
     let ours = live.is_some_and(|live| live.kind == "split" && live.owner == instance);
     if ours { 2 } else { 0 }

@@ -162,7 +162,7 @@ async fn served_by_one(addrs: &[std::net::SocketAddr], name: &str) -> serde_json
 }
 
 /// `n` streams `<name>-<i>` through `addr`, one record each: their names and records.
-async fn streams_with_a_record(
+pub(super) async fn streams_with_a_record(
     addr: std::net::SocketAddr,
     name: &str,
     n: u32,

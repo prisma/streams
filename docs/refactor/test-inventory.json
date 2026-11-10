@@ -1615,6 +1615,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_left_unfinished_is_rolled_forward_with_no_request",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fb6edd7c41726e6a26124f4424e05b2fbe64dbd2a5691fc6fb9dac05ff219878",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_of_a_retired_half_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1733,6 +1744,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_reclaim.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_whose_actor_died_while_preparing_is_rolled_back_with_no_request",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "96db49b501ef41dc5f9d5c1f2ef11535940727a3dcadf184370bdd02a8b956e0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {
@@ -3381,7 +3403,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ea037b397ec081e538bb990776dbc216235660485541164221f7a889cd17dd33",
+    "function_sha256": "c107ce2045c3f222845ef8084b3b02db0dd287a44f962975a02792b82b6ec93f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -3392,7 +3414,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "38026c7641d813890dc4b6bcd07b7f9e901273b7fc5bb55d4b4a9fa1f382c486",
+    "function_sha256": "619c02f327b18850f32308bd17e618948f4c24d292dec3928bbffd949f5b5ad6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
