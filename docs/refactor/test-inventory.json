@@ -1850,6 +1850,19 @@
     "scenarios": []
   },
   {
+    "name": "a_merges_claimant_claims_before_it_fences_the_other_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "eb65719097f562a9cb95015e14ef3a1e418e045ccc326fd99e17d8dbf485e414",
+    "mechanisms": [],
+    "configuration": [
+      "let faults = FaultStore::uniform(super::fixture_storage::mem(), 7, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/merge_claim_traffic.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_mixed_cell_under_pressure_sheds_its_flooder_and_starves_no_class",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

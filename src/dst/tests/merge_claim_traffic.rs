@@ -153,3 +153,110 @@ async fn a_claimants_roll_forward_completes_under_traffic_on_the_other_source() 
     engine_shutdown(&rig.state).await;
     engine_shutdown(&state_b).await;
 }
+
+/// **A merge's claimant claims before it fences the other source** (TLA-048 option (b), change 2:
+/// claim-first). The same lapsed merge, but the claimant is parked at its claim's CAS of the
+/// intent while inst-b keeps taking appends for `001` past its holdoff and its own lapse (6 s and
+/// 11 s). Claim-first has opened nothing of `001` at the park, so inst-b serves on and nothing
+/// lapses a claim; released, the claimant claims (epoch 2), fences `001`, and inst-b's reopen
+/// waits on the fresh claim while the claimant rolls forward. With the maintenance open first, the
+/// parked claimant has already fenced `001`: inst-b's reopen sees the intent lapsed by its own
+/// observations, fences the claimant's writer and takes the merge over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merges_claimant_claims_before_it_fences_the_other_source() {
+    let faults = FaultStore::uniform(super::fixture_storage::mem(), 7, FaultPlan::CLEAN);
+    let (rig, state_b, addr_b, version) = two_instances(&faults).await;
+    let Rig {
+        store,
+        addr,
+        low,
+        high,
+        ..
+    } = &rig;
+    let snapshot = state_b.shards.prefixes();
+    let homes = [snapshot.shards.leaves["000"], snapshot.shards.leaves["001"]];
+    let merged_home = snapshot.shards.next_home;
+    let merged_path = crate::topology::model::born_home_path("00", merged_home);
+    let (stored, etag) = crate::topology::store::read(&**store).await.unwrap();
+    let (reserved, home) = stored.reserve_home();
+    assert_eq!(home, merged_home);
+    crate::topology::store::replace(&**store, &etag, &reserved)
+        .await
+        .unwrap();
+    complete_merged_log(store, &merged_path, merged_home).await;
+    let t = crate::topology::fence::Retired {
+        version: version + 1,
+        op_id: "op-merge".to_string(),
+        children: vec![("00".to_string(), merged_home)],
+    };
+    let path_of = |home: u32| snapshot.shards.homes[&home].path.clone();
+    retire(store, &path_of(homes[0]), &t).await;
+    let merge = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-merge".to_string(),
+        sources: vec![("000".to_string(), homes[0]), ("001".to_string(), homes[1])],
+        children: vec![merged_home],
+        version_seen: version,
+        state: State::Preparing,
+        lease_owner: "inst-elsewhere".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    intent::create(&**store, &merge).await.unwrap();
+    let parked = faults.hold_class_under(StoreOp::Put, ObjClass::Other, "topology/intent.json", 1);
+    let t0 = std::time::Instant::now();
+    while parked.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        drop(append_to(*addr, low, 5).await);
+        assert!(
+            t0.elapsed() < Duration::from_secs(40),
+            "inst-a's claimant reaches its claim"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // Traffic at inst-b for 001 past a fenced engine's holdoff and its opener's own lapse.
+    let traffic = std::time::Instant::now();
+    while traffic.elapsed() < Duration::from_secs(25) {
+        drop(append_to(addr_b, high, 6).await);
+        let now = intent::read(&**store).await.unwrap().unwrap().intent;
+        if now.is_terminal() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    faults.release_hold();
+    let released = std::time::Instant::now();
+    let ended = loop {
+        let held = intent::read(&**store).await.unwrap().unwrap();
+        if held.intent.is_terminal() || released.elapsed() >= Duration::from_secs(10) {
+            break held.intent;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let owner = ended
+        .lease_owner
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        (
+            ended.state,
+            ended.outcome.map(|o| o.result),
+            ended.lease_epoch,
+            owner
+        ),
+        (
+            State::Reclaimed,
+            Some("published".to_string()),
+            2,
+            "opener:000".to_string()
+        ),
+        "inst-a's claim, made before it fenced 001, rolls the merge forward"
+    );
+    let (stored, _) = crate::topology::store::read(&**store).await.unwrap();
+    assert_eq!(stored.shards.leaves.get("00"), Some(&merged_home));
+    engine_shutdown(&rig.state).await;
+    engine_shutdown(&state_b).await;
+}

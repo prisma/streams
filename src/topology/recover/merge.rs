@@ -5,10 +5,11 @@
 //! claim that fenced one source could decide while the other's previous writer still acked writes
 //! that `M`'s older checkpoint lacks (`nc-claim-fences-one-source`).
 //!
-//! Then, as S4's split recovery does: the claim (a CAS raising the lease epoch), the evidence (each
-//! source's `'T'`, whether a copy began, whether `M` is complete, whether the topology already
-//! names the operation), and S6 §7.4's table (`recovery`), acted on with `topology::recover`'s
-//! helpers.
+//! The claim (a CAS raising the lease epoch) comes first, right after the opener's own open and
+//! before the other source's maintenance open (TLA-048 option (b)). Then, as S4's split recovery
+//! does: the evidence (each source's `'T'`, whether a copy began, whether `M` is complete, whether
+//! the topology already names the operation), and S6 §7.4's table (`recovery`), acted on with
+//! `topology::recover`'s helpers.
 
 use std::sync::Arc;
 
@@ -209,6 +210,7 @@ pub(crate) async fn recover(
     let merge = merge_of(snapshot, retired.as_ref(), live.as_ref())
         .ok_or_else(|| "the merge's sources cannot be read".to_string())?;
     let store = engine.data_store().clone();
+    let claimed = claim(engine, &store, live.as_ref()).await?;
     let mut sources = Vec::with_capacity(2);
     for (prefix, home) in &merge.sources {
         if *prefix == engine.prefix {
@@ -227,7 +229,7 @@ pub(crate) async fn recover(
             .map_err(|e| format!("fence {path}: {e}"))?;
         sources.push(Source::Fenced { db, path });
     }
-    let acted = claim_and_act(engine, snapshot, &merge, &sources, live.as_ref()).await;
+    let acted = decide_and_act(&store, snapshot, &merge, &sources, claimed.as_ref()).await;
     // Every path closes the maintenance open before the verdict: the fence re-reads after a
     // recovery, and maintenance engines must not pile up across its rechecks.
     for source in sources {
@@ -238,32 +240,42 @@ pub(crate) async fn recover(
     acted
 }
 
-/// With both sources fenced: the claim, the evidence, and the act.
-async fn claim_and_act(
+/// The claim of a lapsed `live` intent by the opening `engine` (a CAS raising its lease epoch),
+/// made before the other source's maintenance open (TLA-048 option (b), claim-first): a reopen of
+/// that source then holds on the fresh claim instead of finding the intent lapsed and fencing the
+/// claimant's writer, and a claimant whose CAS lost fences nothing. With no live intent (a `'T'`
+/// alone) there is nothing to claim.
+async fn claim(
     engine: &ShardEngine,
+    store: &Arc<dyn ObjectStore>,
+    live: Option<&Held>,
+) -> Result<Option<Held>, String> {
+    let Some(held) = live else {
+        return Ok(None);
+    };
+    let owner = format!("opener:{}@{}", engine.prefix, engine.writer_epoch);
+    super::claim(&**store, held, &owner)
+        .await
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// With the intent claimed and both sources fenced: the evidence, and the act.
+async fn decide_and_act(
+    store: &Arc<dyn ObjectStore>,
     snapshot: &Snapshot,
     merge: &Merge,
     sources: &[Source<'_>],
-    live: Option<&Held>,
+    claimed: Option<&Held>,
 ) -> Result<(), String> {
-    let store = engine.data_store().clone();
-    let owner = format!("opener:{}@{}", engine.prefix, engine.writer_epoch);
-    let claimed = match live {
-        Some(held) => Some(
-            super::claim(&*store, held, &owner)
-                .await
-                .map_err(|e| e.to_string())?,
-        ),
-        None => None,
-    };
     let claimant = Claimant {
-        store: &store,
+        store,
         snapshot,
         merge,
         sources,
-        claimed: claimed.as_ref(),
+        claimed,
     };
-    let (evidence, t) = decide(&store, merge, sources).await?;
+    let (evidence, t) = decide(store, merge, sources).await?;
     act(&claimant, evidence, t).await
 }
 
