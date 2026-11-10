@@ -1400,6 +1400,17 @@
     "scenarios": []
   },
   {
+    "name": "a_live_intent_holds_the_split_until_it_is_terminal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "136999e300380033daa1f849b6eefede2712b9c7ed175c774a57db1a5ed69f4c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_live_wait_tail_whose_engine_is_retired_under_its_read_answers_503",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1689,6 +1700,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d8665ffa2ecfbd770497a819d8f9899f2988022be4daa462f38e5a8f1d16bc01",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {
@@ -3262,6 +3284,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_beats",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "31aba7dce6b98ec17ea64318f9e0a6bb64e7d3ad74d3d110879ebe0db138a3c5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {
@@ -7368,6 +7401,17 @@
     "scenarios": []
   },
   {
+    "name": "one_stream_carrying_a_shards_appends_holds_hot_entity_and_does_not_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "91caa6cee6cf2033a03e46087228ac56c6ea1fd39ed6ee0d67b3ff2c9a31dea0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "only_the_exact_signed_watch_route_skips_the_token",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -10282,6 +10326,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_policys_split_through_s4_keeps_every_stream_whole",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d8ef125800502ae2f4515a592bc17a04426d955f4e409fa7dd8ff6d2405bde4d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {

@@ -88,11 +88,11 @@ fn leaves(state: &crate::http::AppState) -> Vec<String> {
 /// over it, to four, one split at a time and deepest first; at four the load is under the line
 /// on every leaf and nothing more splits. The operations are exactly the three it takes, all on
 /// the one instance a fleet of at most one has.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops() {
     let fleet = seeded().await;
     let (rig, asked) = policy_rig(
@@ -225,11 +225,11 @@ async fn beat_until(
 /// says `split_refused: "instance_full"`, the desired count grows past the one shard with the
 /// ceiling in its reason, and nothing splits. Once the instance asked for beats, the split goes,
 /// and it is the only one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_beats() {
     let fleet = seeded().await;
     let (rig, asked) = policy_rig(fleet.clone(), lines, split_double).await;
@@ -324,11 +324,11 @@ async fn write_intent(store: &Arc<dyn ObjectStore>, state: crate::topology::inte
 /// A live topology intent holds every operation (S4 §10.1): a leaf over the line does not split
 /// while another operation's intent is Preparing, and the beat says why; once the intent is
 /// terminal, the split goes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_live_intent_holds_the_split_until_it_is_terminal() {
     use crate::topology::intent::State;
     let fleet = seeded().await;
@@ -390,11 +390,11 @@ async fn records(addr: std::net::SocketAddr, name: &str) -> serde_json::Value {
 /// The policy's split goes through S4's split end to end: a one-shard cell over the line splits
 /// once into its two halves, and every stream written before the split reads back the same
 /// records from the child that holds it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_policys_split_through_s4_keeps_every_stream_whole() {
     let fleet = seeded().await;
     destination(&fleet).await;
@@ -476,11 +476,11 @@ async fn load_one(addr: std::net::SocketAddr, per_sec: u64, stop: Arc<AtomicBool
 /// One stream carrying all of a shard's appends over the line is a hot entity: a split cannot
 /// relieve it (one shard per entity), so the policy holds `hot_entity`, the beat says so, and
 /// nothing splits (rev 4 §4.3; EDGE-261-RATIFICATION A3).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[expect(
     clippy::disallowed_methods,
     reason = "policy DST; the load generator is stopped through the shared flag and joined before the topology is checked; it must run while the policy loop decides"
 )]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn one_stream_carrying_a_shards_appends_holds_hot_entity_and_does_not_split() {
     let fleet = seeded().await;
     let (rig, asked) = policy_rig(
