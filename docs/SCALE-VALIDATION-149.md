@@ -111,17 +111,36 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   The run holds when the cell is back on one instance with at most 2
   shards. Record when each merge and each scale-in happened. Size the wait
   from the binary defaults:
-  - The first merge waits for the longer of `SHARD_MERGE_SUSTAIN_SECS`
-    (21,600 s of quiet) and `SHARD_SPLIT_REVERSAL_MIN_SECS` (43,200 s since
-    the last split). The two run at once.
+  - The first merge waits for the longer of `SHARD_SPLIT_REVERSAL_MIN_SECS`
+    (43,200 s since the last split) and `HANDLE_IDLE_EVICT_SECS` plus
+    `SHARD_MERGE_SUSTAIN_SECS` (600 + 21,600 s). A leaf goes quiet only once
+    its handles idle out. The two clocks run at once.
   - Each further merge waits one `SHARD_TOPOLOGY_COOLDOWN_SECS` (60 s) plus
     the merge itself (about 30 s).
   - Each scale-in waits one `SCALE_IN_SECS` window (300 s) plus a cooldown,
     one instance at a time. There is no scale-in while a merge's intent is
     live.
-  - From 12 instances and 16 shards that is 43,200 + 14 × 90 + 11 × 360 =
-    48,420 s, about 13.5 h. Allow a quarter over that, about 17 h, before
-    calling the drain failed.
+  - At the top of the ramp the cell holds 64 leaves (below), so from 64
+    leaves and N instances that is 43,200 + 62 × 90 + (N − 1) × 360 s:
+    about 14.7 h at 12 instances and 19.9 h at 64. Allow a quarter over
+    that before calling the drain failed.
+- **What drives the splits.** A leaf splits at 70% of `HANDLE_MAX_RESIDENT`,
+  8,192 resident handles on the 1 GiB profile, so 5,734 streams. A handle
+  stays resident `HANDLE_IDLE_EVICT_SECS` (600 s) after its touch.
+  `SHARD_APPENDS_CEILING`, 5,000 a second, never binds here: 10,000,000
+  hourly touches are 2,778 a second. With an hourly touch, about one stream
+  in six is resident at a time:
+
+  | Streams | Leaves on Compute | Leaves locally (60 s touch, 10 s idle-out) |
+  |---:|---|---|
+  | 10,000 | 1 | 1 |
+  | 100,000 | 4 | 4 |
+  | 1,000,000 | 32 | 32 |
+  | 10,000,000 | 64, every leaf full: expect `topology_at_max` | not run |
+
+  At 10,000,000 streams `topology_at_max` is the expected outcome, not a
+  finding. Whether the step still holds is what it shows. On Compute
+  every touch reloads its handle, so the p99 is the cold path's.
 - **Waits.** A tiny tenant parks one wait. Plan the pool from §4's
   figures: the 1 GiB profile parks 1,200 waits an instance, so the tenant
   each arm needs more instances for its waits alone (about 1 per 1,200
@@ -135,42 +154,73 @@ an hour, so a step carries 60 times the cloud's touch rate at the same
 stream count. A Scaler stands in for Compute's external mode: it starts and
 stops servers as `fleet.desired.count` says, with no delay of its own.
 
-Three trigger constants are scaled by the same 60x with `--set`:
+Scaled with `--set`, by 60x where the constant is a time window:
 - `SHARD_SPLIT_SUSTAIN_SECS` 600 → 10;
 - `SHARD_MERGE_SUSTAIN_SECS` 21,600 → 360;
-- `SHARD_SPLIT_REVERSAL_MIN_SECS` 43,200 → 720.
+- `SHARD_SPLIT_REVERSAL_MIN_SECS` 43,200 → 720;
+- `HANDLE_IDLE_EVICT_SECS` 600 → 10, so a 60 s touch period leaves the same
+  share of streams resident as an hourly touch on Compute. No lower bound
+  but 0, which `STREAMS_AUTH_MODE=enforce` refuses; idle handles are
+  evicted every 5 s.
+- `SHARD_TOPOLOGY_COOLDOWN_SECS` 60 → compressed, and
+  `REBALANCE_MOVE_COOLDOWN_SECS` 60, the override cooldown that also gates
+  an operation. Neither has a lower bound in the code (0 is accepted). The
+  policy's 10 s tick and the fleet's 2 s tick are their floors.
+  **TODO (owner):** the values the official run uses for these and for
+  `HANDLE_IDLE_EVICT_SECS`.
 
-These stay at the binary defaults, so the cell reshapes more slowly than the
-compressed load grows:
-- `SHARD_TOPOLOGY_COOLDOWN_SECS` (60 s between operations);
-- `SHARD_EMERGENCY_SUSTAIN_SECS` (45 s, now slower than the normal line);
-- the topology policy's 10 s tick;
+These stay at the binary defaults:
+- `SHARD_EMERGENCY_SUSTAIN_SECS` (45 s, now slower than the normal line,
+  so the emergency path is not shown locally);
 - `SCALE_IN_SECS` (300 s);
-- the fleet's 30 s scale-out sustain.
+- the fleet's 30 s scale-out sustain;
+- the policy's 10 s tick.
 
-A doubling from 8 to 16 shards is eight operations, at least 8 min. So each
-step first settles: its streams are touched in 60 s chunks until the
+Each step first settles. Its streams are touched in 60 s chunks until the
 shards, the topology version and the live count have held still for
-`--settle-secs`, at most `--settle-max-secs`. Only then is the step
-measured. A step that never settles is recorded as such. It runs up to
-1,000,000 streams and the fleet the machine holds. 10,000,000 streams and
-64 instances are for Compute only.
+`--settle-secs`, then the step is measured. The bound, `--settle-max-secs
+auto`, is 300 s plus one cooldown and 30 s per leaf the step adds, by the
+table above: 1,540 s at 1,000,000 streams with a 10 s cooldown. Every
+chunk's served share, p99, errors by code and sheds are kept beside the
+settled figures. **TODO (owner):** whether the step's bar applies to the
+reshaping window too. Either way, it is reported.
+
+Two rig limits matter at the top step:
+- **The driver.** It paces touches over workers sized from the rate,
+  about 8 s per worker. At 1,000,000 streams a 2,000-worker cap left each
+  worker 120 ms, below the append p99, so healthy touches were skipped.
+- **The store.** s3lite runs on the host, so a top step's tens of GB stay
+  out of the container VM. Its live size is recorded per step.
+
+It runs up to 1,000,000 streams and the fleet the machine holds.
+10,000,000 streams and 64 instances are for Compute only.
 
 ```bash
 bench/ramp/build.sh
 bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
   --counts 10 100 1000 10000 100000 1000000 --scale-in-secs 0 \
   --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto \
-  --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720
+  --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
+        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=<owner> REBALANCE_MOVE_COOLDOWN_SECS=<owner>
 ```
 
 It records, per step, the shards the live instances own (from their
 heartbeats) and the instances live, and fails a low step that ran on more
 than one instance or more than 2 shards. `--drain-secs auto` sizes the
 drain by §5's arithmetic from the constants the servers run and prints it.
-At the compressed constants, from 12 instances and 16 shards, that is
-720 + 14 × 90 + 11 × 360 = 5,940 s, with 25% on top: 7,425 s. Every server's log is kept in the
-results directory. Run both tenancies under the machine lock, one at a time.
+At the compressed constants with a 10 s cooldown, from 32 leaves and 12
+instances, that is 720 + 30 × 40 + 11 × 310 = 5,330 s, so 6,662 s with the
+margin.
+
+The drain runs after a failed step too. Before it and after it, the ramp
+reads back `--readback` streams (200), spread over all it created. With no
+load during the drain the record counts must be equal, which shows the
+merged shards still serve the data. A difference fails the drain. Every
+server's log is kept in the results directory. `--queues N` adds a small
+queue arm per step: N queues, each touched by one send, one claim and its
+ack. It is reported beside the step and gates nothing until queues live on
+segments (S3b part 2). Run both tenancies under the machine lock, one at a
+time.
 
 ## 7. What to report
 

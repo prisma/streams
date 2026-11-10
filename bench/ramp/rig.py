@@ -256,11 +256,16 @@ def bench(*args, env=(), mounts=(), url="http://router:8080", timeout=None):
 
 
 def population(count, rate, secs, label, tokens=None, warmup=0, url="http://router:8080", creators=None,
-               create_from=0, payload_bytes=400, appends_only=False):
+               create_from=0, payload_bytes=400, appends_only=False, queues=False):
     """Creates COUNT streams, then touches them (an append and a read) at RATE
     a second for SECS after WARMUP: habanero's population mode. TOKENS: a
     tokens.txt (stream i takes line i, modulo its length) or None."""
-    workers = max(4, min(2000, int(rate * 8) + 4))
+    # Each worker owns every WORKERS-th entity and paces its own share; a touch longer than
+    # its period skips the next tick (the bench's MissedTickBehavior::Skip). Eight seconds a
+    # worker keeps a slow touch (an append past the 100 ms WAL gap, its read, a refusal's
+    # retry-after) from costing ticks: about rate x 8 workers, never more than there are
+    # entities. At 1,000,000 streams and a 60 s period that is 133,000 workers.
+    workers = max(4, min(count, int(rate * 8) + 4))
     env, mounts = [f"BENCH_POP_RATE={rate}", "BENCH_POP_START=0"], []
     if creators:
         env.append(f"BENCH_POP_CREATORS={creators}")
@@ -268,6 +273,8 @@ def population(count, rate, secs, label, tokens=None, warmup=0, url="http://rout
         env.append(f"BENCH_POP_CREATE_FROM={create_from}")
     if appends_only:
         env.append("BENCH_POP_NO_READ=1")
+    if queues:  # one send, one claim and its ack a touch (the bench's queue kind)
+        env.append("BENCH_POP_KIND=queue")
     if tokens:
         mounts.append((os.path.dirname(tokens), "/tokens"))
         env.append(f"BENCH_POP_TOKENS=/tokens/{os.path.basename(tokens)}")

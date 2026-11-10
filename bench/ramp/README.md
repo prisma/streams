@@ -185,3 +185,13 @@ A step holds by #149's bar: every stream created, at least 98% of the
 touches due served at a p99 of at most 2 s, no shed, no OOM. Refused
 touches count against the 98% and are reported (`touch_errors`).
 `docs/SCALE-VALIDATION-149.md` §6 has the command.
+
+The driver sizes its workers from the rate (about 8 s a worker, never more
+than the entities), s3lite runs on the host (`rig.HostStore`, its live size
+in `watch-*.jsonl` and the step), each settle chunk's served share, p99,
+errors by code and sheds are kept in the step's `settle.chunk_rows`
+(`--settle-max-secs auto` sizes the settle from the leaves the step adds),
+the drain runs after a failed step too and reads back `--readback` streams
+before and after it (equal counts required), and `--queues N` adds a small
+queue arm per step, reported and not gating.
+
