@@ -1597,7 +1597,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "cae92c1db02a508586063c9f9a7f05d9b77994e91b1fbf1e286c1275b2004bc4",
+    "function_sha256": "36b448ada46486d17bfcc084955cb7c362d8cc3b1488dbf9f713d5d4f8a8fe0d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1630,7 +1630,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "736b1b5233be006d7986bd48f6e0eafeb918b6004dcf2773d2349eee914aff6a",
+    "function_sha256": "92096a27459aac672bde57d99ec2ee18f17dae69b287b7e0c58ee89e8db3ad1b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1641,7 +1641,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "beb54a32743f18b43a895dfe9e85a08d9abfcc376c033e914b5ba8f9589a4a91",
+    "function_sha256": "d4f13a12ebb9d12cfe9c26216314b438b6182b6c25ba3ba23d9ff2d413ca6a52",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1685,7 +1685,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6fa2acad0d915426fa56115162e244e94eb65e0cf4f4af0230f2fde14e7310e2",
+    "function_sha256": "54e7759c21579a4952011580aa86cbac54ba6c1953718cf953b77740210062f7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
@@ -1696,7 +1696,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7c58de9c2375c39069be83bef83a245fb38b3f9b708b23415bac253d9c8aad83",
+    "function_sha256": "511ea876994d8eebcaa0b028d63de14f41a324ed0046763d55a0907007b55be1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
@@ -3710,6 +3710,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_sustained_cold_pair_merges_into_one_stored_leaf_and_keeps_every_stream_whole",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8242c1199ffeb86f22781cf7d231ac5182b656836a84ab2c0b2683ce68bfd191",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {

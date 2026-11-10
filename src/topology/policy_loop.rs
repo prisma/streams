@@ -1,7 +1,7 @@
 //! The topology policy's loop (S5): every period, the cell as the fleet tick last read it, the
 //! policy's decision (`policy::Policy::decide`), and S4's split entry for a split this instance
-//! owns. It reads no store object of its own: the beats and the fleet documents' times are the
-//! tick's reads, cached in `Standing` (S5-PLAN-CHECK §3).
+//! owns, or S6's merge entry for a merge. It reads no store object of its own: the beats and the
+//! fleet documents' times are the tick's reads, cached in `Standing` (S5-PLAN-CHECK §3).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,6 +44,42 @@ pub(crate) fn split_entry(shards: ShardDirectory) -> SplitFn {
                 .map_err(|refused| Refused(refusal_code(&refused)))
         })
     })
+}
+
+/// S6's merge entry: start the merge of a parent's two leaves (S6-DESIGN §7), the split entry's
+/// shape with the parent's prefix. The DST stands S6's own entry in.
+pub(crate) type MergeFn = SplitFn;
+
+/// S6's merge entry (`topology::ops`, the operator merge route's own path, S6-DESIGN §7) behind
+/// the seam. It answers once the merge has started; the merge runs on as its own supervised task.
+pub(crate) fn merge_entry(shards: ShardDirectory) -> MergeFn {
+    Arc::new(move |parent: String| {
+        let shards = shards.clone();
+        Box::pin(async move {
+            let started = shards.topology_ops().merge(parent).await;
+            started
+                .map(|_| ())
+                .map_err(|refused| Refused(merge_refusal_code(&refused)))
+        })
+    })
+}
+
+/// The reason code of S6's refusal, in S4's codes where the two share a reason (`not_mergeable`
+/// is the merge's own).
+fn merge_refusal_code(refused: &super::merge::Refused) -> &'static str {
+    use super::merge::Refused as S6;
+    match refused {
+        S6::Busy("fleet") => "fleet_settling",
+        S6::Busy("override") => "override_recent",
+        S6::Busy(_) => "topology_busy",
+        S6::NotOwner(_) => NOT_RING_OWNER,
+        S6::InstanceFull { .. } => INSTANCE_FULL,
+        S6::Unavailable(_) => "unavailable",
+        S6::NotMergeable(_) => "not_mergeable",
+        S6::UnknownPrefix => "unknown_prefix",
+        S6::RolledBack(_) => "rolled_back",
+        S6::Unfinished(_) => "unfinished",
+    }
 }
 
 /// The reason code of S4's refusal.
@@ -94,6 +130,7 @@ pub(crate) struct Cell {
     /// The RSS shed line (MB): an instance's headroom is what it has left below it; 0 is none.
     pub rss_shed_mb: u64,
     pub split: SplitFn,
+    pub merge: MergeFn,
 }
 
 /// Start the policy's loop: one pass each `period`.
@@ -139,15 +176,17 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
     decision
 }
 
-/// `decision`, after the split entry's answer to the split it names. A merge is held until
-/// S6's merge entry lands.
+/// `decision`, after the split or merge entry's answer to the operation it names. A refused
+/// merge holds, by its refusal's code, and the next pass decides again.
 async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
     if let Decision::Merge { parent } = &decision {
-        tracing::info!(
-            parent,
-            "topology merge decided; held until S6's merge entry"
-        );
-        return Decision::Hold(super::policy::Hold::MergePendingS6);
+        return match (cell.merge)(parent.clone()).await {
+            Ok(()) => decision,
+            Err(refused) => {
+                tracing::info!(?refused, parent, "topology merge refused");
+                Decision::Hold(hold_for(refused.0))
+            }
+        };
     }
     let Decision::Split { prefix, .. } = &decision else {
         return decision;
@@ -362,7 +401,7 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
 
 #[cfg(test)]
 mod tests {
-    use super::{hold_for, intent_live, refusal_code};
+    use super::{hold_for, intent_live, merge_refusal_code, refusal_code};
     use crate::topology::policy::Hold;
     use crate::topology::split::Refused as S4;
 
@@ -387,6 +426,43 @@ mod tests {
         assert_eq!(
             refusal_code(&S4::InstanceFull {
                 resident: 7,
+                max: 7
+            }),
+            "instance_full"
+        );
+    }
+
+    /// S6's merge refusals answer the same holds: busy for its three reasons apart, a half another
+    /// instance holds, and the rest (instance_full and not_mergeable among them) steady, so the
+    /// next pass decides again.
+    #[test]
+    fn s6s_merge_refusals_become_the_policys_holds() {
+        use crate::topology::merge::Refused as S6;
+        let held = |refused: S6| hold_for(merge_refusal_code(&refused));
+        assert_eq!(held(S6::Busy("fleet")), Hold::FleetSettling);
+        assert_eq!(held(S6::Busy("override")), Hold::OverrideRecent);
+        assert_eq!(held(S6::Busy("intent")), Hold::IntentLive);
+        assert_eq!(held(S6::NotOwner("streams-2".into())), Hold::PeerActs);
+        for steady in [
+            S6::InstanceFull {
+                resident: 8,
+                max: 7,
+            },
+            S6::NotMergeable(String::new()),
+            S6::Unavailable(String::new()),
+            S6::UnknownPrefix,
+            S6::RolledBack(String::new()),
+            S6::Unfinished(String::new()),
+        ] {
+            assert_eq!(held(steady), Hold::Steady);
+        }
+        assert_eq!(
+            merge_refusal_code(&S6::NotMergeable(String::new())),
+            "not_mergeable"
+        );
+        assert_eq!(
+            merge_refusal_code(&S6::InstanceFull {
+                resident: 8,
                 max: 7
             }),
             "instance_full"

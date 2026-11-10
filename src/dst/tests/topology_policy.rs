@@ -153,6 +153,16 @@ async fn policy_rig(
     cli: fn(&mut crate::config::CliArgs),
     entry: Entry,
 ) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
+    policy_rig_at(fleet, cli, entry, vec![String::new()]).await
+}
+
+/// `policy_rig`, with the cell's leaves `prefixes`.
+async fn policy_rig_at(
+    fleet: Arc<dyn ObjectStore>,
+    cli: fn(&mut crate::config::CliArgs),
+    entry: Entry,
+    prefixes: Vec<String>,
+) -> (super::fixture_http::HttpRig, Arc<Mutex<Vec<String>>>) {
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
@@ -160,7 +170,7 @@ async fn policy_rig(
             fleet_store: Some(fleet),
             instance: Some("streams-1".into()),
             cli,
-            prefixes: vec![String::new()],
+            prefixes,
             ..Default::default()
         },
     )
@@ -183,6 +193,7 @@ async fn policy_rig(
         appends_ceiling: rig.state.config.cli.shard_appends_ceiling,
         rss_shed_mb: 0,
         split: entry(&rig.state, asked.clone()),
+        merge: crate::topology::policy_loop::merge_entry(rig.state.shards.clone()),
     };
     crate::topology::policy_loop::start(cell, Duration::from_millis(200), &rig.tasks);
     (rig, asked)
@@ -511,4 +522,108 @@ async fn one_stream_carrying_a_shards_appends_holds_hot_entity_and_does_not_spli
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
+}
+
+/// The cell's stored topology, as boot leaves it: the one S4's split and S6's merge publish over.
+async fn store_topology(rig: &super::fixture_http::HttpRig) {
+    let topology = crate::topology::model::Topology {
+        version: 1,
+        shards: rig.state.shards.prefixes().shards.clone(),
+        last_op: None,
+        max_request_body_bytes: None,
+    };
+    let raw = serde_json::to_vec(&topology).unwrap();
+    rig.state
+        .data_store
+        .put(&Path::from("topology.json"), raw.into())
+        .await
+        .unwrap();
+}
+
+/// **A sustained cold pair is merged into one stored leaf through S6's merge, and every stream
+/// reads back whole** (S5 + S6 §7, edge #261). A cell of two leaves, `0` and `1`, takes a few
+/// records on each and then goes quiet: both stay under the merge line past its sustain, so the
+/// policy decides `merge parent=root`, and the merge entry merges them. The directory and the
+/// stored topology end with the one leaf `""`, born at the next version at `shards/root-<h>`, and
+/// every stream written before reads back the same records from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_sustained_cold_pair_merges_into_one_stored_leaf_and_keeps_every_stream_whole() {
+    let fleet = seeded().await;
+    let (rig, asked) = policy_rig_at(
+        fleet.clone(),
+        |cli| {
+            cli.fleet_max = 1;
+            lines(cli);
+            cli.shard_merge_sustain_secs = 1;
+            cli.shard_split_reversal_min_secs = 1;
+        },
+        split_double,
+        vec!["0".to_string(), "1".to_string()],
+    )
+    .await;
+    store_topology(&rig).await;
+    let json = [("content-type", "application/json")];
+    let mut kept = Vec::new();
+    for i in 0..12 {
+        let path = format!("/v1/stream/cold-{i}");
+        hreq(rig.addr, "PUT", &path, &json, b"").await;
+        let body = format!(r#"[{{"stream":{i}}}]"#);
+        let (status, _, _) = hreq(rig.addr, "POST", &path, &json, body.as_bytes()).await;
+        assert_eq!(status, 204, "append to cold-{i}");
+        kept.push((
+            format!("cold-{i}"),
+            records(rig.addr, &format!("cold-{i}")).await,
+        ));
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while leaves(&rig.state) != [""] && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let beat = document(&fleet, "streams-1").await;
+    assert_eq!(
+        leaves(&rig.state),
+        [""],
+        "decision {}",
+        beat["topology_decision"]
+    );
+    assert!(asked.lock().unwrap().is_empty(), "nothing split");
+    let (stored, _) = crate::topology::store::read(&*rig.state.data_store)
+        .await
+        .unwrap();
+    assert_eq!(stored.version, 2);
+    assert_eq!(stored.shards.leaves.keys().collect::<Vec<_>>(), [""]);
+    let root = stored.shards.leaves[""];
+    assert_eq!(
+        stored.shards.homes[&root].path,
+        format!("shards/root-{root}"),
+        "the merged root's home"
+    );
+    for (name, before) in &kept {
+        assert_eq!(
+            &served(rig.addr, name).await,
+            before,
+            "{name} after the merge"
+        );
+    }
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// The records of `name` once its shard serves (a just-merged leaf may still be opening), within
+/// 20 s.
+async fn served(addr: std::net::SocketAddr, name: &str) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+        if status == 200 {
+            return serde_json::from_slice(&body).unwrap_or_default();
+        }
+        assert!(
+            status == 503 && tokio::time::Instant::now() < deadline,
+            "{name}: {status} {}",
+            String::from_utf8_lossy(&body)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

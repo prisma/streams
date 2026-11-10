@@ -180,7 +180,7 @@ OWNERS = (
     owner('topology_policy_reason', 'src/topology/policy/reason.rs',
           'topology::policy::reason dst_tests::topology_policy::'),
     owner('topology_policy_loop', 'src/topology/policy_loop.rs',
-          'topology::policy:: dst_tests::topology_policy::'),
+          'topology::policy:: topology::policy_loop:: dst_tests::topology_policy::'),
     owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),

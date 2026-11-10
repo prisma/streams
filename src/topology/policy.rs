@@ -125,8 +125,6 @@ pub(crate) enum Hold {
     TopologyAtMax,
     Congested,
     BeatsStale,
-    /// A merge the policy decided, held until S6's merge entry lands.
-    MergePendingS6,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

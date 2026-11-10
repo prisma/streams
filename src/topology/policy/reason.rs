@@ -17,7 +17,6 @@ impl Hold {
             Hold::TopologyAtMax => "topology_at_max",
             Hold::Congested => "congested",
             Hold::BeatsStale => "beats_stale",
-            Hold::MergePendingS6 => "merge_pending_s6",
         }
     }
 }
@@ -104,7 +103,6 @@ mod tests {
             (Hold::TopologyAtMax, "topology_at_max"),
             (Hold::Congested, "congested"),
             (Hold::BeatsStale, "beats_stale"),
-            (Hold::MergePendingS6, "merge_pending_s6"),
         ];
         for (hold, name) in holds {
             assert_eq!(Decision::Hold(hold).reason(), format!("hold={name}"));
