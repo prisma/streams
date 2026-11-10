@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use super::{HASH, clocked, msg, op, send_op, settle};
-use crate::native_queue::intervals::Interval;
+use crate::native_queue::intervals::{Interval, Released};
 use crate::native_queue::{NqOp, NqOut, PrepareFrom, QueueConfig, SendMessage, SettleKind, hints};
 use crate::shard::ShardEngine;
 use crate::spill::gc::{self, Head, HeadState};
@@ -190,6 +190,36 @@ async fn the_purge_leaves_a_trimming_queue_alone_until_a_request_which_keeps_its
         (HeadState::Requested, 2, 1),
         "the prefix the trim reached is kept"
     );
+}
+
+/// A purge request keeps the queue's `'k'` rows until the purge's last
+/// decrement, so the folds' view keeps them too: after the request a fold
+/// still drops the entries of the chunks the trim released above a held
+/// one, in every `'H'` state, as a split's recount does (TLA-047's view,
+/// control `nc_k_view_by_state`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_fold_after_a_purge_request_still_drops_what_the_trim_released() {
+    let (e, _db, _c) = clocked("nq-trim-requested-k", QueueConfig::default()).await;
+    for body in ["a", "b", "c"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 3).await;
+    ack(&e, &leased[1..]).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(
+        (head(&e).await, e.intervals(&HASH).await.unwrap()),
+        (Some(Head::trimming(3, 0)), vec![iv(1, 2)]),
+        "0 is leased: 1 and 2 form an interval above it"
+    );
+    e.request_purge(HASH, 0).await.unwrap();
+    let requested = head(&e).await.unwrap();
+    assert_eq!(
+        (requested.state, requested.head, requested.reclaimed),
+        (HeadState::Requested, 3, 0)
+    );
+    assert_eq!(e.intervals(&HASH).await.unwrap(), [iv(1, 2)], "'k' stays");
+    let released = e.reclaimed_heads([HASH]).await.unwrap();
+    assert_eq!(released[&HASH], Released::new(0, &[iv(1, 2)]));
 }
 
 /// The cleaner's horizon of a chunk (§7.4): the latest hard expiry of its

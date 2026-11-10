@@ -449,13 +449,14 @@ impl ShardEngine {
         Ok(report)
     }
 
-    /// What each of `hashes` that is a dead stream or a trimming queue
-    /// released (`spill::gc`, `native_queue::intervals`): a fold or merge
-    /// drops the entries ending below its `reclaimed` offset and, for a
-    /// queue, those inside its released intervals, every one of them
-    /// already decremented. One point read per stream (an absent `'H'` row
-    /// costs a bloom probe; the gc's `head_reads`) and one prefix read of a
-    /// trimming queue's intervals, none on a shard with no `'H'` row.
+    /// What each of `hashes` that has an `'H'` row (a dead stream, or a
+    /// trimmed queue) released (`spill::gc`, `native_queue::intervals`): a
+    /// fold or merge drops the entries ending below its `reclaimed` offset
+    /// and, for a queue, those inside its released intervals, every one of
+    /// them already decremented. One point read per stream (an absent `'H'`
+    /// row costs a bloom probe; the gc's `head_reads`) and one prefix read
+    /// of the intervals of each with an `'H'` row, none on a shard with no
+    /// `'H'` row.
     pub(crate) async fn reclaimed_heads(
         &self,
         hashes: impl IntoIterator<Item = [u8; 16]>,
@@ -481,15 +482,14 @@ impl ShardEngine {
     }
 
     /// What a stream with the `'H'` row `h` released: its prefix, and a
-    /// trimming queue's intervals above it.
+    /// queue's intervals above it, in every state: a purge request keeps a
+    /// trimmed queue's `'k'` rows until the purge's last decrement, and a
+    /// split's recount applies them in every state too.
     async fn released_of(
         &self,
         hash: &[u8; 16],
         h: &crate::spill::gc::Head,
     ) -> Result<Released, FoldError> {
-        if h.state != crate::spill::gc::HeadState::Trimming {
-            return Ok(Released::new(h.reclaimed, &[]));
-        }
         let intervals = self.intervals(hash).await.map_err(FoldError::Store)?;
         Ok(Released::new(h.reclaimed, &intervals))
     }
@@ -684,7 +684,7 @@ pub(super) fn fold_rule(period_due: bool, bytes: u64, process: u64, directory_by
         || (process >= PROCESS_DIRECTORY_BYTES && bytes >= DIRECTORY_FOLD_BYTES / 8)
 }
 
-/// What each dead stream and trimming queue released.
+/// What each stream with an `'H'` row released.
 pub(crate) type Reclaimed = BTreeMap<[u8; 16], Released>;
 
 /// F2: one stream's entries, sorted for and stripped of contained ones, of
