@@ -41,8 +41,8 @@ const CHECKPOINT_LIFETIME: Duration = Duration::from_secs(3600);
 pub(crate) enum Refused {
     /// `unknown_prefix`: the prefix's two halves are not both leaves.
     UnknownPrefix,
-    /// `topology_busy`: a live intent holds the cell, an override names a half, or the fleet has
-    /// not settled.
+    /// `topology_busy`: a live intent holds the cell, or the fleet has not settled. An override is
+    /// no refusal of its own (#251 B4).
     Busy(&'static str),
     /// `instance_full`: the merge would leave this instance holding `resident` shards (both halves
     /// and `M` until the publish), past its ceiling `max`.

@@ -110,8 +110,8 @@ pub(crate) async fn run_entries(
 /// Why a split did not happen (the route's refusal codes, S4-DESIGN §6.2 step 0.1).
 #[derive(Debug, Clone)]
 pub(crate) enum Refused {
-    /// `topology_busy`: a live intent holds the cell (`intent`), or an override names the parent
-    /// (`override`).
+    /// `topology_busy`: a live intent holds the cell (`intent`), or the fleet has not settled
+    /// (`fleet`). An override is no refusal of its own (#251 amendment R3).
     Busy(&'static str),
     /// `not_ring_owner`: another instance (named) holds the parent.
     NotOwner(String),
