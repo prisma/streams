@@ -107,8 +107,9 @@ pub(crate) struct Counts {
 /// `reclaimed` was decremented in the source's `'R'` (`spill::gc`), though a `'K'` row or a
 /// run-index object written before the release may still name it until a fold or merge drops it
 /// (the fold's `kept_entries` rule). A recount drops them too, so the children's `'R'` rows sum to
-/// the source's. Each release a source records is one arm of [`Released::of`] and one clause of
-/// [`Released::holds`].
+/// the source's. The split builds it once from the source's rows ([`Released::of`]) and hands it to
+/// every child's [`child_counts`]; a release recorded outside the sentinel (a queue's trimmed
+/// intervals) is added by its caller before the counts, with one clause of [`Released::holds`].
 #[derive(Debug, Default)]
 pub(crate) struct Released {
     /// Per dead stream, its `'H'` row's `reclaimed`: every entry ending below it is released.
@@ -138,17 +139,17 @@ impl Released {
     }
 }
 
-/// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'`, `'O'` and
-/// `'H'`) and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'`
-/// rows name): the entries whose entity hash the range holds and whose stream has not released
-/// them ([`Released`]), each `'K'` row decoded whole so every kept chunk keeps the offset the row
-/// gives it (K-SPLIT-DECISION-2026-11-09).
+/// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'` and `'O'`)
+/// and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'` rows
+/// name): the entries whose entity hash the range holds and whose stream has not `released` them,
+/// each `'K'` row decoded whole so every kept chunk keeps the offset the row gives it
+/// (K-SPLIT-DECISION-2026-11-09).
 pub(crate) fn child_counts(
     rows: &[Row],
     run_entries: &[([u8; 16], DirEntry)],
     range: Range,
+    released: &Released,
 ) -> Result<Counts, PlanError> {
-    let released = Released::of(rows)?;
     let live = |hash: &[u8; 16], entry: &DirEntry| {
         range.contains(EntityHash::from_stored(*hash)) && !released.holds(hash, entry)
     };
@@ -201,7 +202,8 @@ pub(crate) fn child_counts(
 /// stored `'R'` row's chunks and bytes, and every `'O'` row's, equal the children's sums, and the
 /// children count no object the source does not. Else the first object that differs.
 pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanError> {
-    let source = child_counts(rows, &[], Range::ALL)?;
+    // Only the source's `'O'` rows are read from it: no entry, so no release, is counted.
+    let source = child_counts(rows, &[], Range::ALL, &Released::default())?;
     let mut stored: BTreeMap<ObjectId, (u64, u64, u64, u64)> = BTreeMap::new();
     for (key, value) in rows {
         let corrupt = || PlanError::Corrupt(key.clone());

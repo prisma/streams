@@ -1,7 +1,7 @@
 #![cfg(test)]
 //! The helper's routing (S4-DESIGN §7, S3a §2.8): every tag's rule, on rows of each kind.
 
-use super::{PlanError, Row, check_sums, child_counts, child_lists, route};
+use super::{PlanError, Released, Row, check_sums, child_counts, child_lists, route};
 use crate::keyspace::range::Range;
 use crate::keyspace::{SENTINEL, tag};
 use crate::spill::directory::split::decode_row_in_range;
@@ -149,8 +149,9 @@ fn each_child_counts_its_own_entries_and_the_two_sum_to_the_parent() {
     let mut run = decode_row_in_range(OBJECT, &rows[0].1, Range::ALL).unwrap()[1].clone();
     run.1.object = OTHER;
     let (lower, upper) = (Range::of("0"), Range::of("1"));
-    let lo = child_counts(&rows, std::slice::from_ref(&run), lower).unwrap();
-    let hi = child_counts(&rows, std::slice::from_ref(&run), upper).unwrap();
+    let none = Released::default();
+    let lo = child_counts(&rows, std::slice::from_ref(&run), lower, &none).unwrap();
+    let hi = child_counts(&rows, std::slice::from_ref(&run), upper, &none).unwrap();
     let row = |live_bytes, live_chunks, object_len| Refcount {
         live_bytes,
         live_chunks,
@@ -174,7 +175,7 @@ fn an_undecodable_count_row_is_refused() {
     let key = directory_key(OBJECT);
     let rows = [(key.clone(), vec![1, 2])];
     assert_eq!(
-        child_counts(&rows, &[], Range::ALL),
+        child_counts(&rows, &[], Range::ALL, &Released::default()),
         Err(PlanError::Corrupt(key))
     );
 }
@@ -212,7 +213,8 @@ fn the_childrens_counts_must_sum_to_the_sources() {
             runindex::encode_orphans(orphans),
         ),
     ];
-    let children = [Range::of("0"), Range::of("1")].map(|r| child_counts(&rows, &[], r).unwrap());
+    let children = [Range::of("0"), Range::of("1")]
+        .map(|r| child_counts(&rows, &[], r, &Released::default()).unwrap());
     assert_eq!(check_sums(&rows, &children), Ok(()));
     let mut short = children.clone();
     short[1].refcounts.clear();
@@ -326,8 +328,9 @@ fn a_child_counts_no_entry_its_stream_already_released() {
         released(low, last + 1),
     ];
     let (lower, upper) = (Range::of("0"), Range::of("1"));
-    let lo = child_counts(&rows, &run, lower).unwrap();
-    let hi = child_counts(&rows, &run, upper).unwrap();
+    let heads = Released::of(&rows).unwrap();
+    let lo = child_counts(&rows, &run, lower, &heads).unwrap();
+    let hi = child_counts(&rows, &run, upper, &heads).unwrap();
     assert_eq!(lo.refcounts, [], "the lower stream's entries are released");
     assert_eq!(
         hi.refcounts,
@@ -336,13 +339,14 @@ fn a_child_counts_no_entry_its_stream_already_released() {
     assert_eq!(check_sums(&rows, &[lo, hi]), Ok(()));
     let mut at_reclaimed = rows.clone();
     at_reclaimed[3] = released(low, last);
-    let kept = child_counts(&at_reclaimed, &run, lower).unwrap();
+    let at = Released::of(&at_reclaimed).unwrap();
+    let kept = child_counts(&at_reclaimed, &run, lower, &at).unwrap();
     let ids: Vec<ObjectId> = kept.refcounts.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, [OBJECT, OTHER], "an entry ending at reclaimed is live");
     let mut corrupt = rows;
     corrupt[3].1 = vec![9];
     assert_eq!(
-        child_counts(&corrupt, &run, lower),
+        Released::of(&corrupt).map(|_| ()),
         Err(PlanError::Corrupt(gc::head_key(&low)))
     );
 }

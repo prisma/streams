@@ -516,9 +516,11 @@ async fn plan(
     let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
     let routed = sentinel::route(rows, &ranges).map_err(|e| e.to_string())?;
     let run = run_entries(store, |home| parent.object_root(home), rows).await?;
+    let released = sentinel::Released::of(rows).map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(children.len());
     for (routed, range) in routed.into_iter().zip(ranges) {
-        let counts = sentinel::child_counts(rows, &run, range).map_err(|e| e.to_string())?;
+        let counts =
+            sentinel::child_counts(rows, &run, range, &released).map_err(|e| e.to_string())?;
         out.push((routed, counts));
     }
     Ok(out)
