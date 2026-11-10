@@ -1,11 +1,15 @@
 #![cfg(test)]
-//! The merge past its `'T'` (S6-DESIGN rev 6 §7.2, §7.4): once it attempted its `'T'` it only rolls
-//! forward. A leaf that fails to open after the publish leaves the merge published, and a publish
-//! that fails leaves the intent live for a claimant. Its rig is `merge_k`'s.
+//! The merge's pause and its tail (S6-DESIGN rev 6 §7.2, §7.4): while it holds its two sources
+//! parked, both answer as a split's parent does (edge #249 B3); once it attempted its `'T'` it only
+//! rolls forward. A leaf that fails to open after the publish leaves the merge published, and a
+//! publish that fails leaves the intent live for a claimant. Its rig is `merge_k`'s.
 
+use super::billing_closure_debts::JSON;
 use super::fixture_http::engine_shutdown;
+use super::fixture_requests::hreq;
 use super::merge_k::{Rig, State, halves_of_00, rig, split_00};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Pause the merge of `halves` at its park (the left half's gate), run `control` there, and let it
 /// go: the merge's result.
@@ -134,5 +138,102 @@ async fn a_merge_whose_publish_fails_after_t_is_left_live() {
         kept.is_ok(),
         "M's list under the parent's root is kept: {list}"
     );
+    engine_shutdown(&state).await;
+}
+
+/// An append of `{"n": n}` to `name` through `addr`: its status, `Retry-After` and error code.
+async fn append_answer(
+    addr: std::net::SocketAddr,
+    name: &str,
+    n: u32,
+) -> (u16, Option<String>, Option<String>) {
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    let path = format!("/v1/stream/{name}");
+    let (status, headers, body) = hreq(addr, "POST", &path, &[JSON], body.as_bytes()).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let code = error["error"]["code"].as_str().map(str::to_string);
+    (status, headers.get("retry-after").cloned(), code)
+}
+
+/// The records of `name`.
+async fn records(addr: std::net::SocketAddr, name: &str) -> Vec<serde_json::Value> {
+    let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
+    let read: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    read.as_array().cloned().unwrap_or_default()
+}
+
+/// **A merge pauses both its sources as a split pauses its parent** (S6 §7.2, edge #249 B3). At
+/// the merge's park both sources' committers are parked: an append to a stream of either source
+/// is answered after the 2 s hold, `503 shard_splitting` with `Retry-After: 1`, and so is a later
+/// one, at once. Released, the merge publishes, and an append to each stream is served by the
+/// merged leaf; neither stream holds a refused record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merge_pauses_both_sources_with_503_shard_splitting_and_serves_after_its_publish() {
+    let Rig {
+        state,
+        addr,
+        low,
+        high,
+        parent,
+        ..
+    } = rig().await;
+    split_00(&state, &parent).await;
+    let halves = halves_of_00(&state).await;
+    let before = (records(addr, &low).await, records(addr, &high).await);
+    let splitting = (
+        503,
+        Some("1".to_string()),
+        Some("shard_splitting".to_string()),
+    );
+    let answers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (seen, names) = (answers.clone(), [low.clone(), high.clone()]);
+    let paused = move || async move {
+        // Both sources parked at once: their held appends go out together, each waits its hold.
+        let sent_at = Instant::now();
+        let (held_low, held_high) = futures_util::future::join(
+            append_answer(addr, &names[0], 10),
+            append_answer(addr, &names[1], 11),
+        )
+        .await;
+        let waited = sent_at.elapsed();
+        for (name, held, n) in [(&names[0], held_low, 20), (&names[1], held_high, 21)] {
+            let sent_at = Instant::now();
+            let later = append_answer(addr, name, n).await;
+            let at_once = sent_at.elapsed();
+            seen.lock()
+                .unwrap()
+                .push((name.clone(), held, waited, later, at_once));
+        }
+    };
+    let merged = merge_paused_at_park(&state, &halves, "op-p", paused).await;
+    merged.expect("the merge publishes");
+    for (name, held, waited, later, at_once) in answers.lock().unwrap().iter() {
+        assert_eq!(held, &splitting, "{name}: held");
+        assert!(
+            waited >= &Duration::from_secs(2),
+            "{name} held for the hold: {waited:?}"
+        );
+        assert_eq!(later, &splitting, "{name}: a later append");
+        assert!(
+            at_once < &Duration::from_secs(1),
+            "{name} answered at once: {at_once:?}"
+        );
+    }
+    assert_eq!(answers.lock().unwrap().len(), 2, "both sources answered");
+    for (name, n) in [(&low, 30), (&high, 31)] {
+        assert_eq!(
+            append_answer(addr, name, n).await.0,
+            204,
+            "{name} after the publish"
+        );
+    }
+    let after = (records(addr, &low).await, records(addr, &high).await);
+    let grown = |was: &Vec<serde_json::Value>, n: u32| {
+        let mut want = was.clone();
+        want.push(serde_json::json!({ "n": n }));
+        want
+    };
+    assert_eq!(after, (grown(&before.0, 30), grown(&before.1, 31)));
     engine_shutdown(&state).await;
 }

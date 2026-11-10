@@ -1648,6 +1648,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_pauses_both_sources_with_503_shard_splitting_and_serves_after_its_publish",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a6ee1e9748c9f53bb91cfc34588bf6e6728b32d7004c395768817c0bda75cea4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_serves_what_its_sources_wrote_after_the_split",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
