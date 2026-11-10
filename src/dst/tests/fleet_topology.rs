@@ -113,3 +113,35 @@ async fn a_split_source_is_never_the_lag_rebalancers_shard() {
     assert_eq!(state.fleet_pressure().0, "", "a split's source");
     engine_shutdown(&state).await;
 }
+
+/// **Nor is it the lag move's most stalled shard** (S4-DESIGN §4.4): an instance holding one shard
+/// gives it up to a lag move; once its beat read an intent naming that shard as a source, it gives
+/// up none, stalled or wedged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_live_intents_source_is_never_the_lag_moves_shard() {
+    let (state, _addr) = super::fixture_http::http_rig(mem()).await;
+    let leaf = state
+        .shards
+        .prefixes()
+        .shards
+        .leaves
+        .keys()
+        .next()
+        .cloned()
+        .unwrap();
+    let route = crate::topology::ops::route_of(&leaf);
+    let adoption = crate::shard_directory::Adoption::Internal;
+    state.shards.resolve(&route, adoption).await.unwrap();
+    assert_eq!(state.lag_victim("", 0), Some(leaf.clone()), "its one shard");
+    state
+        .fleet
+        .standing()
+        .set_topology_sources(vec![leaf.clone()]);
+    let (wedge_prefix, wedge_max_ms, _) = state.fleet_pressure();
+    assert_eq!(
+        state.lag_victim(&wedge_prefix, wedge_max_ms),
+        None,
+        "a live intent's source"
+    );
+    engine_shutdown(&state).await;
+}

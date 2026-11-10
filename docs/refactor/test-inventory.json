@@ -1514,6 +1514,17 @@
     "scenarios": []
   },
   {
+    "name": "a_live_intents_source_is_never_the_lag_moves_shard",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "bcf70ec7e91eadf4099f493631ebc4d11498204b7dab04bf5adf287fb6201991",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_live_wait_tail_whose_engine_is_retired_under_its_read_answers_503",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -9557,6 +9568,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
+    "scenarios": []
+  },
+  {
+    "name": "return_home_skips_a_live_intents_sources",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ab1d7e56404c3fbc7537d148fc9bb47617c8be5958ae77b99905461f87e3f05a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation.rs",
     "scenarios": []
   },
   {

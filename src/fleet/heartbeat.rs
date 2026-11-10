@@ -498,6 +498,34 @@ impl AppState {
         let lag = effective_lag_secs(self.shards.stall_max_secs(), wedge_max_ms);
         (wedge_prefix, wedge_max_ms, lag)
     }
+
+    /// The shard the lag move gives up: the most stalled shard this runtime holds (possession
+    /// first, keyed by the shard whose sealer stalls, never re-derived from a stream hash), else,
+    /// with no committed backlog anywhere (shed before commit), the wedged one `fleet_pressure`
+    /// named. A source of the live topology intent is never it (S4-DESIGN §4.4).
+    pub(crate) fn lag_victim(&self, wedge_prefix: &str, wedge_max_ms: i64) -> Option<String> {
+        let held = self.shards.held_prefixes();
+        let sources = self.fleet.standing().topology_sources();
+        let wedge = (wedge_prefix, wedge_max_ms);
+        lag_victim_of(&self.shards.shard_stalls(), held, &sources, wedge)
+    }
+}
+
+/// `AppState::lag_victim` over its reads: the most stalled of the `held` shards (`stalls` by
+/// prefix) that no live intent names among its `sources`, else the wedged shard `(prefix, ms)`
+/// when it is wedged, named and no source either.
+fn lag_victim_of(
+    stalls: &[(String, u64)],
+    held: Vec<String>,
+    sources: &[String],
+    (wedge_prefix, wedge_max_ms): (&str, i64),
+) -> Option<String> {
+    let movable = |prefix: &str| !sources.iter().any(|source| source == prefix);
+    let served: Vec<String> = held.into_iter().filter(|p| movable(p)).collect();
+    super::pick_victim_shard(stalls, &served).or_else(|| {
+        let wedged = wedge_max_ms > 0 && !wedge_prefix.is_empty() && movable(wedge_prefix);
+        wedged.then(|| wedge_prefix.to_owned())
+    })
 }
 
 /// The most wedged shard of `wedges` (prefix, blocked commit write or stale
@@ -557,10 +585,37 @@ fn tenths(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACK_WINDOW_MS, Sampler, effective_lag_secs, ewma, megabytes, recent_p50_ms, tenths,
-        worst_wedge,
+        ACK_WINDOW_MS, Sampler, effective_lag_secs, ewma, lag_victim_of, megabytes, recent_p50_ms,
+        tenths, worst_wedge,
     };
     use std::time::{Duration, Instant};
+
+    /// The lag move gives up the most stalled held shard that is no live intent's source; with
+    /// none, the wedged shard while it is wedged (`ms > 0`), named and no source; else nothing.
+    #[test]
+    fn the_lag_victim_is_never_a_live_intents_source() {
+        let names = |list: &[&str]| list.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        let stalls = vec![("a".to_owned(), 5), ("b".to_owned(), 9)];
+        let held = names(&["a", "b"]);
+        let some = |p: &str| Some(p.to_owned());
+        assert_eq!(
+            lag_victim_of(&stalls, held.clone(), &[], ("w", 1)),
+            some("b")
+        );
+        assert_eq!(
+            lag_victim_of(&stalls, held.clone(), &names(&["b"]), ("w", 1)),
+            some("a")
+        );
+        let both = names(&["a", "b"]);
+        assert_eq!(lag_victim_of(&stalls, held, &both, ("w", 1)), some("w"));
+        assert_eq!(lag_victim_of(&stalls, Vec::new(), &[], ("w", 1)), some("w"));
+        assert_eq!(lag_victim_of(&stalls, Vec::new(), &[], ("w", 0)), None);
+        assert_eq!(lag_victim_of(&stalls, Vec::new(), &[], ("", 1)), None);
+        assert_eq!(
+            lag_victim_of(&stalls, Vec::new(), &names(&["w"]), ("w", 1)),
+            None
+        );
+    }
 
     #[test]
     fn each_beat_rates_one_beat_and_smooths_after_the_first() {

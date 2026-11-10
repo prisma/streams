@@ -463,3 +463,107 @@ async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_me
     moved_onto(&fleet, "00", "streams-3").await;
     whole_and_shut(&[&a, &b, &c], &kept).await;
 }
+
+/// **Return-home skips a live intent's sources** (S4-DESIGN §4.4: the intent is a move reservation
+/// that return-home and the rebalancer skip; Fable 5.2's B4-c). On two instances the ring gives
+/// `00 01` to `streams-1` and `10 11` to `streams-2`; an override 400 s old (past
+/// `REBALANCE_RETURN_SECS`) keeps `00` on `streams-2`, and the fair share admits its return home
+/// (1 + 1 within 2). A merge's intent names `00` and `01` as its sources and stays live (renewed).
+/// For as long as it is live, return-home leaves `00`'s override; once it ends, return-home
+/// drops the override and `00` goes home.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn return_home_skips_a_live_intents_sources() {
+    use crate::topology::intent::{self, Intent, State};
+    let (fleet, data) = (seeded().await, mem());
+    let leaves = || ["00", "01", "10", "11"].map(str::to_string).to_vec();
+    let a = full_rig(
+        &fleet,
+        &data,
+        ("streams-1", RigRuntime::first()),
+        lines,
+        leaves(),
+    )
+    .await;
+    store_topology(&a).await;
+    let now = count_of_two(&fleet).await;
+    let b = full_rig(
+        &fleet,
+        &data,
+        ("streams-2", RigRuntime::incarnation(1)),
+        lines,
+        leaves(),
+    )
+    .await;
+    let snapshot = a.state.shards.prefixes();
+    let live = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-reserved".to_string(),
+        sources: vec![
+            ("00".to_string(), snapshot.shards.leaves["00"]),
+            ("01".to_string(), snapshot.shards.leaves["01"]),
+        ],
+        children: vec![snapshot.shards.next_home],
+        version_seen: snapshot.shards.version,
+        state: State::Preparing,
+        lease_owner: "streams-2".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: i64::MAX,
+        started_ms: 0,
+        outcome: None,
+    };
+    let mut held = intent::create(&*data, &live).await.unwrap();
+    // Both instances' beats have read the intent before the aged override lands.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let seen = || {
+        [&a, &b].iter().all(|rig| {
+            rig.state
+                .fleet
+                .standing()
+                .topology_sources()
+                .contains(&"00".to_string())
+        })
+    };
+    while !seen() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(seen(), "both beats read the live intent");
+    let moved = format!(
+        r#"{{"entries":{{"00":{{"to":"streams-2","ms":{}}}}}}}"#,
+        now - 400_000
+    );
+    fleet
+        .put(&Path::from("fleet/overrides.json"), PutPayload::from(moved))
+        .await
+        .unwrap();
+    laid_out(&a, &[("00", "streams-2"), ("01", "streams-1")]).await;
+    // Renewed every second for 20 s (a live actor's lease), the override is never returned.
+    let overridden =
+        || async { document(&fleet, "overrides").await["entries"]["00"]["to"].clone() };
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut next = held.intent.clone();
+        next.started_ms += 1;
+        held = intent::replace(&*data, &held, next).await.unwrap();
+        assert_eq!(
+            overridden().await,
+            "streams-2",
+            "a live intent's source keeps its override"
+        );
+    }
+    let mut ended = held.intent.clone();
+    ended.state = State::RolledBack;
+    intent::replace(&*data, &held, ended).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while overridden().await == "streams-2" && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        overridden().await.is_null(),
+        "once the intent ended the override is returned home"
+    );
+    for rig in [&a, &b] {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+        engine_shutdown(&rig.state).await;
+    }
+}

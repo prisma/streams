@@ -729,8 +729,9 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     let mut drop_keys: Vec<String> = Vec::new();
                     let mut pending_returns: std::collections::HashMap<String, usize> =
                         std::collections::HashMap::new();
+                    // A live topology intent's sources keep their override (S4-DESIGN §4.4).
                     for (prefix, e) in ov.entries.iter() {
-                        if now_ms() - e.ms < return_secs * 1000 {
+                        if state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs) {
                             continue;
                         }
                         if active.is_empty() {
@@ -826,21 +827,7 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
                         );
                     }
-                    let victim = {
-                        // Possession-first, keyed by the shard whose sealer
-                        // stalls (never re-derived from a stream hash).
-                        let served: Vec<String> = state.shards.held_prefixes();
-                        pick_victim_shard(&state.shards.shard_stalls(), &served)
-                            // No committed backlog anywhere (shed-before-
-                            // commit): move the WEDGED shard itself.
-                            .or_else(|| {
-                                if wedge_max_ms > 0 && !wedge_prefix.is_empty() {
-                                    Some(wedge_prefix.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                    };
+                    let victim = state.lag_victim(&wedge_prefix, wedge_max_ms);
                     if let (Some(to), Some(prefix)) = (target, victim) {
                         if ov.pending_events.len() < 64 {
                             ov.pending_events.push(

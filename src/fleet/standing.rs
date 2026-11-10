@@ -164,6 +164,18 @@ impl Standing {
             .unwrap_or_default()
     }
 
+    /// Whether return-home leaves the override on `prefix` in place this tick: the entry is
+    /// younger (`age_ms`) than the return window of `return_secs`, or the live topology intent
+    /// names `prefix` as a source, as the last beat read it (S4-DESIGN §4.4). A poisoned lock
+    /// reads as no source, as `topology_sources` does.
+    pub(crate) fn return_home_skips(&self, prefix: &str, age_ms: i64, return_secs: i64) -> bool {
+        age_ms < return_secs.saturating_mul(1000)
+            || self
+                .topology_sources
+                .lock()
+                .is_ok_and(|sources| sources.iter().any(|source| source == prefix))
+    }
+
     /// The split demand the next beat publishes.
     pub(crate) fn split_demand(&self) -> u64 {
         self.split_demand.load(Ordering::Relaxed)
@@ -310,6 +322,23 @@ mod tests {
         assert_eq!(standing.split_demand(), 7);
         standing.set_split_demand(0);
         assert_eq!(standing.split_demand(), 0);
+    }
+
+    /// Return-home skips an entry younger than its window, to the millisecond, and any entry
+    /// whose prefix the live intent names as a source, until the beat reads no intent.
+    #[test]
+    fn return_home_skips_a_young_entry_and_a_live_intents_source() {
+        let standing = Standing::default();
+        let window = 300_000;
+        assert!(standing.return_home_skips("00", window - 1, 300));
+        assert!(!standing.return_home_skips("00", window, 300));
+        assert!(!standing.return_home_skips("00", 2_000, 0));
+        standing.set_topology_sources(vec!["00".to_owned(), "01".to_owned()]);
+        assert!(standing.return_home_skips("00", window, 300));
+        assert!(standing.return_home_skips("01", i64::MAX, 300));
+        assert!(!standing.return_home_skips("1", window, 300));
+        standing.set_topology_sources(Vec::new());
+        assert!(!standing.return_home_skips("00", window, 300));
     }
 
     fn beat(instance: &str) -> crate::fleet::Heartbeat {
