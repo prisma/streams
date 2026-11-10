@@ -198,9 +198,12 @@ fn config() -> ConsumerConfig {
 /// The second billed group never reads the row the first one staged, nor
 /// does a group between them that bills nothing let go of it: the engine
 /// reads the stream's static row from the store once, and the second
-/// group's counters carry both appends' totals.
+/// group's counters carry both appends' totals. Its month counter needs
+/// both appends in one billing month, so it holds the billing clock
+/// against the tests that inject one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_group_bills_on_the_row_its_predecessor_left_on_the_handle() {
+    let _clock = crate::billing::billing_clock_lock().read().await;
     let rig = Rig::start("resident-billing").await;
     assert_eq!(rig.append(b"payload").await.unwrap().next_offset, 1);
     let first = rig.billing_row().await;
