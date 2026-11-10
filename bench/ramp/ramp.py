@@ -358,15 +358,26 @@ def run_continuous(a, out_dir, results):
             ooms = [f"streams-{k}" for k in range(1, a.fleet_max + 1)
                     if sh("docker", "inspect", "-f", "{{.State.OOMKilled}}", rig.server(k), check=False).strip() == "true"]
             ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
+            settled_window, reshaping = None, None
             if settled:
-                checks["created"] = checks["created"] and settled["create_errors"] == 0
-                ok = ok and checks["created"]
+                # The bar holds over the WHOLE step, its reshaping chunks included (owner,
+                # 2026-11-10); both windows are reported apart so a failure shows where it happened.
+                settled_window = {"held": round(held, 4) if held is not None else None,
+                                  "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "sheds": watch.sheds()}
+                reshaping = {k: settled[k] for k in ("chunks", "secs", "min_held", "max_p99_ms", "sheds")}
+                held, checks = whole_step(a, count, pop, settled, watch.sheds(), checks)
+                ok = all(checks.values())
+            q = queue_arm(a, count, out_dir, posture, scaler) if a.queues else None
+            if q is not None and a.queue_gate:
+                checks["queue"] = q["pass"]
+                ok = ok and q["pass"]
             shards = watch.shard_range()
             if count <= a.low_until:  # #149: the low steps run on FLEET_MIN instances with few shards
                 checks["few"] = (max(live_start, scaler.live, scaler.peak_since(started)) <= a.fleet_min
                                  and shards is not None and shards[2] <= a.low_max_shards)
                 ok = ok and checks["few"]
             step = {"count": count, "shards": a.shards, "shard_range": shards, "settle": settled,
+                    "settled_window": settled_window, "reshaping": reshaping, "queue": q,
                     "store_live_gb_max": watch.live_gb_max,
                     "driver": dict(watch.driver, late=pop.get("late"), workers=rig.population_workers(count, count / a.period)), "fleet": [a.fleet_min, a.fleet_max],
                     "live": [live_start, scaler.live], "tenancy": a.tenancy, "auth": a.auth,
@@ -384,8 +395,6 @@ def run_continuous(a, out_dir, results):
                                 "errors": dict(list((pop.get("errors") or {}).items())[:3]) or pop.get("error")}),
                   flush=True)
             prev = count
-            if a.queues:
-                queue_arm(a, count, out_dir, results, posture, scaler)
             if not ok:
                 print(f"RAMP_STOP at {count}", flush=True)
                 break
@@ -573,20 +582,39 @@ def readback(posture, names):
     return out
 
 
-def queue_arm(a, count, out_dir, results, posture, scaler):
+def whole_step(a, count, pop, settled, sheds, checks):
+    """#149's bar over the whole step (owner, 2026-11-10): the touches served over every settle chunk
+    (60 s each) and the measured window, against the touches due over both; the worst window's p99;
+    the sheds of both. Returns the whole step's served share and the checks it decides."""
+    target = count / a.period
+    due = target * (60 * settled["chunks"] + a.step_secs)
+    served = sum((r["held"] or 0) * target * 60 for r in settled["chunk_rows"])
+    served += (pop.get("touches_per_sec") or 0) * a.step_secs
+    p99s = [r["p99_ms"] for r in settled["chunk_rows"] if r["p99_ms"] is not None]
+    p99s.append((pop.get("latency_ms") or {}).get("p99"))
+    held = served / due if due else None
+    checks = dict(checks)
+    checks["created"] = checks["created"] and settled["create_errors"] == 0
+    checks["touched"] = (held or 0) >= 0.98 or due < 50
+    checks["p99"] = None not in p99s and max(p99s) <= 2000
+    checks["no_shed"] = settled["sheds"] + sheds == 0
+    return held, checks
+
+
+def queue_arm(a, count, out_dir, posture, scaler):
     """C2: a small queue arm beside the streams (off unless --queues): --queues queues, each touched
-    once a period by one send, one claim and its ack, for the step's time. Reported beside the step;
-    it gates nothing until queues live on segments (S3b part 2)."""
+    once a period by one send, one claim and its ack, for the step's time. Reported in the step
+    (`queue`); it gates the step only with --queue-gate (the confirmation run after S3b part 2)."""
     n = a.queues
     pop = rig.population(n, n / a.period, a.step_secs, "queue", posture.tokens, warmup=WARMUP_SECS,
                          create_from=n if a.queue_created else 0, queues=True)
     a.queue_created = True
     _, checks, held = verdict(n, a.period, a.step_secs, pop, 0, [])
-    row = {"count": count, "arm": "queue", "queues": n, "held": round(held, 4) if held is not None else None,
+    row = {"queues": n, "pass": all(checks.values()), "held": round(held, 4) if held is not None else None,
            "checks": checks, "p99_ms": (pop.get("latency_ms") or {}).get("p99"),
            "errors": errors_by_code(pop.get("errors")), "live": scaler.live}
-    open(results, "a").write(json.dumps(row) + "\n")
-    print(json.dumps(row), flush=True)
+    print(json.dumps({"count": count, "queue": row}), flush=True)
+    return row
 
 
 def drain_budget(a, live, shards):
@@ -669,6 +697,7 @@ def main():
                     help="the settle's bound, or `auto`: 300 s plus a cooldown and 30 s per leaf the step adds")
     ap.add_argument("--readback", type=int, default=200, help="streams the drain reads back before and after")
     ap.add_argument("--queues", type=int, default=0, help="a queue arm of this many queues each step (0: off)")
+    ap.add_argument("--queue-gate", action="store_true", help="the queue arm's verdict is part of the step's")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="server settings on top (recorded)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (DRY lines), start nothing")
     a = ap.parse_args()

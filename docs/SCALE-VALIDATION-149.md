@@ -43,7 +43,7 @@ git grep -q '/v1/containers/' <commit> -- src && echo containers || echo project
 
 | Setting | Value | Why |
 |---|---|---|
-| Instance size | 1 vCPU, 1 GiB (`deploy/profiles/compute-1g.env`) | the size the profiles certify. The size comparison (P5.0, 2026-11-08, program notes) found no larger size cheaper per unit of work for tiny tenants. For small ones, 2 vCPU, 4 GiB was 15% cheaper. Medium tenants were measurable only on 1 GiB. The owner decides any change. **TODO (owner):** whether `PROJECT_SHARE_K` and the wait pool should scale with a larger size |
+| Instance size | 1 vCPU, 1 GiB (`deploy/profiles/compute-1g.env`) | the size the profiles certify. The size comparison (P5.0, 2026-11-08, program notes) found no larger size cheaper per unit of work for tiny tenants. For small ones, 2 vCPU, 4 GiB was 15% cheaper. Medium tenants were measurable only on 1 GiB. The owner decides any change. `PROJECT_SHARE_K` (8) and the wait pool stay at today's fixed values for #149, whatever the size (owner, 2026-11-10, RULES.md: "Let's keep todays fixed values for now") |
 | `INITIAL_SHARDS` | 1 | the cell starts on one shard; splits make the rest |
 | `FLEET_MIN`, `FLEET_MAX` | 1, 64 | the cell grows from one instance, up to #149's 64 |
 | `PATH_PREFIX`, `FLEET_PREFIX` | fresh for every run, on a fresh bucket | as §1.3: a reused prefix keeps the old topology |
@@ -95,7 +95,10 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   takes, after the cell has stopped resizing for 10 minutes.
 - **A step holds** when every stream was created, at least 98% of the
   touches due were served at a p99 of at most 2 s, and no instance shed or
-  was OOM-killed (#149's bars). A touch the cell refused is a failed
+  was OOM-killed (#149's bars). The bar holds over the whole step, the time
+  the cell spends reshaping for it included, not only once it has settled
+  (owner, 2026-11-10, RULES.md). The settled and the reshaping figures are
+  still reported apart, so a failure shows where it happened. A touch the cell refused is a failed
   touch: it counts against the 98% and is reported, but the bar does not
   also ask for zero. That includes a `409 not_stream_owner` while a shard
   moves, and a `503 shard_splitting`. The latter is an append held past a
@@ -162,12 +165,14 @@ Scaled with `--set`, by 60x where the constant is a time window:
   share of streams resident as an hourly touch on Compute. No lower bound
   but 0, which `STREAMS_AUTH_MODE=enforce` refuses; idle handles are
   evicted every 5 s.
-- `SHARD_TOPOLOGY_COOLDOWN_SECS` 60 → compressed, and
-  `REBALANCE_MOVE_COOLDOWN_SECS` 60, the override cooldown that also gates
-  an operation. Neither has a lower bound in the code (0 is accepted). The
-  policy's 10 s tick and the fleet's 2 s tick are their floors.
-  **TODO (owner):** the values the official run uses for these and for
-  `HANDLE_IDLE_EVICT_SECS`.
+- `SHARD_TOPOLOGY_COOLDOWN_SECS` 60 → 10, and `REBALANCE_MOVE_COOLDOWN_SECS`
+  60 → 10, the override cooldown that also gates an operation. Neither has
+  a lower bound in the code (0 is accepted). The policy's 10 s tick and the
+  fleet's 2 s tick are their floors.
+
+The three values above (idle-out 10 s, both cooldowns 10 s) are the
+owner's for the official local run (2026-11-10, RULES.md), on top of the
+three sustain and reversal compressions.
 
 These stay at the binary defaults:
 - `SHARD_EMERGENCY_SUSTAIN_SECS` (45 s, now slower than the normal line,
@@ -182,8 +187,10 @@ shards, the topology version and the live count have held still for
 auto`, is 300 s plus one cooldown and 30 s per leaf the step adds, by the
 table above: 1,540 s at 1,000,000 streams with a 10 s cooldown. Every
 chunk's served share, p99, errors by code and sheds are kept beside the
-settled figures. **TODO (owner):** whether the step's bar applies to the
-reshaping window too. Either way, it is reported.
+settled figures. The bar applies to the chunks too: the step's served share
+counts every chunk's touches and the measured window's, against the touches
+due over both. Its p99 is the worst window's, and its sheds are both
+windows'. The step reports `settled_window` and `reshaping` apart.
 
 Two rig limits matter at the top step:
 - **The driver.** It paces touches over workers sized from the rate,
@@ -192,16 +199,32 @@ Two rig limits matter at the top step:
 - **The store.** s3lite runs on the host, so a top step's tens of GB stay
   out of the container VM. Its live size is recorded per step.
 
-It runs up to 1,000,000 streams and the fleet the machine holds.
-10,000,000 streams and 64 instances are for Compute only.
+It runs up to 1,000,000 streams, provided `meas-149-rig` (a fixed 8
+instances at 100,000 and 1,000,000 streams) shows the rig holds that step.
+The fleet is what the machine holds. 10,000,000 streams and 64 instances
+are Compute's, through Habanero (§1 to §5).
+
+**Order** (owner, 2026-11-10):
+1. `meas-149-rig` on slate.
+2. The official streams ramp, `meas-149`: both tenancies, on push 4's
+   pushed sha once it is `CI_GREEN`, before queue parts 1 and 2.
+3. After S3b lands, a short confirmation run closes #149: one tenancy to
+   100,000 streams, with the drain and the queue arm gating.
 
 ```bash
 bench/ramp/build.sh
+# meas-149: --tenancy one to 1,000,000 (below), then --tenancy each to 100,000 (the largest cached tenant set), each in its own lock leg
 bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
   --counts 10 100 1000 10000 100000 1000000 --scale-in-secs 0 \
   --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto \
   --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
-        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=<owner> REBALANCE_MOVE_COOLDOWN_SECS=<owner>
+        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10
+# The confirmation after S3b: one tenancy to 100,000, the drain, and 1,000 queues gating each step
+bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
+  --counts 10 100 1000 10000 100000 --scale-in-secs 0 \
+  --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto --queues 1000 --queue-gate \
+  --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
+        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10
 ```
 
 It records, per step, the shards the live instances own (from their
@@ -218,8 +241,8 @@ load during the drain the record counts must be equal, which shows the
 merged shards still serve the data. A difference fails the drain. Every
 server's log is kept in the results directory. `--queues N` adds a small
 queue arm per step: N queues, each touched by one send, one claim and its
-ack. It is reported beside the step and gates nothing until queues live on
-segments (S3b part 2). Run both tenancies under the machine lock, one at a
+ack. It is reported in the step (`queue`), and with `--queue-gate` its
+verdict is the step's too, as in the confirmation run after S3b part 2. Run both tenancies under the machine lock, one at a
 time.
 
 ## 7. What to report

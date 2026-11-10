@@ -181,8 +181,11 @@ measured, until the shards, the topology version and the live count have
 held still that long (at most `--settle-max-secs`), since the topology
 cooldown and the policy tick are not compressed. `--drain-secs auto` sizes
 the drain from the constants the servers run and prints the arithmetic.
-A step holds by #149's bar: every stream created, at least 98% of the
-touches due served at a p99 of at most 2 s, no shed, no OOM. Refused
+A step holds by #149's bar over the whole step, its settle chunks included
+(owner, 2026-11-10): every stream created, at least 98% of the touches due
+served at a p99 of at most 2 s, no shed, no OOM; `settled_window` and
+`reshaping` report the two windows apart. `--queue-gate` makes the queue
+arm's verdict part of the step's. Refused
 touches count against the 98% and are reported (`touch_errors`).
 `docs/SCALE-VALIDATION-149.md` §6 has the command.
 
