@@ -182,7 +182,7 @@ pub(crate) async fn topology_merge(
             StatusCode::UNPROCESSABLE_ENTITY,
             json!({"error": "not_mergeable", "message": why}),
         ),
-        Err(Refused::Unavailable(why) | Refused::RolledBack(why)) => (
+        Err(Refused::Unavailable(why) | Refused::RolledBack(why) | Refused::Unfinished(why)) => (
             StatusCode::SERVICE_UNAVAILABLE,
             json!({"error": "topology_unavailable", "message": why}),
         ),

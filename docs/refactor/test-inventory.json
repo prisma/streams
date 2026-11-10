@@ -1619,7 +1619,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3d7d165f4aa6a57e321f95213943a9b1699258139078398cfd7b5e572ef8458c",
+    "function_sha256": "b055c1a482a077fc28b548ff2a165e3c0718f9c199e7243d2ec65fa17bc2f473",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1678,6 +1678,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_whose_leaf_fails_to_open_after_the_publish_stays_published",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "6fa2acad0d915426fa56115162e244e94eb65e0cf4f4af0230f2fde14e7310e2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_whose_publish_fails_after_t_is_left_live",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7c58de9c2375c39069be83bef83a245fb38b3f9b708b23415bac253d9c8aad83",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
     "scenarios": []
   },
   {

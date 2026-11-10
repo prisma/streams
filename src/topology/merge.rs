@@ -55,6 +55,9 @@ pub(crate) enum Refused {
     Unavailable(String),
     /// The merge started and rolled back before `'T'`.
     RolledBack(String),
+    /// The merge attempted a `'T'` write but did not publish: it only rolls forward, so its intent
+    /// stays live for the next opener of a source to claim and decide from both sources (S6 §7.4).
+    Unfinished(String),
 }
 
 impl std::fmt::Display for Refused {
@@ -72,6 +75,12 @@ impl std::fmt::Display for Refused {
             Self::NotMergeable(why) => write!(f, "not_mergeable: {why}"),
             Self::Unavailable(why) => write!(f, "topology_unavailable: {why}"),
             Self::RolledBack(why) => write!(f, "rolled back: {why}"),
+            Self::Unfinished(why) => {
+                write!(
+                    f,
+                    "past 'T', unpublished: {why}; the next open of a source decides it"
+                )
+            }
         }
     }
 }
@@ -79,7 +88,8 @@ impl std::fmt::Display for Refused {
 /// What a merge published: the topology version, and `M`'s prefix, home and engine.
 pub(crate) struct Published {
     pub version: u64,
-    pub merged: (String, u32, Arc<ShardEngine>),
+    /// `M`'s engine is `None` when it did not open after the publish: it opens on its next request.
+    pub merged: (String, u32, Option<Arc<ShardEngine>>),
 }
 
 /// The two sources, in prefix order (`…0`, `…1`), with their homes, and the merged leaf's.
@@ -227,6 +237,13 @@ async fn run(
         },
         None => None,
     };
+    #[cfg(test)]
+    if let Some(point) = left.gc_state().gate.take_pause() {
+        // Tests only: a test that went away is no reason to stop the merge.
+        if point.reached.send(()).is_ok() {
+            drop(point.go.await);
+        }
+    }
     let copied = match (&prepared, &barriers) {
         (Ok(()), Some(_)) => copy(dir, store, pair, op_id).await,
         (Err(e), _) => Err(e.clone()),
@@ -238,26 +255,40 @@ async fn run(
     };
     let retired = match copied {
         Ok(()) => retire_sources(pair, version, op_id).await,
-        Err(e) => Err(e),
+        Err(e) => Err(Retiring::Before(e)),
     };
-    if let Err(why) = retired {
-        if let Some((a, b)) = barriers {
-            a.resume();
-            b.resume();
+    let (a, b) = match (retired, barriers) {
+        (Ok(()), Some(barriers)) => barriers,
+        (Err(Retiring::After(why)), _) => {
+            // A `'T'` write was attempted, so the merge only rolls forward (S6 §7.4): the dropped
+            // barriers close both sources, whose reopens hold in their fence until a claimant
+            // decides from what both show.
+            drop(holds);
+            return Err(Refused::Unfinished(why));
         }
-        drop(holds);
-        undo(dir, store, pair).await;
-        return Err(Refused::RolledBack(why));
-    }
-    let retire = |reroute: super::gate::Reroute| {
-        if let Some((a, b)) = barriers {
-            a.retire(reroute.clone());
-            b.retire(reroute);
+        (retired, barriers) => {
+            if let Some((a, b)) = barriers {
+                a.resume();
+                b.resume();
+            }
+            drop(holds);
+            undo(dir, store, pair).await;
+            let why = match retired {
+                Err(Retiring::Before(why) | Retiring::After(why)) => why,
+                Ok(()) => "the barriers were lost".to_string(),
+            };
+            return Err(Refused::RolledBack(why));
         }
+    };
+    // Unreleased (a publish that fails before its release), the barriers close both sources.
+    let retire = move |reroute: super::gate::Reroute| {
+        a.retire(reroute.clone());
+        b.retire(reroute);
     };
     let published = publish(op, actor.clock().monotonic(), retire).await;
     drop(holds);
-    published.map_err(Refused::RolledBack)
+    // A publish always follows the `'T'`s: it only rolls forward.
+    published.map_err(Refused::Unfinished)
 }
 
 /// The refusals: the parent prefix and the two sources' homes, or why they cannot merge now.
@@ -498,20 +529,28 @@ async fn clone_merged(
 
 /// SourcesRetired: one `'T'` into each source, naming `M`, and flushed. The sources stay open,
 /// their barriers held, until the release.
-async fn retire_sources(pair: &Pair, version: u64, op_id: &str) -> Result<(), String> {
+/// Why the sources were not retired: before any `'T'` write, or after one was attempted (it may
+/// be durable, so the merge only rolls forward).
+enum Retiring {
+    Before(String),
+    After(String),
+}
+
+async fn retire_sources(pair: &Pair, version: u64, op_id: &str) -> Result<(), Retiring> {
     let retired = fence::Retired {
         version: version + 1,
         op_id: op_id.to_string(),
         children: vec![(pair.prefix.clone(), pair.home)],
     };
-    let row = serde_json::to_vec(&retired).map_err(|e| format!("'T': {e}"))?;
+    let row = serde_json::to_vec(&retired).map_err(|e| Retiring::Before(format!("'T': {e}")))?;
+    let after = |e: slatedb::Error| Retiring::After(format!("'T': {e}"));
     for (source, _) in &pair.sources {
         source
             .db
             .put(fence::retired_key(), row.clone())
             .await
-            .map_err(|e| format!("'T': {e}"))?;
-        source.db.flush().await.map_err(|e| format!("'T': {e}"))?;
+            .map_err(after)?;
+        source.db.flush().await.map_err(after)?;
     }
     Ok(())
 }
@@ -557,7 +596,15 @@ async fn publish(
     let bits = u128::from_str_radix(&pair.prefix, 2).unwrap_or(0);
     let shift = 128 - u32::try_from(pair.prefix.len()).unwrap_or(0).min(128);
     let route = bits.checked_shl(shift).unwrap_or(0).to_be_bytes();
-    let engine = open_merged(dir, &route, &pair.prefix).await?;
+    // The merge is published: `M` failing to open here opens on its next request, and the merge
+    // goes on to retire its sources.
+    let engine = match open_merged(dir, &route, &pair.prefix).await {
+        Ok(engine) => Some(engine),
+        Err(error) => {
+            tracing::warn!(op_id, "a published merge's leaf did not open: {error}");
+            None
+        }
+    };
     let drained = tokio::time::Instant::now() + DRAIN;
     while pair.sources.iter().any(|(s, _)| s.queued_ops() > 0)
         && tokio::time::Instant::now() < drained

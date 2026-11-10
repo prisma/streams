@@ -931,6 +931,22 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::merge_finish_k",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The merge-past-'T' DSTs (S6 §7.2, §7.4): a merge never rolls back once it attempted its 'T' (a leaf unopened after the publish stays published, a failed publish leaves the intent live).",
+      "syntax": "path = \"tests/merge_finish_k.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::merge_paused_at_park",
+      "path": "src/dst/tests/merge_finish_k.rs",
+      "reason": "The merge and the control a test runs at its park (planting junk under M's path, or making topology.json unreadable) run concurrently in one test task, so the failure lands after 'T'; the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_k",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split end to end on a serving rig (S4-DESIGN section 6, K-SPLIT-DECISION-2026-11-09 section 5): two streams sealed into one segment object, the leaf split in two, each child serving its stream back byte-exact and the children's refcounts summing to the parent's; compiler and the full DST suite exercise the module.",

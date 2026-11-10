@@ -16,7 +16,7 @@ use crate::spill::object::ObjectId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-type State = Arc<crate::http::AppState>;
+pub(super) type State = Arc<crate::http::AppState>;
 type Addr = std::net::SocketAddr;
 
 /// A stream created in the half `half` of the leaf `00` (its route's third bit): its name.
@@ -50,16 +50,16 @@ async fn refcounts(engine: &crate::shard::ShardEngine) -> BTreeMap<ObjectId, (u6
 
 /// A rig whose stored topology is its own (version 1), holding `low` in `000`'s half and `high` in
 /// `001`'s, each with two records sealed into one shared segment object of the leaf `00`.
-struct Rig {
-    store: Arc<dyn object_store::ObjectStore>,
-    state: State,
-    addr: Addr,
-    low: String,
-    high: String,
-    parent: Arc<crate::shard::ShardEngine>,
+pub(super) struct Rig {
+    pub(super) store: Arc<dyn object_store::ObjectStore>,
+    pub(super) state: State,
+    pub(super) addr: Addr,
+    pub(super) low: String,
+    pub(super) high: String,
+    pub(super) parent: Arc<crate::shard::ShardEngine>,
 }
 
-async fn rig() -> Rig {
+pub(super) async fn rig() -> Rig {
     let store = mem();
     let (state, addr) = http_rig(store.clone()).await;
     let topology = crate::topology::model::Topology {
@@ -129,6 +129,7 @@ async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
     .expect("the merge publishes");
     assert_eq!(merged.version, split.version + 1);
     let (prefix, home, engine) = &merged.merged;
+    let engine = engine.as_ref().expect("M opened");
     assert_eq!(prefix, "00");
     assert!(
         !child_homes.contains(home) && *home != parent_home,
@@ -309,7 +310,7 @@ async fn post_merge(addr: Addr, body: &str) -> (u16, serde_json::Value) {
 }
 
 /// Split the leaf `00` of `state` (whose stored topology is version 1) with `parent`, its engine.
-async fn split_00(state: &State, parent: &Arc<crate::shard::ShardEngine>) -> u64 {
+pub(super) async fn split_00(state: &State, parent: &Arc<crate::shard::ShardEngine>) -> u64 {
     let clock = state.runtime.clock.clone();
     crate::topology::split::split(&state.shards, parent, "op-s", "inst-a", &*clock)
         .await
