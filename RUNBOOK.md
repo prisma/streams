@@ -913,7 +913,15 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   dies, the next open of the parent (any request) claims the split after
   11 s and rolls it back, or forward if the parent was already retired;
   the shard answers 503 `shard_opening` meanwhile.
-  `POST /operator/topology/merge` is 501 until S6.
+  `POST /operator/topology/merge` `{"prefix"}` (the parent of the two halves)
+  merges `<prefix>0` and `<prefix>1` the same way: 202 `{op_id, version}`,
+  then both halves pause and their held appends go to the merged leaf.
+  Refusals as for a split (`topology_busy` `fleet` or `intent`,
+  `not_ring_owner`, `instance_full` at its peak: both halves and the merged
+  leaf), plus 422 `not_mergeable` (a half already retired) and 404 when the
+  halves are not both leaves. Both halves must be this instance's: the
+  topology policy moves a split pair onto one instance itself and merges it
+  once the move's cooldown has passed.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
