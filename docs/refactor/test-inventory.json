@@ -318,7 +318,7 @@
     "function_sha256": "01d4e53a40659078db770de801d22432fec3f242a508b03d537950a6e7ccf55a",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/topology_policy.rs",
+    "file": "src/dst/tests/topology_colocation.rs",
     "scenarios": []
   },
   {
@@ -3384,7 +3384,7 @@
     "function_sha256": "ea037b397ec081e538bb990776dbc216235660485541164221f7a889cd17dd33",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/topology_policy.rs",
+    "file": "src/dst/tests/topology_colocation.rs",
     "scenarios": []
   },
   {
@@ -3395,7 +3395,7 @@
     "function_sha256": "38026c7641d813890dc4b6bcd07b7f9e901273b7fc5bb55d4b4a9fa1f382c486",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/topology_policy.rs",
+    "file": "src/dst/tests/topology_colocation.rs",
     "scenarios": []
   },
   {

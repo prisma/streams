@@ -553,6 +553,14 @@
       "syntax": "path = \"tests/topology_policy.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_colocation",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The topology policy's merges across instances (S6 §7.2 step 0, edge #261 B1): a split cold pair co-located on its actor, its partner or a third instance and merged, and a merge with no room asking for an instance; two or three real instances per scenario, on topology_policy's rigs; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/topology_colocation.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::populate",
