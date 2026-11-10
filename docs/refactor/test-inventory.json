@@ -1630,7 +1630,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "b055c1a482a077fc28b548ff2a165e3c0718f9c199e7243d2ec65fa17bc2f473",
+    "function_sha256": "202ce70b155a1c89daa0c59ee4f62c61c17ecb7bae76cc7257bcda625be193b6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",

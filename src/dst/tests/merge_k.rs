@@ -95,7 +95,8 @@ pub(super) async fn rig() -> Rig {
 }
 
 /// **A merge of a split's two children serves both streams from one leaf, with the parent's
-/// counts, and lists what it holds under each ancestor before it is a leaf.**
+/// counts (its sources' summed), and lists what it holds under each ancestor before it is a
+/// leaf.**
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
     let Rig {
@@ -106,7 +107,6 @@ async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
         high,
         parent,
     } = rig().await;
-    let before = refcounts(&parent).await;
     let want = (records(addr, &low).await, records(addr, &high).await);
     let parent_home = state.shards.prefixes().shards.leaves["00"];
 
@@ -114,9 +114,20 @@ async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
     let split = crate::topology::split::split(&state.shards, &parent, "op-s", "inst-a", &*clock)
         .await
         .expect("the split publishes");
-    let children: Vec<Arc<crate::shard::ShardEngine>> =
-        split.children.iter().map(|(_, _, e)| e.clone()).collect();
-    let child_homes: Vec<u32> = split.children.iter().map(|(_, h, _)| *h).collect();
+    let children = halves_of_00(&state).await;
+    let snapshot = state.shards.prefixes();
+    let child_homes: Vec<u32> = ["000", "001"].map(|p| snapshot.shards.leaves[p]).into();
+    // What the children hold once sealed: the parent's shared objects split between them (their
+    // halves sum to the parent's rows), and any object a child sealed of its own (a seal the
+    // parent's budget left over, which a child takes after the split).
+    let mut before = BTreeMap::new();
+    for child in &children {
+        child.seal_requested().await.expect("seal");
+        for (id, (chunks, bytes)) in refcounts(child).await {
+            let sum = before.entry(id).or_insert((0, 0));
+            *sum = (sum.0 + chunks, sum.1 + bytes);
+        }
+    }
 
     let merged = crate::topology::merge::merge(
         &state.shards,
@@ -151,7 +162,7 @@ async fn a_merge_of_two_children_serves_both_streams_with_the_parents_counts() {
     assert_eq!(
         refcounts(engine).await,
         before,
-        "M's counts are the parent's"
+        "M's counts are its sources' summed (the parent's, with any a child sealed of its own)"
     );
     for ancestor in [parent_home] {
         let root = installed.shards.homes[&ancestor].path.clone();
