@@ -148,3 +148,74 @@ async fn a_split_whose_publish_fails_after_t_is_left_to_roll_forward() {
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// The split of a cell over a fault store whose first WAL write of the parent after the park
+/// (`'T'`'s flush) is held and then released by `release` (lost, or failing before dispatch). The
+/// split's result, the intent left behind, the cell, and the faults the store injected.
+async fn split_with_t_held(
+    release: fn(&crate::dst::fault_store::FaultStore),
+) -> (
+    Result<crate::topology::split::Published, crate::topology::split::Refused>,
+    crate::topology::intent::Intent,
+    super::split_k::Cell,
+    u64,
+) {
+    use crate::dst::fault_store::{FaultPlan, FaultStore};
+    let faults = FaultStore::uniform(super::fixture_storage::mem(), 0x7a17, FaultPlan::CLEAN);
+    let store: std::sync::Arc<dyn object_store::ObjectStore> = faults.clone();
+    let cell = super::split_k::cell_over(store.clone()).await;
+    let wal = format!("{}/wal/", cell.parent.log_path());
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    cell.parent.gc_state().gate.pause_at_park(point);
+    let clock = cell.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&cell.state.shards, &cell.parent, "op-l", "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split paused at its park");
+        let engaged =
+            faults.hold_class_under(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, &wal, 1);
+        assert!(go_tx.send(()).is_ok(), "the split waits for go");
+        let t0 = std::time::Instant::now();
+        while engaged.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(10),
+                "'T''s flush parks"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        release(&faults);
+    };
+    let (split, ()) = tokio::join!(split, control);
+    let left = crate::topology::intent::read(&*store)
+        .await
+        .unwrap()
+        .unwrap()
+        .intent;
+    let injected = faults.injected_lost() + faults.injected_errors();
+    (split, left, cell, injected)
+}
+
+/// **A `'T'` whose flush SlateDB retries publishes the split** (S4-DESIGN §6.4). SlateDB's `put`
+/// does not await durability, so the split's `'T'` is durable only once its flush lands. With that
+/// flush's WAL write lost (it lands, its response an error) or failing before dispatch, SlateDB's
+/// store retries it inside the flush, the flush returns, and the split publishes: a `'T'` flush
+/// fails only for a fenced writer, whose WAL table never lands, so the rollback after a failed
+/// `'T'` undoes a `'T'` that is not durable. Pinned for both faults, so a SlateDB that surfaced
+/// either while landing the write would show here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_t_whose_flush_slatedb_retries_publishes_the_split() {
+    let releases: [fn(&crate::dst::fault_store::FaultStore); 2] = [
+        crate::dst::fault_store::FaultStore::release_hold_lost,
+        crate::dst::fault_store::FaultStore::release_hold_failing,
+    ];
+    for release in releases {
+        let (split, left, cell, injected) = split_with_t_held(release).await;
+        assert_eq!(injected, 1, "the held flush took its fault");
+        let published = split.expect("the split publishes");
+        assert_eq!(published.version, 2);
+        assert_eq!(left.state, crate::topology::intent::State::Reclaimed);
+        engine_shutdown(&cell.state).await;
+    }
+}

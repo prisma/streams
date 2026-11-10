@@ -166,6 +166,9 @@ impl Hold {
     }
 }
 
+/// A one-shot fault: the operation, class and path prefix it hits, and the fault.
+type OnceFault = (StoreOp, ObjClass, String, Toxic);
+
 /// Mutable fault state, behind an `Arc` so `delete_stream` — which must
 /// return a `'static` stream — can carry it.
 #[derive(Debug)]
@@ -181,6 +184,9 @@ struct FaultState {
     /// assertions over these.
     op_counts: Mutex<HashMap<(StoreOp, ObjClass), u64>>,
     hold: Mutex<Option<Hold>>,
+    /// The fault the next operation matching (op, class, path prefix) takes instead of what the
+    /// plan rolls: set when a hold is released with one, so its parked operation takes it.
+    once: Mutex<Option<OnceFault>>,
     coverage: Arc<Coverage>,
     injected_latency: AtomicU64,
     injected_errors: AtomicU64,
@@ -200,6 +206,9 @@ impl FaultState {
     }
 
     fn roll(&self, op: StoreOp, class: ObjClass, path: &str) -> Toxic {
+        if let Some(toxic) = self.take_once(op, class, path) {
+            return toxic;
+        }
         let plan = self.profile.plan_for(op, class);
         if plan.error_pct == 0 && plan.lost_response_pct == 0 && plan.latency_pct == 0 {
             return Toxic::None;
@@ -227,6 +236,21 @@ impl FaultState {
         } else {
             Toxic::None
         }
+    }
+
+    /// The one-shot fault for this operation, if a released hold left one that matches it.
+    fn take_once(&self, op: StoreOp, class: ObjClass, path: &str) -> Option<Toxic> {
+        let mut once = self
+            .once
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let matches = once.as_ref().is_some_and(|(o, c, prefix, _)| {
+            *o == op && *c == class && path.starts_with(prefix.as_str())
+        });
+        if !matches {
+            return None;
+        }
+        once.take().map(|(_, _, _, toxic)| toxic)
     }
 
     /// Latency / hold / error decision, shared by every verb.
@@ -328,6 +352,7 @@ impl FaultStore {
                 occurrences: Mutex::new(HashMap::new()),
                 op_counts: Mutex::new(HashMap::new()),
                 hold: Mutex::new(None),
+                once: Mutex::new(None),
                 coverage: Arc::new(Coverage::default()),
                 injected_latency: AtomicU64::new(0),
                 injected_errors: AtomicU64::new(0),
@@ -420,6 +445,31 @@ impl FaultStore {
             paths,
         });
         engaged
+    }
+
+    /// Release the hold, its first parked operation then landing with its response lost (the
+    /// caller sees an error for a write that took effect).
+    pub(crate) fn release_hold_lost(&self) {
+        self.release_hold_with(Toxic::LostResponse);
+    }
+
+    /// Release the hold, its first parked operation then failing before it is dispatched.
+    pub(crate) fn release_hold_failing(&self) {
+        self.release_hold_with(Toxic::ErrorBeforeDispatch);
+    }
+
+    fn release_hold_with(&self, toxic: Toxic) {
+        let target = self.st.hold.lock().unwrap().as_ref().map(|h| {
+            let prefix = match &h.paths {
+                Some(HoldPaths::Under(prefix)) => prefix.clone(),
+                None => String::new(),
+            };
+            (h.op, h.class, prefix)
+        });
+        if let Some((op, class, prefix)) = target {
+            *self.st.once.lock().unwrap() = Some((op, class, prefix, toxic));
+        }
+        self.release_hold();
     }
 
     pub(crate) fn release_hold(&self) {

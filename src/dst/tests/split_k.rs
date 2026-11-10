@@ -74,7 +74,7 @@ pub(super) async fn cell() -> Cell {
 }
 
 /// `cell`, over `store`.
-async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
+pub(super) async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
     cell_at(store, super::fixture_runtime::RigRuntime::first()).await
 }
 

@@ -722,6 +722,14 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::split_with_t_held",
+      "path": "src/dst/tests/split_generations.rs",
+      "reason": "The split and the control that holds and then faults its 'T' flush's WAL write run concurrently in one test task, so the fault lands while the split waits on that flush; the compiler checks the join's expansion and both futures borrow the test's cell and fault store.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
       "count": 3,
       "owner": "crate::a_split_waits_for_the_fleet_to_settle",
       "path": "src/dst/tests/split_k.rs",

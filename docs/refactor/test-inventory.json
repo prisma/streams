@@ -3568,6 +3568,17 @@
     "scenarios": []
   },
   {
+    "name": "a_t_whose_flush_slatedb_retries_publishes_the_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b7fdd97d1613c8cda0b8dbbb038792541cba32d1efc257eda162210f4d953afd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_tail_polling_through_a_seal_window_releases_its_reservation_between_polls",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
