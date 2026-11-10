@@ -1105,6 +1105,62 @@
       "syntax": "path = \"tests/queue_split.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::queue_segments",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Native queues on segments through the HTTP router (S3b-DESIGN sections 4.4 and 12, part 2 step 6): a large acked backlog given back to its last object, a failed first message pinning exactly its chunk, one unreadable message among 1,000 sealed failing alone, and 1,000 parked claims holding no read memory; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/queue_segments.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::filled",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue-on-segments DSTs (S3b-DESIGN sections 4.4 and 12); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::claim",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue-on-segments DSTs (S3b-DESIGN sections 4.4 and 12); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::settle",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue-on-segments DSTs (S3b-DESIGN sections 4.4 and 12); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::one_unreadable_message_among_a_thousand_sealed_fails_alone",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue-on-segments DSTs (S3b-DESIGN sections 4.4 and 12); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_thousand_parked_claims_reserve_zero_bytes",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "Exact request documents and expected wire answers of the queue routes in the queue-on-segments DSTs (S3b-DESIGN sections 4.4 and 12); serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_thousand_parked_claims_reserve_zero_bytes",
+      "path": "src/dst/tests/queue_segments.rs",
+      "reason": "The 1,000 waiting claims and the probe that reads the read memory while they are parked run concurrently in one test task; the compiler checks the join's expansion and both borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
       "category": "macro-dsl",
       "count": 4,
       "owner": "crate::three_acked",

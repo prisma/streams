@@ -861,6 +861,17 @@
     "scenarios": []
   },
   {
+    "name": "a_failed_first_message_pins_exactly_its_own_chunk",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b217c19b0534a2c5f2c1133ba5f67a38c60b9e8690ba23920d2238969928abdb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_segments.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_failed_group_fails_the_close_and_its_retry_together",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1488,6 +1499,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_large_acked_backlog_is_given_back_to_its_last_object",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7a39e62385b83c35ee7384529d44568f52844675885307801f4e0f684ef29dfd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_segments.rs",
     "scenarios": []
   },
   {
@@ -4290,6 +4312,17 @@
       "crate::failpoints::stop_before_mark_committed_off(\"lease2\");"
     ],
     "file": "src/dst/tests/seal_fencing.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_thousand_parked_claims_reserve_zero_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "16d4ef24daa958a82d699ad36284b23fa823a683c019b06b811264eb01b9fc2e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_segments.rs",
     "scenarios": []
   },
   {
@@ -8113,6 +8146,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "one_unreadable_message_among_a_thousand_sealed_fails_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2bf9bc97f43581e880be371a12d136f02a7cd6f12d1db965c0abb4fdcc9dd9af",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_segments.rs",
     "scenarios": []
   },
   {

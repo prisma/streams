@@ -51,6 +51,8 @@ mod open_fence;
 mod purge_gate;
 #[path = "tests/purge_lifecycle.rs"]
 mod purge_lifecycle;
+#[path = "tests/queue_segments.rs"]
+mod queue_segments;
 #[path = "tests/queue_split.rs"]
 mod queue_split;
 #[path = "tests/split_barrier.rs"]
