@@ -6,7 +6,11 @@
 //! that `M`'s older checkpoint lacks (`nc-claim-fences-one-source`).
 //!
 //! The claim (a CAS raising the lease epoch) comes first, right after the opener's own open and
-//! before the other source's maintenance open (TLA-048 option (b)). Then, as S4's split recovery
+//! before the other source's maintenance open (TLA-048 option (b)). A merge the stored topology
+//! already names is then reclaimed with nothing opened: an opener whose snapshot predates the
+//! publish rolls forward from `'T'` alone at every recheck until its snapshot moves, and a
+//! maintenance open there would fence the other source's own reopen (edge #251 amendment B6).
+//! Then, as S4's split recovery
 //! does: the evidence (each source's `'T'`, whether a copy began, whether `M` is complete, whether
 //! the topology already names the operation), and S6 §7.4's table (`recovery`), acted on with
 //! `topology::recover`'s helpers.
@@ -211,6 +215,9 @@ pub(crate) async fn recover(
         .ok_or_else(|| "the merge's sources cannot be read".to_string())?;
     let store = engine.data_store().clone();
     let claimed = claim(engine, &store, live.as_ref()).await?;
+    if is_published(&store, &merge.op_id).await {
+        return end_intent(&store, claimed.as_ref(), State::Reclaimed, "published").await;
+    }
     let mut sources = Vec::with_capacity(2);
     for (prefix, home) in &merge.sources {
         if *prefix == engine.prefix {
@@ -305,10 +312,7 @@ async fn decide(
     }
     // A published merge is reclaimed whatever `M` holds (`recovery`), so it is read first and
     // `M` is not looked at again once it may serve.
-    let published = store::read(&**store)
-        .await
-        .map(|(topology, _)| topology.last_op.is_some_and(|op| op.op_id == merge.op_id))
-        .unwrap_or(false);
+    let published = is_published(store, &merge.op_id).await;
     let path = born_home_path(&merge.prefix, merge.home);
     let files = has_files(store, &path).await;
     let merged_complete = !published && files && merged_is_complete(store, &path, merge.home).await;
@@ -344,15 +348,7 @@ async fn act(
         sources,
         claimed,
     } = *claimant;
-    let end = |state: State, result: &'static str| async move {
-        if let Some(held) = claimed {
-            let ended = super::terminal(held, state, result);
-            intent::replace(&**store, held, ended)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-        Ok::<(), String>(())
-    };
+    let end = |state: State, result: &'static str| end_intent(store, claimed, state, result);
     match recovery(evidence) {
         Recovery::Reclaim => end(State::Reclaimed, "published").await,
         Recovery::RollForward => {
@@ -384,6 +380,30 @@ async fn act(
             born_home_path(&merge.prefix, merge.home)
         )),
     }
+}
+
+/// End the `claimed` intent, if any, `state` with `result`.
+async fn end_intent(
+    store: &Arc<dyn ObjectStore>,
+    claimed: Option<&Held>,
+    state: State,
+    result: &'static str,
+) -> Result<(), String> {
+    if let Some(held) = claimed {
+        let ended = super::terminal(held, state, result);
+        intent::replace(&**store, held, ended)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether the stored topology already names `op_id` as its `last_op` (an unreadable one does not).
+async fn is_published(store: &Arc<dyn ObjectStore>, op_id: &str) -> bool {
+    store::read(&**store)
+        .await
+        .map(|(topology, _)| topology.last_op.is_some_and(|op| op.op_id == op_id))
+        .unwrap_or(false)
 }
 
 /// Delete `M`'s reference and supplementary lists under every root of either source's lineage.

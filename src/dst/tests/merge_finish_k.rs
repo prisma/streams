@@ -525,3 +525,89 @@ async fn a_claimants_completeness_check_leaves_a_serving_merged_leaf_serving() {
     );
     engine_shutdown(&state).await;
 }
+
+/// **A source's opener behind a published merge fences neither source** (S6 §7.4; edge #251
+/// amendment B6). A merge publishes `00` and its intent ends. An opener of the left half whose
+/// snapshot still predates the publish rolls the merge forward from `'T'` alone (no live intent),
+/// at every recheck until its snapshot moves, while the right half's log is open again by a live
+/// writer (the half's own fenced open, reopening). That roll forward opened the right half's log
+/// for maintenance, whose epoch bump fenced the reopened writer: its next write failed
+/// `Closed(Fenced)` and the open answered 500 `shard_open_failed`. The stored topology already
+/// names the merge, so the roll forward opens nothing and the writer still writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_source_opener_behind_a_published_merge_fences_neither_source() {
+    let Rig {
+        store,
+        state,
+        parent,
+        ..
+    } = rig().await;
+    split_00(&state, &parent).await;
+    let halves = halves_of_00(&state).await;
+    let behind = state.shards.prefixes();
+    let clock = state.runtime.clock.clone();
+    let published = crate::topology::merge::merge(
+        &state.shards,
+        [&halves[0], &halves[1]],
+        "op-b",
+        "inst-a",
+        &*clock,
+    )
+    .await
+    .expect("the merge publishes");
+    let right = behind.shards.homes[&behind.shards.leaves["001"]]
+        .path
+        .clone();
+    let reopened = crate::keyspace::db_builder(right.as_str(), store.clone())
+        .build()
+        .await
+        .expect("the right half's log reopens");
+    let retired = crate::topology::fence::Retired {
+        version: published.version,
+        op_id: "op-b".to_string(),
+        children: vec![(published.merged.0.clone(), published.merged.1)],
+    };
+    let left = behind.shards.homes[&behind.shards.leaves["000"]]
+        .path
+        .clone();
+    let opener = source_opener("000", &left, &store).await;
+    let rolled =
+        crate::topology::recover::merge::recover(&opener, &behind, Some(retired), None).await;
+    assert_eq!(rolled, Ok(()), "the published merge needs nothing");
+    let wrote = async {
+        reopened.put(b"probe", b"1").await?;
+        reopened.flush().await
+    }
+    .await
+    .map_err(|e| e.to_string());
+    assert_eq!(wrote, Ok(()), "the reopened right half still writes");
+    drop(reopened.close().await);
+    assert_eq!(
+        opener.await_terminated(Duration::from_secs(10)).await,
+        Ok(())
+    );
+    engine_shutdown(&state).await;
+}
+
+/// A fresh engine over the source `prefix`'s log at `path`, as that source's opener holds it.
+async fn source_opener(
+    prefix: &str,
+    path: &str,
+    store: &Arc<dyn object_store::ObjectStore>,
+) -> Arc<crate::shard::ShardEngine> {
+    let db = crate::keyspace::db_builder(path, store.clone())
+        .build()
+        .await
+        .expect("the source's log opens");
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("its maintenance loads");
+    crate::shard::ShardEngine::start(
+        prefix.to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        None,
+        maintenance,
+    )
+}
