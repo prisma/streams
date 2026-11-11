@@ -87,14 +87,25 @@ async fn debts(state: &State) -> (bool, bool) {
 }
 
 /// Drains billing and waits for the sealer until no shard carries any debt,
-/// so every residency in the sweeps under test is the walk's own.
+/// so every residency in the sweeps under test is the walk's own. A round
+/// visits at least one open shard and a shard twice at most before it reads
+/// that shard's dirty index again (`DrainWait::still_dirty`), so billing debt
+/// still standing after twice the open shards' rounds (plus two) is a drain
+/// that re-emits without ever acknowledging, which fails here at once rather
+/// than after the 200 polls (a healthy quiesce takes one round).
 async fn quiesce(state: &State) {
     let mut wait = DrainWait::default();
+    let (mut rounds, limit) = (0, 2 * state.shards.engines().len() + 2);
     for _ in 0..200 {
         match debts(state).await {
             (false, false) => return,
             (true, _) => {
                 wait.still_dirty(state, "billing debt");
+                assert!(
+                    rounds < limit,
+                    "billing debt outlived {limit} drain rounds that each appended to `_usage`"
+                );
+                rounds += 1;
                 wait.round(state).await;
             }
             (false, true) => {}
