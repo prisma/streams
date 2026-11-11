@@ -215,9 +215,29 @@ pub(super) async fn http_rig_two_bit(
     instance: Option<&str>,
     runtime: RigRuntime,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    two_bit_rig(store, instance, runtime, None).await
+}
+
+/// [`http_rig_two_bit`] whose sealers never seal on their own ([`cold_sealer`]): only a requested
+/// seal runs, so a test that requests one finds the records it wrote unsealed.
+pub(super) async fn http_rig_two_bit_cold(
+    store: Arc<dyn ObjectStore>,
+    instance: Option<&str>,
+    runtime: RigRuntime,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    two_bit_rig(store, instance, runtime, Some(cold_sealer)).await
+}
+
+async fn two_bit_rig(
+    store: Arc<dyn ObjectStore>,
+    instance: Option<&str>,
+    runtime: RigRuntime,
+    seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let options = HttpRigOptions {
         prefixes: two_bit(),
         instance: instance.map(str::to_string),
+        seal,
         ..Default::default()
     };
     http_rig_build(store, runtime, options).await.parts()

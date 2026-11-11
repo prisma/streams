@@ -114,10 +114,10 @@ async fn closed_after(cell: &Cell, failed: Failed, landed: bool) {
     assert_eq!(ended, want, "the parent's WAL after the park");
 }
 
-/// A split cell whose parent holds an unsealed record of each stream, so the probe's seal at the
-/// park has a group to refuse (`merge_finish_k::assert_quiet`), however fast the sealer ran before.
+/// A cold-seal split cell (no seal runs unrequested) whose parent holds an unsealed record of each
+/// stream, so the probe's seal at the park has a group to refuse (`merge_finish_k::assert_quiet`).
 async fn cell_with_records() -> Cell {
-    let cell = cell().await;
+    let cell = super::split_k::cold_cell().await;
     for (name, n) in [(&cell.low, 20), (&cell.high, 21)] {
         assert_eq!(append_answer(cell.addr, name, n).await.0, 204, "{name}");
     }

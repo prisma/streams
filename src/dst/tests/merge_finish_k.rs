@@ -257,7 +257,7 @@ async fn halves_with_records(rig: &Rig) -> [Arc<crate::shard::ShardEngine>; 2] {
 /// batch is then refused as final (no write after `'T'`), and the merged leaf holds no probe row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_quiesced_source_writes_nothing_until_the_merge_publishes() {
-    let rig = rig().await;
+    let rig = super::merge_k::cold_rig().await;
     let halves = halves_with_records(&rig).await;
     let (merged, at, batch) = merge_probed(&rig, &halves, false).await;
     assert_quiet(&at);
@@ -276,7 +276,7 @@ async fn a_quiesced_source_writes_nothing_until_the_merge_publishes() {
 /// which holds the probe row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_quiesced_source_writes_nothing_until_the_merge_rolls_back() {
-    let rig = rig().await;
+    let rig = super::merge_k::cold_rig().await;
     let halves = halves_with_records(&rig).await;
     let home = rig.state.shards.prefixes().shards.next_home;
     let path = crate::topology::model::born_home_path("00", home);
@@ -309,7 +309,7 @@ async fn a_quiesced_source_writes_nothing_until_the_merge_rolls_back() {
 /// is refused as final, both sources' WALs unchanged since.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_quiesced_source_writes_nothing_after_the_merges_t_when_its_publish_fails() {
-    let rig = rig().await;
+    let rig = super::merge_k::cold_rig().await;
     let halves = halves_with_records(&rig).await;
     let (merged, at, batch) = merge_probed(&rig, &halves, true).await;
     assert_quiet(&at);

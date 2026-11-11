@@ -7,7 +7,7 @@
 //! it holds before it becomes a leaf (L5).
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig_two_bit};
+use super::fixture_http::{engine_shutdown, http_rig_two_bit, http_rig_two_bit_cold};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -63,10 +63,23 @@ pub(super) async fn rig() -> Rig {
     rig_named(None).await
 }
 
+/// `rig` whose sealers never seal on their own: only a requested seal runs (the park probes).
+pub(super) async fn cold_rig() -> Rig {
+    let store = mem();
+    let rigged = http_rig_two_bit_cold(store.clone(), None, RigRuntime::first()).await;
+    rig_over(store, rigged).await
+}
+
 /// `rig`, its instance named `instance` (so the ring's ownership is real) when one is given.
 pub(super) async fn rig_named(instance: Option<&str>) -> Rig {
     let store = mem();
-    let (state, addr) = http_rig_two_bit(store.clone(), instance, RigRuntime::first()).await;
+    let rigged = http_rig_two_bit(store.clone(), instance, RigRuntime::first()).await;
+    rig_over(store, rigged).await
+}
+
+/// The rig `rigged` over `store`: its topology stored, a stream in each half of `00`.
+async fn rig_over(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr)) -> Rig {
+    let (state, addr) = rigged;
     let topology = crate::topology::model::Topology {
         version: 1,
         shards: state.shards.prefixes().shards.clone(),

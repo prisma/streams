@@ -265,10 +265,11 @@ async fn split_probed(
     (split, at, batch)
 }
 
-/// A split cell whose parent holds a record of each half.
+/// A cold-seal split cell (no seal runs unrequested) whose parent holds an unsealed record of each
+/// half, so the probe's seal at the park has a group to refuse (`merge_finish_k::assert_quiet`).
 async fn cell_with_records() -> super::split_k::Cell {
     use super::merge_finish_k::append_answer;
-    let cell = cell().await;
+    let cell = super::split_k::cold_cell().await;
     for (name, n) in [(&cell.low, 20), (&cell.high, 21)] {
         assert_eq!(append_answer(cell.addr, name, n).await.0, 204, "{name}");
     }

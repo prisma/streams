@@ -2630,7 +2630,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "b104b2ea2c66baa7381ff22a42c5cab4696b0fda9550bca9d1ddb0047a6fa933",
+    "function_sha256": "3c20f8dc156f0089c908a7a3aa33795bbdd9358aae6e4af9d923f6772f806303",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
@@ -2641,7 +2641,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "25657ff2e01508ad66ed25d19bd23b2005cddc9837ccb6d7512415313d2460a8",
+    "function_sha256": "596b7351a18148d1712db54b0fbfaf15422c3bcf324234831127f1d28c976888",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
@@ -2652,7 +2652,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "26b70bd8d94cf668045c2bb5233a1307ba29b3696d3d6670cf0cedc84c11cf9d",
+    "function_sha256": "c2cc51b3735a547fc6e87e5bc8463b6b1ceed95e83a751bf2f8f1fa312969a16",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",

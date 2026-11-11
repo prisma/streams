@@ -6,7 +6,7 @@
 //! for the object sum to the parent's.
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig_two_bit};
+use super::fixture_http::{engine_shutdown, http_rig_two_bit, http_rig_two_bit_cold};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use crate::spill::object::ObjectId;
@@ -78,12 +78,26 @@ pub(super) async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell
     cell_at(store, super::fixture_runtime::RigRuntime::first()).await
 }
 
+/// `cell` whose sealers never seal on their own: only a requested seal runs (the park probes).
+pub(super) async fn cold_cell() -> Cell {
+    let store = mem();
+    let runtime = super::fixture_runtime::RigRuntime::first();
+    let rigged = http_rig_two_bit_cold(store.clone(), None, runtime).await;
+    cell_of(store, rigged).await
+}
+
 /// `cell_over`, on `runtime` (whose manual clock the test may drive).
 async fn cell_at(
     store: Arc<dyn object_store::ObjectStore>,
     runtime: super::fixture_runtime::RigRuntime,
 ) -> Cell {
-    let (state, addr) = http_rig_two_bit(store.clone(), None, runtime).await;
+    let rigged = http_rig_two_bit(store.clone(), None, runtime).await;
+    cell_of(store, rigged).await
+}
+
+/// The cell `rigged` over `store`: its topology stored, a stream in each half of `00`.
+async fn cell_of(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr)) -> Cell {
+    let (state, addr) = rigged;
     // The cell's stored topology, as boot leaves it: the rig's own.
     let topology = crate::topology::model::Topology {
         version: 1,
