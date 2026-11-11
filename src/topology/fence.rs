@@ -158,8 +158,9 @@ fn names_source(intent: &intent::Intent, prefix: &str, snapshot: &Snapshot) -> b
 pub(crate) type SnapshotFn = Arc<dyn Fn() -> Option<Arc<Snapshot>> + Send + Sync>;
 
 /// `open`, fenced: it opens the log at the path the topology gives the prefix's home (its static
-/// path for a prefix that is no leaf), and the engine it opens is returned only once the fence lets
-/// it serve (see the module).
+/// path before any topology is known), and the engine it opens is returned only once the fence
+/// lets it serve (see the module). A prefix that is no leaf of the topology is refused
+/// `not_a_leaf` without opening anything (#251 amendment R3-d).
 pub(crate) fn fenced(
     open: crate::sharddir::LogOpener,
     snapshot: SnapshotFn,
@@ -196,7 +197,16 @@ async fn open_held(
             Some(store) => hold_before_open(&prefix, snapshot, &**store).await?,
             None => None,
         };
-        let path = log_path(snapshot().as_deref(), &prefix);
+        // A prefix that is no leaf has no log of its own to open: its static path would be a new,
+        // empty one (#251 amendment R3-d).
+        let held = snapshot();
+        if held
+            .as_deref()
+            .is_some_and(|held| !held.shards.leaves.contains_key(&prefix))
+        {
+            anyhow::bail!("not_a_leaf: {prefix}");
+        }
+        let path = log_path(held.as_deref(), &prefix);
         let engine = open(prefix.clone(), path.clone(), incarnation).await?;
         intents.get_or_init(|| engine.data_store().clone());
         engine.place(path, snapshot.clone());
