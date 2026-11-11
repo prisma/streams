@@ -2912,6 +2912,19 @@ EDGE-261-RATIFICATION.md) left these:
     Streams first, after #149. A fork patch that mints a seed's ULID at or above the
     watermark helps only if the seed is involved.
   - Nothing is filed upstream without the owner's OK in chat.
+- **Collection passes that straddle a split's or a merge's `prepare`** (Fable 5.2,
+  `DESIGN-DECISION-c3-incomplete-rig-2026-11-11.md` Addendum 8 §5; package 6). `prepare` stands
+  collection down with a plain flag (`Gate::set_collection_off`) and no handshake, so a pass
+  that read the flag just before goes on past it: `log_releases` can PUT a release log after
+  the clone (harmless: a log names its own holder, `rel/<holder>/`, and a child is another
+  holder), and an orphan sweep or a clean pass can run across the checkpoint. Addendum 8 judges
+  it safe by code, on three things already in push 4: the checkpoint under the exclusive gate,
+  the orphan sweep's in-flight and age rule, and the source's final flag. Two checks are left:
+  - a DST that holds an orphan sweep and a clean pass in flight across `prepare` and asserts
+    that every object a child's rows name still exists after the publish;
+  - whether a prepared reference list that names an object a pre-quiesce clean batch then
+    zeroed keeps that object from the lineage sweep for good: a storage leak, not a loss, and
+    not verified.
 
 ## 20. Follow-ups from edge change #260 (2026-11-09)
 
