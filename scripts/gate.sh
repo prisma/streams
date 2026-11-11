@@ -31,13 +31,14 @@ if ! QUALITY_RELEASE_TARGETS="--lib ${TARGETS[*]}" scripts/quality.sh >> "$OUT" 
   fail quality "$OUT"
 fi
 stage suite "$OUT.suite.log"
-if ! cargo test --locked --release --lib -- --skip post_split_throughput_scales > "$OUT.suite.log" 2>&1; then
+if ! cargo test --locked --release --lib -- --skip post_split_throughput_scales --skip dst::dst_tests::topology_convergence:: > "$OUT.suite.log" 2>&1; then
   fail suite "$OUT.suite.log"
 fi
 grep -E '^test result: ok' "$OUT.suite.log" >> "$OUT"
-# The suite holds every inventoried test but the one capacity leg below.
+# The suite holds every inventoried test but the capacity leg below and the
+# convergence DST, which CI runs alone in its topology job.
 if ! python3 scripts/quality/tests_ran.py "$OUT.suite.log" \
-  --inventory docs/refactor/test-inventory.json --skipped 1 >> "$OUT" 2>&1; then
+  --inventory docs/refactor/test-inventory.json --skipped 2 >> "$OUT" 2>&1; then
   fail suite-ran "$OUT"
 fi
 # CI's suite also runs every other target: the bins' unit tests and

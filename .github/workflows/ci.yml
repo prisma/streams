@@ -121,16 +121,16 @@ jobs:
           # job deadline. The hash keeps pgrep off the watcher itself.
           scripts/quality/hang_dump.sh 'target/release/deps/streams_slate-[0-9a-f]{16}' 900 &
           watcher=$!
-          cargo test --release -- --skip post_split_throughput_scales 2>&1 | tee /tmp/suite.log
+          cargo test --release -- --skip post_split_throughput_scales --skip dst::dst_tests::topology_convergence:: 2>&1 | tee /tmp/suite.log
           kill "$watcher" 2>/dev/null || true
           grep -E "^test result" /tmp/suite.log
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
           # ...and the suite must have RUN: every inventoried test but
-          # the one capacity leg below (a filter that matches nothing
-          # still exits 0).
-          python3 scripts/quality/tests_ran.py /tmp/suite.log --inventory docs/refactor/test-inventory.json --skipped 1
+          # the capacity leg below and the convergence DST the topology
+          # job runs alone (a filter that matches nothing still exits 0).
+          python3 scripts/quality/tests_ran.py /tmp/suite.log --inventory docs/refactor/test-inventory.json --skipped 2
       # The capacity-mechanism gate runs ALONE — its measurement owns
       # the runner (the test's own precondition): inside the parallel
       # suite, contention lands one-sidedly on the post-split phase and
@@ -235,7 +235,7 @@ jobs:
   # capacity test keeps its own leg in `rust`.
   topology:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -246,6 +246,12 @@ jobs:
         run: 'scripts/test-leg.sh target/legs/topology-merge.log --min 21 -- --release --lib dst::dst_tests::merge_k:: dst::dst_tests::merge_finish_k:: dst::dst_tests::reads_merged:: dst::dst_tests::seal_convergence::'
       - name: The policy and the fleet's topology (S5)
         run: 'scripts/test-leg.sh target/legs/topology-policy.log --min 30 --exact dst::dst_tests::topology_policy::a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops --exact dst::dst_tests::topology_policy::a_sustained_cold_pair_merges_into_one_stored_leaf_and_keeps_every_stream_whole --exact dst::dst_tests::topology_colocation::a_cold_pair_split_across_two_instances_is_colocated_and_merged --exact dst::dst_tests::topology_colocation::a_split_pair_whose_actor_is_full_is_merged_on_its_partner --exact dst::dst_tests::topology_colocation::a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_merged_there -- --release --lib dst::dst_tests::topology_policy:: dst::dst_tests::topology_colocation:: dst::dst_tests::fleet_topology:: dst::dst_tests::scaler_split_gate:: dst::dst_tests::topology_lifecycle:: dst::dst_tests::topology_scaling:: -- --skip post_split_throughput_scales'
+      # The topology's convergence runs ALONE (DESIGN-DECISION-dst-load-under-hog-2026-11-11 §3,
+      # decided under the owner's gate-selection delegation): 8-11 minutes green and up to about
+      # 17 red, past the rust job's 15-minute hang watcher, and its grow half must not share the
+      # runner's four vCPUs. The suite and scripts/gate.sh skip it by its path.
+      - name: The topology's convergence, alone (S5, #149)
+        run: 'scripts/test-leg.sh target/legs/topology-convergence.log --exact dst::dst_tests::topology_convergence::a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_back_to_one -- --release --lib dst::dst_tests::topology_convergence::a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_back_to_one -- --exact --nocapture'
 
   mt-cert-1000:
     runs-on: ubuntu-24.04

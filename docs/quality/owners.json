@@ -561,6 +561,14 @@
       "syntax": "path = \"tests/topology_colocation.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_convergence",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The topology's convergence end to end (#149, rev 4 §4.4 compressed): a one-shard cell grows under load to four shards on two instances and, quiet, merges and scales back in to one instance and one shard with every record readable, through the production fleet tick, heartbeat and policy loop; compiler and the topology CI job exercise the module.",
+      "syntax": "path = \"tests/topology_convergence.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::populate",

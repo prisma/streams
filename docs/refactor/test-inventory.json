@@ -2063,6 +2063,17 @@
     "scenarios": []
   },
   {
+    "name": "a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_back_to_one",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "be8c1ce44204a63d77cfa54bb4ae3d0a2855f2b5746e85feea5c0f4c3a0e9e3b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_convergence.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_one_shard_cell_over_the_split_line_doubles_to_four_shards_and_stops",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

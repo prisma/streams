@@ -330,6 +330,7 @@ Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 | Platform e2e | `(cd sdk && npm ci && npm run build) && node scripts/platform-e2e.mjs && node scripts/platform-e2e-negative.mjs` | HTTP, auth, boot, lifecycle, fleet |
 | Conformance | `CONFORMANCE.md` (332 pass, 6 skipped) | raw wire surface |
 | LiveFeed fleet | `bash bench/fleet/livefeed-cert.sh` | SSE, fleet ownership |
+| Convergence DST | `scripts/test-leg.sh target/legs/topology-convergence.log --exact dst::dst_tests::topology_convergence::a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_back_to_one -- --release --lib dst::dst_tests::topology_convergence::a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_back_to_one -- --exact --nocapture` (alone, 8-11 min; the suite and the gate skip it) | topology, fleet count, policy, split, merge |
 | MT cert | `MT_CERT_PROJECTS=1000 scripts/test-leg.sh target/legs/mt-cert.log --exact dst::dst_tests::security_audit::shared_cell_certification_smoke -- --release --lib shared_cell_certification_smoke -- --nocapture` | tenancy, quotas |
 
 The e2e harnesses import `sdk/dist` (git-ignored, easily stale): build the SDK
