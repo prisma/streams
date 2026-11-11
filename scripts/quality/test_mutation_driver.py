@@ -9,8 +9,9 @@ import shutil
 import unittest
 from unittest import mock
 
+import mutants_width
 import mutation_driver
-from mutation_owners import MutationOwner
+from mutation_owners import CostModel, MutationOwner
 
 
 OWNERS = tuple(
@@ -170,7 +171,7 @@ class FakeCargo:
         raise AssertionError(f'unexpected command: {command}')
 
 
-def run_driver(plan, statuses, shard='', intercept=None):
+def run_driver(plan, statuses, shard='', intercept=None, env=None):
     """Run the driver against FakeCargo; `intercept(command, **kwargs)` may
     answer a command first (None: FakeCargo answers)."""
     with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +190,9 @@ def run_driver(plan, statuses, shard='', intercept=None):
                 mutation_driver, 'validate_plan', return_value=OWNERS))
             stack.enter_context(mock.patch.object(mutation_driver, 'check_tool_version'))
             stack.enter_context(mock.patch.object(mutation_driver, 'make_harness_diff'))
-            stack.enter_context(mock.patch.dict(os.environ, {'QUALITY_MUTANT_SHARD': shard}))
+            stack.enter_context(mock.patch.dict(os.environ, {
+                'QUALITY_MUTANT_SHARD': shard, 'QUALITY_MUTANT_GROUP': '',
+                'QUALITY_MUTANT_DIGEST': '', **(env or {})}))
             stack.enter_context(contextlib.redirect_stdout(printed))
             try:
                 mutation_driver.execute(out)
@@ -413,6 +416,63 @@ class TempCopy(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not ignored by git'):
             mutation_driver.mutants_tmpdir(out)
         self.assertFalse(out.exists())
+
+
+class PushedDeal(unittest.TestCase):
+    """A push's job g of G runs group g of the deal by owner, only when its
+    own packing is the plan job's (gate decision of 2026-11-11, H2). Every
+    fake owner lists two mutants; the model is patched so each fills a job
+    (60 + 2 x 20 = 100 of the 120-minute cap), or, at 50 a mutant, splits in
+    two parts of one mutant each (110)."""
+
+    def deal(self, each):
+        model = CostModel(1, (60.0, each))
+        with mock.patch.object(mutants_width, 'PUSH_MODEL', model):
+            return mutants_width.deal({entry.name: 2 for entry in OWNERS}, OWNERS)
+
+    def run_group(self, group, each, digest=None):
+        dealt = self.deal(each)
+        env = {'QUALITY_MUTANT_GROUP': group,
+               'QUALITY_MUTANT_DIGEST': dealt.digest if digest is None else digest}
+        with mock.patch.object(mutants_width, 'PUSH_MODEL', CostModel(1, (60.0, each))):
+            return dealt, run_driver(PUSHED, {}, env=env)
+
+    def test_a_job_runs_only_its_groups_owner_whole(self):
+        dealt, (fake, outcome, printed) = self.run_group('1/3', 20.0)
+        self.assertEqual(dealt.width, 3)
+        self.assertIsNone(outcome)
+        self.assertEqual(fake.ran, ['beta'])
+        run = [c for c in fake.commands if c[:2] == ['cargo', 'mutants'] and '--list' not in c]
+        self.assertNotIn('--shard', run[0])
+        self.assertIn('1 owner share(s) of 3 registered owner(s)', printed)
+
+    def test_a_job_runs_its_round_robin_part_of_a_split_owner(self):
+        dealt, (fake, outcome, _) = self.run_group('1/6', 50.0)
+        self.assertEqual(dealt.width, 6)
+        self.assertIsNone(outcome)
+        self.assertEqual(fake.ran, ['alpha'])
+        alpha = [c for c in fake.commands if c[:2] == ['cargo', 'mutants']
+                 and 'src/alpha.rs' in c]
+        # Listed whole for the deal, then its part listed and run.
+        self.assertNotIn('--shard', alpha[0])
+        for command in alpha[1:]:
+            self.assertEqual(command[-4:], ['--shard', '1/2', '--sharding', 'round-robin'])
+
+    def test_a_job_whose_deal_differs_from_the_plan_jobs_measures_nothing(self):
+        for group, digest in (('1/3', '0000000000000000'), ('1/4', None)):
+            with self.subTest(group=group, digest=digest):
+                _, (fake, outcome, printed) = self.run_group(group, 20.0, digest)
+                self.assertEqual(fake.ran, [])
+                self.assertIsInstance(outcome, SystemExit)
+                self.assertIn('measured nothing', str(outcome.code))
+
+    def test_a_group_and_a_shard_together_are_refused(self):
+        with self.assertRaisesRegex(ValueError, 'not both'):
+            run_driver(PUSHED, {}, shard='1/4', env={'QUALITY_MUTANT_GROUP': '0/1'})
+
+    def test_a_night_is_never_dealt_by_group(self):
+        with self.assertRaisesRegex(ValueError, 'nightly uses QUALITY_MUTANT_SHARD'):
+            run_driver(SCHEDULED, {}, env={'QUALITY_MUTANT_GROUP': '0/1'})
 
 
 class PushedChange(unittest.TestCase):

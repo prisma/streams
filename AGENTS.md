@@ -286,15 +286,19 @@ export QUALITY_EVENT_NAME=push QUALITY_HEAD_SHA=$(git rev-parse HEAD) \
 scripts/quality/mutations.sh    # zero MISSED, TIMEOUT and incomplete; ~1 min per mutant locally
 ```
 
-CI deals the same leg over the `mutants` job's matrix of `w` jobs of
-360 min (`QUALITY_MUTANT_SHARD=k/w`, cargo-mutants `--shard`,
-round-robin): each tests every `w`-th selected mutant, together each one
-once. The `mutants-plan` job sets `w` per run: one job per 110 measured
-mutants of the selection, at least 8 and at most 48, and 8 for the nightly
-(`scripts/quality/mutants_width.py --plan target/preflight/plan/plan.json`
-prints it for a push). A push selecting more than about 5,000 mutants does
-not fit even 48 jobs: split it into smaller pushes. Locally
-run it whole, or one share with the same variable. The driver runs every selected owner and
+CI deals a push's leg by owner over the `mutants` job's matrix of 360-min jobs
+(`scripts/quality/mutants_width.py`, gate decision of 2026-11-11). The `mutants-plan` job
+lists each selected owner's in-diff mutants and packs the owners by modeled cost:
+- 9.5 min a baseline per owner per job, 5.1 a mutant, 50 a job;
+- an owner too large for the cap is split into round-robin parts;
+- the cap is the first of 120, 150, 180, 210 or 250 net minutes that takes at most 48 jobs.
+Job `g` runs group `g` (`QUALITY_MUTANT_GROUP=g/G`): it packs again and measures nothing
+unless its digest is the plan job's. A push the 250-minute packing cannot fit in 48 jobs
+(about 2,000 mutants) is refused: split it into smaller pushes. A plan without mutants takes
+one job. The nightly keeps eight jobs (`QUALITY_MUTANT_SHARD=k/8`, every 8th mutant of each
+owner of the night). `python3 scripts/quality/mutation_driver.py --deal` (with the
+`QUALITY_*` variables above) prints a push's deal before you push it. Locally, run the leg
+whole; the driver runs every selected owner and
 fails once at the end with each owner's missed, timed-out and incomplete mutants; an
 answer that measured nothing, such as a failing baseline, stops it at once. MISSED and
 TIMEOUT print live in the log, and INCOMPLETE (with its reason and log) as each owner ends.

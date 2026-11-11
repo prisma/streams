@@ -12,6 +12,7 @@ import sys
 import tomllib
 
 from common import ROOT, write_json
+import mutants_width
 from mutation_owners import OWNERS, SIZES_COMMAND, SIZES_PATH, validate_plan, validate_sources
 
 HARNESS_PREFIX = 'tools/quality-invariants/src/../../../'
@@ -43,10 +44,12 @@ def cargo_test_args(filters):
 
 
 def shard_args(share=None):
-    """This job's share of an owner's mutants. CI runs the mutation leg as
+    """This job's share of an owner's mutants. The nightly runs its leg as
     several jobs of one selection (QUALITY_MUTANT_SHARD=k/n): each lists and
     tests every n-th mutant, dealt round-robin, so together they test each
-    selected mutant exactly once. Unset: all of them.
+    selected mutant exactly once. Unset: all of them. A push is dealt by
+    owner instead (QUALITY_MUTANT_GROUP, group_work): a split owner's part
+    arrives as `share` with n = 1.
 
     A scheduled owner too large for one night is dealt over several (share =
     (part, parts)): night `part`'s job k takes round-robin shard
@@ -285,7 +288,10 @@ def report_survivors(survivors, owners):
                   f'under {listing}')
 
 
-def execute(out):
+def prepare(out):
+    """Plan the selection into `out` and validate it before any discovery:
+    (plan, selected owners, scheduled, the night's shares, the canonical and
+    harness diffs, None for a scheduled run)."""
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [sys.executable, 'scripts/quality/verification_plan.py', '--out', str(out)],
@@ -314,9 +320,6 @@ def execute(out):
         'deleted_source_dispositions': plan.get('deleted_source_dispositions', []),
     })
     check_tool_version()
-    # Test processes inherit it; a test that breaks on the longer path fails
-    # the baseline, which stops the leg at once.
-    run_env = {**os.environ, 'TMPDIR': str(mutants_tmpdir(out))}
 
     canonical_diff = None if scheduled else out / 'pr.diff'
     harness_diff = None
@@ -324,24 +327,88 @@ def execute(out):
         base = plan['comparison_revision']
         harness_diff = out / 'harness-pr.diff'
         make_harness_diff(base, harness_diff)
+    return plan, selected, scheduled, shares, canonical_diff, harness_diff
+
+
+def list_owner(entry, out, canonical_diff, harness_diff, share=None):
+    """List one owner's mutants (its share of them) into out/<owner>: the
+    selection and the diff its run mutates against."""
+    output = out / entry.name
+    output.mkdir(parents=True, exist_ok=True)
+    canonical = output / 'selected.json'
+    run_to_file(list_command(entry, canonical_diff, share=share), canonical)
+    chosen = selection(canonical)
+    mutation_diff = canonical_diff
+    if entry.target == 'harness-lib':
+        harness = output / 'harness-selected.json'
+        run_to_file(list_command(entry, harness_diff, harness=True, share=share), harness)
+        mirrored = selection(harness)
+        if chosen != mirrored:
+            raise ValueError(f'{entry.name}: harness mutation scope differs from canonical source')
+        mutation_diff = harness_diff
+    return chosen, mutation_diff
+
+
+def in_diff_deal(out, selected, canonical_diff, harness_diff):
+    """Every selected owner listed whole, packed as the push's deal."""
+    counts = {entry.name: len(list_owner(entry, out, canonical_diff, harness_diff)[0])
+              for entry in selected}
+    return mutants_width.deal(counts, selected)
+
+
+def plan_deal(out):
+    """(plan, deal) for the mutants-plan job and `--deal`; the deal is None
+    for a scheduled rotation or a plan that runs no mutants."""
+    plan, selected, scheduled, _, canonical_diff, harness_diff = prepare(out)
+    if scheduled or not plan.get('mutants'):
+        return plan, None
+    try:
+        return plan, in_diff_deal(out, selected, canonical_diff, harness_diff)
+    except mutants_width.Refused as refused:
+        print(f'mutants deal refused: {refused}')
+        raise SystemExit(1) from refused
+
+
+def group_work(group, scheduled, selected, out, canonical_diff, harness_diff):
+    """The (owner, share) pairs this job runs. Without a group, every
+    selected owner (whole, or its share of the night). With QUALITY_MUTANT_GROUP
+    g/G, the push's deal is packed again here and must be the plan job's
+    (QUALITY_MUTANT_DIGEST); otherwise nothing is measured."""
+    if group is None:
+        return [(entry, None) for entry in selected]
+    if scheduled:
+        raise ValueError('QUALITY_MUTANT_GROUP deals a push; the nightly uses QUALITY_MUTANT_SHARD')
+    if os.environ.get('QUALITY_MUTANT_SHARD', '').strip():
+        raise ValueError('set QUALITY_MUTANT_GROUP or QUALITY_MUTANT_SHARD, not both')
+    index, count = group
+    dealt = in_diff_deal(out, selected, canonical_diff, harness_diff)
+    expected = os.environ.get('QUALITY_MUTANT_DIGEST', '').strip()
+    if (dealt.width, dealt.digest) != (count, expected):
+        print(dealt.describe())
+        raise SystemExit(
+            f'mutants deal differs from the plan job\'s: {dealt.width} job(s), digest '
+            f'{dealt.digest}, against {count} and {expected or "none"}; measured nothing')
+    if not dealt.groups:
+        return []
+    return [(share.owner, (share.part, share.parts) if share.parts > 1 else None)
+            for share in dealt.groups[index]]
+
+
+def execute(out):
+    group = mutants_width.parse_group(os.environ.get('QUALITY_MUTANT_GROUP'))
+    plan, selected, scheduled, shares, canonical_diff, harness_diff = prepare(out)
+    # Test processes inherit it; a test that breaks on the longer path fails
+    # the baseline, which stops the leg at once.
+    run_env = {**os.environ, 'TMPDIR': str(mutants_tmpdir(out))}
+    work = group_work(group, scheduled, selected, out, canonical_diff, harness_diff)
 
     total = 0
     survivors = []
-    for entry in selected:
+    for entry, share in work:
         output = out / entry.name
-        output.mkdir(parents=True, exist_ok=True)
-        canonical = output / 'selected.json'
-        share = tuple(shares[entry.name]) if entry.name in shares else None
-        run_to_file(list_command(entry, canonical_diff, share=share), canonical)
-        chosen = selection(canonical)
-        mutation_diff = canonical_diff
-        if entry.target == 'harness-lib':
-            harness = output / 'harness-selected.json'
-            run_to_file(list_command(entry, harness_diff, harness=True, share=share), harness)
-            mirrored = selection(harness)
-            if chosen != mirrored:
-                raise ValueError(f'{entry.name}: harness mutation scope differs from canonical source')
-            mutation_diff = harness_diff
+        if share is None and entry.name in shares:
+            share = tuple(shares[entry.name])
+        chosen, mutation_diff = list_owner(entry, out, canonical_diff, harness_diff, share)
         count = len(chosen)
         if count == 0:
             print(f'{entry.name}: no executable mutants in the selected scope')
@@ -356,7 +423,7 @@ def execute(out):
               'no mutation experiment is claimed.')
     else:
         print(f'Mutation verification executed {total} selected mutant(s) across '
-              f'{len(selected)} registered owner(s).')
+              f'{len(work)} owner share(s) of {len(selected)} registered owner(s).')
     if survivors:
         report_survivors(survivors, len(selected))
         raise SystemExit(1)
@@ -390,9 +457,14 @@ def main():
     parser.add_argument('--out', default='target/quality-mutations')
     parser.add_argument('--measure-sizes', action='store_true',
                         help=f'list every owner and rewrite {SIZES_PATH.name}')
+    parser.add_argument('--deal', action='store_true',
+                        help="list only: print the push's deal as CI's mutants-plan job would")
     args = parser.parse_args()
     if args.measure_sizes:
         measure_sizes()
+    elif args.deal:
+        _, dealt = plan_deal(Path(args.out).resolve())
+        print(dealt.describe() if dealt else 'mutants deal: none (scheduled, or no mutants)')
     else:
         execute(Path(args.out).resolve())
 

@@ -92,15 +92,19 @@ jobs:
         run: scripts/quality/nightly.sh miri
   mutants-plan:
     runs-on: ubuntu-24.04
-    # The mutants job's width for this run (round 7 D2.1, decided by the
-    # lead under the owner's delegation): one job per 110 measured mutants
-    # of the selection, at least 8 and at most 48; the nightly rotation
-    # stays at 8 (scripts/quality/mutants_width.py, pinned by
-    # test_mutants_width.py).
-    timeout-minutes: 30
+    # The mutants job's deal for this run (gate decision of 2026-11-11, H2):
+    # a push's in-diff mutants, listed per owner with the driver's own
+    # command, are packed by owner into groups by modeled cost (9.5 min a
+    # baseline, 5.1 a mutant, 50 a job), one job each, under the first cap
+    # of 120-250 net minutes that takes at most 48 jobs; a selection that
+    # does not fit is refused. The nightly rotation stays at 8 jobs and a
+    # plan without mutants takes 1 (scripts/quality/mutants_width.py, pinned
+    # by test_mutants_width.py). The listing needs the pinned cargo-mutants.
+    timeout-minutes: 45
     outputs:
       width: ${{ steps.width.outputs.width }}
       shards: ${{ steps.width.outputs.shards }}
+      digest: ${{ steps.width.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,21 +114,28 @@ jobs:
         run: git cat-file -e "$QUALITY_BEFORE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$QUALITY_BEFORE_SHA"
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
       - name: Select the UTC-day mutation rotation
         if: github.event_name == 'schedule'
         run: echo "QUALITY_SCHEDULE_SLOT=$(($(date -u +%s) / 86400))" >> "$GITHUB_ENV"
-      - name: Plan the mutants job's width
+      - name: Deal the mutants over jobs
         id: width
         run: |
           cargo build --locked -p streams-quality-syntax
-          python3 scripts/quality/verification_plan.py --out target/quality-plan
-          python3 scripts/quality/mutants_width.py --plan target/quality-plan/plan.json
+          python3 scripts/quality/mutants_width.py --out target/quality-plan
   mutants:
     runs-on: ubuntu-24.04
     needs: mutants-plan
-    # The mutation leg, dealt over `mutants-plan`'s width of jobs: each
-    # lists and tests every width-th mutant of every selected owner
-    # (round-robin, cargo-mutants --shard), so together they test the same
+    # The mutation leg, dealt over `mutants-plan`'s width of jobs. A push's
+    # job g runs group g of the deal (QUALITY_MUTANT_GROUP=g/G): it lists and
+    # packs again and measures nothing unless its deal's digest is the plan
+    # job's, then runs its owners whole or the round-robin part of a split
+    # one. A nightly job k lists and tests every 8th mutant of every owner of
+    # the night (QUALITY_MUTANT_SHARD=k/8). Together they test the same
     # selection with the same tests and timeouts, each mutant once. As one
     # job inside invariant-tools it exceeded that job's 240 min on a push
     # across the fleet owners (f780ad64: about 120 mutants, cancelled at
@@ -187,7 +198,9 @@ jobs:
         env:
           CARGO_INCREMENTAL: "1"
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
-          QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/${{ needs.mutants-plan.outputs.width }}
+          QUALITY_MUTANT_SHARD: ${{ github.event_name == 'schedule' && format('{0}/{1}', matrix.shard, needs.mutants-plan.outputs.width) || '' }}
+          QUALITY_MUTANT_GROUP: ${{ github.event_name != 'schedule' && format('{0}/{1}', matrix.shard, needs.mutants-plan.outputs.width) || '' }}
+          QUALITY_MUTANT_DIGEST: ${{ needs.mutants-plan.outputs.digest }}
         run: scripts/quality/mutations.sh
   formal:
     runs-on: ubuntu-24.04

@@ -727,24 +727,43 @@ def owner_sizes(owners=OWNERS, path=SIZES_PATH):
     return {entry.name: recorded[entry.name] for entry in owners}
 
 
+@dataclass(frozen=True)
+class CostModel:
+    """Modeled minutes of an owner's share on one job: each job with a share
+    builds and tests the owner's unmutated baseline, then its
+    ceil(mutants / (parts * jobs)) mutants. `costs` is the (baseline, each
+    mutant) of a target, `default` of every other."""
+
+    jobs: int
+    default: tuple[float, float]
+    costs: tuple[tuple[str, tuple[float, float]], ...] = ()
+
+    def minutes(self, entry, mutants, parts=1):
+        if mutants == 0:
+            return 0.0  # Only the listing runs; no baseline is built.
+        baseline, each = dict(self.costs).get(entry.target, self.default)
+        return baseline + math.ceil(mutants / (parts * self.jobs)) * each
+
+
+# The nightly rotation: each owner's share over SCHEDULE_JOBS runners.
+NIGHT_MODEL = CostModel(SCHEDULE_JOBS, DEFAULT_NIGHT_MINUTES, tuple(NIGHT_MINUTES.items()))
+
+
 def night_minutes(entry, mutants, parts=1, jobs=SCHEDULE_JOBS):
     """Modeled minutes of one share of an owner on the night's slowest runner."""
-    if mutants == 0:
-        return 0.0  # Only the listing runs; no baseline is built.
-    baseline, each = NIGHT_MINUTES.get(entry.target, DEFAULT_NIGHT_MINUTES)
-    return baseline + math.ceil(mutants / (parts * jobs)) * each
+    return CostModel(jobs, NIGHT_MODEL.default, NIGHT_MODEL.costs).minutes(entry, mutants, parts)
 
 
-def owner_shares(entry, mutants, cap):
-    """The fewest equal parts whose night fits the cap."""
+def owner_shares(entry, mutants, cap, model=NIGHT_MODEL):
+    """The fewest equal parts whose job fits the cap."""
     for parts in range(1, max(mutants, 1) + 1):
-        minutes = night_minutes(entry, mutants, parts)
+        minutes = model.minutes(entry, mutants, parts)
         if minutes <= cap:
             return tuple(ScheduledShare(entry, part, parts, minutes) for part in range(parts))
     raise ValueError(f'{entry.name}: one mutant alone exceeds the {cap}-minute night')
 
 
-def schedule_groups(owners=OWNERS, sizes=None, cap=SCHEDULE_CAP_MINUTES):
+def schedule_groups(owners=OWNERS, sizes=None, cap=SCHEDULE_CAP_MINUTES, model=NIGHT_MODEL):
     """Pack every owner's shares into groups that each fit the cap.
 
     Largest share first, each into the least-filled group (the lowest index on
@@ -754,7 +773,8 @@ def schedule_groups(owners=OWNERS, sizes=None, cap=SCHEDULE_CAP_MINUTES):
     the measured sizes, so every runner and the driver derive the same one."""
     sizes = owner_sizes(owners) if sizes is None else sizes
     rank = {entry.name: index for index, entry in enumerate(owners)}
-    shares = [share for entry in owners for share in owner_shares(entry, sizes[entry.name], cap)]
+    shares = [share for entry in owners
+              for share in owner_shares(entry, sizes[entry.name], cap, model)]
     ordered = sorted(shares, key=lambda share: (-share.minutes, rank[share.owner.name], share.part))
     count = max(1, math.ceil(sum(share.minutes for share in shares) / cap),
                 *(share.parts for share in shares))

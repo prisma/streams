@@ -224,13 +224,13 @@ class MutationOwnership(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/rust-quality.yml').read_text()
         job = workflow[workflow.index('\n  mutants:'):workflow.index('\n  formal:')]
         jobs = mutation_owners.SCHEDULE_JOBS
-        # The job count is planned per run (mutants_width.py, round 7 D2.1):
-        # the nightly rotation's planned width is its job count, whatever its
-        # selection's size.
+        # The job count is planned per run (mutants_width.py): the nightly
+        # rotation's planned width is its job count, whatever its selection's
+        # size (a push is dealt by owner, gate decision of 2026-11-11, H2).
         self.assertIn('shard: ${{ fromJSON(needs.mutants-plan.outputs.shards) }}', job)
-        self.assertIn('QUALITY_MUTANT_SHARD: ${{ matrix.shard }}/${{ needs.mutants-plan.outputs.width }}', job)
-        self.assertEqual(mutants_width.width(10**6, True), jobs)
-        self.assertEqual(mutants_width.width(0, True), jobs)
+        self.assertIn("QUALITY_MUTANT_SHARD: ${{ github.event_name == 'schedule' && format('{0}/{1}', "
+                      "matrix.shard, needs.mutants-plan.outputs.width) || '' }}", job)
+        self.assertEqual(mutants_width.NIGHT_JOBS, jobs)
         timeout = int(re.search(r'timeout-minutes: (\d+)', job).group(1))
         self.assertLessEqual(mutation_owners.SCHEDULE_CAP_MINUTES, 0.75 * timeout)
         groups = mutation_owners.schedule_groups()
