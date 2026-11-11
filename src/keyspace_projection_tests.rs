@@ -5,7 +5,7 @@
 //! through a compaction of the projected tables too. A checkpoint of the
 //! durable state alone leaves data in the WAL, which a projection refuses.
 
-use std::ops::Bound;
+use std::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -510,14 +510,16 @@ async fn a_projected_clone_of_a_projected_clone_holds_its_range_of_both() {
     grand.close().await.unwrap();
 }
 
-/// The fork's checkpoint-coverage wart (FORK.md, known issues), pinned so a
-/// pin that fixes it shows: a checkpoint of everything taken while writes
-/// are still buffered in the WAL writer stamps the frozen memtable with the
-/// WAL id from before its own flush, so those writes land in a WAL past the
-/// checkpoint's replay point and a projected clone of it is refused. With
-/// the WAL flushed first, the same clone succeeds.
+/// The fork's checkpoint-coverage case (FORK.md known issue K1, fixed by patch 10): a checkpoint
+/// of everything taken while writes are still buffered in the WAL writer stamps the frozen
+/// memtable with the WAL id from before its own flush, so those writes' WAL lies past the
+/// checkpoint's replay point although the writes are in its L0. The clone refuses a source's WAL
+/// only for a record above the source's last L0 sequence number, so a projected clone of that
+/// checkpoint succeeds and holds exactly the source's buffered rows in its range. A durable
+/// checkpoint of writes whose WAL is uploaded but whose memtable is not flushed names WAL records
+/// above its L0, and a projected clone of it is still refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_checkpoint_of_everything_with_wal_writes_buffered_is_refused_for_projection() {
+async fn a_projected_clone_takes_buffered_writes_from_l0_and_refuses_one_above_it() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
     // No background WAL flush, and writes that do not wait for one: they
     // stay buffered in the WAL writer until something flushes it.
@@ -531,33 +533,59 @@ async fn a_checkpoint_of_everything_with_wal_writes_buffered_is_refused_for_proj
         .await
         .unwrap();
     buffered_writes(&db).await;
-    let unflushed = db
+    let everything = db
         .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
         .await
         .unwrap();
-    let refused = clone_into(&store, "p/refused", spec("p/buffered", &unflushed, low())).await;
+    clone_into(&store, "p/taken", spec("p/buffered", &everything, low()))
+        .await
+        .expect("every buffered write is in the checkpoint's L0");
+    let taken = db_builder("p/taken", store.clone()).build().await.unwrap();
+    let in_low = |key: &Bytes| low().contains(key);
+    let expected: Vec<_> = rows(&db)
+        .await
+        .into_iter()
+        .filter(|(k, _)| in_low(k))
+        .collect();
+    let buffered: Vec<Bytes> = (0..STREAMS)
+        .map(|i| Bytes::from(pending_key(&hash(i))))
+        .filter(|key| in_low(key))
+        .collect();
+    // Streams 0..=32: `hash(32)` shares the split's first 15 bytes (0x80) and sorts below it.
+    assert_eq!(buffered.len(), 33, "the writes below the split");
     assert!(
-        refused
-            .as_ref()
-            .is_err_and(|e| e.to_string().contains("WAL")),
-        "a checkpoint of everything with WAL writes buffered: {refused:?}"
+        buffered
+            .iter()
+            .all(|key| expected.iter().any(|(row, _)| row == key)),
+        "every buffered write in the range is among the source's rows"
     );
-    let fresh = db_builder("p/flushed", store.clone())
+    assert_eq!(
+        rows(&taken).await,
+        expected,
+        "the clone holds the buffered rows in its range"
+    );
+    taken.close().await.unwrap();
+
+    let above = db_builder("p/above", store.clone())
         .with_settings(quiet())
         .build()
         .await
         .unwrap();
-    buffered_writes(&fresh).await;
-    fresh.flush().await.unwrap();
-    let flushed = fresh
-        .create_checkpoint(CheckpointScope::All, &CheckpointOptions::default())
+    buffered_writes(&above).await;
+    above.flush().await.unwrap();
+    let durable = above
+        .create_checkpoint(CheckpointScope::Durable, &CheckpointOptions::default())
         .await
         .unwrap();
-    clone_into(&store, "p/allowed", spec("p/flushed", &flushed, low()))
-        .await
-        .unwrap();
+    let refused = clone_into(&store, "p/refused", spec("p/above", &durable, low())).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("WAL")),
+        "a WAL record above the source's L0: {refused:?}"
+    );
     db.close().await.unwrap();
-    fresh.close().await.unwrap();
+    above.close().await.unwrap();
 }
 
 /// Merges on every stream's pending row, returning without waiting for the

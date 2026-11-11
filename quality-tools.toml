@@ -11,10 +11,10 @@ cargo-mutants = "27.1.0"
 
 [slatedb]
 git = "https://github.com/prisma/slatedb.git"
-rev = "857840b6007bce0f8d0488ac62e57f53e40c558a"
+rev = "e14e58df812434aedc70440ca09db90da5e97bc1"
 upstream = "https://github.com/slatedb/slatedb.git"
 base = "0c22c032bb1af4e53d92b2098c83a34b11d2d710"
-# Tag streams-20261110-857840b: FORK.md, the nine patches it lists, then FORK.md as on main.
+# Tag streams-20261114-e14e58d: FORK.md, the ten patches it lists, then FORK.md as on main.
 carries = [
   { docs = true, fork = "ab50eaf52c6a244d806ab58c6f6e564773e76e10" },
   { pr = 2190, pr_diff = true, fork = "609038fdb2ce137ebf90a75e1c173717fb2e4c32" },
@@ -30,6 +30,9 @@ carries = [
   # pr_diff cannot match and the fork commit is named.
   { pr = 2231, fork = "30bae5fe24d682efa5437c3cc5136e9db8d0435d" },
   { docs = true, fork = "857840b6007bce0f8d0488ac62e57f53e40c558a" },
+  { issue = 2263, fork = "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4" },
+  { docs = true, fork = "9251675b8007f524877d2b731d41f286176e0bed" },
+  { docs = true, fork = "e14e58df812434aedc70440ca09db90da5e97bc1" },
 ]
 
 # A fork pin (docs/quality/dependencies.md): `rev` must be `base` plus exactly

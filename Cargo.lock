@@ -2903,7 +2903,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slatedb"
 version = "0.17.0"
-source = "git+https://github.com/prisma/slatedb.git?rev=857840b6007bce0f8d0488ac62e57f53e40c558a#857840b6007bce0f8d0488ac62e57f53e40c558a"
+source = "git+https://github.com/prisma/slatedb.git?rev=e14e58df812434aedc70440ca09db90da5e97bc1#e14e58df812434aedc70440ca09db90da5e97bc1"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -2949,7 +2949,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.17.0"
-source = "git+https://github.com/prisma/slatedb.git?rev=857840b6007bce0f8d0488ac62e57f53e40c558a#857840b6007bce0f8d0488ac62e57f53e40c558a"
+source = "git+https://github.com/prisma/slatedb.git?rev=e14e58df812434aedc70440ca09db90da5e97bc1#e14e58df812434aedc70440ca09db90da5e97bc1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2968,7 +2968,7 @@ dependencies = [
 [[package]]
 name = "slatedb-mirror"
 version = "0.17.0"
-source = "git+https://github.com/prisma/slatedb.git?rev=857840b6007bce0f8d0488ac62e57f53e40c558a#857840b6007bce0f8d0488ac62e57f53e40c558a"
+source = "git+https://github.com/prisma/slatedb.git?rev=e14e58df812434aedc70440ca09db90da5e97bc1#e14e58df812434aedc70440ca09db90da5e97bc1"
 dependencies = [
  "async-trait",
  "backon",
@@ -2991,7 +2991,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.17.0"
-source = "git+https://github.com/prisma/slatedb.git?rev=857840b6007bce0f8d0488ac62e57f53e40c558a#857840b6007bce0f8d0488ac62e57f53e40c558a"
+source = "git+https://github.com/prisma/slatedb.git?rev=e14e58df812434aedc70440ca09db90da5e97bc1#e14e58df812434aedc70440ca09db90da5e97bc1"
 dependencies = [
  "async-trait",
  "bytes",
