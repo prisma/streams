@@ -122,3 +122,45 @@ fn a_home_first_held_in_the_pause_gets_its_reference_list() {
         (Lists::new(), Lists::new())
     );
 }
+
+/// **Each refusal reads as what the split did** (logs and the DSTs' messages show them; the
+/// operator route answers from the variant, not this text). An `Unfinished` split says the parent's
+/// next open decides it, forward or back, since its `'T'` write may not have landed.
+#[test]
+fn each_refusal_reads_as_what_the_split_did() {
+    use super::Refused;
+    let texts = [
+        (Refused::Busy("intent"), "topology_busy: intent"),
+        (
+            Refused::NotOwner("inst-b".to_string()),
+            "not_ring_owner: inst-b holds the parent",
+        ),
+        (
+            Refused::InstanceFull {
+                resident: 9,
+                max: 8,
+            },
+            "instance_full: 9 resident shards at the split's peak, past 8",
+        ),
+        (
+            Refused::Unavailable("no loop".to_string()),
+            "topology_unavailable: no loop",
+        ),
+        (
+            Refused::NotSplittable("a retired parent".to_string()),
+            "not_splittable: a retired parent",
+        ),
+        (Refused::UnknownPrefix, "unknown_prefix"),
+        (
+            Refused::RolledBack("the clone".to_string()),
+            "rolled back: the clone",
+        ),
+        (
+            Refused::Unfinished("'T': the flush failed".to_string()),
+            "past 'T', unpublished: 'T': the flush failed; the next open of the parent decides it",
+        ),
+    ];
+    for (refused, text) in texts {
+        assert_eq!(refused.to_string(), text);
+    }
+}

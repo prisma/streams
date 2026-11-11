@@ -126,8 +126,9 @@ pub(crate) enum Refused {
     UnknownPrefix,
     /// The split started and rolled back before `'T'`.
     RolledBack(String),
-    /// The split wrote `'T'` but its publish failed: it only rolls forward, so its intent stays
-    /// live for the next opener of the parent to claim and roll forward from `'T'` (S4-DESIGN §6.4).
+    /// The split attempted its `'T'` write, and the write or the publish after it failed: it only
+    /// rolls forward, so its intent stays live for the next opener of the parent to claim, which
+    /// rolls forward from `'T'`, or back if no `'T'` landed (S4-DESIGN §6.4).
     Unfinished(String),
 }
 
@@ -149,7 +150,7 @@ impl std::fmt::Display for Refused {
             Self::Unfinished(why) => {
                 write!(
                     f,
-                    "past 'T', unpublished: {why}; the next open of the parent rolls it forward"
+                    "past 'T', unpublished: {why}; the next open of the parent decides it"
                 )
             }
         }
@@ -239,8 +240,8 @@ impl Started {
     }
 
     /// The rest of the split (S4-DESIGN §6.2 from step 0.3). Before `'T'` any failure, and a lost
-    /// lease, rolls back; from `'T'` the split only rolls forward. The actor renews its intent while
-    /// the steps run, and ends it once they are done.
+    /// lease, rolls back; from an attempted `'T'` the split only rolls forward. The actor renews
+    /// its intent while the steps run, and ends it once they are done.
     pub(crate) async fn finish(
         self,
         clock: &dyn crate::runtime::Clock,
@@ -267,8 +268,8 @@ impl Started {
                 recover::drop_checkpoint(&self.parent, &self.op_id).await;
             }
             Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
-            // Past 'T' (Unfinished) the split only rolls forward: its intent stays live, and
-            // lapses for the next opener of the parent to claim and roll forward from 'T'.
+            // Past an attempted 'T' (Unfinished) the split only rolls forward: its intent stays
+            // live, and lapses for the next opener of the parent to claim and decide from its log.
             Err(_) => {}
         }
         ran
@@ -308,22 +309,32 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
     };
     let retired = match copied {
         Ok(()) => write_retired(op, actor).await,
-        Err(e) => Err(e),
+        Err(e) => Err(Retiring::Before(e)),
     };
-    if retired.is_ok() {
-        // From `'T'` the parent's log is final; the hold is still exclusive (see `gate`).
+    if !matches!(retired, Err(Retiring::Before(_))) {
+        // From an attempted `'T'` the parent's log is final; the hold is still exclusive (see
+        // `gate`).
         gate.set_final();
     }
     let barrier = match (retired, barrier) {
         (Ok(()), Some(barrier)) => barrier,
+        (Err(Retiring::After(why)), barrier) => {
+            // A `'T'` write was attempted, so the split only rolls forward (S4-DESIGN §6.4): the
+            // barrier drops unreleased, which closes the parent before the hold drops, and its
+            // reopen holds in its fence until the next opener decides from what the log holds.
+            drop(barrier);
+            drop(hold);
+            return Err(Refused::Unfinished(why));
+        }
         (retired, barrier) => {
             if let Some(barrier) = barrier {
                 barrier.resume();
             }
             drop(hold);
-            let why = retired
-                .err()
-                .unwrap_or_else(|| "the barrier was lost".to_string());
+            let why = match retired {
+                Err(Retiring::Before(why) | Retiring::After(why)) => why,
+                Ok(()) => "the barrier was lost".to_string(),
+            };
             return Err(roll_back(op.dir, parent, &actor.held(), why).await);
         }
     };
@@ -342,10 +353,18 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
     published.map_err(Refused::Unfinished)
 }
 
+/// Why the parent's `'T'` was not written: before any write was attempted (the actor no longer
+/// owns its intent, or a step before it failed), or after one was (its put or flush failed, and
+/// `'T'` may be durable or become so, so the split only rolls forward).
+enum Retiring {
+    Before(String),
+    After(String),
+}
+
 /// The parent's `'T'` (S4-DESIGN §6.2 step 3.1), written and flushed while the actor still owns its
-/// intent: from it the split only rolls forward.
-async fn write_retired(op: &Op<'_>, actor: &Actor<'_>) -> Result<(), String> {
-    actor.still_owned("'T'").await?;
+/// intent: from the attempt the split only rolls forward.
+async fn write_retired(op: &Op<'_>, actor: &Actor<'_>) -> Result<(), Retiring> {
+    actor.still_owned("'T'").await.map_err(Retiring::Before)?;
     let retired = fence::Retired {
         version: op.version + 1,
         op_id: op.op_id.to_string(),
@@ -356,12 +375,25 @@ async fn write_retired(op: &Op<'_>, actor: &Actor<'_>) -> Result<(), String> {
             .collect(),
     };
     let row = serde_json::to_vec(&retired).unwrap_or_default();
+    let after = |e: slatedb::Error| Retiring::After(format!("'T': {e}"));
+    #[cfg(test)]
+    let fault = op.parent.gc_state().gate.take_t_fault();
+    #[cfg(test)]
+    if fault == Some(super::gate::TFault::BeforePut) {
+        return Err(Retiring::After("'T': injected: the put failed".to_string()));
+    }
     op.parent
         .db
         .put(fence::retired_key(), row)
         .await
-        .map_err(|e| format!("'T': {e}"))?;
-    op.parent.db.flush().await.map_err(|e| format!("'T': {e}"))
+        .map_err(after)?;
+    #[cfg(test)]
+    if fault == Some(super::gate::TFault::AfterPut) {
+        return Err(Retiring::After(
+            "'T': injected: the flush failed".to_string(),
+        ));
+    }
+    op.parent.db.flush().await.map_err(after)
 }
 
 /// The refusals (S4-DESIGN §6.2 step 0.1): the parent's home, or why it cannot split now.

@@ -1043,6 +1043,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_t_outcome",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split whose 'T' write fails after the attempt (S4 6.4, addendum 6 of DESIGN-DECISION-c3-incomplete-rig-2026-11-11): the split refuses Unfinished with no resume and no rollback, the queued writer is refused as final, and the parent's next opener rolls forward from a landed 'T' or back without one; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_t_outcome.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_override",
       "path": "src/dst/dst_tests.rs",
       "reason": "A leaf count balance moved by an override splits where the override places it (#251 amendment R3): the policy's split under sustained load is not held by an aged override; compiler and the full DST suite exercise the module.",

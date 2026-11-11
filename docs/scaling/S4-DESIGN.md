@@ -512,9 +512,17 @@ or `'Y'` (fallback), plus the intent row for a merge of it (S6).
 | the topology at `T.version` naming `op_id` | published | Reclaimed (idempotent) |
 
 **A slow, not dead, actor** against this table:
-- **Before `'T'`:** its parent writer is fenced by the claimant's open. Its `'T'` flush fails, its renewal
-  fails, and its child writes (fallback) or clone calls (C4) touch paths the claimant deletes. Its own
-  rollback deletes only the same objects. Its terminal CAS fails on `lease_epoch`/ETag.
+- **Before `'T'`:** its parent writer is fenced by the claimant's open. Its `'T'` write fails (an attempted
+  `'T'`, below), its renewal fails, and its child writes (fallback) or clone calls (C4) touch paths the
+  claimant deletes. Its own rollback, on a refusal before the attempt, deletes only the same objects. Its
+  terminal CAS fails on `lease_epoch`/ETag.
+- **An attempted `'T'` whose put or flush failed:** the actor cannot tell a `'T'` that landed (a put that
+  landed before its flush failed, a flush whose response was lost, the close's own flush) from one that did
+  not, so it treats the attempt as written. It refuses `Unfinished` with no resume and no rollback, its
+  barrier drops unreleased (the parent closes, and the gate's final flag refuses every queued writer), and
+  its intent stays live. The next opener of the parent decides by the table above: forward from `'T'`, back
+  without it. Only a refusal before the attempt (the actor's ownership check) rolls back in process
+  (DESIGN-DECISION-c3-incomplete-rig-2026-11-11, addendum 6).
 - **After `'T'`:** both roll forward, the publish is idempotent, and a fenced child writer ends the actor
   (§4.3).
 

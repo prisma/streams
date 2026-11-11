@@ -352,7 +352,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "01d4e53a40659078db770de801d22432fec3f242a508b03d537950a6e7ccf55a",
+    "function_sha256": "6f2cedf08c831e935730bc7f082ae4234cc19e7e3354e694ed4e5c832dc01ce8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -1390,7 +1390,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7d3a2728c0de7be5adde50a549116a38872c7239fd9e17107c22efac2aae0059",
+    "function_sha256": "a72784e0e5d5935a11659285924e91da574d5b3d0511b334d66e9ce5b1b867ff",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -1426,7 +1426,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "2c6721505424fcd12ffacc8d1a6a449dfabc7084d4643e866c474a258d943ddc",
+    "function_sha256": "494c6583d52660ab074d61f998154a30b6cb22040215534b438d3e211ebe3178",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1744,7 +1744,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ffab7b9b4f02c6751f98354997ae8e008f4f56b205bb36c92e8c5da9177ffe99",
+    "function_sha256": "2ea8a5ece62a03b23c855d62409b424e50a41072460799ccba1acd87d549d028",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -1832,7 +1832,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4733c77caef8c97e6ececcbcc6dcc925ccec17967e72576a34f12c2f342cade6",
+    "function_sha256": "6ae0896c6ea6945acc30d06ada0e6d7cf79b2395261e9f6d2fee58b0b40eb3ca",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -2557,6 +2557,72 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_parent_writes_nothing_after_the_splits_t_when_its_publish_fails",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fdefd99011b77aa55dd8e332e0381c8e73c4dae30403bbe17b54c2225b2acdfd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_parent_writes_nothing_until_the_split_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "afc8c348f47d98360d29758a0c1744b478a2e524690afd06178c9e52782f2b15",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_parent_writes_nothing_until_the_split_rolls_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "214dc3aa0d7a91591416960048b24be92559f2b5850b2e2ace3d2e16e7cc6cc2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_source_writes_nothing_after_the_merges_t_when_its_publish_fails",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b104b2ea2c66baa7381ff22a42c5cab4696b0fda9550bca9d1ddb0047a6fa933",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_source_writes_nothing_until_the_merge_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "25657ff2e01508ad66ed25d19bd23b2005cddc9837ccb6d7512415313d2460a8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_quiesced_source_writes_nothing_until_the_merge_rolls_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "26b70bd8d94cf668045c2bb5233a1307ba29b3696d3d6670cf0cedc84c11cf9d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
     "scenarios": []
   },
   {
@@ -3640,7 +3706,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "09546725841e539cbbd19fbceb3f01edc564d0ac4da6d07eabf79429397b9418",
+    "function_sha256": "9703b465d987d58f45772945c2668e4d36343594fff7837c4c03106b67fffb38",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
@@ -3688,6 +3754,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_generations.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_t_landed_before_its_flush_failed_only_rolls_forward",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "88f661c0397463b902a718a60da29a2f631c76078e7238d0bf084aa0ee37767c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_t_outcome.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_whose_t_put_failed_is_rolled_back_only_by_the_next_opener",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b6a920e6c7f92d853ff0336367a591e2a8713fc71f17e174a6ea6cb7393fcc10",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_t_outcome.rs",
     "scenarios": []
   },
   {
@@ -5269,7 +5357,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5cfcf4d541c82ec2d4edebbdfdc860dc236b212467ebdda3c223565186f96627",
+    "function_sha256": "ea3b9bcd78604de4bc2f55c1548b2ac5f8c2deacd6eb3d8340bf4e700a8d5603",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",
@@ -5408,7 +5496,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d5d2bea52bc119e2fe1538e32eeb37be544d29447e0c888bb8941b76064e4fb4",
+    "function_sha256": "13511c5825ffc1844f437efe75d1078903c7321badb2bdce75f4a5054d1f7c58",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_sweep.rs",
@@ -7593,7 +7681,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "1ee2fd2b162e1b310f8df3d291afca2c43c233d2ec22f3401dc5db87f4ce9260",
+    "function_sha256": "e6ffef7957349511f92e759eea9dd46040cd61f7d9510ad14b6a544131ea0761",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
@@ -8136,7 +8224,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ad631aa4802fd19e279a7ab83f89b45f0014a0aa5b706db0810dad669ccf83bb",
+    "function_sha256": "b61827b3cf9c36184128c7f16f338e1dd72d9e07e97e497d8e7c1d2883c78056",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/parked_waits.rs",
@@ -8204,7 +8292,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 8, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "9f562031328bf9c75aacab5cd22819e95c86d6f598d09b22688b8bed3da8ea66",
+    "function_sha256": "4479528f6a1ddac08d5759ab85b7e913680c08260e97e52937ac3fa8332406fa",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::new(0, 0, 0)"
@@ -9056,7 +9144,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "1da52587341fd8de92daa5bf94cdf5e969f76c2ea0ccd06e0946b414e9d19c91",
+    "function_sha256": "9f42b085fc5c5aa76ab80df4124d4553c2fc67c93e94276dd6f2fdc8d38d71ba",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -10177,7 +10265,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8e50f301a633ff369a144cd017800d03ceb42541525df0c1fdd2cee14c7adb2e",
+    "function_sha256": "26fd864dc142cb6f97459386fd34e13f591f38ede234e5b06b526cf31380e0a1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
@@ -10458,7 +10546,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "26d4ba0c09c19c4efadbe26ada4679c72081a1ed1a3f054c451eb95ac06a9fb4",
+    "function_sha256": "ffd526c9f273d7686d007f10f00ab9fd01c4e600e8ad022bcd71355a35fdb10a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_workload.rs",
@@ -10511,7 +10599,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "343c178b54776d90fd228154d8b36011645cfc4ca6856989ab392da31b193cae",
+    "function_sha256": "de7fb9362295a6aad078cc7ed0db8be6437c7b577b008e621eb493b59deac08d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_workload.rs",
@@ -11057,7 +11145,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7f228a7357107d5f317046cc550e2b5ed5b375c106793e3ab927ee3e1414de67",
+    "function_sha256": "2104856d15ae66db2dbf122f085dead58ad39318294ef65ed71ba150189aa6d9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",

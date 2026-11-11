@@ -61,6 +61,8 @@ mod split_lists;
 mod split_override;
 #[path = "tests/split_purged.rs"]
 mod split_purged;
+#[path = "tests/split_t_outcome.rs"]
+mod split_t_outcome;
 #[path = "tests/topology_clone_clock.rs"]
 mod topology_clone_clock;
 

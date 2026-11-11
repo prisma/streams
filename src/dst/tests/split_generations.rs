@@ -211,10 +211,10 @@ async fn split_with_t_held(
 /// **A `'T'` whose flush SlateDB retries publishes the split** (S4-DESIGN §6.4). SlateDB's `put`
 /// does not await durability, so the split's `'T'` is durable only once its flush lands. With that
 /// flush's WAL write lost (it lands, its response an error) or failing before dispatch, SlateDB's
-/// store retries it inside the flush, the flush returns, and the split publishes: a `'T'` flush
-/// fails only for a fenced writer, whose WAL table never lands, so the rollback after a failed
-/// `'T'` undoes a `'T'` that is not durable. Pinned for both faults, so a SlateDB that surfaced
-/// either while landing the write would show here.
+/// store retries it inside the flush, the flush returns, and the split publishes. A `'T'` write
+/// that does fail leaves the split `Unfinished` for the next opener to decide
+/// (`split_t_outcome`). Pinned for both faults, so a SlateDB that surfaced either while landing the
+/// write would show here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_t_whose_flush_slatedb_retries_publishes_the_split() {
     let releases: [fn(&crate::dst::fault_store::FaultStore); 2] = [

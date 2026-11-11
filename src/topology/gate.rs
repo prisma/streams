@@ -66,6 +66,18 @@ pub(crate) struct MaintenanceGate {
     /// Tests: where a split pauses once its barrier parks (`pause_at_park`).
     #[cfg(test)]
     pause: Mutex<Option<PausePoint>>,
+    /// Tests: how the next split's `'T'` write fails (`fail_t`).
+    #[cfg(test)]
+    t_fault: Mutex<Option<TFault>>,
+}
+
+/// Tests: a split's `'T'` write fails before its put (nothing lands), or after it (the put landed,
+/// and its flush is reported failed).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TFault {
+    BeforePut,
+    AfterPut,
 }
 
 /// Tests: a split that reaches its pause answers `reached` and waits for `go`.
@@ -107,6 +119,21 @@ impl MaintenanceGate {
     #[cfg(test)]
     pub(crate) fn take_pause(&self) -> Option<PausePoint> {
         self.pause
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Tests: the next split of this engine fails its `'T'` write at `fault`.
+    #[cfg(test)]
+    pub(crate) fn fail_t(&self, fault: TFault) {
+        *self.t_fault.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+
+    /// Tests: the `'T'` fault a split takes, if a test set one.
+    #[cfg(test)]
+    pub(crate) fn take_t_fault(&self) -> Option<TFault> {
+        self.t_fault
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
