@@ -200,7 +200,7 @@ const catalogAnswer = async (cell: string, bearer: string) =>
 /// `project`'s status in the bundle `state` holds, or "omitted".
 const statusIn = (state: string, project: string) =>
   (readBundle(state).policies.containers as { container_id: string; status: string }[])
-    .find((p) => p.project_id === project)?.status ?? "omitted";
+    .find((p) => p.container_id === project)?.status ?? "omitted";
 
 maybe("a suspended project is offboarded through the canary witness on the real binary", async () => {
   const c = await initCell();
