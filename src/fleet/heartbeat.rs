@@ -256,6 +256,13 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             live = intent.live(&*state.data_store) => live,
         };
         open_unopened_sources(&state, live.as_ref()).await;
+        // Raced against the cancel like the loop's other I/O: a prune dropped mid-read or mid-CAS
+        // is safe (level-triggered, CAS-guarded, repeated by the next beat), and the cancel
+        // reaches the withdrawing beat.
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            () = prune_stale_overrides(&state) => {}
+        }
         let sources = live.as_ref().map(|l| l.sources.clone()).unwrap_or_default();
         state.fleet.standing().set_topology_sources(sources);
         let reserved_shards = reserved_by(live.as_ref(), &instance);
@@ -320,6 +327,23 @@ async fn open_unopened_sources(state: &AppState, live: Option<&crate::topology::
             let ready = matches!(outcome, crate::sharddir::OpenOutcome::Ready(_));
             tracing::info!(shard = %prefix, op_id = %live.op_id, ready, "opening a live intent's source for its fence");
         }
+    }
+}
+
+/// Drop the overrides that name no leaf (#251 amendment R3-d) once this instance's mirror holds
+/// one that is no leaf of its installed topology: level-triggered and free while the mirror is
+/// clean. Every instance may fire; the CAS lets one land and the mirror follows on the next tick.
+/// The authority is the stored topology (`stale::pruned`), so an instance whose installed topology
+/// lags writes nothing.
+async fn prune_stale_overrides(state: &AppState) {
+    let leaves = state.shards.prefixes();
+    let mirror = state.ownership.view();
+    let stale = mirror
+        .overrides
+        .keys()
+        .any(|prefix| !leaves.shards.leaves.contains_key(prefix));
+    if stale && super::stale::prune(&state.fleet, &*state.data_store).await {
+        tracing::info!("overrides: a beat dropped the entries that name no leaf");
     }
 }
 

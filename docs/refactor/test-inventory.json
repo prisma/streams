@@ -1496,7 +1496,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "88a89004bd9d765e139059e63202b06c4b3cd527cba42466c4a2a1dc108dbdb2",
+    "function_sha256": "f8156e1a1ae1300bf7e16340813f3742d304ccab7e4067f2dc6e529eb150b7fb",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_override.rs",
@@ -10616,6 +10616,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_fleet_tick_opens_no_override_whose_prefix_is_no_leaf",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "231f5f7b7616f696f6cde0334af578ac69172cf13b7e65108aeeb5100d47e8e8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
     "scenarios": []
   },
   {

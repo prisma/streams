@@ -182,18 +182,8 @@ async fn r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_r
                 "unread overrides must not publish a new ring"
             );
         }
-        let report = rig.tasks.shutdown(Duration::from_secs(4)).await;
-        assert!(
-            report.aborted.is_empty(),
-            "active fleet I/O must cancel cooperatively: {report:?}"
-        );
-        assert!(
-            report
-                .outcomes
-                .iter()
-                .any(|(name, outcome)| *name == "fleet"
-                    && *outcome == crate::tasks::TaskOutcome::Finished)
-        );
+        let withdrawn = (path == "fleet/overrides.json").then_some("runtime shutting down");
+        desired::cancelled_cleanly(&rig.tasks, &inner, withdrawn).await;
         if path == "fleet/desired.json" {
             assert!(
                 matches!(

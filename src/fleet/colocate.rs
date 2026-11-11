@@ -3,8 +3,9 @@
 //! merge's actor first. One CAS of the overrides document names both halves for the actor: the
 //! one it already serves and the one it takes. With both overridden, count balance moves neither
 //! (it moves only a shard without an override), and the merge, once the move's cooldown has
-//! passed, finds both here. After the merge the halves are no leaves; the next write of the
-//! document by count balance or a co-location drops their entries (`stale`).
+//! passed, finds both here. After the merge the halves are no leaves; the next beat that sees
+//! them, or the next write of the document by count balance or a co-location, drops their entries
+//! (`stale`).
 
 use super::{FleetDocument, FleetRepository};
 use crate::ownership::OwnershipService;

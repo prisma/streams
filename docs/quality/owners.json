@@ -50,10 +50,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 4,
+      "count": 5,
       "owner": "crate::run",
       "path": "src/fleet/heartbeat.rs",
-      "reason": "The heartbeat task selects between supervised cancellation and the drain marker's creation, its beat timer, its read of the topology intent, then its bounded publication; compiler checks expansion.",
+      "reason": "The heartbeat task selects between supervised cancellation and the drain marker's creation, its beat timer, its read of the topology intent, its prune of stale overrides, then its bounded publication; compiler checks expansion.",
       "syntax": "tokio::select"
     },
     {

@@ -443,3 +443,31 @@ async fn the_planner_reads_no_in_flight_shorter_than_the_window() {
         "the first tick publishes, and the planner read no in-flight: {desired:?}"
     );
 }
+
+/// r09's shutdown (`fleet_controller::r09_fleet_cancels_entered_documents_...`): within 4 s the
+/// supervisor cancels every task cooperatively (none aborted) and the fleet task finishes; given
+/// `withdrawn`, the last beat stored for `streams-1` names exactly that withdrawal (the held
+/// overrides read: the heartbeat's prune of a stale override is raced against its cancel, so the
+/// withdrawing beat is sent; #251 amendment R3-d, C2).
+pub(super) async fn cancelled_cleanly(
+    tasks: &crate::tasks::TaskSupervisor,
+    fleet: &std::sync::Arc<dyn object_store::ObjectStore>,
+    withdrawn: Option<&str>,
+) {
+    let report = tasks.shutdown(Duration::from_secs(4)).await;
+    assert!(
+        report.aborted.is_empty(),
+        "active fleet I/O must cancel cooperatively: {report:?}"
+    );
+    let finished = report
+        .outcomes
+        .iter()
+        .any(|(name, outcome)| *name == "fleet" && *outcome == crate::tasks::TaskOutcome::Finished);
+    assert!(finished, "the fleet task finishes: {report:?}");
+    if let Some(withdrawn) = withdrawn {
+        let path = Path::from("fleet/streams-1.json");
+        let bytes = fleet.get(&path).await.unwrap().bytes().await.unwrap();
+        let last: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(last["withdrawn"], withdrawn, "the last beat: {last}");
+    }
+}

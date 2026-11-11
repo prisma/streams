@@ -117,12 +117,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         document(&fleet, "streams-2").await["topology_decision"].clone(),
     );
     assert_eq!(stored_leaves(&data).await, [""], "decisions {decisions:?}");
-    let moved = document(&fleet, "overrides").await;
-    assert_eq!(
-        (&moved["entries"]["0"]["to"], &moved["entries"]["1"]["to"]),
-        (&"streams-2".into(), &"streams-2".into()),
-        "the actor moved both halves to itself first: {moved}"
-    );
+    moved_to_the_actor_then_pruned(&fleet).await;
     let root = owner("").expect("the ring owns the merged root");
     let serving = if root == "streams-1" { a.addr } else { b.addr };
     for (name, before) in &kept {
@@ -138,6 +133,46 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     }
     engine_shutdown(&a.state).await;
     engine_shutdown(&b.state).await;
+}
+
+/// The actor moved both halves to itself first: the overrides document's `rebalance_move` events
+/// are exactly `("0", streams-2)` and `("1", streams-2)` (nothing in the rig drains them: the
+/// fleet's event drain runs from the telemetry loop, which this rig never starts). The merge
+/// published `[""]`, so neither half is a leaf and a beat drops both entries
+/// (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 3; #251 R3-d, C2): within 10 s the
+/// document names neither.
+async fn moved_to_the_actor_then_pruned(fleet: &Arc<dyn ObjectStore>) {
+    let moved = document(fleet, "overrides").await;
+    let mut moves: Vec<(String, String)> = moved["pending_events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["event_type"] == "rebalance_move")
+        .map(|event| {
+            (
+                event["shard"].to_string(),
+                event["fields"]["to"].to_string(),
+            )
+        })
+        .collect();
+    moves.sort();
+    let to_the_actor = [r#""0""#, r#""1""#].map(|shard| (shard.into(), r#""streams-2""#.into()));
+    assert_eq!(
+        moves, to_the_actor,
+        "the actor moved both halves to itself first: {moved}"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let entries = document(fleet, "overrides").await["entries"].clone();
+        if entries["0"].is_null() && entries["1"].is_null() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a beat drops the entries that name no leaf: {entries}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// The records of `name` from whichever of `addrs` serves it (its shard's owner), within 20 s.

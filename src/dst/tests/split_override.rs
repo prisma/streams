@@ -18,8 +18,8 @@ use std::time::Duration;
 /// **A leaf count balance moved here splits here under sustained load.** A one-shard cell run by
 /// `streams-1`, whose leaf `""` carries an aged override naming `streams-1` (as count balance's
 /// move leaves it, past the move cooldown and short of return-home). Under appends past the split
-/// line the policy splits it through S4's split into `0` and `1` within 30 s, while the override
-/// still stands.
+/// line the policy splits it through S4's split into `0` and `1` within 30 s, under the override;
+/// then a beat drops the parent's entry, which names no leaf (#251 amendment R3-d).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_leaf_the_balancer_moved_here_splits_here_under_load() {
     let fleet = seeded().await;
@@ -75,9 +75,18 @@ async fn a_leaf_the_balancer_moved_here_splits_here_under_load() {
         asked.lock().unwrap()
     );
     assert_eq!(*asked.lock().unwrap(), [""]);
+    // The parent's entry names no leaf once the split publishes: a beat drops it (#251 R3-d).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let parent_entry = || async {
+        let (overrides, _) = rig.state.fleet.read_overrides().await.unwrap();
+        overrides.entries.contains_key("")
+    };
+    while parent_entry().await && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(
-        rig.state.ownership.overrides().contains_key(""),
-        "the split ran under the override"
+        !parent_entry().await,
+        "a beat drops the split parent's entry"
     );
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
