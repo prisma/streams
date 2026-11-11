@@ -1,9 +1,13 @@
 //! Kani proofs for the trim hints: KANI-111 (S3b-DESIGN §3.4, §11.3).
 //! - A hint key parses back to exactly the sequence and queue it names,
 //!   and a key under any other sentinel tag names nothing.
-//! - After any three additions, a queue's hint ranges are sorted, apart
-//!   (neither overlapping nor touching), cover every added offset, and
-//!   reach only the range-row spans the added offsets lie in.
+//! - One addition to any sorted, apart (neither overlapping nor touching)
+//!   list of up to three non-empty ranges keeps them sorted, apart and
+//!   non-empty, holds each range it had and the added one within one range,
+//!   and starts and ends every range where one of those did. By induction
+//!   from the empty list, after any additions (while at most three ranges
+//!   are held before each) a queue's hint ranges cover every added offset
+//!   and reach only the range-row spans the added ranges reach.
 use super::{HintRanges, key, parse_key};
 
 #[kani::proof]
@@ -23,37 +27,57 @@ fn kani_111_a_hint_key_names_its_sequence_and_queue_and_no_other_tag_does() {
     assert!(parse_key(&other).is_none(), "another tag names nothing");
 }
 
-/// An added range: offsets below a bound that spans three range rows.
-fn any_range() -> (u64, u64) {
-    let a: u64 = kani::any();
-    let b: u64 = kani::any();
-    kani::assume(a < b && b <= 3 * super::super::range::SPAN);
-    (a, b)
+/// Any `N` sorted, apart, non-empty ranges: what additions leave, by the
+/// induction this harness's step proves.
+fn any_ranges<const N: usize>() -> [(u64, u64); N] {
+    let ranges: [(u64, u64); N] = kani::any();
+    for i in 0..N {
+        kani::assume(ranges[i].0 < ranges[i].1);
+        if i > 0 {
+            kani::assume(ranges[i - 1].1 < ranges[i].0);
+        }
+    }
+    ranges
+}
+
+/// One addition of any non-empty range to `N` held ranges.
+fn one_addition<const N: usize>() {
+    let before = any_ranges::<N>();
+    let (a, b): (u64, u64) = (kani::any(), kani::any());
+    kani::assume(a < b);
+    let mut h = HintRanges(before.to_vec());
+    h.add(a, b);
+    let after = &h.0;
+    let input = |j: usize| if j < N { before[j] } else { (a, b) };
+    // One nondeterministic index per property, not a loop over the result
+    // (kani-ci-memory): what holds at any index holds at every index.
+    let i: usize = kani::any();
+    kani::assume(i <= N);
+    if i + 1 < after.len() {
+        assert!(after[i].1 < after[i + 1].0, "sorted and apart");
+    }
+    let j: usize = kani::any();
+    kani::assume(j <= N);
+    let (x, y) = input(j);
+    assert!(
+        after.iter().any(|&(p, q)| p <= x && y <= q),
+        "every added offset is named"
+    );
+    assert!(after.len() <= N + 1, "no range is made from nothing");
+    if let Some(&(p, q)) = after.get(i) {
+        assert!(p < q, "no range is empty");
+        assert!(
+            (0..=N).any(|k| input(k).0 == p) && (0..=N).any(|k| input(k).1 == q),
+            "no range reaches a span nothing added lies in"
+        );
+    }
 }
 
 #[kani::proof]
 #[kani::unwind(6)]
 fn kani_111_hint_ranges_stay_sorted_apart_and_cover_only_what_was_added() {
-    let added = [any_range(), any_range(), any_range()];
-    let mut h = HintRanges::default();
-    for (a, b) in added {
-        h.add(a, b);
-    }
-    let ranges = h.below(u64::MAX);
-    let span = |o: u64| o >> super::super::range::SHIFT;
-    for w in ranges.windows(2) {
-        assert!(w[0].1 < w[1].0, "sorted and apart");
-    }
-    for (a, b) in added {
-        let covers = |o: u64| ranges.iter().any(|&(x, y)| x <= o && o < y);
-        assert!(covers(a) && covers(b - 1), "every added offset is named");
-    }
-    for &(x, y) in &ranges {
-        assert!(x < y, "no range is empty");
-        let named = |s: u64| added.iter().any(|&(a, b)| span(a) <= s && s <= span(b - 1));
-        assert!(
-            named(span(x)) && named(span(y - 1)),
-            "no range reaches a span nothing added lies in"
-        );
-    }
+    one_addition::<0>();
+    one_addition::<1>();
+    one_addition::<2>();
+    one_addition::<3>();
 }
