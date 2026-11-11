@@ -18,8 +18,8 @@ function check(name, cond, extra = "") {
   }
 }
 
-const project = process.env.STREAMS_PROJECT ?? "proj_local";
-const client = new StreamsClient({ url, token, project });
+const container = process.env.STREAMS_CONTAINER ?? "proj_local";
+const client = new StreamsClient({ url, token, container });
 
 // Create with watches; idempotent retry.
 const orders = await client.createStream("smoke/orders", {
@@ -45,14 +45,14 @@ const a2 = await producer.appendMany(
 );
 check("producer appendMany", a2.count === 2);
 // Rewind the local state to replay seq 1 with the SAME body: duplicate.
-await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", project, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
+await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", container, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
 const dup = await producer.appendMany(
   [{ customerId: "c1", n: 1 }, { customerId: "c1", n: 2 }],
   { routingKey: "c1" },
 );
 check("exact retry is duplicate", dup.duplicate === true);
 // Same seq, different body: conflict.
-await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", project, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
+await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", container, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
 let reused = false;
 try {
   await producer.append({ customerId: "c1", n: 99 }, { routingKey: "c1" });
