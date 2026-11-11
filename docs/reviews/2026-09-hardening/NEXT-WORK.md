@@ -2823,6 +2823,45 @@ EDGE-261-RATIFICATION.md) left these:
   hysteresis. Red: a policy unit test (a leaf-quiet pair with
   `shards_wanted == leaves` never merges, with `leaves - 1` merges after the
   sustain) and a planner pin.
+- **A merge refused `instance_full` holds `steady` and asks for nothing**
+  (DESIGN-DECISION-convergence-stall-2026-11-11.md §2, rejected option (d) as a
+  follow-up). A merge whose actor legitimately holds `max` open leaves holds
+  `steady`, and nothing in the cell changes it except the sweep closing a cold
+  leaf. Decide whether that is live at defaults (`SHARDS_PER_INSTANCE_MAX` 7)
+  and whether the hold gets its own name.
+- **Which beat the planner read for the convergence DST's late grow**
+  (DESIGN-DECISION-converge-budget-2026-11-11.md, Open; after push 4). In green3
+  (`s5/conv/final-a-075127`) the count went 3→4 at 230 s, with every beat's
+  `split_refused` already null: one transient instance per split, as #261 allows,
+  but it made count balance part `00` and `01` and cost the first merge a settle
+  and a co-location. Find which beat the planner read (a planner-tick trace of a
+  run that shows it), and whether the ask was stale.
+- **A co-location gives the pair to the lower ordinal of actor and partner**
+  (DESIGN-DECISION-converge-budget-2026-11-11.md §2c; #261 Note B1-a). Of the
+  actor and the partner, both with room, the lower ordinal takes the pair: either
+  choice moves exactly one shard, and the lower ordinal outlives the higher, so a
+  scale-in does not drain the pair's new home (the convergence DST's green3 repeat,
+  streams-2 over streams-4). Count balance and return-home are unaffected. The unit
+  pin "the actor when it has room" changes, so it is an edge note on #261 B1. While
+  there, `colocation_target`'s "others" tier sorts by `id` as a string
+  (`streams-10` before `streams-2`): sort by ordinal.
+- **A shrink floor in the gate** (DESIGN-DECISION-grow-shrink-gap-2026-11-11.md §2,
+  rejected for push 4). A `SCALE_IN_SECS` under about 30 s shrinks on a view older
+  than its window (#261 Note B2-a). Decide a floor in `hysteresis::Gate` (a clamp
+  beside `GROW_FLOOR_MS`, not a boot refusal); `dst/tests/fleet_desired.rs` runs
+  at 0 in two places. An edge change on #260 H3.
+- **The heartbeat's open of a live intent's sources is not raced against its cancel**
+  (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 2; push 4 raced only the stale-override
+  prune). `fleet::heartbeat::run` awaits `open_unopened_sources` bare. Each `open_or_wait` carries
+  a 1 s patience and an intent names at most two sources, so it delays the heartbeat's cancel by at
+  most 2 s, inside the 4 s shutdown deadline, and dropping it later is safe (the single-flight open
+  runs in its own task). Guard it like its neighbours when the heartbeat is next touched, with its
+  own red (an open held at shutdown).
+- **A merge half's waiting open answers 503, not 500, on `not_a_leaf`** (#251
+  R3-d-1). C3's refusal reaches a request waiting on the open as a failed open
+  (a strike, `health.failed`, `500 shard_open_failed`). The retryable form is one
+  typed "retry, no strike" outcome from the opener, inside `OpenGate::get_or_open`,
+  whose exception-growth row is frozen: Fable decides the row.
 - **Q5's 30 s shard-log poll is blocked by flush liveness.** The shard logs'
   manifest poll (`MANIFEST_POLL_MS`, read only by
   `config::validation::shard_settings`) is also how the memtable flusher
