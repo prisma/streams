@@ -383,4 +383,88 @@ mod tests {
             }
         }
     }
+
+    /// The convergence DST's shrink window (`topology_convergence.rs`'s `compressed`): longer
+    /// than one peer read plus a beat (8 s) and than a split's hand-over with one failed attempt
+    /// (about 23 s), shorter than S4's 60 s settle (DESIGN-DECISION-grow-shrink-gap-2026-11-11).
+    const DST_SCALE_IN: Duration = Duration::from_secs(30);
+
+    /// Two members at 41 % and 15 rps each on two shards, folded from their beats as the tick
+    /// folds them; with `asking` one of them reports its split waiting for an instance.
+    fn view(asking: bool) -> Loads {
+        let mut loads = Loads {
+            shards: 2,
+            ..Loads::default()
+        };
+        for (instance, ask) in [("streams-1", false), ("streams-2", asking)] {
+            let refused = if ask {
+                r#","split_refused":"instance_full","shards_resident":2"#
+            } else {
+                ""
+            };
+            let beat = format!(
+                r#"{{"instance":"{instance}","ts_ms":1,"rps":15.0,"cpu_pct":41.0,"owned_shards":[],"draining":false{refused}}}"#
+            );
+            loads.fold(&serde_json::from_str(&beat).unwrap());
+        }
+        loads
+    }
+
+    /// The gate's first shrink over a count of 3 published `published_s` into the test, its ticks
+    /// at `ticks`, each planned from the stale view before `fresh_from` and from the asking view
+    /// from then on: (second, count), or none.
+    fn first_shrink(
+        window: Duration,
+        ticks: &[i64],
+        fresh_from: i64,
+        published_s: i64,
+    ) -> Option<(i64, u64)> {
+        let base = Instant::now();
+        let mut gate = Gate::new(window, 60);
+        let cur = Desired {
+            count: 3,
+            reason: String::new(),
+            epoch: 3,
+            computed_at_ms: EPOCH_MS + published_s * 1_000,
+            pending_events: Vec::new(),
+        };
+        ticks.iter().find_map(|&t| {
+            let plan = Demand::default().plan(&view(t >= fresh_from), &thresholds(), base);
+            let decided = gate.decide((plan.need, plan.shrink), Some(&cur), at(base, t));
+            decided.map(|count| (t, count))
+        })
+    }
+
+    /// **A shrink window shorter than the fleet's observation undoes a grow** (the convergence
+    /// DST's red, 2026-11-11). The view a planner holds is its peers' beats as last read, one tick
+    /// in three: before it reads the ask the two members plan (2, 2); once it does, (3, 3).
+    /// - The stale ask: a count of 3 just published, ticks at 1, 3 and 5 s on the stale view, at
+    ///   7 s on the fresh one. A 2 s window shrinks at 3 s; the DST's 30 s window never does.
+    /// - The hand-over: a count of 3, aged, nothing asking, ticks every 2 s from 100 s. A 2 s
+    ///   window shrinks at 102 s; the 30 s one holds through 128 s and takes the transient
+    ///   instance back at 130 s, as #261 says.
+    #[test]
+    fn a_window_shorter_than_the_fleets_observation_undoes_a_grow() {
+        let fresh = Demand::default().plan(&view(true), &thresholds(), Instant::now());
+        let stale = Demand::default().plan(&view(false), &thresholds(), Instant::now());
+        assert_eq!(
+            ((stale.need, stale.shrink), (fresh.need, fresh.shrink)),
+            ((2, 2), (3, 3))
+        );
+        let two = Duration::from_secs(2);
+        let ask = [1, 3, 5, 7];
+        assert_eq!(first_shrink(two, &ask, 7, 0), Some((3, 2)));
+        assert_eq!(
+            first_shrink(DST_SCALE_IN, &ask, 7, 0),
+            None,
+            "the stale ask"
+        );
+        let quiet: Vec<i64> = (100..=130).step_by(2).collect();
+        assert_eq!(first_shrink(two, &quiet, i64::MAX, -1_000), Some((102, 2)));
+        assert_eq!(
+            first_shrink(DST_SCALE_IN, &quiet, i64::MAX, -1_000),
+            Some((130, 2)),
+            "the hand-over"
+        );
+    }
 }
