@@ -305,6 +305,9 @@ manifest that fails to load, `(os error 2)`/`(os error 28)`, `E0583`, `E0463`, a
 build script), a mutant cargo-mutants could not classify, and an owner that recorded
 another number of mutants than it listed are all incomplete
 (`scripts/quality/mutation_driver.py`, `incomplete_reason`).
+cargo-mutants copies the tree under the driver's own `TMPDIR`, `<out>/tmp` (emptied once a
+leg), never the host's temp directory, whose cleaner once emptied a copy mid-run; an `--out`
+inside the checkout must be git-ignored.
 CI runs each mutant's test process under a 10 GiB `RLIMIT_DATA` through cargo's target
 runner (`prlimit`, set in the `mutants` step), so a mutant that allocates without end
 aborts and is listed incomplete; local runs are uncapped (macOS has no `prlimit`).

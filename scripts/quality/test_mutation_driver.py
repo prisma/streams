@@ -128,9 +128,12 @@ class FakeCargo:
         self.ran = []
         self.commands = []
         self.envs = []
+        self.list_envs = []
 
     def __call__(self, command, cwd=None, stdout=None, check=False, **kwargs):
         self.commands.append(command)
+        if command[:3] == ['cargo', 'mutants', '--list']:
+            self.list_envs.append(kwargs.get('env'))
         if 'scripts/quality/verification_plan.py' in command:
             (self.out / 'plan.json').write_text(json.dumps(self.plan))
             return subprocess.CompletedProcess(command, 0)
@@ -377,6 +380,39 @@ class VerdictEvidence(unittest.TestCase):
         self.assertIn('1 of 3 owner(s)', summary)
         self.assertIn('gamma: incomplete 1', summary)
         self.assertIn('outcomes.json records 1 mutant(s); the driver listed 2', summary)
+
+
+class TempCopy(unittest.TestCase):
+    """cargo-mutants copies the tree under TMPDIR; a host's cleaner of its
+    temp directory removed files from that copy mid-run (2026-11-10), so the
+    driver gives it a TMPDIR of its own (gate decision of 2026-11-11, H1)."""
+
+    def test_every_owners_run_carries_a_tmpdir_under_the_output_and_its_listing_does_not(self):
+        fake, outcome, _ = run_driver(PUSHED, {})
+        self.assertIsNone(outcome)
+        runs = [(command, env) for command, env in zip(
+            [c for c in fake.commands if c[:2] == ['cargo', 'mutants'] and '--list' not in c],
+            fake.envs)]
+        self.assertEqual(len(runs), 3)
+        for command, env in runs:
+            out = Path(command[command.index('--output') + 1]).parent
+            self.assertEqual(env['TMPDIR'], str(out / 'tmp'))
+            self.assertEqual(env['PATH'], os.environ['PATH'])
+        self.assertEqual(fake.list_envs, [None, None, None])
+
+    def test_the_tmpdir_starts_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / 'tmp' / 'cargo-mutants-old.tmp').mkdir(parents=True)
+            tmp = mutation_driver.mutants_tmpdir(out)
+            self.assertEqual(tmp, out / 'tmp')
+            self.assertEqual(list(tmp.iterdir()), [])
+
+    def test_an_output_inside_the_checkout_that_git_does_not_ignore_is_refused(self):
+        out = mutation_driver.ROOT / 'scripts' / 'quality' / 'mutants-out-not-ignored'
+        with self.assertRaisesRegex(ValueError, 'not ignored by git'):
+            mutation_driver.mutants_tmpdir(out)
+        self.assertFalse(out.exists())
 
 
 class PushedChange(unittest.TestCase):

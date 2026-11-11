@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -230,7 +231,26 @@ def incomplete_mutants(listing, listed):
     return found
 
 
-def run_owner(command, listing, listed):
+def mutants_tmpdir(out):
+    """The TMPDIR cargo-mutants copies the tree into, emptied once a leg.
+
+    The host's temp directory is not the driver's: macOS's daily cleaner of
+    /var/folders removed files from a copy that kept the sources' old times
+    mid-run (2026-11-10, gate decision of 2026-11-11, H1), so every owner's
+    run gets `<out>/tmp`. It must not be a path the copy itself would copy:
+    inside the checkout it must be ignored by git (cargo-mutants copies with
+    --gitignore true)."""
+    tmp = out / 'tmp'
+    if tmp.resolve().is_relative_to(ROOT.resolve()) and subprocess.run(
+            ['git', 'check-ignore', '-q', str(tmp)], cwd=ROOT).returncode != 0:
+        raise ValueError(f'{tmp} is inside the checkout and not ignored by git: cargo-mutants '
+                         'would copy its own copies; use an ignored --out such as target/...')
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    return tmp
+
+
+def run_owner(command, listing, listed, env=None):
     """Run one owner's `listed` mutants; True when the answer is a survivor
     status or a mutant's run was incomplete.
 
@@ -238,7 +258,7 @@ def run_owner(command, listing, listed):
     one run reports every owner it selected, once, at the end; an answer that
     measured nothing stops it at once. Each incomplete mutant is printed as its
     owner finishes, so a watcher can stop the leg at the first."""
-    status = subprocess.run(command, cwd=ROOT).returncode
+    status = subprocess.run(command, cwd=ROOT, env=env).returncode
     if status and status not in SURVIVOR_STATUSES:
         raise subprocess.CalledProcessError(status, command)
     incomplete = incomplete_mutants(listing, listed)  # listed whatever the answer
@@ -294,6 +314,9 @@ def execute(out):
         'deleted_source_dispositions': plan.get('deleted_source_dispositions', []),
     })
     check_tool_version()
+    # Test processes inherit it; a test that breaks on the longer path fails
+    # the baseline, which stops the leg at once.
+    run_env = {**os.environ, 'TMPDIR': str(mutants_tmpdir(out))}
 
     canonical_diff = None if scheduled else out / 'pr.diff'
     harness_diff = None
@@ -325,7 +348,7 @@ def execute(out):
             continue
         total += count
         if run_owner(mutation_command(entry, out, output, mutation_diff, share),
-                     output / 'mutants.out', count):
+                     output / 'mutants.out', count, run_env):
             survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:
