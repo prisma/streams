@@ -738,15 +738,45 @@ pub(crate) fn encode_dedup(offset: u64, expires_at: i64) -> Vec<u8> {
 }
 
 pub(crate) fn decode_dedup(raw: &[u8]) -> Result<(u64, i64), String> {
-    let mut r = Reader::new(raw);
-    let off = r.u64()?;
-    let at = r.i64()?;
-    let lane = r.u8()?;
-    r.end()?;
-    if lane != super::keys::LANE {
-        return Err(format!("queue dedup row: lane {lane}"));
+    dedup_fields(raw).map_err(|refusal| refusal.to_string())
+}
+
+/// Why a dedup entry is refused. Typed, so KANI-111 checks the refusals:
+/// a `format!` error path is beyond it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DedupRefusal {
+    Truncated,
+    Trailing,
+    Lane(u8),
+}
+
+impl std::fmt::Display for DedupRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("queue row: truncated"),
+            Self::Trailing => f.write_str("queue row: trailing bytes"),
+            Self::Lane(lane) => write!(f, "queue dedup row: lane {lane}"),
+        }
     }
-    Ok((off, at))
+}
+
+/// `decode_dedup`'s checked core: the offset and expiry (8 bytes each, little-endian), the lane,
+/// and nothing after it.
+fn dedup_fields(raw: &[u8]) -> Result<(u64, i64), DedupRefusal> {
+    let (off, rest) = raw
+        .split_first_chunk::<8>()
+        .ok_or(DedupRefusal::Truncated)?;
+    let (at, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or(DedupRefusal::Truncated)?;
+    let (&lane, rest) = rest.split_first().ok_or(DedupRefusal::Truncated)?;
+    if !rest.is_empty() {
+        return Err(DedupRefusal::Trailing);
+    }
+    if lane != super::keys::LANE {
+        return Err(DedupRefusal::Lane(lane));
+    }
+    Ok((u64::from_le_bytes(*off), i64::from_le_bytes(*at)))
 }
 
 struct Reader<'a> {

@@ -1,11 +1,15 @@
 //! Kani proofs for a queue's fixed-layout entries: KANI-111 (S3b-DESIGN
 //! §3.2, §11.3). Over any values:
 //! - a dedup entry `'u'` (offset, expiry, lane) round-trips, and an entry
-//!   one byte short, one byte long or of another lane is refused;
+//!   cut to any shorter length, one byte long or of another lane is refused
+//!   (checked on `dedup_fields`, the typed core; `decode_dedup` only names
+//!   its refusals, and native_queue::tests pins those names);
 //! - a scheduled entry `'a'` (send time, stored length, inline page)
 //!   round-trips at each inline length checked, and an entry shorter than
 //!   its fixed fields is refused.
-use super::{decode_dedup, decode_scheduled, encode_dedup, encode_scheduled};
+use super::{
+    DedupRefusal, decode_dedup, decode_scheduled, dedup_fields, encode_dedup, encode_scheduled,
+};
 
 #[kani::proof]
 fn kani_111_a_dedup_entry_round_trips_and_refuses_other_lengths_and_lanes() {
@@ -16,14 +20,16 @@ fn kani_111_a_dedup_entry_round_trips_and_refuses_other_lengths_and_lanes() {
         decode_dedup(&raw) == Ok((offset, expires_at)),
         "a dedup entry round-trips"
     );
+    let cut: usize = kani::any();
+    kani::assume(cut < raw.len());
     assert!(
-        decode_dedup(&raw[..raw.len() - 1]).is_err(),
+        dedup_fields(&raw[..cut]) == Err(DedupRefusal::Truncated),
         "a short dedup entry is refused"
     );
     let mut long = raw.clone();
     long.push(kani::any());
     assert!(
-        decode_dedup(&long).is_err(),
+        dedup_fields(&long) == Err(DedupRefusal::Trailing),
         "a long dedup entry is refused"
     );
     let mut lane = raw;
@@ -31,7 +37,7 @@ fn kani_111_a_dedup_entry_round_trips_and_refuses_other_lengths_and_lanes() {
     kani::assume(other != crate::native_queue::keys::LANE);
     *lane.last_mut().unwrap() = other;
     assert!(
-        decode_dedup(&lane).is_err(),
+        dedup_fields(&lane) == Err(DedupRefusal::Lane(other)),
         "a dedup entry of another lane is refused"
     );
 }

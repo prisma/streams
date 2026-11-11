@@ -178,16 +178,26 @@ pub(crate) const LANE: u8 = 0;
 /// incarnation of a name), so an id from an earlier incarnation of the same
 /// name does not resolve (§4).
 pub(crate) fn message_id(hash: &[u8; 16], offset: u64) -> String {
+    id_string("msg_", &base32::<13, 21>(&message_raw(hash, offset)))
+}
+
+pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
+    message_offset(hash, &unbase32::<13>(id.strip_prefix("msg_")?.as_bytes())?)
+}
+
+/// A message id's bytes: incarnation tag, lane, offset.
+fn message_raw(hash: &[u8; 16], offset: u64) -> [u8; 13] {
     let mut raw = [0u8; 13];
     raw[..4].copy_from_slice(&hash[12..]);
     raw[4] = LANE;
     raw[5..].copy_from_slice(&offset.to_be_bytes());
-    format!("msg_{}", base32(&raw))
+    raw
 }
 
-pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
-    let raw = unbase32(id.strip_prefix("msg_")?)?;
-    if raw.len() != 13 || raw[..4] != hash[12..] || raw[4] != LANE {
+/// The offset a message id's bytes name under `hash`: none for another
+/// incarnation or another lane.
+fn message_offset(hash: &[u8; 16], raw: &[u8; 13]) -> Option<u64> {
+    if raw[..4] != hash[12..] || raw[4] != LANE {
         return None;
     }
     Some(u64::from_be_bytes(raw[5..].try_into().ok()?))
@@ -196,17 +206,27 @@ pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
 /// Lease tokens: `lt_` + base32 of (incarnation tag, lane, offset, lease
 /// gen).
 pub(crate) fn lease_token(hash: &[u8; 16], token: super::Token) -> String {
+    id_string("lt_", &base32::<17, 28>(&lease_raw(hash, token)))
+}
+
+pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token> {
+    lease_of(hash, &unbase32::<17>(s.strip_prefix("lt_")?.as_bytes())?)
+}
+
+/// A lease token's bytes: incarnation tag, lane, offset, lease gen.
+fn lease_raw(hash: &[u8; 16], token: super::Token) -> [u8; 17] {
     let mut raw = [0u8; 17];
     raw[..4].copy_from_slice(&hash[12..]);
     raw[4] = LANE;
     raw[5..13].copy_from_slice(&token.offset.to_be_bytes());
     raw[13..].copy_from_slice(&token.lease_gen.to_be_bytes());
-    format!("lt_{}", base32(&raw))
+    raw
 }
 
-pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token> {
-    let raw = unbase32(s.strip_prefix("lt_")?)?;
-    if raw.len() != 17 || raw[..4] != hash[12..] || raw[4] != LANE {
+/// The lease a token's bytes name under `hash`: none for another
+/// incarnation or another lane.
+fn lease_of(hash: &[u8; 16], raw: &[u8; 17]) -> Option<super::Token> {
+    if raw[..4] != hash[12..] || raw[4] != LANE {
         return None;
     }
     Some(super::Token {
@@ -217,6 +237,19 @@ pub(crate) fn parse_lease_token(hash: &[u8; 16], s: &str) -> Option<super::Token
 
 const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
+/// Each byte's value in `ALPHABET`, or `NOT_BASE32`: one table read per
+/// character instead of a search of the alphabet.
+const DECODE: [u8; 256] = {
+    let mut table = [NOT_BASE32; 256];
+    let mut value: u8 = 0;
+    while (value as usize) < ALPHABET.len() {
+        table[ALPHABET[value as usize] as usize] = value;
+        value += 1;
+    }
+    table
+};
+const NOT_BASE32: u8 = 0xFF;
+
 /// A queue's backoff jitter seed (`StateRow::jitter`): the entity hash's last eight bytes, all
 /// identity bits, so queues whose route bytes agree still jitter apart; odd, as xorshift needs.
 pub(crate) fn jitter_seed(hash: &[u8; 16]) -> u64 {
@@ -225,33 +258,56 @@ pub(crate) fn jitter_seed(hash: &[u8; 16]) -> u64 {
     u64::from_le_bytes(seed) | 1
 }
 
-fn base32(raw: &[u8]) -> String {
-    let mut out = String::with_capacity(raw.len() * 8 / 5 + 1);
-    let (mut acc, mut bits) = (0u32, 0u32);
+/// `prefix` followed by `chars` (base32 characters, all ASCII).
+fn id_string(prefix: &str, chars: &[u8]) -> String {
+    let mut out = String::with_capacity(prefix.len() + chars.len());
+    out.push_str(prefix);
+    out.extend(chars.iter().map(|&c| char::from(c)));
+    out
+}
+
+/// The base32 characters of `N` bytes: `M` of them, five bits each, the
+/// last padded with zero bits. Fixed sizes and no heap, so KANI-111 checks
+/// the codec itself (over a `String` it ran out of time and memory).
+fn base32<const N: usize, const M: usize>(raw: &[u8; N]) -> [u8; M] {
+    const { assert!(M == (N * 8).div_ceil(5)) };
+    let mut out = [0u8; M];
+    let (mut acc, mut bits, mut at) = (0u32, 0u32, 0usize);
     for &b in raw {
         acc = (acc << 8) | u32::from(b);
         bits += 8;
         while bits >= 5 {
             bits -= 5;
-            out.push(ALPHABET[((acc >> bits) & 31) as usize] as char);
+            out[at] = ALPHABET[((acc >> bits) & 31) as usize];
+            at += 1;
         }
     }
     if bits > 0 {
-        out.push(ALPHABET[((acc << (5 - bits)) & 31) as usize] as char);
+        out[at] = ALPHABET[((acc << (5 - bits)) & 31) as usize];
     }
     out
 }
 
-fn unbase32(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 5 / 8);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.bytes() {
-        let v = u32::try_from(ALPHABET.iter().position(|&a| a == c)?).ok()?;
-        acc = (acc << 5) | v;
+/// The `N` bytes base32 characters `s` decode to: `s` must be all base32
+/// and give exactly `N` whole bytes (`5 * len / 8 == N`); bits beyond the
+/// last whole byte are ignored, as they always were.
+fn unbase32<const N: usize>(s: &[u8]) -> Option<[u8; N]> {
+    if s.len() * 5 / 8 != N {
+        return None;
+    }
+    let mut out = [0u8; N];
+    let (mut acc, mut bits, mut at) = (0u32, 0u32, 0usize);
+    for &c in s {
+        let v = DECODE[usize::from(c)];
+        if v == NOT_BASE32 {
+            return None;
+        }
+        acc = (acc << 5) | u32::from(v);
         bits += 5;
         if bits >= 8 {
             bits -= 8;
-            out.push(((acc >> bits) & 0xff) as u8);
+            out[at] = ((acc >> bits) & 0xff) as u8;
+            at += 1;
         }
     }
     Some(out)

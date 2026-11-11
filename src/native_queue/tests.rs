@@ -67,10 +67,22 @@ fn ids_receipts_and_dedup_entries_carry_lane_zero() {
     want.push(0);
     assert_eq!(entry, want, "offset, expiry, lane 0");
     assert_eq!(decode_dedup(&entry), Ok((5, 6)));
-    assert!(decode_dedup(&entry[..16]).is_err(), "the laneless layout");
+    assert_eq!(
+        decode_dedup(&entry[..16]),
+        Err("queue row: truncated".to_owned()),
+        "the laneless layout"
+    );
+    assert_eq!(
+        decode_dedup(&[&entry[..], &[0]].concat()),
+        Err("queue row: trailing bytes".to_owned())
+    );
     let mut lane1 = entry;
     lane1[16] = 1;
-    assert!(decode_dedup(&lane1).is_err(), "lane 1");
+    assert_eq!(
+        decode_dedup(&lane1),
+        Err("queue dedup row: lane 1".to_owned()),
+        "lane 1"
+    );
 }
 
 #[test]

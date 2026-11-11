@@ -1,12 +1,12 @@
 diff --git a/src/native_queue/keys.rs b/src/native_queue/keys.rs
 --- a/src/native_queue/keys.rs
 +++ b/src/native_queue/keys.rs
-@@ -187,7 +187,7 @@
- 
- pub(crate) fn parse_message_id(hash: &[u8; 16], id: &str) -> Option<u64> {
-     let raw = unbase32(id.strip_prefix("msg_")?)?;
--    if raw.len() != 13 || raw[..4] != hash[12..] || raw[4] != LANE {
-+    if raw.len() != 13 || raw[..4] != hash[12..] {
+@@ -193,7 +193,7 @@
+ /// The offset a message id's bytes name under `hash`: none for another
+ /// incarnation or another lane.
+ fn message_offset(hash: &[u8; 16], raw: &[u8; 13]) -> Option<u64> {
+-    if raw[..4] != hash[12..] || raw[4] != LANE {
++    if raw[..4] != hash[12..] {
          return None;
      }
      Some(u64::from_be_bytes(raw[5..].try_into().ok()?))

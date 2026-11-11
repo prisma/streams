@@ -1743,7 +1743,7 @@
       "kind": "kani",
       "title": "Native queue ids and fixed-layout entries: message ids, lease tokens, dedup and scheduled entries round-trip and refuse what they did not write",
       "status": "pass-with-recorded-scope",
-      "owner": "the native queue's public ids (native_queue::keys message_id, parse_message_id, lease_token, parse_lease_token) and fixed-layout entries (native_queue::rows encode_dedup, decode_dedup, encode_scheduled, decode_scheduled)",
+      "owner": "the native queue's public ids (native_queue::keys message_id, parse_message_id, lease_token, parse_lease_token and their fixed-size cores message_raw, message_offset, lease_raw, lease_of, base32, unbase32) and fixed-layout entries (native_queue::rows encode_dedup, decode_dedup and its checked core dedup_fields, encode_scheduled, decode_scheduled)",
       "source_paths": [
         "src/native_queue/keys.rs",
         "src/native_queue/rows.rs"
@@ -1763,7 +1763,7 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "message ids and lease tokens over any entity hash, offset and lease generation, against any hash that differs in its incarnation tag (bytes 12-15) and any lane but lane 0; the dedup entry over any offset, expiry and trailing byte, one byte short, one long or of any other lane; the scheduled entry over any send time, stored length and availableAt at inline lengths 0 and 4, cut to any length below its 12 fixed bytes. The state row (StateRow, with its webhook strings) and the delivery row (DeliveryRow, with its code string) are outside the proof (UTF-8 validation and String error paths are beyond Kani here, verification/README.md); native_queue::tests pin their encodings and refusals byte for byte, the range row's codec likewise",
+      "input_scope": "message ids and lease tokens on their fixed-size cores over any entity hash, offset and lease generation: their base32 characters decode to exactly their bytes, which name what they were made for, and nothing under any hash that differs in its incarnation tag (bytes 12-15) or (ids) at any lane but lane 0 (the String layer, the msg_/lt_ prefix and ASCII characters, is outside the proof: native_queue::tests pins ids and tokens character for character); the dedup entry over any offset, expiry and trailing byte, cut to any shorter length, one byte long or of any other lane, its refusals on the typed core dedup_fields (native_queue::tests pins decode_dedup's messages for them); the scheduled entry over any send time, stored length and availableAt at inline lengths 0 and 4, cut to any length below its 12 fixed bytes. The state row (StateRow, with its webhook strings) and the delivery row (DeliveryRow, with its code string) are outside the proof (UTF-8 validation and String error paths are beyond Kani here, verification/README.md); native_queue::tests pin their encodings and refusals byte for byte, the range row's codec likewise",
       "regressions": [
         "native_queue::tests::every_queue_key_is_pinned",
         "native_queue::tests::the_queue_families_are_distinct"

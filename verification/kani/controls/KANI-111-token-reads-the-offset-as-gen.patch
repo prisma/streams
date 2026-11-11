@@ -1,7 +1,7 @@
 diff --git a/src/native_queue/keys.rs b/src/native_queue/keys.rs
 --- a/src/native_queue/keys.rs
 +++ b/src/native_queue/keys.rs
-@@ -211,7 +211,7 @@
+@@ -227,7 +227,7 @@
      }
      Some(super::Token {
          offset: u64::from_be_bytes(raw[5..13].try_into().ok()?),

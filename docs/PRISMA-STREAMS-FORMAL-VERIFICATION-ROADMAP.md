@@ -2979,7 +2979,7 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 <a id="kani-111"></a>
 ### KANI-111 — Native queue ids and fixed-layout entries round-trip and refuse what they did not write
 
-**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-111, 6 baselines and 4 negative controls: an id parsed without its incarnation check, an id parsed without its lane check, a token that reads its offset's bytes as its generation, and a dedup entry that takes trailing bytes). The state and delivery rows, which carry strings, are outside the proof and pinned byte for byte by `native_queue::tests`.
+**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-111, 6 baselines and 4 negative controls: an id parsed without its incarnation check, an id parsed without its lane check, a token that reads its offset's bytes as its generation, and a dedup entry that takes trailing bytes). The ids' `String` layer (their prefix and ASCII characters; the proof covers their bytes and base32 characters) and the state and delivery rows, which carry strings, are outside the proof and pinned byte for byte by `native_queue::tests`.
 
 **Validate.** A message id and a lease token parse back to exactly the offset and lease they name under their own queue's incarnation, and to nothing under another incarnation or another lane; a dedup entry and a scheduled entry round-trip and refuse an entry of another length or lane.
 
