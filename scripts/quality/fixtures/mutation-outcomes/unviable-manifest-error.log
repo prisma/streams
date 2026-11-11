@@ -1,0 +1,14 @@
+
+*** src/shard/billing_ops.rs:86:9: replace ShardEngine::usage_month_finals_page -> anyhow::Result<(Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>, bool)> with Ok((vec![], true))
+
+*** /home/dev/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo test --no-run --profile=quality --verbose --package=streams-slate@0.3.0-beta.1 --locked --lib --target-dir=/work/streams/target/quality-mutations/build
+error: failed to load manifest for workspace member `/tmp/cargo-mutants-s3a-G9lJMw.tmp/tools/quality-syntax`
+
+Caused by:
+  failed to parse manifest at `/tmp/cargo-mutants-s3a-G9lJMw.tmp/tools/quality-syntax/Cargo.toml`
+
+Caused by:
+  no targets specified in the manifest
+  either src/lib.rs, src/main.rs, a [lib] section, or [[bin]] section must be present
+
+*** result: Failure(101)

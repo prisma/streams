@@ -228,7 +228,7 @@ The gates enforce these; plan for them before writing
 | `FORMAL_FAIL` / `FORMAL_CHECK_FAIL` | Invalid receipt (checks changed): re-record in the same commit. |
 | `FORMAL_STALE` | Inputs changed: re-record before release (section 6). |
 | `register every changed critical mutation owner` | Add a `mutation_owners.py` row. |
-| `MISSED` / `TIMEOUT` / `incomplete` (mutants) | Add or sharpen a test that kills that mutant by an assertion (`incomplete`: its tests died by a signal, or cargo-mutants could not classify it); an equivalent mutant is removed from the code (no allowlist). |
+| `MISSED` / `TIMEOUT` / `incomplete` (mutants) | Add or sharpen a test that kills that mutant by an assertion (`incomplete`: a verdict without evidence, section 7: fix the environment and rerun when its reason is `environment: ...`); an equivalent mutant is removed from the code (no allowlist). |
 
 ## 6. Formal verification (Kani and TLA+)
 
@@ -295,10 +295,16 @@ mutants of the selection, at least 8 and at most 48, and 8 for the nightly
 prints it for a push). A push selecting more than about 5,000 mutants does
 not fit even 48 jobs: split it into smaller pushes. Locally
 run it whole, or one share with the same variable. The driver runs every selected owner and
-fails once at the end with each owner's missed, timed-out and incomplete mutants (a catch
-whose tests died by a signal, or one cargo-mutants could not classify; MISSED and TIMEOUT
-print live in the log); an answer that measured nothing, such as a failing baseline, stops
-it at once.
+fails once at the end with each owner's missed, timed-out and incomplete mutants; an
+answer that measured nothing, such as a failing baseline, stops it at once. MISSED and
+TIMEOUT print live in the log, and INCOMPLETE (with its reason and log) as each owner ends.
+A verdict needs evidence: a catch counts only when its test phase reached `test result:
+FAILED.` and its tests did not die by a signal; an unviable mutant only when the compiler
+said `error: could not compile `. A phase showing a broken build tree or host (a workspace
+manifest that fails to load, `(os error 2)`/`(os error 28)`, `E0583`, `E0463`, a failed
+build script), a mutant cargo-mutants could not classify, and an owner that recorded
+another number of mutants than it listed are all incomplete
+(`scripts/quality/mutation_driver.py`, `incomplete_reason`).
 CI runs each mutant's test process under a 10 GiB `RLIMIT_DATA` through cargo's target
 runner (`prlimit`, set in the `mutants` step), so a mutant that allocates without end
 aborts and is listed incomplete; local runs are uncapped (macOS has no `prlimit`).

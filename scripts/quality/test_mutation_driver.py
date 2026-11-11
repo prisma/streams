@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
 import unittest
 from unittest import mock
 
@@ -25,6 +26,8 @@ CARGO_FAILED = ('error: test failed, to rerun pass `-p streams-slate --lib`\n\nC
                 f"  process didn't exit successfully: `{TEST_BINARY}` ({{ending}})\n")
 ABORTED = 'signal: 6, SIGABRT: process abort signal'
 EXITED = 'exit status: 101'
+FAILED_RESULT = 'test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\n'
+FIXTURES = Path(__file__).with_name('fixtures') / 'mutation-outcomes'
 
 # How a test phase ends, by kind of catch: the tests' output, cargo's account
 # of the test binary, its process_status in outcomes.json, the log's result
@@ -32,7 +35,7 @@ EXITED = 'exit status: 101'
 # makes cargo exit 101, so cargo-mutants counts the mutant caught.
 TEST_ENDINGS = {
     # An assertion failed.
-    'caught': (PANIC + 'assertion failed: ok\n', EXITED,
+    'caught': (PANIC + 'assertion failed: ok\n\n' + FAILED_RESULT, EXITED,
                {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
     # The test binary aborted on a failed allocation, as under the memory cap.
     'signalled': ('memory allocation of 1073741824 bytes failed\n', ABORTED,
@@ -43,11 +46,15 @@ TEST_ENDINGS = {
                    {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
     # Only the allocation failure's message, as when the process that aborted
     # is a child the test spawned, not the one cargo waited on.
-    'allocation-failed': (PANIC + 'helper failed: memory allocation of 1073741824 bytes failed\n',
-                          EXITED, {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
+    'allocation-failed': (PANIC + 'helper failed: memory allocation of 1073741824 bytes failed\n\n'
+                          + FAILED_RESULT, EXITED, {'Failure': 101}, 'Failure(101)', 'CaughtMutant'),
     # cargo itself died by a signal: cargo-mutants cannot classify the mutant,
     # only warns, counts it nowhere and answers 0.
     'unclassified': ('', None, {'Signalled': 9}, 'Signalled(9)', 'Failure'),
+    # The tests passed: the mutant survived.
+    'missed': ('test result: ok. 4 passed; 0 failed\n', None, 'Success', 'Success', 'MissedMutant'),
+    # The test phase ran into cargo-mutants' timeout.
+    'timeout': ('', None, 'Timeout', 'Timeout', 'Timeout'),
 }
 
 
@@ -86,15 +93,26 @@ def mutant_outcome(listing, name, line, kind):
     }
 
 
-def write_outcomes(listing, name, kind):
+def write_outcomes(listing, name, kind, total=2):
     """The owner's outcomes.json: the baseline passed, its first mutant ended
-    as `kind` and its second was caught by an assertion."""
+    as `kind` and its second was caught by an assertion; `total` is the
+    number of mutants it says it recorded."""
     (listing / 'log').mkdir(parents=True, exist_ok=True)
     baseline = {'scenario': 'Baseline', 'summary': 'Success', 'log_path': 'log/baseline.log',
                 'diff_path': None, 'phase_results': []}
     outcomes = [baseline, mutant_outcome(listing, name, 1, kind),
                 mutant_outcome(listing, name, 2, 'caught')]
-    (listing / 'outcomes.json').write_text(json.dumps({'outcomes': outcomes, 'total_mutants': 2}))
+    (listing / 'outcomes.json').write_text(json.dumps({'outcomes': outcomes, 'total_mutants': total}))
+
+
+def fixture_outcome(listing, fixture, summary, line=1):
+    """An outcome whose log is a trimmed excerpt of a real cargo-mutants log
+    (fixtures/mutation-outcomes, README.md there)."""
+    (listing / 'log').mkdir(parents=True, exist_ok=True)
+    log_path = f'log/{fixture}'
+    shutil.copy(FIXTURES / fixture, listing / log_path)
+    return {'scenario': {'Mutant': {'name': f'{fixture}:{line}'}}, 'summary': summary,
+            'log_path': log_path}
 
 
 class FakeCargo:
@@ -109,6 +127,7 @@ class FakeCargo:
         self.statuses = statuses
         self.ran = []
         self.commands = []
+        self.envs = []
 
     def __call__(self, command, cwd=None, stdout=None, check=False, **kwargs):
         self.commands.append(command)
@@ -128,13 +147,18 @@ class FakeCargo:
         if command[:2] == ['cargo', 'mutants']:
             name = Path(command[command.index('--output') + 1]).name
             self.ran.append(name)
+            self.envs.append(kwargs.get('env'))
             status = self.statuses.get(name, 0)
-            if status in TEST_ENDINGS:
-                write_outcomes(self.out / name / 'mutants.out', name, status)
+            listing = self.out / name / 'mutants.out'
+            if status == 'short':  # records one mutant fewer than were listed
+                write_outcomes(listing, name, 'caught', total=1)
                 status = 0
+            elif status in TEST_ENDINGS:
+                write_outcomes(listing, name, status)
+                status = 0
+            elif status in (0, 2, 3):
+                write_outcomes(listing, name, {0: 'caught', 2: 'missed', 3: 'timeout'}[status])
             if status in (2, 3):
-                listing = self.out / name / 'mutants.out'
-                listing.mkdir(parents=True, exist_ok=True)
                 kind = 'missed.txt' if status == 2 else 'timeout.txt'
                 (listing / kind).write_text(f'src/{name}.rs:1:1: replace {name} with ()\n')
             if check and status:
@@ -143,13 +167,20 @@ class FakeCargo:
         raise AssertionError(f'unexpected command: {command}')
 
 
-def run_driver(plan, statuses, shard=''):
+def run_driver(plan, statuses, shard='', intercept=None):
+    """Run the driver against FakeCargo; `intercept(command, **kwargs)` may
+    answer a command first (None: FakeCargo answers)."""
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory)
         fake = FakeCargo(out, plan, statuses)
         printed = io.StringIO()
+
+        def run(command, **kwargs):
+            answer = intercept(command, **kwargs) if intercept else None
+            return fake(command, **kwargs) if answer is None else answer
+
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(mutation_driver.subprocess, 'run', fake))
+            stack.enter_context(mock.patch.object(mutation_driver.subprocess, 'run', run))
             stack.enter_context(mock.patch.object(mutation_driver, 'validate_sources'))
             stack.enter_context(mock.patch.object(
                 mutation_driver, 'validate_plan', return_value=OWNERS))
@@ -256,6 +287,96 @@ class ScheduledRotation(unittest.TestCase):
             self.assertNotIn('--list', run)
             for command in (listing, run):
                 self.assertEqual(command[-4:], ['--shard', dealt, '--sharding', 'round-robin'])
+
+
+class VerdictEvidence(unittest.TestCase):
+    """A verdict needs positive evidence (gate decision of 2026-11-11, H1),
+    replayed on trimmed excerpts of real logs."""
+
+    def reason(self, fixture, summary):
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)
+            return mutation_driver.incomplete_reason(
+                listing, fixture_outcome(listing, fixture, summary))
+
+    def test_a_build_tree_without_a_members_sources_is_no_evidence_of_either_verdict(self):
+        # billing_ops.rs:86 and :33 at df849d2a0: the temp copy lost
+        # tools/quality-syntax/src mid-run.
+        for fixture, summary in (('unviable-manifest-error.log', 'Unviable'),
+                                 ('caught-manifest-error.log', 'CaughtMutant')):
+            with self.subTest(fixture=fixture):
+                self.assertEqual(self.reason(fixture, summary),
+                                 'environment: failed to load manifest')
+
+    def test_a_parse_error_without_an_error_code_stays_unviable(self):
+        # maintenance.rs:20:13: `error: \`||\` operators are not supported...`
+        self.assertIsNone(self.reason('unviable-parse-error.log', 'Unviable'))
+
+    def test_a_catch_whose_tests_panicked_with_not_found_stays_caught(self):
+        self.assertIsNone(self.reason('caught-not-found-panic.log', 'CaughtMutant'))
+
+    def test_a_signature_in_a_rustc_snippet_line_does_not_count(self):
+        log = ('\n*** src/tasks/signal.rs:12:5: replace deliver_to_helper with ()\n\n'
+               f'*** {CARGO} --no-run --lib\n'
+               'error[E0308]: mismatched types\n'
+               '  --> src/tasks/signal.rs:12:5\n'
+               "12 |     fn deliver_to_helper(signal: libc::c_int) { open(PATH) } // (os error 2)\n"
+               "   |     process didn't exit successfully: `rustc` (signal: 9, SIGKILL)\n"
+               "error: could not compile `streams-slate` (lib test) due to 1 previous error\n"
+               '\n*** result: Failure(101)\n')
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)
+            (listing / 'log').mkdir()
+            (listing / 'log' / 'signal.log').write_text(log)
+            outcome = {'scenario': {'Mutant': {'name': 'signal'}}, 'summary': 'Unviable',
+                       'log_path': 'log/signal.log'}
+            self.assertIsNone(mutation_driver.incomplete_reason(listing, outcome))
+
+    def test_an_unviable_mutant_the_compiler_never_rejected_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)
+            outcome = fixture_outcome(listing, 'caught-not-found-panic.log', 'Unviable')
+            self.assertEqual(mutation_driver.incomplete_reason(listing, outcome),
+                             'no compiler error')
+
+    def test_a_catch_that_ran_no_test_to_a_failed_result_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            listing = Path(directory)
+            outcome = fixture_outcome(listing, 'unviable-parse-error.log', 'CaughtMutant')
+            self.assertEqual(mutation_driver.incomplete_reason(listing, outcome),
+                             'no failed test result')
+
+    def test_a_broken_build_tree_fails_the_push_and_names_each_mutant_as_its_owner_ends(self):
+        def broken(command, **kwargs):
+            if command[:2] == ['cargo', 'mutants'] and '--list' not in command \
+                    and Path(command[command.index('--output') + 1]).name == 'beta':
+                listing = Path(command[command.index('--output') + 1]) / 'mutants.out'
+                outcomes = [fixture_outcome(listing, 'unviable-manifest-error.log', 'Unviable', 1),
+                            fixture_outcome(listing, 'caught-manifest-error.log', 'CaughtMutant', 2)]
+                (listing / 'outcomes.json').write_text(
+                    json.dumps({'outcomes': outcomes, 'total_mutants': 2}))
+                return subprocess.CompletedProcess(command, 0)
+            return None
+        fake, outcome, printed = run_driver(PUSHED, {}, intercept=broken)
+        self.assertEqual(fake.ran, ['alpha', 'gamma'])
+        self.assertIsInstance(outcome, SystemExit)
+        self.assertEqual(outcome.code, 1)
+        self.assertIn('INCOMPLETE unviable-manifest-error.log:1 (environment: failed to load '
+                      'manifest) [', printed)
+        self.assertIn('INCOMPLETE caught-manifest-error.log:2 (environment: failed to load '
+                      'manifest) [', printed)
+        summary = printed[printed.index('Mutation survivors'):]
+        self.assertIn('1 of 3 owner(s)', summary)
+        self.assertIn('beta: incomplete 2', summary)
+
+    def test_an_owner_recording_other_than_its_listed_mutants_is_a_survivor(self):
+        fake, outcome, printed = run_driver(PUSHED, {'gamma': 'short'})
+        self.assertEqual(fake.ran, ['alpha', 'beta', 'gamma'])
+        self.assertIsInstance(outcome, SystemExit)
+        summary = printed[printed.index('Mutation survivors'):]
+        self.assertIn('1 of 3 owner(s)', summary)
+        self.assertIn('gamma: incomplete 1', summary)
+        self.assertIn('outcomes.json records 1 mutant(s); the driver listed 2', summary)
 
 
 class PushedChange(unittest.TestCase):

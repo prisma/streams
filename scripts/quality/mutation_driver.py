@@ -147,6 +147,26 @@ SURVIVOR_STATUSES = {2: 'missed', 3: 'timeout'}
 INCOMPLETE_SIGNATURES = ('(signal: ', 'memory allocation of ')
 SURVIVOR_KINDS = (*SURVIVOR_STATUSES.values(), 'incomplete')
 
+# A verdict needs positive evidence (gate decision of 2026-11-11, H1): a catch
+# is a test phase that ran tests to `test result: FAILED.`, an unviable mutant
+# a build phase the compiler rejected (`error: could not compile `, which a
+# parse error without an `error[E...]` code also carries). cargo-mutants
+# counts any failing `cargo test` a catch and any failing build unviable, so a
+# build tree broken under it (the temp copy losing a workspace member's
+# sources mid-run, 2026-11-10: "no targets specified in the manifest") or a
+# broken host passed as 14 unviable mutants and one catch. Either verdict is
+# incomplete without its evidence, or when its phase shows one of these
+# environment signatures. `NotFound` is not one: real catches panic with an
+# object store's NotFound. rustc's source-snippet lines (`12 | ...`) are not
+# read, so source text never counts.
+ENVIRONMENT_SIGNATURES = (
+    'failed to load manifest', 'failed to parse manifest', 'could not find `Cargo.toml`',
+    'no targets specified in the manifest', '(os error 2)', '(os error 28)',
+    'error[E0583]', 'error[E0463]', 'failed to run custom build command',
+)
+SNIPPET_LINE = re.compile(r'^\s*\d*\s*\|')
+COMPILER_KILLED = re.compile(r"process didn't exit successfully: .*\(signal: \d+")
+
 
 def last_phase_output(log):
     """The output after a scenario log's last command header: a caught
@@ -158,40 +178,72 @@ def last_phase_output(log):
     return log[start:]
 
 
-def is_incomplete(listing, outcome):
-    if outcome['summary'] == 'Failure':
-        return True
-    if outcome['summary'] != 'CaughtMutant':
-        return False
-    output = last_phase_output((listing / outcome['log_path']).read_text(errors='replace'))
-    return any(signature in output for signature in INCOMPLETE_SIGNATURES)
+def incomplete_reason(listing, outcome):
+    """Why a mutant's verdict is incomplete, or None when it stands."""
+    summary = outcome['summary']
+    if summary == 'Failure':
+        return 'cargo-mutants could not classify it'
+    if summary not in ('CaughtMutant', 'Unviable'):
+        return None
+    log = listing / outcome['log_path']
+    if not log.is_file():
+        return 'its log is missing'
+    lines = [line for line in last_phase_output(log.read_text(errors='replace')).splitlines()
+             if not SNIPPET_LINE.match(line)]
+    for signature in ENVIRONMENT_SIGNATURES:
+        if any(signature in line for line in lines):
+            return f'environment: {signature}'
+    if summary == 'CaughtMutant':
+        for signature in INCOMPLETE_SIGNATURES:
+            if any(signature in line for line in lines):
+                return f'its tests died: {signature.strip()}'
+        if not any(line.startswith('test result: FAILED.') for line in lines):
+            return 'no failed test result'
+        return None
+    if any(COMPILER_KILLED.search(line) for line in lines):
+        return 'compiler killed by a signal'
+    if not any(line.startswith('error: could not compile ') for line in lines):
+        return 'no compiler error'
+    return None
 
 
-def incomplete_mutants(listing):
+def incomplete_mutants(listing, listed):
     """Write listing/incomplete.txt from cargo-mutants' outcomes.json, one
-    mutant name per line as missed.txt lists them, and return the names."""
+    mutant name per line as missed.txt lists them, and return (name, reason,
+    log) for each. An owner whose outcomes record another number of mutants
+    than the `listed` the driver selected is incomplete as a whole."""
     path = listing / 'outcomes.json'
-    if not path.is_file():
-        return []
-    names = [outcome['scenario']['Mutant']['name']
-             for outcome in json.loads(path.read_text())['outcomes']
-             if isinstance(outcome['scenario'], dict) and 'Mutant' in outcome['scenario']
-             and is_incomplete(listing, outcome)]
-    (listing / 'incomplete.txt').write_text(''.join(f'{name}\n' for name in names))
-    return names
+    recorded = json.loads(path.read_text()) if path.is_file() else {'outcomes': [], 'total_mutants': 0}
+    found = []
+    if recorded['total_mutants'] != listed:
+        found.append((f'outcomes.json records {recorded["total_mutants"]} mutant(s); '
+                      f'the driver listed {listed}', 'count mismatch', path))
+    for outcome in recorded['outcomes']:
+        scenario = outcome['scenario']
+        if not (isinstance(scenario, dict) and 'Mutant' in scenario):
+            continue
+        reason = incomplete_reason(listing, outcome)
+        if reason:
+            found.append((scenario['Mutant']['name'], reason, listing / outcome['log_path']))
+    listing.mkdir(parents=True, exist_ok=True)
+    (listing / 'incomplete.txt').write_text(''.join(f'{name}\n' for name, _, _ in found))
+    return found
 
 
-def run_owner(command, listing):
-    """Run one owner's mutants; True when the answer is a survivor status or
-    a mutant's run was incomplete.
+def run_owner(command, listing, listed):
+    """Run one owner's `listed` mutants; True when the answer is a survivor
+    status or a mutant's run was incomplete.
 
     Every selection, diff-scoped or scheduled, keeps going past survivors, so
     one run reports every owner it selected, once, at the end; an answer that
-    measured nothing stops it at once."""
+    measured nothing stops it at once. Each incomplete mutant is printed as its
+    owner finishes, so a watcher can stop the leg at the first."""
     status = subprocess.run(command, cwd=ROOT).returncode
     if status and status not in SURVIVOR_STATUSES:
         raise subprocess.CalledProcessError(status, command)
-    incomplete = incomplete_mutants(listing)  # listed whatever the answer
+    incomplete = incomplete_mutants(listing, listed)  # listed whatever the answer
+    for name, reason, log in incomplete:
+        print(f'INCOMPLETE {name} ({reason}) [{log}]', flush=True)
     return status in SURVIVOR_STATUSES or bool(incomplete)
 
 
@@ -273,7 +325,7 @@ def execute(out):
             continue
         total += count
         if run_owner(mutation_command(entry, out, output, mutation_diff, share),
-                     output / 'mutants.out'):
+                     output / 'mutants.out', count):
             survivors.append((entry.name, output / 'mutants.out'))
 
     if total == 0:

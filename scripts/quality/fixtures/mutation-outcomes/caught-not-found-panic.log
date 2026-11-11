@@ -1,0 +1,241 @@
+
+*** src/shard/seal/gc.rs:784:9: replace ShardEngine::object_root -> String with String::new()
+
+*** /home/dev/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo test --profile=quality --verbose --package=streams-slate@0.3.0-beta.1 --locked --lib --target-dir=/work/streams/target/quality-mutations/build shard::seal::gc_tests:: -- shard::seal::gc:: shard::seal::fold_tests::merges dst_tests::purge_lifecycle:: shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home
+   --> src/shard/seal/gc.rs:783:38
+    |
+    |                                      ^^^^ help: if this is intentional, prefix it with an underscore: `_home`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+running 59 tests
+test shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home ... FAILED
+test shard::seal::gc::clean::tests::a_restart_after_the_commit_serves_the_copy ... FAILED
+test shard::seal::gc::clean::tests::a_copy_never_overwrites_an_object_at_its_path ... FAILED
+test shard::seal::gc::clean::tests::a_purge_request_mid_pass_abandons_the_copy ... FAILED
+test shard::seal::gc::clean::tests::a_read_started_before_the_copy_keeps_the_old_objects ... FAILED
+test shard::seal::gc::clean::tests::a_crash_after_the_copys_put_leaves_an_orphan_the_sweep_deletes ... FAILED
+test shard::seal::gc::clean::tests::a_restart_finds_its_candidates_at_the_recount ... FAILED
+test shard::seal::gc::pass_tests::a_decrement_leaving_bytes_and_no_chunk_is_inexact ... FAILED
+test shard::seal::gc::clean::tests::a_pass_rewrites_objects_a_ledger_chunk_pins_and_releases_them ... FAILED
+test shard::seal::gc::clean::tests::a_fold_after_the_copy_keeps_it_and_a_purge_reclaims_it ... FAILED
+test shard::seal::gc::clean::tests::an_object_pinned_by_dead_streams_backs_off ... FAILED
+test shard::seal::gc::pass_tests::a_pass_acts_on_its_signals_only ... FAILED
+test shard::seal::gc::clean::tests::nothing_runs_in_the_quiet_period_or_at_the_yield_mark ... FAILED
+test shard::seal::gc::sweep_tests::a_sweep_lists_only_its_own_homes_root ... FAILED
+test shard::seal::gc::pass_tests::a_read_pins_only_the_objects_zeroed_after_it_started ... FAILED
+test shard::seal::gc::sweep_tests::a_sweep_spares_young_objects_and_a_newer_owners ... FAILED
+test shard::seal::gc::pass_tests::a_merge_drops_reclaimed_entries_and_its_inputs_are_pinned_by_earlier_reads ... FAILED
+test shard::seal::gc::pass_tests::purge_due_counts_the_incarnations_that_still_wait ... FAILED
+test shard::seal::gc::clean::tests::a_consolidation_queued_with_the_old_chunks_skips ... FAILED
+test shard::seal::gc::clean::tests::a_consolidation_landing_mid_pass_abandons_the_copy ... FAILED
+test shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group ... FAILED
+test shard::seal::gc_tests::a_fenced_writers_object_is_swept_by_the_new_owner ... FAILED
+test shard::seal::gc_tests::a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed ... FAILED
+test shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not ... FAILED
+test shard::seal::gc_tests::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends ... FAILED
+test shard::seal::gc_tests::the_physical_size_is_exact_through_consolidation_and_purge ... FAILED
+test shard::seal::gc_tests::garbage_outlives_a_restart_and_waits_a_grace_from_it ... FAILED
+test shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it ... FAILED
+test shard::seal::gc_tests::a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one ... FAILED
+test shard::seal::fold_tests::merges_make_hourly_and_daily_objects_and_retire_their_inputs ... FAILED
+test shard::seal::gc_tests::a_purge_reclaims_exactly_its_streams_chunks_and_their_objects ... FAILED
+test shard::seal::gc::clean::tests::a_pass_stops_at_its_byte_budget ... FAILED
+test shard::seal::gc::clean::tests::a_pass_stops_at_its_get_budget ... FAILED
+
+failures:
+
+---- shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home stdout ----
+
+thread 'shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home' (89775708) panicked at src/shard/open_index/tests.rs:146:5:
+
+---- shard::seal::gc::clean::tests::a_restart_after_the_commit_serves_the_copy stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_restart_after_the_commit_serves_the_copy' (89775797) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_copy_never_overwrites_an_object_at_its_path stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_copy_never_overwrites_an_object_at_its_path' (89775713) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_purge_request_mid_pass_abandons_the_copy stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_purge_request_mid_pass_abandons_the_copy' (89775776) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_read_started_before_the_copy_keeps_the_old_objects stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_read_started_before_the_copy_keeps_the_old_objects' (89775778) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_crash_after_the_copys_put_leaves_an_orphan_the_sweep_deletes stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_crash_after_the_copys_put_leaves_an_orphan_the_sweep_deletes' (89775714) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_restart_finds_its_candidates_at_the_recount stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_restart_finds_its_candidates_at_the_recount' (89775803) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::pass_tests::a_decrement_leaving_bytes_and_no_chunk_is_inexact stdout ----
+
+thread 'shard::seal::gc::pass_tests::a_decrement_leaving_bytes_and_no_chunk_is_inexact' (89775826) panicked at src/shard/seal/gc/pass_tests.rs:179:35:
+
+---- shard::seal::gc::clean::tests::a_pass_rewrites_objects_a_ledger_chunk_pins_and_releases_them stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_pass_rewrites_objects_a_ledger_chunk_pins_and_releases_them' (89775771) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_fold_after_the_copy_keeps_it_and_a_purge_reclaims_it stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_fold_after_the_copy_keeps_it_and_a_purge_reclaims_it' (89775720) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::an_object_pinned_by_dead_streams_backs_off stdout ----
+
+thread 'shard::seal::gc::clean::tests::an_object_pinned_by_dead_streams_backs_off' (89775812) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::pass_tests::a_pass_acts_on_its_signals_only stdout ----
+
+thread 'shard::seal::gc::pass_tests::a_pass_acts_on_its_signals_only' (89775834) panicked at src/shard/seal/gc/pass_tests.rs:80:5:
+  left: (0, 0)
+
+---- shard::seal::gc::clean::tests::nothing_runs_in_the_quiet_period_or_at_the_yield_mark stdout ----
+
+thread 'shard::seal::gc::clean::tests::nothing_runs_in_the_quiet_period_or_at_the_yield_mark' (89775816) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::sweep_tests::a_sweep_lists_only_its_own_homes_root stdout ----
+
+thread 'shard::seal::gc::sweep_tests::a_sweep_lists_only_its_own_homes_root' (89775902) panicked at src/shard/seal/gc/sweep_tests.rs:154:5:
+
+---- shard::seal::gc::pass_tests::a_read_pins_only_the_objects_zeroed_after_it_started stdout ----
+
+thread 'shard::seal::gc::pass_tests::a_read_pins_only_the_objects_zeroed_after_it_started' (89775859) panicked at src/shard/seal/gc/pass_tests.rs:143:5:
+  left: 0
+
+---- shard::seal::gc::sweep_tests::a_sweep_spares_young_objects_and_a_newer_owners stdout ----
+
+thread 'shard::seal::gc::sweep_tests::a_sweep_spares_young_objects_and_a_newer_owners' (89775918) panicked at src/shard/seal/gc/sweep_tests.rs:125:5:
+  left: []
+
+---- shard::seal::gc::pass_tests::a_merge_drops_reclaimed_entries_and_its_inputs_are_pinned_by_earlier_reads stdout ----
+
+thread 'shard::seal::gc::pass_tests::a_merge_drops_reclaimed_entries_and_its_inputs_are_pinned_by_earlier_reads' (89775832) panicked at src/shard/seal/gc/pass_tests.rs:575:5:
+
+---- shard::seal::gc::pass_tests::purge_due_counts_the_incarnations_that_still_wait stdout ----
+
+thread 'shard::seal::gc::pass_tests::purge_due_counts_the_incarnations_that_still_wait' (89775875) panicked at src/shard/seal/gc/pass_tests.rs:347:5:
+  left: 2
+
+---- shard::seal::gc::clean::tests::a_consolidation_queued_with_the_old_chunks_skips stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_consolidation_queued_with_the_old_chunks_skips' (89775712) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_consolidation_landing_mid_pass_abandons_the_copy stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_consolidation_landing_mid_pass_abandons_the_copy' (89775711) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group stdout ----
+
+thread 'shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group' (89775945) panicked at src/shard/seal/gc_tests.rs:165:9:
+
+---- shard::seal::gc_tests::a_fenced_writers_object_is_swept_by_the_new_owner stdout ----
+
+thread 'shard::seal::gc_tests::a_fenced_writers_object_is_swept_by_the_new_owner' (89775929) panicked at src/shard/seal/gc_tests.rs:525:5:
+  left: 0
+
+---- shard::seal::gc_tests::a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed stdout ----
+
+thread 'shard::seal::gc_tests::a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed' (89775934) panicked at src/shard/seal/gc_tests.rs:942:5:
+  left: 0
+
+---- shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not stdout ----
+
+thread 'shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not' (89775965) panicked at src/shard/seal/gc_tests.rs:390:5:
+  left: 0
+
+---- shard::seal::gc_tests::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends stdout ----
+
+thread 'shard::seal::gc_tests::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends' (89775950) panicked at src/shard/seal/gc_tests.rs:277:14:
+
+---- shard::seal::gc_tests::the_physical_size_is_exact_through_consolidation_and_purge stdout ----
+
+thread 'shard::seal::gc_tests::the_physical_size_is_exact_through_consolidation_and_purge' (89775971) panicked at src/shard/seal/gc_tests.rs:277:14:
+
+---- shard::seal::gc_tests::garbage_outlives_a_restart_and_waits_a_grace_from_it stdout ----
+
+thread 'shard::seal::gc_tests::garbage_outlives_a_restart_and_waits_a_grace_from_it' (89775960) panicked at src/shard/seal/gc_tests.rs:165:9:
+
+---- shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it stdout ----
+
+thread 'shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it' (89775923) panicked at src/shard/seal/gc_tests.rs:277:14:
+
+---- shard::seal::gc_tests::a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one stdout ----
+
+thread 'shard::seal::gc_tests::a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one' (89775955) panicked at src/shard/seal/gc_tests.rs:165:9:
+
+---- shard::seal::fold_tests::merges_make_hourly_and_daily_objects_and_retire_their_inputs stdout ----
+
+thread 'shard::seal::fold_tests::merges_make_hourly_and_daily_objects_and_retire_their_inputs' (89775709) panicked at src/shard/seal/fold_tests.rs:479:5:
+  left: {}
+
+---- shard::seal::gc_tests::a_purge_reclaims_exactly_its_streams_chunks_and_their_objects stdout ----
+
+thread 'shard::seal::gc_tests::a_purge_reclaims_exactly_its_streams_chunks_and_their_objects' (89775939) panicked at src/shard/seal/gc_tests.rs:165:9:
+
+---- shard::seal::gc::clean::tests::a_pass_stops_at_its_byte_budget stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_pass_stops_at_its_byte_budget' (89775773) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+---- shard::seal::gc::clean::tests::a_pass_stops_at_its_get_budget stdout ----
+
+thread 'shard::seal::gc::clean::tests::a_pass_stops_at_its_get_budget' (89775774) panicked at src/shard/seal/gc/clean/tests.rs:192:5:
+  left: 0
+
+failures:
+    shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home
+    shard::seal::fold_tests::merges_make_hourly_and_daily_objects_and_retire_their_inputs
+    shard::seal::gc::clean::tests::a_consolidation_landing_mid_pass_abandons_the_copy
+    shard::seal::gc::clean::tests::a_consolidation_queued_with_the_old_chunks_skips
+    shard::seal::gc::clean::tests::a_copy_never_overwrites_an_object_at_its_path
+    shard::seal::gc::clean::tests::a_crash_after_the_copys_put_leaves_an_orphan_the_sweep_deletes
+    shard::seal::gc::clean::tests::a_fold_after_the_copy_keeps_it_and_a_purge_reclaims_it
+    shard::seal::gc::clean::tests::a_pass_rewrites_objects_a_ledger_chunk_pins_and_releases_them
+    shard::seal::gc::clean::tests::a_pass_stops_at_its_byte_budget
+    shard::seal::gc::clean::tests::a_pass_stops_at_its_get_budget
+    shard::seal::gc::clean::tests::a_purge_request_mid_pass_abandons_the_copy
+    shard::seal::gc::clean::tests::a_read_started_before_the_copy_keeps_the_old_objects
+    shard::seal::gc::clean::tests::a_restart_after_the_commit_serves_the_copy
+    shard::seal::gc::clean::tests::a_restart_finds_its_candidates_at_the_recount
+    shard::seal::gc::clean::tests::an_object_pinned_by_dead_streams_backs_off
+    shard::seal::gc::clean::tests::nothing_runs_in_the_quiet_period_or_at_the_yield_mark
+    shard::seal::gc::pass_tests::a_decrement_leaving_bytes_and_no_chunk_is_inexact
+    shard::seal::gc::pass_tests::a_merge_drops_reclaimed_entries_and_its_inputs_are_pinned_by_earlier_reads
+    shard::seal::gc::pass_tests::a_pass_acts_on_its_signals_only
+    shard::seal::gc::pass_tests::a_read_pins_only_the_objects_zeroed_after_it_started
+    shard::seal::gc::pass_tests::purge_due_counts_the_incarnations_that_still_wait
+    shard::seal::gc::sweep_tests::a_sweep_lists_only_its_own_homes_root
+    shard::seal::gc::sweep_tests::a_sweep_spares_young_objects_and_a_newer_owners
+    shard::seal::gc_tests::a_consolidation_offered_before_a_purge_supersedes_nothing_after_it
+    shard::seal::gc_tests::a_fenced_writers_object_is_swept_by_the_new_owner
+    shard::seal::gc_tests::a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed
+    shard::seal::gc_tests::a_purge_reclaims_exactly_its_streams_chunks_and_their_objects
+    shard::seal::gc_tests::a_purge_waits_for_the_ledger_and_for_its_own_group
+    shard::seal::gc_tests::a_read_that_planned_with_a_chunk_keeps_its_object_until_it_ends
+    shard::seal::gc_tests::a_reclaim_runs_in_bounded_batches_and_resumes_after_a_failed_one
+    shard::seal::gc_tests::garbage_outlives_a_restart_and_waits_a_grace_from_it
+    shard::seal::gc_tests::objects_put_without_their_commit_are_swept_and_objects_in_flight_are_not
+    shard::seal::gc_tests::the_physical_size_is_exact_through_consolidation_and_purge
+
+test result: FAILED. 26 passed; 33 failed; 0 ignored; 0 measured; 2536 filtered out; finished in 0.44s
+
+error: test failed, to rerun pass `-p streams-slate --lib`
+
+*** result: Failure(101)
