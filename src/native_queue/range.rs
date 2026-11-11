@@ -303,4 +303,51 @@ mod tests {
         b.clear(10);
         assert!(b.is_empty());
     }
+
+    /// `count`'s exact value, which KANI-109 leaves here (it proves `count`
+    /// zero exactly when the bitmap is empty): every offset of a row alone,
+    /// then a long run of sets and clears against a per-bit model.
+    #[test]
+    fn count_is_the_number_of_offsets_held() {
+        let row = SPAN * 5;
+        for b in 0..SPAN {
+            let mut bits = Bits::default();
+            bits.set(row + b);
+            assert_eq!(bits.count(), 1, "offset {b} alone");
+            bits.clear(row + b);
+            assert_eq!(
+                (bits.count(), bits.is_empty()),
+                (0, true),
+                "offset {b} cleared"
+            );
+        }
+        let mut model = [false; SPAN_BITS];
+        let mut held = 0u32;
+        let mut bits = Bits::default();
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        for step in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let b = x % SPAN;
+            let at = usize::try_from(b).unwrap();
+            let set = x & (1 << 40) != 0;
+            if set && !model[at] {
+                held += 1;
+            } else if !set && model[at] {
+                held -= 1;
+            }
+            model[at] = set;
+            if set {
+                bits.set(row + b);
+            } else {
+                bits.clear(row + b);
+            }
+            assert_eq!(bits.count(), held, "step {step}");
+        }
+        assert!(held > 1_000, "the run fills many words: {held}");
+        for b in 0..SPAN {
+            assert_eq!(bits.contains(row + b), model[usize::try_from(b).unwrap()]);
+        }
+    }
 }

@@ -2961,9 +2961,9 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 <a id="kani-109"></a>
 ### KANI-109 — Native queue range rows: a bitmap holds exactly its last set offsets, and its count and emptiness agree
 
-**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-109, 2 baselines and 4 negative controls: bits that alias across words, a clear that keeps the bit, a count of the first word only, and an emptiness test that ignores the cancel bitmap).
+**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-109, 3 baselines and 4 negative controls: bits that alias across words, a clear that keeps the bit, a count of the first word only, and an emptiness test that ignores the cancel bitmap). The count's exact value is outside the proof (equating a 4,096-bit popcount with symbolic offsets ran out CBMC's budget in every shape tried) and pinned by `native_queue::range::tests`: every offset of a row alone, and 20,000 sets and clears against a per-bit model.
 
-**Validate.** A range row's three bitmaps are kept with set, clear, contains and count alone: after any three operations at offsets of one row the bitmap holds exactly the offsets whose last operation set them, an untouched offset is clear, the count is their number, and a row is deleted (empty) exactly when its counts are zero and its bitmaps empty.
+**Validate.** A range row's three bitmaps are kept with set, clear, contains and count alone: after any three operations at offsets of one row the bitmap holds exactly the offsets whose last operation set them, an untouched offset is clear and the bitmap is empty exactly when none is held; over any bitmap the count is zero exactly when the bitmap is empty; and a row is deleted (empty) exactly when its counts are zero and its bitmaps empty.
 
 **Why valuable.** The frontier passes, cancels and resolves offsets by these bits, and the codec refuses a row whose `sched` differs from the `sbits` count: an aliased or sticky bit leases a cancelled message or skips a live one.
 

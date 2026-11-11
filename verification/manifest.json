@@ -1673,11 +1673,12 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "Bits over any three set or clear operations at any offsets of one row (any row of the u64 offset space) and any probe offset of the row; RangeRow::is_empty over any open and sched counts and any marking of one offset in each bitmap. The bitmap codec (Bits::put and read, the runs and raw forms) and the transaction code that keeps sched equal to the sbits count are outside the proof: native_queue::range::tests and TLA-046's RangeRowsMatch pin them",
+      "input_scope": "Bits over any three set or clear operations at any offsets of one row (any row of the u64 offset space) and any probe offset of the row (contents and emptiness); Bits::count against Bits::is_empty over any bitmap (all 4,096 bits); RangeRow::is_empty over any open and sched counts and any marking of one offset in each bitmap. Bits::count's exact value (equating a 4,096-bit popcount with symbolic offsets ran out CBMC's budget in every shape tried, 2026-11-11), the bitmap codec (Bits::put and read, the runs and raw forms) and the transaction code that keeps sched equal to the sbits count are outside the proof: native_queue::range::tests (every offset of a row alone, and 20,000 sets and clears against a per-bit model) and TLA-046's RangeRowsMatch pin them",
       "regressions": [
         "native_queue::range::tests::a_range_row_round_trips_in_the_shorter_form",
         "native_queue::range::tests::a_range_row_refuses_what_it_did_not_write",
-        "native_queue::range::tests::offsets_map_to_rows_and_bits"
+        "native_queue::range::tests::offsets_map_to_rows_and_bits",
+        "native_queue::range::tests::count_is_the_number_of_offsets_held"
       ],
       "checks": [
         {
@@ -1692,6 +1693,14 @@
           "id": "KANI-109/empty",
           "role": "baseline",
           "harness": "native_queue::range::proofs::kani_109_a_range_row_is_empty_exactly_when_it_holds_nothing",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-109/count",
+          "role": "baseline",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_counts_nothing_exactly_when_it_is_empty",
           "expect": {
             "result": "pass"
           }
@@ -1719,11 +1728,11 @@
         {
           "id": "KANI-109/nc-count-first-word",
           "role": "negative-control",
-          "harness": "native_queue::range::proofs::kani_109_a_bitmap_holds_exactly_the_offsets_its_last_operations_set",
+          "harness": "native_queue::range::proofs::kani_109_a_bitmap_counts_nothing_exactly_when_it_is_empty",
           "patch": "verification/kani/controls/KANI-109-count-first-word.patch",
           "expect": {
             "result": "fail",
-            "property": "count is the number of offsets held"
+            "property": "count is zero exactly when the bitmap is empty"
           }
         },
         {
