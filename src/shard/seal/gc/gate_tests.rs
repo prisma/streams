@@ -71,6 +71,34 @@ async fn a_purge_request_is_busy_at_once_while_a_split_holds_the_gate() {
     rig.engine.begin_close();
 }
 
+/// **A final source takes no index batch, and a purge request on it is `Busy`** (#251 R3-d;
+/// DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 5). Once a topology operation wrote its
+/// `'T'` and set the gate's final flag, a batch through `write_index_batch` is refused before it
+/// writes, with the exact reason, and `request_purge` answers `Busy` and writes no head row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_final_source_refuses_an_index_batch_and_answers_a_purge_request_busy() {
+    let rig = gc_rig("gate-final").await;
+    let dead = [0x3D; 16];
+    rig.engine.gc_state().gate.set_final();
+    let mut batch = WriteBatch::new();
+    batch.put(b"\xffgate-final", b"v");
+    let written = rig
+        .engine
+        .write_index_batch(batch)
+        .await
+        .map_err(|e| e.to_string());
+    let why = "the source is final: a topology operation wrote 'T'";
+    assert!(
+        written.as_ref().is_err_and(|e| e.contains(why)),
+        "{written:?}"
+    );
+    assert_eq!(rig.engine.db.get(b"\xffgate-final").await.unwrap(), None);
+    let asked = rig.engine.request_purge(dead, 0).await;
+    assert!(matches!(asked, Err(GcError::Busy)), "{asked:?}");
+    assert_eq!(rig.engine.head_row(&dead).await.unwrap(), None);
+    rig.engine.begin_close();
+}
+
 /// **The orphan sweep stands down while collection is off.** An older owner's orphan is
 /// neither listed nor deleted by a sweep with collection off; the next sweep, with it on,
 /// deletes it.

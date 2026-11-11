@@ -342,6 +342,12 @@ Seals, folds, trims and `request_purge` continue: their rows are sentinel (the d
 (the supplementary list covers them). A barriered seal's object PUT is an orphan under the parent's path,
 for S6's sweeper (finding 15, §15).
 
+**The "final" flag** (push 4, DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 5): from the `'T'` a
+split or merge wrote, the source's log is final. The operation sets the flag while it holds the gate
+exclusive, at the point from which it only rolls forward, and never clears it. A writer queued on the gate
+that gets it after the operation drops its hold writes no batch (`write_index_batch_held` refuses, and
+`request_purge` answers `Busy`), so the source's rows stay exactly what its successors copied.
+
 ### 5.2 The barrier without a `CommitOp` variant (Fable's decision on O1)
 
 **The barrier rides `CommitOp::Seal(Box<SealCommit>)` as a new `SealCommit::Barrier(BarrierReq)` kind,**

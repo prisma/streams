@@ -257,6 +257,12 @@ async fn run(
         Ok(()) => retire_sources(pair, version, op_id).await,
         Err(e) => Err(Retiring::Before(e)),
     };
+    if matches!(retired, Ok(()) | Err(Retiring::After(_))) {
+        // A `'T'` was written or attempted: both logs are final, under both holds (see `gate`).
+        for (source, _) in &pair.sources {
+            source.gc_state().gate.set_final();
+        }
+    }
     let (a, b) = match (retired, barriers) {
         (Ok(()), Some(barriers)) => barriers,
         (Err(Retiring::After(why)), _) => {

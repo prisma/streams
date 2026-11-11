@@ -64,7 +64,8 @@ impl ShardEngine {
         if self.head_row(&hash).await?.is_some() {
             return Ok(());
         }
-        let Some(shared) = gc.gate.try_shared() else {
+        // A final source (its `'T'` written) takes no batch: `Busy`, as while a split holds it.
+        let Some(shared) = gc.gate.try_shared().filter(|_| !gc.gate.is_final()) else {
             return Err(GcError::Busy);
         };
         let mut batch = WriteBatch::new();

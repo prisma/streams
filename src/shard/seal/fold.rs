@@ -585,6 +585,10 @@ impl ShardEngine {
         batch: WriteBatch,
         _shared: &tokio::sync::RwLockReadGuard<'_, ()>,
     ) -> Result<(), FoldError> {
+        if self.gc_state().gate.is_final() {
+            let why = "the source is final: a topology operation wrote 'T'";
+            return Err(FoldError::Batch(why.to_string()));
+        }
         #[cfg(test)]
         self.fold_state().before_batch().await?;
         let result = async {

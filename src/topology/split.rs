@@ -310,6 +310,10 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
         Ok(()) => write_retired(op, actor).await,
         Err(e) => Err(e),
     };
+    if retired.is_ok() {
+        // From `'T'` the parent's log is final; the hold is still exclusive (see `gate`).
+        gate.set_final();
+    }
     let barrier = match (retired, barrier) {
         (Ok(()), Some(barrier)) => barrier,
         (retired, barrier) => {

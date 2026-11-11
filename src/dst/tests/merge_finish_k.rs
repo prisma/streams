@@ -40,6 +40,288 @@ pub(super) async fn merge_paused_at_park<F: std::future::Future<Output = ()>>(
     merged
 }
 
+/// What a source's log holds of its WAL: its path, and each WAL object under it by id with the
+/// sequence numbers of its records, in order. A quiesced source's mark does not move. The
+/// writer's `next_wal_sst_id` is not in it: it catches up when an L0 flush publishes the manifest
+/// (it went 1 -> 7 at a split's park with WAL objects 1-6 identical, suite-tip-142538), which is
+/// no WAL write.
+pub(super) async fn wal_mark(
+    store: &Arc<dyn object_store::ObjectStore>,
+    source: &crate::shard::ShardEngine,
+) -> WalMark {
+    let path = source.log_path();
+    let reader = slatedb::WalReader::new(path.as_str(), store.clone());
+    let mut objects = Vec::new();
+    for file in reader.list(..).await.expect("the WAL lists") {
+        let mut records = file.iterator().await.expect("the WAL object reads");
+        let mut seqs = Vec::new();
+        while let Some(record) = records.next().await.expect("a WAL record") {
+            seqs.push(record.seq);
+        }
+        objects.push((file.id, seqs));
+    }
+    (path, objects)
+}
+
+/// A row the test owns in the sentinel's space. Tag `'D'` is reserved for #150's queue debt index
+/// (`keyspace::tests::SENTINEL_TAGS`): nothing in the product writes or reads it yet.
+pub(super) fn probe_row() -> Vec<u8> {
+    let mut key = crate::keyspace::SENTINEL.to_vec();
+    key.push(b'D');
+    key.extend_from_slice(b"park-probe");
+    key
+}
+
+/// An index batch of [`probe_row`], awaited once the operation ends.
+pub(super) type Batch =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
+type Answer = (u16, Option<String>, Option<String>);
+
+/// A log's path and its WAL objects by id, each with its records' sequence numbers.
+pub(super) type WalMark = (String, Vec<(u64, Vec<u64>)>);
+
+/// What a quiesced operation's sources showed at its park: their WAL marks before and after a hold,
+/// a requested seal's and a fold's answers on the first source, the answers to an append to a
+/// stream of each, and whether the index batch was still waiting at the end of the hold.
+#[derive(Debug)]
+pub(super) struct AtPark {
+    before: Vec<WalMark>,
+    after: Vec<WalMark>,
+    sealed: Result<usize, String>,
+    folded: Result<(usize, bool), String>,
+    appends: (Answer, Answer),
+    batch_pending: bool,
+}
+
+/// At the park of an operation over `sources`: an index batch of [`probe_row`] on the first
+/// through `write_index_batch` (the funnel every writer outside the committer takes, the gate held
+/// shared), a requested seal and a fold of it, and an append to each of `names`, through a hold of
+/// 3 s (past `barrier::HOLD`, 2 s); every source's WAL mark before and after. The batch comes back
+/// unfinished for the caller to await once the operation ends.
+pub(super) async fn probe_at_park(
+    store: &Arc<dyn object_store::ObjectStore>,
+    sources: &[Arc<crate::shard::ShardEngine>],
+    addr: std::net::SocketAddr,
+    names: [&str; 2],
+) -> (AtPark, Batch) {
+    let mut before = Vec::new();
+    for source in sources {
+        before.push(wal_mark(store, source).await);
+    }
+    let source = sources[0].clone();
+    let mut batch: Batch = Box::pin(async move {
+        let mut batch = slatedb::WriteBatch::new();
+        batch.put(probe_row(), b"1");
+        source
+            .write_index_batch(batch)
+            .await
+            .map_err(|error| format!("{error:?}"))
+    });
+    let held = tokio::time::timeout(Duration::from_secs(3), &mut batch);
+    let probes = async {
+        let first = &sources[0];
+        let sealed = first.seal_requested().await.map(|report| report.streams);
+        let folded = first
+            .fold_once()
+            .await
+            .map(|r| (r.rows, r.object.is_none()));
+        let appends = futures_util::future::join(
+            append_answer(addr, names[0], 30),
+            append_answer(addr, names[1], 31),
+        )
+        .await;
+        let sealed = sealed.map_err(|error| format!("{error:?}"));
+        (
+            sealed,
+            folded.map_err(|error| format!("{error:?}")),
+            appends,
+        )
+    };
+    let (ended, (sealed, folded, appends)) = futures_util::future::join(held, probes).await;
+    let mut after = Vec::new();
+    for source in sources {
+        after.push(wal_mark(store, source).await);
+    }
+    let at = AtPark {
+        before,
+        after,
+        sealed,
+        folded,
+        appends,
+        batch_pending: ended.is_err(),
+    };
+    (at, batch)
+}
+
+/// The park was quiet: every source's WAL objects and record seqs exactly unchanged through the
+/// hold; the index batch still waiting on the gate; the seal refused by the parked committer; the
+/// fold with nothing to fold (the operation's `prepare` folded each source first); both appends
+/// held `503 shard_splitting`.
+pub(super) fn assert_quiet(at: &AtPark) {
+    for (path, objects) in &at.before {
+        assert!(!objects.is_empty(), "{path}: the probe sees its WAL");
+    }
+    assert_eq!(at.after, at.before, "a parked source wrote to its WAL");
+    assert!(
+        at.batch_pending,
+        "the index batch waits for the quiesce: {at:?}"
+    );
+    let refused = r#"Store("the seal's group was not applied")"#.to_string();
+    assert_eq!(at.sealed, Err(refused), "a seal at the park");
+    assert_eq!(at.folded, Ok((0, true)), "a fold at the park finds nothing");
+    let splitting = (
+        503,
+        Some("1".to_string()),
+        Some("shard_splitting".to_string()),
+    );
+    assert_eq!(
+        at.appends,
+        (splitting.clone(), splitting),
+        "both appends held"
+    );
+}
+
+type Probed = (
+    Result<crate::topology::merge::Published, crate::topology::merge::Refused>,
+    AtPark,
+    Batch,
+);
+
+/// `topology.json` made unreadable, so a publish after `'T'` fails (`Unfinished`).
+pub(super) async fn unreadable_topology(store: &Arc<dyn object_store::ObjectStore>) {
+    let path = object_store::path::Path::from("topology.json");
+    object_store::ObjectStoreExt::put(&**store, &path, b"{".to_vec().into())
+        .await
+        .unwrap();
+}
+
+/// The refusal a final source gives a queued index batch (`write_index_batch_held`).
+pub(super) const FINAL: &str = r#"Batch("the source is final: a topology operation wrote 'T'")"#;
+
+/// The queued batch, once the operation ended: refused as final, and the sources' WAL marks
+/// exactly what they were when the operation returned (nothing lands after `'T'`).
+pub(super) async fn refused_as_final(
+    store: &Arc<dyn object_store::ObjectStore>,
+    sources: &[Arc<crate::shard::ShardEngine>],
+    batch: Batch,
+) {
+    let mut ended = Vec::new();
+    for source in sources {
+        ended.push(wal_mark(store, source).await);
+    }
+    let refused = tokio::time::timeout(Duration::from_secs(20), batch).await;
+    assert_eq!(refused, Ok(Err(FINAL.to_string())), "the batch after 'T'");
+    for (source, mark) in sources.iter().zip(&ended) {
+        assert_eq!(&wal_mark(store, source).await, mark, "no write after 'T'");
+    }
+}
+
+/// The merge of `00`'s halves paused at its park while [`probe_at_park`] runs there (and, when
+/// `corrupt`, `topology.json` is then made unreadable): its result, the park's account and the
+/// unfinished index batch.
+async fn merge_probed(
+    rig: &Rig,
+    halves: &[Arc<crate::shard::ShardEngine>; 2],
+    corrupt: bool,
+) -> Probed {
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let (marks, sources, store) = (seen.clone(), halves.clone(), rig.state.data_store.clone());
+    let (addr, names) = (rig.addr, [rig.low.clone(), rig.high.clone()]);
+    let paused = move || async move {
+        let probed = probe_at_park(&store, &sources, addr, [&names[0], &names[1]]).await;
+        if corrupt {
+            unreadable_topology(&store).await;
+        }
+        *marks.lock().unwrap() = Some(probed);
+    };
+    let merged = merge_paused_at_park(&rig.state, halves, "op-q", paused).await;
+    let (at, batch) = seen.lock().unwrap().take().expect("the park was reached");
+    (merged, at, batch)
+}
+
+/// `00` split, then a record appended to a stream of each half: the merge's sources, each with a
+/// WAL of its own.
+async fn halves_with_records(rig: &Rig) -> [Arc<crate::shard::ShardEngine>; 2] {
+    split_00(&rig.state, &rig.parent).await;
+    let halves = halves_of_00(&rig.state).await;
+    for (name, n) in [(&rig.low, 20), (&rig.high, 21)] {
+        assert_eq!(append_answer(rig.addr, name, n).await.0, 204, "{name}");
+    }
+    halves
+}
+
+/// **A quiesced source writes nothing until the merge publishes**
+/// (DESIGN-DECISION-c3-incomplete-rig-2026-11-11, Addendum 4, step 2 as amended). At the merge's
+/// park the probe runs (`probe_at_park`, `assert_quiet`). Released, the merge publishes; the index
+/// batch is then refused as final (no write after `'T'`), and the merged leaf holds no probe row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_source_writes_nothing_until_the_merge_publishes() {
+    let rig = rig().await;
+    let halves = halves_with_records(&rig).await;
+    let (merged, at, batch) = merge_probed(&rig, &halves, false).await;
+    assert_quiet(&at);
+    merged.expect("the merge publishes");
+    refused_as_final(&rig.state.data_store, &halves, batch).await;
+    let leaf = super::merge_k::opened(&rig.state, "00").await;
+    let row = leaf.db.get(probe_row()).await.unwrap();
+    assert_eq!(row, None, "no probe row in the merged leaf");
+    engine_shutdown(&rig.state).await;
+}
+
+/// **A quiesced source writes nothing until the merge rolls back** (the rollback variant of
+/// `a_quiesced_source_writes_nothing_until_the_merge_publishes`). A manifest that does not decode
+/// sits at `M`'s path, so `M`'s clone fails inside the pause. At the park the probe runs. Released,
+/// the merge refuses `RolledBack` naming that path; the index batch then lands on the source,
+/// which holds the probe row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_source_writes_nothing_until_the_merge_rolls_back() {
+    let rig = rig().await;
+    let halves = halves_with_records(&rig).await;
+    let home = rig.state.shards.prefixes().shards.next_home;
+    let path = crate::topology::model::born_home_path("00", home);
+    let junk = format!("{path}/manifest/00000000000000000001.manifest");
+    let junk = object_store::path::Path::from(junk.as_str());
+    object_store::ObjectStoreExt::put(&*rig.store, &junk, b"junk".to_vec().into())
+        .await
+        .unwrap();
+    let (merged, at, batch) = merge_probed(&rig, &halves, false).await;
+    assert_quiet(&at);
+    let refused = merged.err().expect("the merge rolls back");
+    assert!(
+        matches!(&refused, crate::topology::merge::Refused::RolledBack(why) if why.contains(&path)),
+        "{refused:?}"
+    );
+    let ended = tokio::time::timeout(Duration::from_secs(20), batch).await;
+    assert_eq!(ended, Ok(Ok(())), "the batch lands once the merge ends");
+    let row = halves[0].db.get(probe_row()).await.unwrap();
+    assert_eq!(
+        row,
+        Some(bytes::Bytes::from_static(b"1")),
+        "the source holds the probe row"
+    );
+    engine_shutdown(&rig.state).await;
+}
+
+/// **A quiesced source writes nothing after the merge's `'T'` when its publish fails** (the
+/// `Unfinished` variant). At the park the probe runs, then `topology.json` is made unreadable, so
+/// the publish fails after both `'T'`s: the merge refuses `Unfinished`, and the queued index batch
+/// is refused as final, both sources' WALs unchanged since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_source_writes_nothing_after_the_merges_t_when_its_publish_fails() {
+    let rig = rig().await;
+    let halves = halves_with_records(&rig).await;
+    let (merged, at, batch) = merge_probed(&rig, &halves, true).await;
+    assert_quiet(&at);
+    let refused = merged.err().expect("the publish fails");
+    assert!(
+        matches!(refused, crate::topology::merge::Refused::Unfinished(_)),
+        "{refused:?}"
+    );
+    refused_as_final(&rig.state.data_store, &halves, batch).await;
+    engine_shutdown(&rig.state).await;
+}
+
 /// **A merge whose leaf fails to open after the publish stays published** (S6 §7.2, as the split
 /// does; edge #251's view). Junk WAL objects are planted under `M`'s path at the park, so `M`'s
 /// clone passes and its open fails: the merge answers `Published` without `M`'s engine (it opens on
@@ -142,7 +424,7 @@ async fn a_merge_whose_publish_fails_after_t_is_left_live() {
 }
 
 /// An append of `{"n": n}` to `name` through `addr`: its status, `Retry-After` and error code.
-async fn append_answer(
+pub(super) async fn append_answer(
     addr: std::net::SocketAddr,
     name: &str,
     n: u32,

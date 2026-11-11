@@ -230,3 +230,122 @@ async fn a_t_whose_flush_slatedb_retries_publishes_the_split() {
         engine_shutdown(&cell.state).await;
     }
 }
+
+/// The split of `cell`'s parent paused at its park while `merge_finish_k::probe_at_park` runs
+/// there on the parent (and, when `corrupt`, `topology.json` is then made unreadable): its result,
+/// the park's account and the unfinished index batch.
+async fn split_probed(
+    cell: &super::split_k::Cell,
+    corrupt: bool,
+) -> (
+    Result<crate::topology::split::Published, crate::topology::split::Refused>,
+    super::merge_finish_k::AtPark,
+    super::merge_finish_k::Batch,
+) {
+    use super::merge_finish_k::probe_at_park;
+    let store = cell.state.data_store.clone();
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    cell.parent.gc_state().gate.pause_at_park(point);
+    let clock = cell.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&cell.state.shards, &cell.parent, "op-q", "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split paused at its park");
+        let sources = [cell.parent.clone()];
+        let probed = probe_at_park(&store, &sources, cell.addr, [&cell.low, &cell.high]).await;
+        if corrupt {
+            super::merge_finish_k::unreadable_topology(&store).await;
+        }
+        assert!(go_tx.send(()).is_ok(), "the split waits for go");
+        probed
+    };
+    let (split, (at, batch)) = futures_util::future::join(split, control).await;
+    (split, at, batch)
+}
+
+/// A split cell whose parent holds a record of each half.
+async fn cell_with_records() -> super::split_k::Cell {
+    use super::merge_finish_k::append_answer;
+    let cell = cell().await;
+    for (name, n) in [(&cell.low, 20), (&cell.high, 21)] {
+        assert_eq!(append_answer(cell.addr, name, n).await.0, 204, "{name}");
+    }
+    cell
+}
+
+/// **A quiesced parent writes nothing until the split publishes** (the split's twin of
+/// `merge_finish_k::a_quiesced_source_writes_nothing_until_the_merge_publishes`). At the split's
+/// park the probe runs on the parent. Released, the split publishes; the index batch is then refused
+/// as final (no write after `'T'`), and neither child holds the probe row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_parent_writes_nothing_until_the_split_publishes() {
+    use super::merge_finish_k::{assert_quiet, probe_row};
+    let cell = cell_with_records().await;
+    let (split, at, batch) = split_probed(&cell, false).await;
+    assert_quiet(&at);
+    split.expect("the split publishes");
+    let parent = [cell.parent.clone()];
+    super::merge_finish_k::refused_as_final(&cell.state.data_store, &parent, batch).await;
+    for prefix in ["000", "001"] {
+        let child = super::merge_k::opened(&cell.state, prefix).await;
+        let row = child.db.get(probe_row()).await.unwrap();
+        assert_eq!(row, None, "no probe row in {prefix}");
+    }
+    engine_shutdown(&cell.state).await;
+}
+
+/// **A quiesced parent writes nothing until the split rolls back** (the rollback variant). A
+/// manifest that does not decode sits at the first child's path, so its clone fails inside the
+/// pause. At the park the probe runs on the parent. Released, the split refuses `RolledBack` naming
+/// that path; the index batch then lands on the parent, which holds the probe row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_parent_writes_nothing_until_the_split_rolls_back() {
+    use super::merge_finish_k::{assert_quiet, probe_row};
+    let cell = cell_with_records().await;
+    let home = cell.state.shards.prefixes().shards.next_home;
+    let path = crate::topology::model::born_home_path("000", home);
+    let junk = format!("{path}/manifest/00000000000000000001.manifest");
+    let junk = object_store::path::Path::from(junk.as_str());
+    let store = cell.state.data_store.clone();
+    object_store::ObjectStoreExt::put(&*store, &junk, b"junk".to_vec().into())
+        .await
+        .unwrap();
+    let (split, at, batch) = split_probed(&cell, false).await;
+    assert_quiet(&at);
+    let refused = split.err().expect("the split rolls back");
+    assert!(
+        matches!(&refused, crate::topology::split::Refused::RolledBack(why) if why.contains(&path)),
+        "{refused}"
+    );
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(20), batch).await;
+    assert_eq!(ended, Ok(Ok(())), "the batch lands once the split ends");
+    let row = cell.parent.db.get(probe_row()).await.unwrap();
+    assert_eq!(
+        row,
+        Some(bytes::Bytes::from_static(b"1")),
+        "the parent holds the probe row"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// **A quiesced parent writes nothing after the split's `'T'` when its publish fails** (the
+/// `Unfinished` variant). At the park the probe runs on the parent, then `topology.json` is made
+/// unreadable, so the publish fails after `'T'`: the split refuses `Unfinished`, and the queued
+/// index batch is refused as final, the parent's WAL unchanged since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_quiesced_parent_writes_nothing_after_the_splits_t_when_its_publish_fails() {
+    use super::merge_finish_k::assert_quiet;
+    let cell = cell_with_records().await;
+    let (split, at, batch) = split_probed(&cell, true).await;
+    assert_quiet(&at);
+    let refused = split.err().expect("the publish fails");
+    assert!(
+        matches!(&refused, crate::topology::split::Refused::Unfinished(_)),
+        "{refused}"
+    );
+    let parent = [cell.parent.clone()];
+    super::merge_finish_k::refused_as_final(&cell.state.data_store, &parent, batch).await;
+    engine_shutdown(&cell.state).await;
+}

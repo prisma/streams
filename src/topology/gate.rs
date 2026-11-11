@@ -29,6 +29,11 @@
 //!   passes that delete or rewrite objects stand down (the orphan sweep, consolidation, the
 //!   cleaner, purge reclaim and the run-index merge). Seals, folds, trims and `request_purge`
 //!   continue: their rows are sentinel rows the split's delta covers, or objects its lists cover.
+//! - **"Final"** ([`MaintenanceGate::is_final`]): from the `'T'` a split or merge wrote, the
+//!   source's log is final. The operation sets it while it holds the gate exclusive, at the point
+//!   from which it only rolls forward, and it is never cleared: a writer queued on the gate that
+//!   gets it once the operation drops its hold writes no batch (`write_index_batch_held` refuses,
+//!   `request_purge` answers `Busy`), so the source's rows stay exactly what its successors copied.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,6 +59,8 @@ pub(crate) struct MaintenanceGate {
     splitting: AtomicBool,
     parked: AtomicBool,
     retired: Mutex<Option<Reroute>>,
+    /// The source wrote `'T'`: set once, never cleared.
+    final_log: AtomicBool,
     marking: AtomicBool,
     touched: Mutex<HashSet<[u8; 16]>>,
     /// Tests: where a split pauses once its barrier parks (`pause_at_park`).
@@ -175,5 +182,15 @@ impl MaintenanceGate {
     /// an open is held by the fence (`topology::fence`).
     pub(crate) fn set_collection_off(&self, off: bool) {
         self.collection_off.store(off, Ordering::Release);
+    }
+
+    /// Whether the source's log is final: a split or merge wrote its `'T'` (see the module).
+    pub(crate) fn is_final(&self) -> bool {
+        self.final_log.load(Ordering::Acquire)
+    }
+
+    /// The operation that wrote `'T'` makes the log final, under its exclusive hold.
+    pub(crate) fn set_final(&self) {
+        self.final_log.store(true, Ordering::Release);
     }
 }
