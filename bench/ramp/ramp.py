@@ -59,6 +59,7 @@ import rig
 from rig import HERE, sh
 
 WARMUP_SECS = 30
+POLICY_PASS_SECS = 10  # topology::policy_loop::PERIOD: one pass co-locates a pair, the next merges it
 STORE = []  # the run's rig.HostStore, once started (s3lite on the host: a ramp's store outgrows the VM)
 
 
@@ -622,15 +623,18 @@ def drain_budget(a, live, shards):
     (--set, else the binary defaults). The first merge waits for the longer of the split-reversal
     age (since the last split) and the handle idle-out plus the merge sustain (a leaf goes quiet
     once its handles idle out; both clocks run at once); then one merge a topology cooldown (plus about 30 s for the merge itself) down to
-    --low-max-shards, and one scale-in a SCALE_IN_SECS window plus a cooldown down to
+    --low-max-shards, each also charged a co-location (REBALANCE_MOVE_COOLDOWN_SECS plus one policy
+    pass), since on a count-balanced fleet most pairs sit on two instances (converge-budget decision
+    2026-11-11 §6), and one scale-in a SCALE_IN_SECS window plus a cooldown down to
     --fleet-min, taken one after the other (no scale-in while a merge's intent is live); 25%
     over that."""
     scale_in, cooldown = knob(a, "SCALE_IN_SECS", 300), knob(a, "SHARD_TOPOLOGY_COOLDOWN_SECS", 60)
     merge_sustain, reversal = knob(a, "SHARD_MERGE_SUSTAIN_SECS", 21600), knob(a, "SHARD_SPLIT_REVERSAL_MIN_SECS", 43200)
-    idle = knob(a, "HANDLE_IDLE_EVICT_SECS", 600)
+    idle, move_cooldown = knob(a, "HANDLE_IDLE_EVICT_SECS", 600), knob(a, "REBALANCE_MOVE_COOLDOWN_SECS", 60)
     merges, scale_ins = max(0, shards - a.low_max_shards), max(0, live - a.fleet_min)
     # A leaf's load falls only once its handles idle out, so its merge sustain starts then.
     parts = {"first_merge": max(reversal, idle + merge_sustain), "merges": merges * (cooldown + 30),
+             "colocations": merges * (move_cooldown + POLICY_PASS_SECS),
              "scale_ins": scale_ins * (scale_in + cooldown)}
     return int(1.25 * sum(parts.values())), parts
 

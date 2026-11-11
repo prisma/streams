@@ -170,13 +170,18 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
     its handles idle out. The two clocks run at once.
   - Each further merge waits one `SHARD_TOPOLOGY_COOLDOWN_SECS` (60 s) plus
     the merge itself (about 30 s).
+  - A merge whose halves sit on two instances first co-locates them: one
+    `REBALANCE_MOVE_COOLDOWN_SECS` (60 s) plus one policy pass (10 s,
+    `policy_loop::PERIOD`). On a count-balanced fleet that is most merges,
+    so charge it to every one.
   - Each scale-in waits one `SCALE_IN_SECS` window (300 s) plus a cooldown,
     one instance at a time. There is no scale-in while a merge's intent is
     live.
   - At the top of the ramp the cell holds 64 leaves (below), so from 64
-    leaves and N instances that is 43,200 + 62 × 90 + (N − 1) × 360 s:
-    about 14.7 h at 12 instances and 19.9 h at 64. Allow a quarter over
-    that before calling the drain failed.
+    leaves and N instances that is 43,200 + 62 × (90 + 70) + (N − 1) × 360 s:
+    about 15.9 h at 12 instances and 21.1 h at 64. The co-locations are
+    4,340 s of that, about 8%. Allow a quarter over that before calling the
+    drain failed.
 - **What drives the splits.** A leaf splits at 70% of `HANDLE_MAX_RESIDENT`,
   8,192 resident handles on the 1 GiB profile, so 5,734 streams. A handle
   stays resident `HANDLE_IDLE_EVICT_SECS` (600 s) after its touch.
@@ -314,9 +319,10 @@ It records, per step, the shards the live instances own (from their
 heartbeats) and the instances live, and fails a low step that ran on more
 than one instance or more than 2 shards. `--drain-secs auto` sizes the
 drain by §5's arithmetic from the constants the servers run and prints it.
-At the compressed constants with a 10 s cooldown, from 4 leaves and at
-most 12 instances, that is 720 + 3 × 40 + 11 × 310 = 4,250 s, so 5,312 s
-with the margin. Fewer instances shorten it by 310 s each.
+At the compressed constants with 10 s cooldowns, from 4 leaves (2 merges
+down to 2 shards) and at most 12 instances, that is
+720 + 2 × (40 + 20) + 11 × 310 = 4,250 s, so 5,312 s with the margin. Fewer
+instances shorten it by 310 s each.
 
 The drain runs after a failed step too. Before it and after it, the ramp
 reads back `--readback` streams (200), spread over all it created. With no
