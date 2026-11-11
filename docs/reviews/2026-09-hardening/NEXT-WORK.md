@@ -2791,6 +2791,19 @@ wait's tails. Three readers still answer the old way:
   itself is a fork patch, after #149: `Path::parse` (falling back to `Path::from` when it fails) at
   the four sites, a new `streams-*` pin tag measured in Streams first (the fork rule), and an
   upstream slatedb/slatedb issue. Filing that issue is public: it needs the owner's OK in chat.
+- **A roll forward that is stuck holds the parent with no operator path out** (addendum 6's
+  outcome B, DESIGN-DECISION-c3-incomplete-rig-2026-11-11, package 5, 2026-11-11). A claimant's
+  `recover::publish` refuses `stuck: the topology is at X and 'T' at Y` when the stored topology
+  is neither at `T.version - 1` nor past it. The fence answers `Hold`, every request on the parent
+  meets 503 `shard_opening` until the open fails at 60 s, and then the gate's holdoff
+  (`shard_moving`), and this repeats for good. It fails closed: the parent's log keeps every row.
+  Since #249 amendment R4 the parent closes with its intent live after any attempted `'T'`, and no
+  operation starts under a live intent, so the version moves under a pending `'T'` only by operator
+  action or corruption; push 4 adds no handling (Fable's ruling). Wanted: an operator route, or a
+  RUNBOOK procedure checked by a DST, that reads the parent's `'T'` and the stored topology and
+  either re-bases the publish onto the current version (a fresh home CAS and children whose clones
+  are still initialized) or removes `'T'` under a claim when no child exists, with the intent ended
+  `RolledBack`. Until then RUNBOOK §11 ("Shard split") says how it shows and to escalate.
 
 ## 18. Follow-ups from S5, the topology policy (2026-11-10)
 

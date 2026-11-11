@@ -88,6 +88,17 @@
     "scenarios": []
   },
   {
+    "name": "a_born_home_whose_log_is_missing_is_refused_not_served_empty",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5f9a46e935d39a605eab490e99dcce6f193a113de81df09d15d59239ff4db41c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_t_outcome.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -48,20 +48,42 @@ fn split_set(set: &ShardSet, prefix: &str) -> ShardSet {
     next
 }
 
-/// The split entry's double: each split it is asked for, in order, installed at once.
+/// Each child's log of the split `prefix` in `next`, seeded with its identity row as its clone
+/// would be: an operation-born home's log without one is missing (`shard::check_identity`).
+async fn seed_children(store: &Arc<dyn ObjectStore>, next: &ShardSet, prefix: &str) {
+    for child in [format!("{prefix}0"), format!("{prefix}1")] {
+        let home = next.leaves[&child];
+        let db = crate::keyspace::db_builder(next.homes[&home].path.as_str(), store.clone())
+            .build()
+            .await
+            .unwrap();
+        let (key, value) = crate::shard::open_index::identity_row(home);
+        db.put(&key, &value).await.unwrap();
+        db.close().await.unwrap();
+    }
+}
+
+/// The split entry's double: each split it is asked for, in order, its children's logs seeded and
+/// its topology installed.
 pub(super) fn split_double(
     state: &Arc<crate::http::AppState>,
     asked: Arc<Mutex<Vec<String>>>,
 ) -> SplitFn {
     let (shards, clock) = (state.shards.clone(), state.runtime.clock.clone());
+    let store = state.data_store.clone();
     Arc::new(move |prefix: String| {
-        let next = split_set(&shards.prefixes().shards, &prefix);
-        assert!(
-            shards.install(next, None, clock.monotonic()),
-            "the split's topology installs"
-        );
-        asked.lock().unwrap().push(prefix);
-        Box::pin(async { Ok(()) })
+        let (shards, clock, store) = (shards.clone(), clock.clone(), store.clone());
+        let asked = asked.clone();
+        Box::pin(async move {
+            let next = split_set(&shards.prefixes().shards, &prefix);
+            seed_children(&store, &next, &prefix).await;
+            assert!(
+                shards.install(next, None, clock.monotonic()),
+                "the split's topology installs"
+            );
+            asked.lock().unwrap().push(prefix);
+            Ok(())
+        })
     })
 }
 

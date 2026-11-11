@@ -912,6 +912,21 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   dies, the next open of the parent (any request) claims the split after
   11 s and rolls it back, or forward if the parent was already retired;
   the shard answers 503 `shard_opening` meanwhile.
+  A split whose `'T'` write failed answers 503 `topology_unavailable`
+  naming it, and is decided the same way: its parent closes, the shard
+  answers 503 `shard_moving` and then `shard_opening`, and after 11 s the
+  parent's next open rolls the split forward from a landed `'T'` or back
+  without one (#249 amendment R4). Two states need an operator, and both
+  fail closed, with nothing served from an empty log: a child whose open answers 500
+  `shard_open_failed` (reads) or `shard_open` (appends) with
+  `log_missing: shard log shards/<prefix>-<home> ... has no identity row`
+  has lost its log (#251 amendment R3-e); its range stays unavailable until the
+  log is restored from the bucket's history or the cell is recreated. A parent
+  whose open holds with the warn line `the opener's recovery failed:
+  stuck: the topology is at X and 'T' at Y` has a stored topology that
+  moved under its pending `'T'` (NEXT-WORK §17); `topology.json` shows its
+  intent. Change neither `'T'` nor `topology.json` by hand: escalate to the
+  topology owner.
   `POST /operator/topology/merge` `{"prefix"}` (the parent of the two halves)
   merges `<prefix>0` and `<prefix>1` the same way: 202 `{op_id, version}`,
   then both halves pause and their held appends go to the merged leaf.

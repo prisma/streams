@@ -263,8 +263,11 @@ fn identity_value(home: u32) -> [u8; 8] {
     value
 }
 
-/// Checks the identity of the shard log at `path`, writing it on an empty log, and refuses the
-/// open of a log of another layout or home (a `data` error; a store error keeps its own kind).
+/// Checks the identity of the shard log at `path`, writing it on an empty log of an initial home,
+/// and refuses the open of a log of another layout or home, and of an operation-born home's log
+/// (`shards/<prefix>-<home>`) that has no identity row: its clone seeds the row, so such a log is
+/// missing (`log_missing`), never a new one (a `data` error; a store error keeps its own kind).
+/// Nothing is written on a refusal.
 pub(crate) async fn check_identity(db: &Db, path: &str) -> Result<(), slatedb::Error> {
     let Some(home) = crate::sharddir::home_of_db_path(path) else {
         return Err(slatedb::Error::data(format!(
@@ -276,6 +279,14 @@ pub(crate) async fn check_identity(db: &Db, path: &str) -> Result<(), slatedb::E
     let found = db.get(&key).await?;
     if found.as_deref() == Some(&want[..]) {
         return Ok(());
+    }
+    if found.is_none()
+        && let Some((prefix, _)) = crate::sharddir::prefix_of_db_path(path).split_once('-')
+    {
+        return Err(slatedb::Error::data(format!(
+            "log_missing: shard log {path} (prefix {prefix}, home {home}) has no identity row; an \
+             operation-born home's log is created only by its clone (RUNBOOK)"
+        )));
     }
     let empty = found.is_none() && db.scan(..).await?.next().await?.is_none();
     if !empty {

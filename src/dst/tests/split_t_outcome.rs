@@ -291,3 +291,117 @@ async fn a_split_whose_t_put_failed_is_rolled_back_only_by_the_next_opener() {
     assert_eq!(records(cell.addr, &cell.high).await, want_high);
     engine_shutdown(&cell.state).await;
 }
+
+/// A request's status, its error code and message.
+async fn answer(cell: &Cell, method: &str, body: &[u8]) -> (u16, String, String) {
+    let path = format!("/v1/stream/{}", cell.low);
+    let headers: &[(&str, &str)] = if body.is_empty() {
+        &[]
+    } else {
+        &[super::billing_closure_debts::JSON]
+    };
+    let (status, _, body) = hreq(cell.addr, method, &path, headers, body).await;
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let field = |name: &str| {
+        error["error"][name]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    (status, field("code"), field("message"))
+}
+
+/// The first answer to a request past the shard's anti-flap holdoff, every answer inside it a 503
+/// `shard_moving`.
+async fn past_holdoff(cell: &Cell, method: &str, body: &[u8]) -> (u16, String, String) {
+    let t0 = Instant::now();
+    loop {
+        let answered = answer(cell, method, body).await;
+        if answered.0 != 503 {
+            return answered;
+        }
+        assert_eq!(
+            answered.1, "shard_moving",
+            "inside the holdoff: {}",
+            answered.2
+        );
+        assert!(t0.elapsed() < Duration::from_secs(20), "the holdoff ends");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// **A published child whose log is missing is refused at its open, never served as a new, empty
+/// log** (addendum 6's second ruling, outcome A's guard; edge #251 amendment R3-e). Leaf `00`
+/// splits into `000` and `001`; then `000`'s log is deleted (as a rollback's clear would have).
+/// SlateDB's builder creates a new database at a path with no manifest, and the identity check
+/// refuses it: an operation-born home's log carries the `'Y'` its clone seeded, so one with none is
+/// missing. Past the holdoff its shutdown armed, a read of the low stream answers 500
+/// `shard_open_failed`, `log_missing`; an append inside the failed open's holdoff answers 503
+/// `shard_moving`; an append past it answers 500 `shard_open`, `log_missing` again; never a 404,
+/// 200 or 204. The log at `000`'s path holds no
+/// `'Y'`, and the sibling `001` serves its stream exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_born_home_whose_log_is_missing_is_refused_not_served_empty() {
+    let cell = cell().await;
+    let want_high = records(cell.addr, &cell.high).await;
+    let store = cell.state.data_store.clone();
+    let clock = cell.state.runtime.clock.clone();
+    let published =
+        crate::topology::split::split(&cell.state.shards, &cell.parent, "op-m", "inst-a", &*clock)
+            .await
+            .expect("the split publishes");
+    let (_, home, low) = published
+        .children
+        .iter()
+        .find(|(prefix, _, _)| prefix == "000")
+        .expect("the low child");
+    let log = low.log_path();
+    assert_eq!(log, crate::topology::model::born_home_path("000", *home));
+    engine_shutdown(&cell.state).await;
+    let closed = low.shutdown_handle().wait(Duration::from_secs(20)).await;
+    assert_eq!(
+        closed,
+        Ok(()),
+        "the low child's log closes before it is deleted"
+    );
+    crate::topology::recover::delete_child(&store, &log).await;
+    let left = {
+        use futures_util::TryStreamExt;
+        let at = object_store::path::Path::from(log.as_str());
+        let listed: Vec<_> = store.list(Some(&at)).try_collect().await.unwrap();
+        listed
+            .into_iter()
+            .map(|m| m.location.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(left.is_empty(), "{log} is deleted: {left:?}");
+    let missing = format!(
+        "log_missing: shard log {log} (prefix 000, home {home}) has no identity row; an \
+         operation-born home's log is created only by its clone (RUNBOOK)"
+    );
+    let (status, code, message) = past_holdoff(&cell, "GET", b"").await;
+    assert_eq!(
+        (status, code.as_str()),
+        (500, "shard_open_failed"),
+        "{message}"
+    );
+    assert!(message.contains(&missing), "{message}");
+    let (status, code, message) = answer(&cell, "POST", br#"[{"n":50}]"#).await;
+    assert_eq!((status, code.as_str()), (503, "shard_moving"), "{message}");
+    let (status, code, message) = past_holdoff(&cell, "POST", br#"[{"n":51}]"#).await;
+    assert_eq!((status, code.as_str()), (500, "shard_open"), "{message}");
+    assert!(message.contains(&missing), "{message}");
+    let raw = crate::keyspace::db_builder(log.as_str(), store.clone())
+        .build()
+        .await
+        .unwrap();
+    let identity = [crate::keyspace::SENTINEL.as_slice(), b"Y"].concat();
+    assert_eq!(
+        raw.get(&identity).await.unwrap(),
+        None,
+        "no 'Y' was written"
+    );
+    raw.close().await.unwrap();
+    assert_eq!(records(cell.addr, &cell.high).await, want_high);
+    engine_shutdown(&cell.state).await;
+}

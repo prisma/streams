@@ -107,21 +107,40 @@ async fn a_log_whose_path_names_no_shard_is_refused() {
     );
 }
 
-/// **A log at an operation-born home's path takes the home its path names** (S4 route A): a new log
-/// at `shards/10-7` records home 7 and reopens; a log there that records another home is refused;
-/// a path of neither form names no home and is refused.
+/// **A log at an operation-born home's path opens only with its own identity row** (S4 route A;
+/// addendum 6's second ruling): its clone seeds the `'Y'` row, so a log there that has none is
+/// missing. Over an empty store, the open of `shards/10-7` is refused `log_missing` and leaves no
+/// `'Y'` behind, again on a retry; a log there seeded with home 7's row opens and records home 7; a
+/// log there that records another home is refused; a path of neither form names no home and is
+/// refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_log_at_an_operation_born_home_takes_the_home_its_path_names() {
+async fn a_log_at_an_operation_born_home_opens_only_with_its_identity_row() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    let db = open(&store, "shards/10-7").await.unwrap();
+    for attempt in ["first", "retry"] {
+        let refusal = open(&store, "shards/10-7").await.err().unwrap();
+        assert_eq!(
+            refusal.to_string(),
+            "Data error: log_missing: shard log shards/10-7 (prefix 10, home 7) has no identity row; \
+             an operation-born home's log is created only by its clone (RUNBOOK)",
+            "{attempt}"
+        );
+        let raw = crate::keyspace::db_builder("shards/10-7", store.clone())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            raw.get(&super::identity_key()).await.unwrap(),
+            None,
+            "{attempt}"
+        );
+        raw.close().await.unwrap();
+    }
+    let seeded: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let layout = crate::registry::LAYOUT_VERSION;
+    seed(&seeded, "shards/10-7", &[identity(layout, 7)]).await;
+    let db = open(&seeded, "shards/10-7").await.unwrap();
     assert_eq!(super::recorded_home(&db).await.unwrap(), Some(7));
     db.close().await.unwrap();
-    open(&store, "shards/10-7")
-        .await
-        .unwrap()
-        .close()
-        .await
-        .unwrap();
     let other: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     seed(&other, "shards/10-7", &[identity(8, 2)]).await;
     let refusal = open(&other, "shards/10-7").await.err().unwrap();

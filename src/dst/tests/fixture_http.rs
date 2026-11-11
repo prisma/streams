@@ -258,6 +258,27 @@ pub(super) async fn http_rig_with_auth_service(
     .parts()
 }
 
+/// A rig engine's log at `path`, on the rig's fast settings, its identity checked as the
+/// production opener checks it (`shard::check_identity`, `compaction_guard::shard_log_builder`): a
+/// refused log is closed again and its open fails.
+async fn rig_log(path: String, store: Arc<dyn ObjectStore>) -> anyhow::Result<slatedb::Db> {
+    let db = crate::keyspace::db_builder(path.clone(), store)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+    if let Err(refusal) = crate::shard::check_identity(&db, &path).await {
+        if let Err(error) = db.close().await {
+            tracing::warn!(%path, %error, "closing a refused rig log failed");
+        }
+        return Err(refusal.into());
+    }
+    Ok(db)
+}
+
 /// The rig's shard opener: the REAL production open order — db build →
 /// load_or_rebuild_maintenance → engine start — with the R26-5 park point
 /// before restoration, then the rig's sealer settings (`fast_sealer`
@@ -288,14 +309,7 @@ pub(super) fn rig_opener(
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
             > = Box::pin(async move {
-                let db = crate::keyspace::db_builder(path, store.clone())
-                    .with_settings(slatedb::config::Settings {
-                        flush_interval: Some(std::time::Duration::from_millis(5)),
-                        manifest_poll_interval: std::time::Duration::from_millis(50),
-                        ..Default::default()
-                    })
-                    .build()
-                    .await?;
+                let db = rig_log(path, store.clone()).await?;
                 // R26-5 park point: BEFORE restoration, exactly where a
                 // slow durable-state load sits in production.
                 if let Some(park) = &open_park {
