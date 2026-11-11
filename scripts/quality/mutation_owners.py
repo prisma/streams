@@ -171,6 +171,11 @@ OWNERS = (
     owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
     owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists:: dst_tests::split_generations::a_quiesced_ dst_tests::split_t_outcome::'),
+    # The merge (S6): its pause, publish and tail DSTs, the claimant's traffic, the policy's merges,
+    # and the final flag it sets at 'T' (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 7).
+    owner('topology_merge', 'src/topology/merge.rs',
+          'dst_tests::merge_finish_k:: dst_tests::merge_k:: dst_tests::merge_claim_traffic:: '
+          'dst_tests::topology_policy::a_merge dst_tests::split_generations::a_quiesced_'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that_would_fill dst_tests::merge_k::a_merge_waits'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
@@ -398,8 +403,11 @@ OWNERS = (
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet:: dst_tests::fleet_topology::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
+    # The beat's open of a live intent's unopened sources is what claims a lapsed merge with no
+    # request (TLA-048 liveness_local): the policy DST that waits for exactly that.
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
-          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology::'),
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology:: '
+          'dst_tests::topology_policy::a_merge_whose_actor_died'),
     # Each shard's load in the beat: the rates are unit tests, the beat the policy DST reads.
     owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',
           'fleet::heartbeat::shard_load:: dst_tests::topology_policy::'),
