@@ -215,8 +215,14 @@ pub(crate) async fn repair_indexes(
         let body = json!({"error": "repair_marker_unwritten", "message": error.to_string()});
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response();
     }
+    #[cfg(test)]
+    crate::failpoints::pause_repair_before_retire(&prefix).await;
+    // Only the incarnation the marker went through: a replacement installed since (the found one
+    // died or was retired) opened after the marker and repairs on its own (edge #245 F1).
     let reason = crate::shard_directory::RetirementReason::IndexRepair;
-    state.shards.retire(&shard, reason, |_, _| true);
+    state
+        .shards
+        .retire(&shard, reason, |found, _| Arc::ptr_eq(found, &engine));
     let body = json!({"prefix": prefix, "repair": "next_open"});
     (StatusCode::ACCEPTED, axum::Json(body)).into_response()
 }

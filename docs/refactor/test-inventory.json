@@ -6449,7 +6449,7 @@
     "attributes": [
       "#[test]"
     ],
-    "function_sha256": "cf9ff5e9596abb20fb669b46af19912f5d618cffd315a1adf7a644a77459ba70",
+    "function_sha256": "a740d41e32065a9967d8f4e50a7804adeef717573ccf74fe2900c460e6306fe8",
     "mechanisms": [],
     "configuration": [
       "fn failpoint_registry_is_enumerable_and_described() {",
@@ -10974,6 +10974,33 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_operator_repair_route_refuses_a_request_without_a_bearer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e7d8b747af41c5cc5ba340a7e930a92a97b4a315b4cae68f322ffcd35c3dba51",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/security_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_operator_route_never_retires_a_replacement_of_the_engine_it_marked",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e90af510a9f3c290f02f1fc025a35af195a133e89a3a2f8a1ba6fc9cf086bcb6",
+    "mechanisms": [],
+    "configuration": [
+      "// reaches this failpoint.",
+      "crate::failpoints::park_repair_before_retire(&prefix);",
+      "let fp = crate::failpoints::Fp::RepairBeforeRetire;",
+      "crate::failpoints::release_repair_before_retire(&prefix);"
+    ],
+    "file": "src/dst/tests/layout8_ranges.rs",
     "scenarios": []
   },
   {

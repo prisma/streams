@@ -107,6 +107,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::the_operator_route_never_retires_a_replacement_of_the_engine_it_marked",
+      "path": "src/dst/tests/layout8_ranges.rs",
+      "reason": "The repair route and the swap that replaces its engine while it is parked run concurrently in one test task (primitive spawning is owner-only); the compiler checks the join's expansion and both futures borrow the test's rig.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::requires_test",
       "path": "tools/quality-syntax/src/facts.rs",
       "reason": "Pinned syn type macro for parsing comma-separated cfg syntax; compiled tool tests cover aliases and mixed cfg.",

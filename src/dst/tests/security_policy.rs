@@ -238,6 +238,28 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
     engine_shutdown(&state).await;
 }
 
+/// Edge change #245's first "After" at its own endpoint: under enforce the operator's index repair
+/// refuses a request without a bearer (401) and retires nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_operator_repair_route_refuses_a_request_without_a_bearer() {
+    let scopes = "streams.create streams.records.append";
+    let (state, addr, _tok) = sr_rig("proj-repr", "c_repr", "repr-1", scopes).await;
+    // An open engine for the route to retire: a raw create under the fleet credential.
+    let create = [
+        ("content-type", "application/json"),
+        ("authorization", "Bearer dst-internal-token"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/repr-x", &create, b"[]").await;
+    assert!(st == 200 || st == 201, "fleet credential on raw: {st}");
+    let before = state.shards.engines().len();
+    assert!(before > 0, "the rig has an engine open");
+    let route = "/operator/shards/root/repair-indexes";
+    let (st, _, _) = hreq(addr, "POST", route, &[], b"").await;
+    assert_eq!(st, 401, "the repair route must require a bearer");
+    assert_eq!(state.shards.engines().len(), before, "and retires nothing");
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

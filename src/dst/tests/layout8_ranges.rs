@@ -250,3 +250,84 @@ async fn the_operator_route_repairs_a_shards_indexes_at_its_next_open() {
     );
     engine_shutdown(&state).await;
 }
+
+/// Edge change #245 F1: the route retires only the incarnation its marker went through. A
+/// replacement installed between the marker's write and the retire (the found engine was retired
+/// and the shard reopened) is left serving; it opened after the marker and repairs on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_operator_route_never_retires_a_replacement_of_the_engine_it_marked() {
+    use crate::shard_directory::RetirementReason;
+    use std::sync::Arc;
+    // Two shards: the route names the stream's own prefix, so no other test's repair of `root`
+    // reaches this failpoint.
+    let options = HttpRigOptions {
+        prefixes: vec!["0".to_owned(), "1".to_owned()],
+        ..Default::default()
+    };
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    let (state, addr) = (rig.state.clone(), rig.addr);
+    raw_put(addr, "l8-fence", &[JSON], b"").await;
+    let sref = state.deployment.raw_adapter_sref("l8-fence");
+    let prefix = (state.shards).prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0);
+    let engine_of = |prefix: &str| {
+        let open = state.shards.engines_by_prefix().into_iter();
+        open.filter(|(p, _)| p == prefix).map(|(_, e)| e).next()
+    };
+    let found = engine_of(&prefix).expect("the stream's shard is open");
+    crate::failpoints::park_repair_before_retire(&prefix);
+    let route = format!("/operator/shards/{prefix}/repair-indexes");
+    let fp = crate::failpoints::Fp::RepairBeforeRetire;
+    // While the route is parked before its retire, the found incarnation goes and a replacement
+    // opens on the next touch; then the route continues.
+    let swap = async {
+        assert_eq!(
+            parked_at(fp, &prefix).await,
+            1,
+            "the route reached its retire"
+        );
+        state
+            .shards
+            .retire(&prefix, RetirementReason::FleetEviction, |_, _| true);
+        state.shards.clear_holdoff(&prefix);
+        let status = appended_once_served(addr, "/v1/stream/l8-fence").await;
+        assert_eq!(status, 204, "the shard reopened");
+        let replacement = engine_of(&prefix).expect("the shard reopened");
+        assert!(!Arc::ptr_eq(&found, &replacement));
+        crate::failpoints::release_repair_before_retire(&prefix);
+        replacement
+    };
+    let both = async { tokio::join!(hreq(addr, "POST", &route, &[], b""), swap) };
+    let ((st, _, body), replacement) =
+        tokio::time::timeout(std::time::Duration::from_secs(30), both)
+            .await
+            .expect("the route answers");
+    assert_eq!(st, 202, "{}", String::from_utf8_lossy(&body));
+    let serving = engine_of(&prefix).expect("the replacement still serves");
+    assert!(Arc::ptr_eq(&serving, &replacement));
+    engine_shutdown(&state).await;
+}
+
+/// The arrivals of `name` at `fp` once one has arrived, or after 10 s.
+async fn parked_at(fp: crate::failpoints::Fp, name: &str) -> usize {
+    for _ in 0..200 {
+        if crate::failpoints::parked(fp, name) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    crate::failpoints::parked(fp, name)
+}
+
+/// Appends a row to the stream at `path` until its shard serves it (204), for up to 10 s; the last
+/// status.
+async fn appended_once_served(addr: Addr, path: &str) -> u16 {
+    let mut status = 0;
+    for _ in 0..100 {
+        status = hreq(addr, "POST", path, &[JSON], ROW).await.0;
+        if status == 204 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    status
+}

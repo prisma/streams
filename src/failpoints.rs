@@ -73,10 +73,12 @@ pub(crate) enum Fp {
     SseBeforeSend,
     FeedAfterPermitRelease,
     SseBodyBeforeYield,
+    // Operator routes.
+    RepairBeforeRetire,
 }
 
 impl Fp {
-    pub(crate) const ALL: [Fp; 27] = [
+    pub(crate) const ALL: [Fp; 28] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -104,6 +106,7 @@ impl Fp {
         Fp::SseBeforeSend,
         Fp::FeedAfterPermitRelease,
         Fp::SseBodyBeforeYield,
+        Fp::RepairBeforeRetire,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -185,6 +188,12 @@ impl Fp {
                  durable, BEFORE the SEALED publication CAS — exactly \
                  the state a crash between the close loop and step 3 \
                  leaves; a plain retry must resume and complete"
+            }
+            Fp::RepairBeforeRetire => {
+                "operator repair-indexes: after the repair marker is \
+                 durable through the found engine, BEFORE the retire — \
+                 the window in which a replacement incarnation can be \
+                 installed (edge #245 F1); keyed by the URL's prefix"
             }
             _ => return None,
         })
@@ -487,6 +496,16 @@ pub(crate) fn release_close_before_mark(name: &str) {
 }
 pub(crate) async fn pause_close_before_mark(name: &str) {
     pause(Fp::CloseBeforeMark, name).await;
+}
+
+pub(crate) fn park_repair_before_retire(prefix: &str) {
+    arm(Fp::RepairBeforeRetire, prefix);
+}
+pub(crate) fn release_repair_before_retire(prefix: &str) {
+    release(Fp::RepairBeforeRetire, prefix);
+}
+pub(crate) async fn pause_repair_before_retire(prefix: &str) {
+    pause(Fp::RepairBeforeRetire, prefix).await;
 }
 
 pub(crate) fn park_product_seal_before_claim(name: &str) {
