@@ -40,7 +40,8 @@ fn a_split_waiting_for_an_instance_wants_one_more_and_names_the_ceiling() {
     };
     assert_eq!(
         n(&Demand::default().plan(&one, &thresholds(), Instant::now())),
-        (2, 2, 1)
+        (2, 2, 0),
+        "an ask grows the count and is not split demand"
     );
     let two = Loads {
         instance_full: Some(2),
@@ -97,5 +98,6 @@ fn a_split_waiting_for_the_fleet_to_settle_keeps_the_count_and_asks_for_nothing(
             "{shards} shards"
         );
     }
-    assert_eq!(plan("instance_full", 1), (2, 2, 1));
+    assert_eq!(plan("instance_full", 1), (2, 2, 0));
+    assert_eq!(plan("instance_full", 3), (2, 2, 0));
 }

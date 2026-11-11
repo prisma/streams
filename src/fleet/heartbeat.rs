@@ -121,9 +121,11 @@ pub(crate) struct Heartbeat {
     pub store_read_p50_ms: u64,
     #[serde(default)]
     pub store_read_p99_ms: u64,
-    /// How far the publisher's last desired count ran past the topology's
+    /// How far the publisher's last load demand ran past the topology's
     /// shards: the split demand shard split (item 7) reads; 0 while the
-    /// shards cover the fleet.
+    /// shards cover the fleet. Its utilization counts only members at 5 rps
+    /// or more, and a split's wait for an instance is not part of it (#243 as
+    /// amended).
     #[serde(default)]
     pub split_demand: u64,
     /// Why the topology policy's split waits (`instance_full`: no room for both children

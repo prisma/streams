@@ -2797,6 +2797,19 @@ wait's tails. Three readers still answer the old way:
 S5 (edge change #261, ratified with amendments by Fable 5.1 on 2026-11-10,
 EDGE-261-RATIFICATION.md) left these:
 
+- **A merge does not undo what the fleet axis asked for** (first of the scaling
+  items; DESIGN-DECISION-convergence-cpu-loop-2026-11-11.md "Follow-up", decided
+  in shape, after push 4, its own commit and its own #261 amendment). A cell
+  needing `shards + 1` instances for CPU while its leaves are append-quiet
+  splits on the fleet axis, its quiet children merge after the reversal age, and
+  the same demand splits again: at defaults one split and one merge per 12 h
+  10 min. The planner publishes `shards_wanted` through `Standing` only (the
+  split demand's maximum recomputed at `scale_in_util`, within `at.max`, before
+  the shards clamp); the policy's `View` carries it, and a pair is quiet only
+  while `shards_wanted < view.leaves.len()`. The two divisors are the
+  hysteresis. Red: a policy unit test (a leaf-quiet pair with
+  `shards_wanted == leaves` never merges, with `leaves - 1` merges after the
+  sustain) and a planner pin.
 - **Q5's 30 s shard-log poll is blocked by flush liveness.** The shard logs'
   manifest poll (`MANIFEST_POLL_MS`, read only by
   `config::validation::shard_settings`) is also how the memtable flusher

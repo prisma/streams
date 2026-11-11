@@ -176,6 +176,9 @@ pub(super) const RSS_HOT_SHARE: f64 = 0.8;
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Loads {
     pub(super) cores_used: f64,
+    /// The cores of the members doing real work (≥ 5 rps): what the split demand's utilization
+    /// reads (#243 as amended), so CPU no request explains asks for no split.
+    pub(super) loaded_cores: f64,
     pub(super) inflight: f64,
     pub(super) rps: f64,
     pub(super) live: u64,
@@ -229,6 +232,7 @@ impl Loads {
             let store = beat.store_read_p50_ms as f64;
             self.max_loaded_p50 = self.max_loaded_p50.max(beat.ack_p50_ms).max(store);
             self.max_loaded_cpu = self.max_loaded_cpu.max(beat.cpu_pct);
+            self.loaded_cores += beat.cpu_pct / 100.0;
         }
     }
 }
@@ -285,7 +289,8 @@ pub(super) struct Need {
     pub(super) shrink: u64,
     /// The demand, within `FLEET_MAX`, past the shards: published on the
     /// heartbeat for shard split (item 7) to read; 0 while the shards cover
-    /// it.
+    /// it. Its utilization counts loaded members only, and a split's wait for
+    /// an instance is not part of it (#243 as amended).
     pub(super) split_demand: u64,
     /// Each dimension's reading and what it wanted.
     pub(super) reason: String,
@@ -317,7 +322,8 @@ impl Demand {
     ///
     /// The count is clamped to the topology's shards and to the fleet's
     /// maximum, and what the demand runs past the shards is the split
-    /// demand. The shrink target uses the conservative divisor, and keeps
+    /// demand, whose utilization reads only loaded members' cores and which
+    /// leaves out a split's wait for an instance (#243 as amended). The shrink target uses the conservative divisor, and keeps
     /// the sustained dimensions, so a sustained refusal, RSS or latency
     /// breach blocks a shrink; edge congestion blocks it outright, since rps
     /// falls while clients queue at the edge, and so does a member's live
@@ -386,7 +392,15 @@ impl Demand {
                 .max(waiting)
                 .clamp(1, at.max)
         };
-        let split_demand = wanted.min(at.max).saturating_sub(shards);
+        // The split demand counts load (#243 as amended): CPU only from loaded members, and not
+        // a split's own wait for an instance, which would otherwise keep that ask alive.
+        let split_wanted = ceil_count(loads.loaded_cores / at.target_util)
+            .max(need_slots)
+            .max(need_latency)
+            .max(need_hot)
+            .max(need_edge)
+            .max(need_occupancy);
+        let split_demand = split_wanted.min(at.max).saturating_sub(shards);
         let l = loads;
         let mut reason = format!(
             "cores_used={:.2} util->{need_util} inflight={:.0} slots->{need_slots} hot_cpu={:.0}% refusal_beats={} rss_max={:.0}MB ({need_hot}) ack_p50={:.0}ms ({need_latency}) edge_p50={:.0}ms ({need_edge}) cached={} projects={} ({need_occupancy}) shards={} split->{split_demand} rps={:.0} live={}",
@@ -661,6 +675,9 @@ mod tests {
 mod waiting_tests;
 
 #[cfg(test)]
+mod split_demand_tests;
+
+#[cfg(test)]
 mod demand_tests {
     use super::{Demand, Loads, Need, REFUSAL_BEATS_HOT, Thresholds};
     use std::time::{Duration, Instant};
@@ -688,6 +705,7 @@ mod demand_tests {
     pub(super) fn quiet(shards: u64) -> Loads {
         Loads {
             cores_used: 1.2,
+            loaded_cores: 1.2,
             rps: 400.0,
             live: 4,
             max_loaded_cpu: 30.0,
@@ -931,6 +949,7 @@ mod demand_tests {
         let now = Instant::now();
         let busy = Loads {
             cores_used: 6.0,
+            loaded_cores: 6.0,
             ..quiet(4)
         };
         assert_eq!(
