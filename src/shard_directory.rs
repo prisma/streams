@@ -433,9 +433,19 @@ impl ShardDirectory {
     }
 
     /// Open (or join the single-flight open of) `prefix` with an explicit
-    /// patience — the fleet's eager move-in and the sweep's discovery,
-    /// which honor the same holdoffs as the request path.
+    /// patience — the fleet's eager move-in, the sweep's discovery and the
+    /// beat's open of a live intent's source, which honor the same holdoffs
+    /// as the request path. A prefix that is no leaf of the installed
+    /// topology is never opened here (#251 amendment R3-d): it answers
+    /// `not_a_leaf` at once, starting no open, arming no holdoff and taking no
+    /// strike, and opens on a later call once an install makes it a leaf.
     pub(crate) async fn open_or_wait(&self, prefix: &str, wait: Duration) -> OpenOutcome {
+        if !self.prefixes().shards.leaves.contains_key(prefix) {
+            return OpenOutcome::Wait {
+                code: "not_a_leaf",
+                retry_after_secs: 1,
+            };
+        }
         self.inner.gate.get_or_open(prefix, wait).await
     }
 
@@ -723,6 +733,49 @@ mod directory_tests {
         let want = [("10", "shards/10-2"), ("0", "shards/0")]
             .map(|(p, path)| (p.to_string(), path.to_string()));
         assert_eq!(handed, want);
+    }
+
+    /// **The by-prefix door opens only leaves** (#251 amendment R3-d): over the leaves `0` and `1`,
+    /// `open_or_wait("10")` answers `Wait { not_a_leaf, 1 }`; no open starts (the opener, which
+    /// creates the log, is never called), nothing is published, and no open is counted.
+    #[tokio::test]
+    async fn a_prefix_that_is_no_leaf_is_never_opened() {
+        let topology = crate::config::validation::InitialShards::new(2)
+            .unwrap()
+            .topology(1 << 20);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let opener: crate::sharddir::OpenAt = Box::new(
+            move |_prefix: String, _path: String, _inc: EngineIncarnation| {
+                c.fetch_add(1, Ordering::Relaxed);
+                Box::pin(std::future::ready(Err(anyhow::anyhow!("must not open"))))
+            },
+        );
+        let dir = ShardDirectory::new_at(
+            topology.shards,
+            OwnershipService::new(""),
+            OpenTiming {
+                open_deadline: Duration::from_secs(60),
+                open_wait: Duration::from_millis(500),
+            },
+            |_notifier| opener,
+        );
+        let outcome = dir.open_or_wait("10", Duration::from_secs(1)).await;
+        let OpenOutcome::Wait {
+            code,
+            retry_after_secs,
+        } = outcome
+        else {
+            panic!("a prefix that is no leaf must wait, not open or fail");
+        };
+        assert_eq!((code, retry_after_secs), ("not_a_leaf", 1));
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "the opener is never called"
+        );
+        assert_eq!(dir.open_count(), 0);
+        assert_eq!(dir.open_stats()["started"], 0, "{}", dir.open_stats());
     }
 
     /// A shard the ring assigns elsewhere is refused with the owner's

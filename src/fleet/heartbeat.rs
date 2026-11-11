@@ -305,16 +305,13 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 /// fence holds while the intent's lease is fresh, so nothing is decided under a live actor, whose
 /// sources are open on its own instance anyway; once the lease lapsed it claims the intent and
 /// rolls it back or forward. A prefix that is no leaf here (a published split's parent) is left
-/// to the intent's reclaim.
+/// to the intent's reclaim: the directory opens only leaves (`ShardDirectory::open_or_wait`).
 async fn open_unopened_sources(state: &AppState, live: Option<&crate::topology::intent::Live>) {
     let Some(live) = live.filter(|live| live.op_id != crate::topology::intent::UNREADABLE) else {
         return;
     };
-    let leaves = state.shards.prefixes();
     for prefix in &live.sources {
-        let unopened = leaves.shards.leaves.contains_key(prefix)
-            && state.ownership.is_mine(prefix)
-            && !state.shards.is_open(prefix);
+        let unopened = state.ownership.is_mine(prefix) && !state.shards.is_open(prefix);
         if unopened {
             let outcome = state
                 .shards
