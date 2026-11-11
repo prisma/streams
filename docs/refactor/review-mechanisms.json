@@ -1034,8 +1034,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "7a349763f34eaaf750647c546ddcbabcbbe220ce7f2cd886f5c929ffa24eb2d9",
-      "after_sha256": "2e2425c0a6eeec581bf5d4f06fea94923d93650ccd37f36b24287ea4aaf57b6e",
-      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. Item 32 adds a no-op command-line edit (|_| {}); ordinary rigs keep the hermetic fixture CLI."
+      "after_sha256": "cb2d919ea290b09c986179b6ed49a282b221e78b3c7f1f68821c3bb7529d9b51",
+      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling. Admission fixtures now provide optional typed admission limits through a hermetic configuration factory so they can accumulate and drain real acknowledged backlog; the default remains None and ordinary rig defaults are unchanged. Item 32 adds a no-op command-line edit (|_| {}); ordinary rigs keep the hermetic fixture CLI. Push 4 (DESIGN-DECISION-c3-incomplete-rig-2026-11-11, Fable 5.2 under the owner's delegation): the default prefixes become [\"\"], one shard covering every hash; the former [\"00\"] was an incomplete set whose hashes outside 00 fell back to the non-leaf \"\" and opened a log no topology names."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",

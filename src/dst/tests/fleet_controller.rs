@@ -541,6 +541,7 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
             instance: Some("streams-1".into()),
             // No seal retires the faked byte below and refreshes progress.
             seal: Some(cold_sealer),
+            prefixes: super::fixture_http::two_bit(),
             ..Default::default()
         },
     )

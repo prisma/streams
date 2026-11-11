@@ -311,7 +311,7 @@ struct SplitAdmission {
 }
 async fn split_admission() -> SplitAdmission {
     let (state, addr) = backlog_rig(HttpRigOptions {
-        prefixes: vec!["00".into(), "01".into(), "02".into(), "03".into()],
+        prefixes: vec!["00".into(), "01".into(), "10".into(), "11".into()],
         ..Default::default()
     })
     .await;

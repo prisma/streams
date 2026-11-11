@@ -385,10 +385,7 @@ async fn tombstone_walk_closes_clean_terminal_rows_of_every_project() {
         let desc = state.registry.get(&sref).await.unwrap().unwrap();
         rows.push((sref, desc.resolve_segment("").identity));
     }
-    let engine = state
-        .shards
-        .open("00")
-        .expect("the rig's one shard is open");
+    let engine = state.shards.open("").expect("the rig's one shard is open");
     // Ack every row CLEAN while its stream is alive: from here on the
     // dirty-path reconciler never revisits them, only the walk can.
     let ids: Vec<[u8; 16]> = rows.iter().map(|(_, identity)| *identity).collect();
@@ -867,7 +864,7 @@ async fn billing_terminal_shutdown_waits_for_a_late_open() {
     let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
     assert!(report.aborted.is_empty());
     assert!(matches!(
-        rig.state.shards.open_or_wait("00", Duration::ZERO).await,
+        rig.state.shards.open_or_wait("", Duration::ZERO).await,
         crate::sharddir::OpenOutcome::Wait { .. }
     ));
     assert_eq!(rig.state.shards.open_count(), 0);
@@ -886,7 +883,7 @@ async fn billing_terminal_shutdown_waits_for_a_late_open() {
     shutdown.await;
     assert_eq!(rig.state.shards.open_count(), 0);
     assert!(matches!(
-        rig.state.shards.open_or_wait("00", Duration::ZERO).await,
+        rig.state.shards.open_or_wait("", Duration::ZERO).await,
         crate::sharddir::OpenOutcome::Wait {
             code: "shard_closing",
             ..

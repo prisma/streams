@@ -2,7 +2,7 @@
 
 use super::fixture_auth::{FLEET_KID, sr_rig, sr2_workload_jwt, sr2_workload_jwt_exp};
 use super::fixture_failpoints::gap_lock;
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build, two_bit};
 use super::fixture_livefeed::{hub_sse_collect, sse_head};
 use super::fixture_requests::{PRISMA_KEY, RIG_KEY_B64, hreq};
 use super::fixture_runtime::RigRuntime;
@@ -525,6 +525,7 @@ async fn jwt_only_fleet(
         HttpRigOptions {
             instance: Some("rig-a".to_string()),
             auth_service: Some(svc.clone()),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )
@@ -537,6 +538,7 @@ async fn jwt_only_fleet(
             instance: Some("rig-b".to_string()),
             auth_service: Some(svc),
             fleet_auth: Some((None, Some(src))),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )
@@ -613,6 +615,7 @@ async fn telemetry_append_receiver_reports_ownership_not_absence() {
         RigRuntime::first(),
         HttpRigOptions {
             instance: Some("rig-a".to_string()),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )
@@ -689,6 +692,7 @@ async fn system_append_without_a_peer_reports_the_typed_refusal() {
         RigRuntime::first(),
         HttpRigOptions {
             instance: Some("rig-b".to_string()),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )

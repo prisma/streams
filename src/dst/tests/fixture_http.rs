@@ -49,7 +49,7 @@ impl Default for HttpRigOptions {
     fn default() -> Self {
         Self {
             fleet_store: None,
-            prefixes: vec!["00".to_string()],
+            prefixes: vec![String::new()],
             shard: crate::shard::ShardConfig::default(),
             per_segment_slots: 0,
             max_request_body_bytes: None,
@@ -201,6 +201,26 @@ pub(super) async fn http_rig_named_at(
     )
     .await
     .parts()
+}
+
+/// The four 2-bit prefixes, the complete set `InitialShards::new(4)` boots a cell with.
+pub(super) fn two_bit() -> Vec<String> {
+    ["00", "01", "10", "11"].map(String::from).to_vec()
+}
+
+/// A rig over [`two_bit`] under `runtime`, its instance named `instance` when one is given: the
+/// split and merge DSTs' cell, whose leaf `00` has a sibling and every hash a leaf.
+pub(super) async fn http_rig_two_bit(
+    store: Arc<dyn ObjectStore>,
+    instance: Option<&str>,
+    runtime: RigRuntime,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    let options = HttpRigOptions {
+        prefixes: two_bit(),
+        instance: instance.map(str::to_string),
+        ..Default::default()
+    };
+    http_rig_build(store, runtime, options).await.parts()
 }
 
 /// A rig whose sealers never seal (see [`cold_sealer`]).

@@ -207,7 +207,7 @@ impl CellSpec {
             quotas: |_| ProjectQuotas::default(),
             cli: |_| {},
             shard: crate::shard::ShardConfig::default(),
-            prefixes: vec!["00".to_string()],
+            prefixes: vec![String::new()],
             admission: None,
             bounds: SharedBounds::default(),
             store: mem(),

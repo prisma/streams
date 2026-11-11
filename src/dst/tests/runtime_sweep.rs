@@ -1,7 +1,7 @@
 //! Runtime sweep.
 
 use super::fixture_failpoints::sweep_lock;
-use super::fixture_http::http_rig_cold_seal;
+use super::fixture_http::{http_rig_cold_seal, two_bit};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&st
 async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let (state, addr) = http_rig_cold_seal(store, vec!["00".into()]).await;
+    let (state, addr) = http_rig_cold_seal(store, two_bit()).await;
     let ct = [("content-type", "application/json")];
     // Layout 4: routes are project-qualified, so the name that lands
     // in the pinned "00" shard is found by probing, not hardcoded.

@@ -6,7 +6,7 @@
 //! for the object sum to the parent's.
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig_at};
+use super::fixture_http::{engine_shutdown, http_rig_two_bit};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use crate::spill::object::ObjectId;
@@ -83,7 +83,7 @@ async fn cell_at(
     store: Arc<dyn object_store::ObjectStore>,
     runtime: super::fixture_runtime::RigRuntime,
 ) -> Cell {
-    let (state, addr) = http_rig_at(store.clone(), runtime).await;
+    let (state, addr) = http_rig_two_bit(store.clone(), None, runtime).await;
     // The cell's stored topology, as boot leaves it: the rig's own.
     let topology = crate::topology::model::Topology {
         version: 1,
@@ -801,7 +801,7 @@ async fn a_split_that_would_fill_its_instance_is_refused() {
 /// override past the 600 s move cooldown too, the fleet no longer refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_waits_for_the_fleet_to_settle() {
-    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, http_rig_build, two_bit};
     let fleet = mem();
     let rig = http_rig_build(
         mem(),
@@ -809,6 +809,7 @@ async fn a_split_waits_for_the_fleet_to_settle() {
         HttpRigOptions {
             fleet_store: Some(fleet.clone()),
             instance: Some("streams-1".into()),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )

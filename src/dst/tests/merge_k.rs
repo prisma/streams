@@ -7,7 +7,7 @@
 //! it holds before it becomes a leaf (L5).
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{engine_shutdown, http_rig, http_rig_named, http_rig_named_at};
+use super::fixture_http::{engine_shutdown, http_rig_two_bit};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -66,10 +66,7 @@ pub(super) async fn rig() -> Rig {
 /// `rig`, its instance named `instance` (so the ring's ownership is real) when one is given.
 pub(super) async fn rig_named(instance: Option<&str>) -> Rig {
     let store = mem();
-    let (state, addr) = match instance {
-        Some(name) => http_rig_named(store.clone(), name).await,
-        None => http_rig(store.clone()).await,
-    };
+    let (state, addr) = http_rig_two_bit(store.clone(), instance, RigRuntime::first()).await;
     let topology = crate::topology::model::Topology {
         version: 1,
         shards: state.shards.prefixes().shards.clone(),
@@ -421,7 +418,7 @@ async fn a_merge_that_would_fill_its_instance_is_refused() {
 /// same; with the override past the 600 s move cooldown too, the merge starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_waits_for_the_fleet_to_settle() {
-    use super::fixture_http::{HttpRigOptions, http_rig_build};
+    use super::fixture_http::{HttpRigOptions, http_rig_build, two_bit};
     let fleet = mem();
     let rig = http_rig_build(
         mem(),
@@ -429,6 +426,7 @@ async fn a_merge_waits_for_the_fleet_to_settle() {
         HttpRigOptions {
             fleet_store: Some(fleet.clone()),
             instance: Some("streams-1".into()),
+            prefixes: two_bit(),
             ..Default::default()
         },
     )
@@ -472,7 +470,7 @@ async fn a_merge_waits_for_the_fleet_to_settle() {
 /// `not_ring_owner {owner: "inst-b"}`; nothing is merged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_merge_of_halves_another_instance_holds_is_refused() {
-    let (state, addr) = http_rig_named(mem(), "inst-a").await;
+    let (state, addr) = http_rig_two_bit(mem(), Some("inst-a"), RigRuntime::first()).await;
     store_topology(&state).await;
     let parent = state.engine_for_quiet(&[0; 16]).await.unwrap();
     let version = split_00(&state, &parent).await;
@@ -656,7 +654,7 @@ async fn gone(store: &dyn object_store::ObjectStore, path: &str) -> bool {
 async fn a_lapsed_merge_is_rolled_back_by_a_sources_opener_that_fences_both_sources() {
     use crate::topology::intent::{self, Intent, State};
     let store = mem();
-    let (state, addr) = http_rig(store.clone()).await;
+    let (state, addr) = http_rig_two_bit(store.clone(), None, RigRuntime::first()).await;
     let topology = crate::topology::model::Topology {
         version: 1,
         shards: state.shards.prefixes().shards.clone(),
@@ -787,9 +785,9 @@ pub(super) async fn append_until_served(
 /// reopens it.
 pub(super) async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr, u64) {
     let shared: Arc<dyn object_store::ObjectStore> = store.clone();
-    let (state, addr) = http_rig_named(shared.clone(), "inst-a").await;
+    let (state, addr) = http_rig_two_bit(shared.clone(), Some("inst-a"), RigRuntime::first()).await;
     let (state_b, addr_b) =
-        http_rig_named_at(shared.clone(), "inst-b", RigRuntime::incarnation(1)).await;
+        http_rig_two_bit(shared.clone(), Some("inst-b"), RigRuntime::incarnation(1)).await;
     let active = vec!["inst-a".to_string(), "inst-b".to_string()];
     let owners = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
         pairs
@@ -800,7 +798,16 @@ pub(super) async fn two_instances(store: &Arc<FaultStore>) -> (Rig, State, Addr,
     for s in [&state, &state_b] {
         s.ownership.set_view(
             active.clone(),
-            owners(&[("00", "inst-a"), ("000", "inst-a"), ("001", "inst-a")]),
+            // The cell's other leaves are inst-a's too, so a probe stream that lands outside `00`
+            // is created where it is sent (the rig is the four 2-bit prefixes).
+            owners(&[
+                ("00", "inst-a"),
+                ("000", "inst-a"),
+                ("001", "inst-a"),
+                ("01", "inst-a"),
+                ("10", "inst-a"),
+                ("11", "inst-a"),
+            ]),
         );
     }
     let topology = crate::topology::model::Topology {

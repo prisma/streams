@@ -78,7 +78,7 @@ async fn rig(label: &str) -> (Rig, String) {
     fault.hold_class_under(
         StoreOp::Put,
         ObjClass::Other,
-        "shards/00/compactions",
+        "shards/root/compactions",
         1 << 20,
     );
     let rig = Rig {
@@ -235,7 +235,7 @@ async fn operator_views_name_the_shed(r: &Rig, sheds: u64) {
             &l0["shedding"],
             &l0["sheds"]
         ),
-        (&json!("00"), &json!(false), &json!(true), &json!(sheds)),
+        (&json!(""), &json!(false), &json!(true), &json!(sheds)),
         "{load}"
     );
     let marks = (&l0["high"], &l0["low"], &l0["line"]);

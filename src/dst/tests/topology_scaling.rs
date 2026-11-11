@@ -265,7 +265,7 @@ async fn split_children_land_on_distinct_engines() {
     let store = mem();
     let (state, addr) = http_rig_opts(
         store,
-        vec!["00".into(), "01".into(), "02".into(), "03".into()],
+        vec!["00".into(), "01".into(), "10".into(), "11".into()],
         crate::shard::ShardConfig::default(),
     )
     .await;
@@ -404,7 +404,7 @@ async fn post_split_throughput_scales() {
     // on real hardware.
     let (state, addr) = http_rig_full(
         store,
-        vec!["00".into(), "01".into(), "02".into(), "03".into()],
+        vec!["00".into(), "01".into(), "10".into(), "11".into()],
         crate::shard::ShardConfig {
             wal_group_commit: false,
             ..Default::default()
@@ -537,7 +537,7 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
     let store = mem();
     let (state, addr) = http_rig_opts(
         store,
-        vec!["00".into(), "01".into()],
+        vec!["00".into(), "01".into(), "1".into()],
         crate::shard::ShardConfig::default(),
     )
     .await;
@@ -741,7 +741,7 @@ async fn keyed_append(addr: std::net::SocketAddr, name: &str, key: &str, n: i64)
 async fn keyed_collection(name: &str) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let (state, addr) = http_rig_opts(
         mem(),
-        vec!["00".into(), "01".into()],
+        vec!["00".into(), "01".into(), "1".into()],
         crate::shard::ShardConfig::default(),
     )
     .await;

@@ -449,7 +449,7 @@ async fn parked_pulls_never_reach_the_heartbeat() {
     assert!(matches!(
         rig.state
             .shards
-            .open_or_wait("00", Duration::from_secs(5))
+            .open_or_wait("", Duration::from_secs(5))
             .await,
         crate::sharddir::OpenOutcome::Ready(_)
     ));
