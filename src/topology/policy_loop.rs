@@ -306,6 +306,7 @@ async fn intent_live(store: &dyn object_store::ObjectStore) -> bool {
 /// a restart only delays a merge.
 #[derive(Debug, Default)]
 pub(crate) struct Seen {
+    // mt-lint: allow(name-keyed-map): shard prefix (a leaf) -> when it first appeared
     born: BTreeMap<String, i64>,
     version: Option<u64>,
     changed_ms: Option<i64>,

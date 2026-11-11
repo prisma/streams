@@ -39,8 +39,10 @@ pub(crate) struct ShardLoad {
 /// shard's appends its busiest stream carried since the beat before (rev 4 §4.3's hot entity).
 #[derive(Debug, Default)]
 pub(super) struct TopStreams {
+    // mt-lint: allow(name-keyed-map): shard prefix -> its resident streams' tails, not stream identity
     tails: BTreeMap<String, HashMap<[u8; 16], u64>>,
     /// By shard: the busiest stream's growth over the last beat, and every stream's.
+    // mt-lint: allow(name-keyed-map): shard prefix -> its busiest stream's share, not stream identity
     shares: BTreeMap<String, (u64, u64)>,
 }
 

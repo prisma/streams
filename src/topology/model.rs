@@ -55,6 +55,7 @@ pub(crate) struct ShardSet {
     /// covering everything.
     pub shards: Vec<String>,
     pub homes: BTreeMap<u32, Home>,
+    // mt-lint: allow(name-keyed-map): shard prefix (a leaf of the topology) -> its home
     pub leaves: BTreeMap<String, u32>,
     pub next_home: u32,
 }
@@ -153,6 +154,7 @@ struct Unchecked {
     version: u64,
     shards: Vec<String>,
     homes: BTreeMap<u32, Home>,
+    // mt-lint: allow(name-keyed-map): shard prefix (a leaf of the topology) -> its home
     leaves: BTreeMap<String, u32>,
     next_home: u32,
     #[serde(default)]

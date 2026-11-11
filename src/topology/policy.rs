@@ -175,8 +175,10 @@ struct Doubling {
 /// What the policy carries between ticks.
 #[derive(Debug, Default)]
 pub(crate) struct Policy {
+    // mt-lint: allow(name-keyed-map): shard prefix (a leaf) -> its split sustain
     leaves: BTreeMap<String, Sustain>,
     /// Since when each sibling pair, by its parent's prefix, has been quiet on fresh beats.
+    // mt-lint: allow(name-keyed-map): shard prefix (a sibling pair's parent) -> quiet since
     quiet: BTreeMap<String, i64>,
     /// Since when every fresh fold has shown the fleet's demand past the shards: the cell's
     /// sustain, which no topology operation restarts.
