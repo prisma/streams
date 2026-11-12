@@ -23,6 +23,9 @@ pub(crate) mod colocate;
 /// This runtime's planned drain, run before a requested stop.
 pub(crate) mod drain;
 mod heartbeat;
+/// Tests: the beat's open of a live intent's sources, called directly (`fleet_topology`).
+#[cfg(test)]
+pub(crate) use heartbeat::open_unopened_sources;
 mod hysteresis;
 mod outbox;
 mod planning;

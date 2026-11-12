@@ -33,6 +33,28 @@
     "scenarios": []
   },
   {
+    "name": "a_beat_opens_a_live_intents_sources_only_once_a_ring_is_known",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d31f1475a18d430d491f030d6e60160c2e63a0d91086ddd38cd9f9d4ee09e589",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_beat_opens_no_live_intents_source_another_instance_owns",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f251729b4d547488dd00b6ce84ad4129a346d9ed9d6ec6f7d5e2d0929c145aae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_beats_refusals_add_the_trackers_to_admissions",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

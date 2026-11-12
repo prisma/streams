@@ -313,7 +313,17 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 /// sources are open on its own instance anyway; once the lease lapsed it claims the intent and
 /// rolls it back or forward. A prefix that is no leaf here (a published split's parent) is left
 /// to the intent's reclaim: the directory opens only leaves (`ShardDirectory::open_or_wait`).
-async fn open_unopened_sources(state: &AppState, live: Option<&crate::topology::intent::Live>) {
+/// Nothing opens before the fleet tick published a ring: in fleet mode an empty ring means "not
+/// known yet", while `is_mine` counts every shard this instance's, so the first beat would fence
+/// another instance's shard and could decide its intent (DESIGN-DECISION-c3-incomplete-rig
+/// Addendum 9). The next beat after the first view opens what this instance owns.
+pub(crate) async fn open_unopened_sources(
+    state: &AppState,
+    live: Option<&crate::topology::intent::Live>,
+) {
+    if state.ownership.ring_active().is_empty() {
+        return;
+    }
     let Some(live) = live.filter(|live| live.op_id != crate::topology::intent::UNREADABLE) else {
         return;
     };
