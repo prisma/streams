@@ -156,3 +156,30 @@ async fn the_watch_reports_the_live_intents_operation_and_none_once_it_ends() {
     store.put(&path, raw.into()).await.unwrap();
     assert_eq!(op(watch.live(&*store).await).as_deref(), Some("op-x"));
 }
+
+/// Each refusal of an intent write reads as what happened: the live intent that holds the cell,
+/// a CAS lost to another write, or the store's failure.
+#[test]
+fn an_intent_refusal_reads_as_its_cause() {
+    let live = Intent {
+        kind: "merge".to_string(),
+        op_id: "op-m".to_string(),
+        sources: Vec::new(),
+        children: Vec::new(),
+        version_seen: 1,
+        state: State::Preparing,
+        lease_owner: "inst-a".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    assert_eq!(
+        IntentError::Busy(Box::new(live)).to_string(),
+        "a live merge intent op-m holds the cell"
+    );
+    assert_eq!(
+        IntentError::Lost.to_string(),
+        "the intent changed under the write"
+    );
+}
