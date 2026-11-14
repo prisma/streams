@@ -679,11 +679,14 @@ impl ShardEngine {
         if garbage > 0 {
             let collected = self.collect_counted().await;
             let released = self.log_releases().await;
-            match (collected, released) {
-                (Ok((_, 0)), Ok((_, 0))) => lower(&gc.garbage_signal, garbage),
-                (Err(e), _) => tracing::warn!(shard = %self.prefix, "garbage pass stopped: {e}"),
-                (_, Err(e)) => tracing::warn!(shard = %self.prefix, "release pass stopped: {e}"),
-                _ => {}
+            if let (Ok((_, 0)), Ok((_, 0))) = (&collected, &released) {
+                lower(&gc.garbage_signal, garbage);
+            }
+            if let Err(e) = collected {
+                tracing::warn!(shard = %self.prefix, "garbage pass stopped: {e}");
+            }
+            if let Err(e) = released {
+                tracing::warn!(shard = %self.prefix, "release pass stopped: {e}");
             }
         }
         if let Err(e) = self.clean_pass().await {
