@@ -327,6 +327,21 @@ mod tests {
             .topology(1 << 20)
     }
 
+    /// A split's children must be homes a reservation took and nothing holds: a home at
+    /// `next_home`, reserved by no one, is refused even beside one that was reserved.
+    #[test]
+    fn a_split_onto_a_home_at_next_home_is_refused() {
+        let (reserved, home) = initial(2).reserve_home();
+        let unreserved = reserved.shards.next_home;
+        assert_eq!(unreserved, home + 1);
+        assert!(
+            reserved.split("1", [home, unreserved], "op").is_err(),
+            "{unreserved} was never reserved"
+        );
+        let (twice, homes) = initial(2).reserve_homes();
+        assert!(twice.split("1", homes, "op").is_ok());
+    }
+
     /// A new cell's homes are its prefixes read as numbers at `shards/<prefix>`, each prefix
     /// its own leaf, and the next home is past them: the homes S3a's static layout already
     /// names its objects by (`keyspace::home_of`).
