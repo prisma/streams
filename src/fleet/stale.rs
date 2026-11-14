@@ -20,14 +20,9 @@ pub(crate) async fn pruned(mut overrides: Overrides, store: &dyn ObjectStore) ->
     let Ok((stored, _)) = crate::topology::store::read(store).await else {
         return overrides;
     };
-    let before = overrides.entries.len();
     overrides
         .entries
         .retain(|prefix, _| stored.shards.leaves.contains_key(prefix));
-    let dropped = before - overrides.entries.len();
-    if dropped > 0 {
-        tracing::info!(dropped, "overrides: dropped entries that name no leaf");
-    }
     overrides
 }
 
@@ -52,9 +47,11 @@ async fn write_pruned(
 ) -> bool {
     let before = overrides.entries.len();
     let next = pruned(overrides, store).await;
-    if next.entries.len() == before {
+    let dropped = before - next.entries.len();
+    if dropped == 0 {
         return false;
     }
+    tracing::info!(dropped, "overrides: dropped entries that name no leaf");
     let Ok(body) = serde_json::to_vec(&next) else {
         return false;
     };
