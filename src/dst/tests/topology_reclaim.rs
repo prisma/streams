@@ -176,3 +176,40 @@ async fn a_merge_whose_actor_died_after_its_publish_holds_nothing() {
     assert_eq!(ended(&*store).await.op_id, "op-s2");
     engine_shutdown(&state).await;
 }
+
+/// **The fleet's intent watch reads the intent's body again only once its ETag moved.** Two reads
+/// of an unchanged live intent both report it live; the second read's GET of the intent is answered
+/// 304 Not Modified (the watch sends the ETag it read), so a beat does not fetch the body it
+/// already has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_intent_watch_reads_the_body_again_only_once_its_etag_moved() {
+    let trace = crate::dst::trace_store::TraceStore::verbatim(mem());
+    let live = intent::Intent {
+        kind: "split".to_string(),
+        op_id: "op-w".to_string(),
+        sources: vec![("1".to_string(), 1)],
+        children: vec![2, 3],
+        version_seen: 1,
+        state: State::Preparing,
+        lease_owner: "inst-a".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    };
+    intent::create(&*trace, &live).await.unwrap();
+    let mut watch = intent::Watch::default();
+    assert!(watch.live(&*trace).await.is_some(), "the first read");
+    trace.reset();
+    assert!(watch.live(&*trace).await.is_some(), "the second read");
+    let first_get = trace
+        .events()
+        .into_iter()
+        .find(|e| e.op == crate::dst::StoreOp::Get && e.path.ends_with("intent.json"))
+        .map(|e| e.outcome);
+    assert_eq!(
+        first_get,
+        Some(crate::dst::trace_store::TraceOutcome::NotModified),
+        "the second read's GET of the intent is a 304"
+    );
+}
