@@ -11,6 +11,10 @@ use super::merge_k::{Rig, State, halves_of_00, rig, split_00};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// How long a merge may take to reach its park: a merge refused before it never gets there, and
+/// the test then fails here instead of waiting for ever.
+const PARK_WAIT: Duration = Duration::from_secs(20);
+
 /// Pause the merge of `halves` at its park (the left half's gate), run `control` there, and let it
 /// go: the merge's result.
 pub(super) async fn merge_paused_at_park<F: std::future::Future<Output = ()>>(
@@ -32,7 +36,10 @@ pub(super) async fn merge_paused_at_park<F: std::future::Future<Output = ()>>(
         &*clock,
     );
     let controlled = async {
-        reached_rx.await.expect("the merge paused at its park");
+        tokio::time::timeout(PARK_WAIT, reached_rx)
+            .await
+            .expect("the merge reached its park")
+            .expect("the merge paused at its park");
         control().await;
         assert!(go_tx.send(()).is_ok(), "the merge waits for go");
     };
@@ -667,7 +674,10 @@ fn paused_merge<'a>(
             &*clock,
         );
         let watch = async {
-            reached_rx.await.expect("the merge paused at its park");
+            tokio::time::timeout(PARK_WAIT, reached_rx)
+                .await
+                .expect("the merge reached its park")
+                .expect("the merge paused at its park");
             notice.reach();
         };
         futures_util::future::join(merge, watch).await.0
