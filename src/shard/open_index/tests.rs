@@ -169,6 +169,19 @@ async fn a_log_at_an_operation_born_home_opens_only_with_its_identity_row() {
     }
 }
 
+/// A born home's path names its home only in decimal digits: `shards/<prefix>-<home>` with a sign
+/// (`+3`, which `u32::from_str` takes) or any other byte in the home names no home, as an empty
+/// home does; a well-formed one names it, the root's included.
+#[test]
+fn a_born_homes_path_names_its_home_only_in_digits() {
+    use crate::sharddir::home_of_db_path;
+    assert_eq!(home_of_db_path("shards/10-7"), Some(7));
+    assert_eq!(home_of_db_path("shards/root-12"), Some(12));
+    for path in ["shards/10-+3", "shards/10-3a", "shards/10-", "shards/10- 3"] {
+        assert_eq!(home_of_db_path(path), None, "{path}");
+    }
+}
+
 #[test]
 fn a_shards_home_is_its_prefix_read_as_a_number() {
     use crate::keyspace::home_of;
