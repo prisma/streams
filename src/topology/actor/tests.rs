@@ -64,3 +64,74 @@ async fn an_actor_past_its_lease_reclaims_its_own_intent_unless_a_claimant_took_
         ("opener:0@3", 3)
     );
 }
+
+/// The intent written behind the actor's back, its lease moved and `change` applied: what a
+/// write of the actor's own whose reply was lost, or a claimant's, leaves in the store.
+async fn written_behind(store: &dyn ObjectStore, change: fn(&mut Intent)) {
+    let current = intent::read(store).await.unwrap().unwrap();
+    let mut next = current.intent.clone();
+    next.lease_until_ms += 1;
+    change(&mut next);
+    intent::replace(store, &current, next).await.unwrap();
+}
+
+/// The writes a renewal or an end can lose its CAS to, and whether the actor adopts each: only
+/// its own (the same epoch, owner and operation, still live) is adopted; any other ends it.
+/// A write behind the actor: what it is, the change it makes, and whether the actor adopts it.
+type Behind = (&'static str, fn(&mut Intent), bool);
+
+const BEHIND: [Behind; 5] = [
+    ("its own write", |_| {}, true),
+    ("another epoch", |i| i.lease_epoch += 1, false),
+    (
+        "another owner",
+        |i| i.lease_owner = "opener:0@2".to_string(),
+        false,
+    ),
+    ("another operation", |i| i.op_id = "op-b".to_string(), false),
+    ("a terminal intent", |i| i.state = State::RolledBack, false),
+];
+
+/// **A renewal whose CAS lost to a write of the actor's own adopts it and the actor runs on; one
+/// lost to any other write ends the actor's ownership.** Each case writes behind a fresh actor,
+/// then renews once: the actor still owns its intent exactly when the write was its own, and
+/// then holds the stored intent.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_renewal_lost_to_its_own_write_adopts_it_and_lost_to_any_other_ends_ownership() {
+    for (what, change, adopted) in BEHIND {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let clock = ManualClock::at(1_700_000_000_000);
+        let held = intent::create(&*store, &split()).await.unwrap();
+        let actor = Actor::new(&*store, &clock, held);
+        written_behind(&*store, change).await;
+        actor.renew_once().await;
+        assert_eq!(actor.owned("the next step").is_ok(), adopted, "{what}");
+        let stored = intent::read(&*store).await.unwrap().unwrap();
+        assert_eq!(actor.held() == stored, adopted, "{what}: the held intent");
+    }
+}
+
+/// **An end whose CAS lost to a write of the actor's own retries over it and ends the intent; one
+/// lost to any other write leaves the stored intent as it is.**
+#[tokio::test(crate = "crate::test_rt")]
+async fn an_end_lost_to_its_own_write_ends_the_intent_and_lost_to_any_other_leaves_it() {
+    for (what, change, adopted) in BEHIND {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let clock = ManualClock::at(1_700_000_000_000);
+        let held = intent::create(&*store, &split()).await.unwrap();
+        let actor = Actor::new(&*store, &clock, held);
+        written_behind(&*store, change).await;
+        let behind = intent::read(&*store).await.unwrap().unwrap();
+        actor.end(State::RolledBack, "rolled_back").await;
+        let stored = intent::read(&*store).await.unwrap().unwrap();
+        if adopted {
+            assert_eq!(stored.intent.state, State::RolledBack, "{what}");
+            assert_eq!(
+                stored.intent.lease_until_ms, behind.intent.lease_until_ms,
+                "{what}"
+            );
+        } else {
+            assert_eq!(stored, behind, "{what}: left as it was");
+        }
+    }
+}
