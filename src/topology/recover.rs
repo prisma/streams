@@ -55,15 +55,15 @@ pub(crate) fn terminal(held: &Held, state: State, result: &str) -> Intent {
 /// child of `home` may hold objects under.
 pub(crate) fn lineage_of(shards: &ShardSet, home: u32) -> Vec<u32> {
     let mut roots = vec![home];
-    let mut at = 0;
-    while let Some(&h) = roots.get(at) {
+    let mut next = std::collections::VecDeque::from([home]);
+    while let Some(h) = next.pop_front() {
         let parents = shards.homes.get(&h).map(|home| home.parents.clone());
         for parent in parents.unwrap_or_default() {
             if !roots.contains(&parent) {
                 roots.push(parent);
+                next.push_back(parent);
             }
         }
-        at += 1;
     }
     roots
 }
