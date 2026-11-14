@@ -9813,6 +9813,19 @@
     "scenarios": []
   },
   {
+    "name": "return_home_counts_its_homes_reserved_shards",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3ba9eefe9b71a4b038efc541cf185f9cb42ba7dc25fb28f13e1911d946109d28",
+    "mechanisms": [],
+    "configuration": [
+      "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
+    ],
+    "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
     "name": "return_home_skips_a_live_intents_sources",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

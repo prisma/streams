@@ -445,3 +445,84 @@ async fn a_count_move_prunes_every_override_that_names_no_leaf() {
     assert_eq!(named, ["00", "10", "11"], "only the stored leaves' entries");
     stop(rig).await;
 }
+
+/// **Return-home counts its home's reserved shards** (S4-DESIGN §4.4). The ring is `streams-1`
+/// (this rig) and `streams-2`, which reserves one shard for a split of its own. Of the four shards,
+/// one whose ring home is `streams-2` sits overridden on `streams-1`, aged past return-home's
+/// 300 s; `streams-2` holds one other (younger overrides, which return-home skips, make it
+/// exactly one). Returning the aged shard would put `streams-2` at one held, one returned and one
+/// reserved, past its fair share of two, so through four ticks the override stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn return_home_counts_its_homes_reserved_shards() {
+    let ring = ["streams-1", "streams-2"].map(String::from).to_vec();
+    let home = |p: &str| ring[crate::ownership::ring_pick(p, &ring)].clone();
+    let (to_s2, to_s1): (Vec<&str>, Vec<&str>) =
+        PREFIXES.iter().partition(|p| home(p) == "streams-2");
+    let aged = *to_s2.first().expect("the ring gives streams-2 a shard");
+    let now = now_ms();
+    let mut entries = vec![(aged, "streams-1", now - 400_000)];
+    match to_s2.get(1) {
+        // streams-2 keeps its second ring shard; any further ones move to streams-1.
+        Some(_) => entries.extend(to_s2[2..].iter().map(|p| (*p, "streams-1", now - 30_000))),
+        // streams-2 has no other ring shard: give it one of streams-1's.
+        None => entries.push((to_s1[0], "streams-2", now - 30_000)),
+    }
+    let body = entries
+        .iter()
+        .map(|(p, to, ms)| format!(r#""{p}":{{"to":"{to}","ms":{ms}}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let inner = mem();
+    let beat = format!(
+        r#"{{"instance":"streams-2","ts_ms":{},"rps":0.0,"cpu_pct":0.0,"inflight":0,"owned_shards":[],"draining":false,"reserved_shards":1,"url":"https://streams-2.invalid"}}"#,
+        now + 60_000
+    );
+    for (path, doc) in [
+        (
+            "fleet/desired.json",
+            r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#.to_string(),
+        ),
+        (
+            "fleet/overrides.json",
+            format!(r#"{{"entries":{{{body}}}}}"#),
+        ),
+        ("fleet/streams-2.json", beat),
+    ] {
+        inner
+            .put(&Path::from(path), PutPayload::from(doc))
+            .await
+            .unwrap();
+    }
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(inner.clone()),
+            instance: Some("streams-1".into()),
+            prefixes: PREFIXES.map(String::from).to_vec(),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(crate::fleet::start_configured(
+        rig.state.clone(),
+        &rig.tasks
+    ));
+    settled(Duration::from_secs(12), || {
+        rig.state.ownership.ring_active() == ring
+    })
+    .await;
+    // Four ticks (a 2 s period), each reading the aged override as a return-home candidate.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let (overrides, _) = rig.state.fleet.read_overrides().await.unwrap();
+    let kept = overrides.entries.get(aged).map(|entry| entry.to.as_str());
+    let all: Vec<(&String, &str)> = overrides
+        .entries
+        .iter()
+        .map(|(prefix, entry)| (prefix, entry.to.as_str()))
+        .collect();
+    assert_eq!(kept, Some("streams-1"), "{aged} stays: {all:?}");
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
