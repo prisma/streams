@@ -3669,6 +3669,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_of_a_child_starts_from_the_published_version_at_the_childs_home",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "27dc96a7da9cc3f32633486a0784c662338cd77b60d3825943cccb76e7538c2b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_start.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_of_a_leaf_another_instance_owns_names_that_instance",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3765,6 +3776,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_scaling.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_under_a_live_intent_is_refused_busy",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c1e575f3fdb65cebd27d3cf8311c671a232d53b0a8b7933606b0af2a312b312a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_start.rs",
     "scenarios": []
   },
   {

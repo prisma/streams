@@ -170,7 +170,7 @@ OWNERS = (
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: dst_tests::merge_claim_traffic:: shard::seal::gc::lineage_tests::the_open_path_fence'),
     owner('topology_sentinel', 'src/topology/sentinel.rs', 'topology::sentinel'),
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
-    owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists:: dst_tests::split_generations::a_quiesced_ dst_tests::split_t_outcome::'),
+    owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists:: dst_tests::split_generations::a_quiesced_ dst_tests::split_t_outcome:: dst_tests::split_start::'),
     # The merge (S6): its unit tests, its pause, publish and tail DSTs, the merge route's, and the
     # final flag it sets at 'T' (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 7). Narrowed
     # to tests whose waits are 30 s or less (GATE-DECISION-mutation-timeout §5): the claimant's and

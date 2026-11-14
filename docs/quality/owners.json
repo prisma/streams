@@ -1051,6 +1051,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_start",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split's start (S4 6.2 steps 0.1-0.2): a split of a published child starts from the version the first split published at the child's own born home, each published child is its own prefix's engine, and a split under a live intent is refused before it reserves homes; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_start.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_t_outcome",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split whose 'T' write fails after the attempt (S4 6.4, addendum 6 of DESIGN-DECISION-c3-incomplete-rig-2026-11-11): the split refuses Unfinished with no resume and no rollback, the queued writer is refused as final, and the parent's next opener rolls forward from a landed 'T' or back without one; compiler and the full DST suite exercise the module.",
