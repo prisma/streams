@@ -415,6 +415,8 @@ async fn a_held_open_another_opener_fences_reopens_and_serves() {
         if status == 204 || fenced_at.elapsed() >= Duration::from_secs(10) {
             break status;
         }
+        // The fenced open closes and reopens inside the same open: never a failed open's 500.
+        assert_eq!(status, 503, "held (503 shard_opening) until it serves");
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_eq!(status, 204, "served within 10 s of the fencing");

@@ -124,3 +124,9 @@ async fn a_read_of_a_closed_log_is_a_store_error_not_a_fence() {
         Ok(_) => panic!("a closed log read"),
     }
 }
+
+/// A held open's whole bound, its reopens after a fence included, is twice the fence's wait.
+#[test]
+fn a_held_open_is_bounded_by_twice_the_fence_wait() {
+    assert_eq!(super::HELD_OPEN_BOUND, super::FENCE_WAIT * 2);
+}

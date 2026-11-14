@@ -49,6 +49,10 @@ pub(crate) const RECHECK: Duration = Duration::from_secs(1);
 /// How long an open waits on the fence before it fails (provisional, far inside the open deadline).
 pub(crate) const FENCE_WAIT: Duration = Duration::from_secs(60);
 
+/// How long a held open may take in all, its reopens after a fence included: twice
+/// [`FENCE_WAIT`], inside the directory's open deadline.
+const HELD_OPEN_BOUND: Duration = Duration::from_secs(120);
+
 /// The retired-parent row's sentinel tag (`keyspace::SENTINEL_TAGS`).
 const RETIRED_TAG: u8 = b'T';
 
@@ -183,7 +187,7 @@ pub(crate) fn fenced(
 /// claimant's maintenance open of a sibling mid-open) is closed, its termination awaited (so its
 /// close notification, carrying this incarnation, lands before any replacement is published), and
 /// the open re-enters the hold before the open, which waits on the claimant's fresh claim and
-/// reopens once the intent ended or lapsed; all within twice [`FENCE_WAIT`].
+/// reopens once the intent ended or lapsed; all within [`HELD_OPEN_BOUND`].
 async fn open_held(
     open: &crate::sharddir::OpenAt,
     prefix: String,
@@ -214,8 +218,8 @@ async fn open_held(
             HoldEnd::Served => return Ok(engine),
             HoldEnd::Fenced => {
                 drop(engine.shutdown_handle().wait(FENCE_WAIT).await);
-                if started.elapsed() >= FENCE_WAIT * 2 {
-                    anyhow::bail!("fenced while held, again past {:?}", FENCE_WAIT * 2);
+                if started.elapsed() >= HELD_OPEN_BOUND {
+                    anyhow::bail!("fenced while held, again past {HELD_OPEN_BOUND:?}");
                 }
                 tracing::info!(shard = %prefix, "a newer writer fenced the held open; it reopens");
             }
