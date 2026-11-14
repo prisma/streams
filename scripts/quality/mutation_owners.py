@@ -416,11 +416,12 @@ OWNERS = (
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
     owner('fleet_standing', 'src/fleet/standing.rs', 'fleet:: dst_tests::fleet_topology::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
-    # The beat's open of a live intent's unopened sources is what claims a lapsed merge with no
-    # request (TLA-048 liveness_local): the policy DST that waits for exactly that.
+    # The beat's open of a live intent's unopened sources is pinned by the fleet_topology DSTs that
+    # call it directly. fleet_topology::the_fleet_tick_opens_no_override_whose_prefix_is_no_leaf
+    # (each wait <= 10 s) is the sole killer of prune_stale_overrides' heartbeat.rs:349:5 (body
+    # -> ()) and heartbeat.rs:354:23 (delete !).
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
-          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology:: '
-          'dst_tests::topology_policy::a_merge_whose_actor_died'),
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology::'),
     # Each shard's load in the beat: the rates and each engine's load are unit tests; the
     # busiest stream's measure from live tails is the hot-entity DST (30 s wait).
     owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',
