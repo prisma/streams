@@ -127,6 +127,19 @@ async fn cell_of(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr
     }
 }
 
+/// How long a test waits for a split to reach its park: a split refused or failed before it never
+/// takes the pause point, and the wait fails instead of hanging.
+const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The split reached its park (`gate::PausePoint`), within [`PARK_BOUND`].
+pub(super) async fn parked(reached: tokio::sync::oneshot::Receiver<()>) {
+    let at = tokio::time::timeout(PARK_BOUND, reached).await;
+    assert!(
+        matches!(at, Ok(Ok(()))),
+        "the split paused at its park within {PARK_BOUND:?}: {at:?}"
+    );
+}
+
 /// **A split's children each serve their stream back byte-exact, and their counts sum to the
 /// parent's.**
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
@@ -311,7 +324,7 @@ async fn the_pause_puts_no_list_when_nothing_adds_a_holding() {
     let clock = state.runtime.clock.clone();
     let split = crate::topology::split::split(&state.shards, &parent, "op-d", "inst-a", &*clock);
     let control = async {
-        reached_rx.await.expect("the split paused at its park");
+        parked(reached_rx).await;
         let prepared = lists(&*store).await;
         assert!(go_tx.send(()).is_ok(), "the split waits for go");
         prepared
@@ -344,7 +357,7 @@ async fn an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset() {
     let clock = state.runtime.clock.clone();
     let split = crate::topology::split::split(&state.shards, &parent, "op-held", "inst-a", &*clock);
     let control = async {
-        reached_rx.await.expect("the split paused at its park");
+        parked(reached_rx).await;
         let release = async {
             until_queued(&parent).await;
             assert!(go_tx.send(()).is_ok(), "the split waits for go");
@@ -510,7 +523,7 @@ async fn split_paused_while<F: std::future::Future<Output = ()>>(
     let split =
         crate::topology::split::split(&cell.state.shards, &cell.parent, op_id, "inst-a", &*clock);
     let control = async {
-        reached_rx.await.expect("the split paused at its park");
+        parked(reached_rx).await;
         at_park.await;
         assert!(go_tx.send(()).is_ok(), "the split waits for go");
     };

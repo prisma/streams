@@ -252,7 +252,7 @@ async fn split_probed(
     let split =
         crate::topology::split::split(&cell.state.shards, &cell.parent, "op-q", "inst-a", &*clock);
     let control = async {
-        reached_rx.await.expect("the split paused at its park");
+        super::split_k::parked(reached_rx).await;
         let sources = [cell.parent.clone()];
         let probed = probe_at_park(&store, &sources, cell.addr, [&cell.low, &cell.high]).await;
         if corrupt {

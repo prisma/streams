@@ -60,7 +60,7 @@ async fn split_failing_t(cell: &Cell, fault: TFault) -> Failed {
     let split =
         crate::topology::split::split(&cell.state.shards, &cell.parent, "op-t", "inst-a", &*clock);
     let control = async {
-        reached_rx.await.expect("the split paused at its park");
+        super::split_k::parked(reached_rx).await;
         let store = cell.state.data_store.clone();
         let sources = [cell.parent.clone()];
         let names = [cell.low.as_str(), cell.high.as_str()];
