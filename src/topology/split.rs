@@ -32,6 +32,8 @@ use crate::spill::{gc, lineage, runindex};
 const QUIESCE: Duration = Duration::from_secs(5);
 /// How long the retired parent's held operations may take to drain to the children.
 const DRAIN: Duration = Duration::from_secs(2);
+/// At most this many folds before Preparing plans (S4-DESIGN §6.2 step 0.3).
+const PREPARING_FOLDS: usize = 8;
 /// The pause's checkpoint lifetime (deleted at the end; it expires if the split dies).
 const CHECKPOINT_LIFETIME: Duration = Duration::from_secs(3600);
 
@@ -476,12 +478,11 @@ async fn prepare(
     parent: &Arc<ShardEngine>,
     children: &[Child],
 ) -> Result<Vec<Lists>, String> {
-    for _ in 0..8 {
-        match parent.fold_once().await {
-            Ok(report) if report.more => {}
-            _ => break,
-        }
-    }
+    fold_ahead(
+        || async { parent.fold_once().await.is_ok_and(|report| report.more) },
+        PREPARING_FOLDS,
+    )
+    .await;
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
     gate.start_marking();
@@ -494,6 +495,38 @@ async fn prepare(
         put.push(lists);
     }
     Ok(put)
+}
+
+/// Preparing's fold ahead (S4-DESIGN §6.2 step 0.3): `fold` runs while it answers that rows are
+/// left for the next fold, at most `max` times, and stops at its first `false` (nothing left, or a
+/// failed fold). Whatever it leaves, the plan copies as `'K'` rows.
+async fn fold_ahead<F, Fut>(mut fold: F, max: usize)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..max {
+        if !fold().await {
+            return;
+        }
+    }
+}
+
+/// The retired parent's held operations drained to the children (`queued` counts those still in
+/// its committer's channel), or `within` passed: a parent retired with operations queued would
+/// answer them `shard_moving` instead of rerouting them.
+async fn drained(queued: impl Fn() -> usize, within: Duration) {
+    let drain = async {
+        while queued() > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    if tokio::time::timeout(within, drain).await.is_err() {
+        tracing::warn!(
+            "a retired parent still queued {} operations after {within:?}",
+            queued()
+        );
+    }
 }
 
 /// Quiesced (S4-DESIGN §6.2 steps 1.3 to 2.5): the WAL flushed and a checkpoint of everything, the
@@ -722,10 +755,7 @@ async fn publish(
             Err(error) => tracing::warn!(op_id, "a published split's child did not open: {error}"),
         }
     }
-    let drained = tokio::time::Instant::now() + DRAIN;
-    while parent.queued_ops() > 0 && tokio::time::Instant::now() < drained {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    drained(|| parent.queued_ops(), DRAIN).await;
     dir.retire(&parent.prefix, RetirementReason::Split, |_, _| true);
     Ok(Published {
         version: next.version,

@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use bytes::Bytes;
 
-use super::{Lists, key_bounds, pause_lists, seed_rows, supplements};
+use super::{Lists, drained, fold_ahead, key_bounds, pause_lists, seed_rows, supplements};
 use crate::keyspace::SENTINEL;
 use crate::spill::gc::ObjectKind;
 use crate::topology::sentinel::Counts;
@@ -163,4 +163,60 @@ fn each_refusal_reads_as_what_the_split_did() {
     for (refused, text) in texts {
         assert_eq!(refused.to_string(), text);
     }
+}
+
+/// The folds `fold_ahead` runs when its fold answers `answers` in turn (then `false`), at most
+/// `max`.
+async fn folds_for(answers: &[bool], max: usize) -> usize {
+    let calls = std::cell::Cell::new(0);
+    let fold = || {
+        let n = calls.get();
+        calls.set(n + 1);
+        let more = answers.get(n).copied().unwrap_or(false);
+        async move { more }
+    };
+    fold_ahead(fold, max).await;
+    calls.get()
+}
+
+/// **Preparing folds while rows are left, at most its bound, and stops at the first fold that
+/// leaves none or fails**: two folds with rows left then one without is three folds; a fold that
+/// always leaves rows stops at the bound; a first fold that leaves none (or fails) is the only one.
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
+async fn the_preparing_fold_runs_until_nothing_is_left_within_its_bound() {
+    assert_eq!(folds_for(&[true, true, false], 8).await, 3);
+    assert_eq!(folds_for(&[true; 20], 8).await, 8);
+    assert_eq!(folds_for(&[false], 8).await, 1);
+    assert_eq!(folds_for(&[true], 0).await, 0);
+}
+
+/// **A retired parent is retired once its queued operations drained, or once the drain's time is
+/// up, and at once when none is queued**: a queue of three that drains one per look returns once
+/// it is empty, well inside its time; an empty one returns at once though its time is long; one
+/// that never drains returns when its time is up, not before.
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
+async fn a_retired_parent_waits_for_its_queued_operations_within_the_drain() {
+    use std::time::{Duration, Instant};
+    let looks = std::cell::Cell::new(0_usize);
+    let queued = || {
+        let n = looks.get();
+        looks.set(n + 1);
+        3_usize.saturating_sub(n)
+    };
+    let t0 = Instant::now();
+    drained(queued, Duration::from_secs(10)).await;
+    assert_eq!(
+        looks.get(),
+        4,
+        "three looks with operations queued, one without"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let t0 = Instant::now();
+    drained(|| 0, Duration::from_secs(10)).await;
+    assert!(t0.elapsed() < Duration::from_secs(1), "{:?}", t0.elapsed());
+    let t0 = Instant::now();
+    drained(|| 1, Duration::from_millis(300)).await;
+    let waited = t0.elapsed();
+    assert!(waited >= Duration::from_millis(300), "{waited:?}");
+    assert!(waited < Duration::from_secs(5), "{waited:?}");
 }
