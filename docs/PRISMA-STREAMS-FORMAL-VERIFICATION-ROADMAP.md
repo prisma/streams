@@ -142,6 +142,8 @@ design check (§7.7).
 | TLA-016 | pass-with-recorded-scope | 3 / 2 / 5 | SealSpill.tla (layout 6A, verification/tla/spill/): pending-row merge operands, the durable snapshot, object PUT, directory publication before the commit, the committer's all-or-nothing live-tail check (a defensive check, unreachable in scope) and the remainder put built from the live stream (REVIEW-6A F1), forced flushes with no WAL flush of their own and SlateDB's flush retention at the memtable's last seq (slatedb/slatedb#2208) (F2, seal and deadline flushes), crash and restart from the durable 'K' rows and pending row. Replaces HistoryAbsorb.tla. Controls: prebuilt remainder (I1), durable-seq retention boundary (F2). TLA-016-F5 closed by #2208 (2026-10-30). | to be recorded | — |
 | TLA-018 | pass-with-recorded-scope | 5 / 4 / 4 | SealRead.tla: durable and applied, unfiltered and keyed reads composed of the ring, the directory's chunks (summary skips, honest partial) and the unsealed pages captured with the boundary under one lock. Replaces ReadCompose.tla. Controls: late directory, hole consumed, under-approximating summary, the pre-F4 second lock. | to be recorded | — |
 | TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | to be recorded at `d83af9a4` | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
+| TLA-045 | pass-with-recorded-scope | 2 / 11 / 5 | `TopologyReconfiguration.tla`: one leaf's split into its halves and its recovery, the lease that does not fence and the claim as an action of an open after its epoch bump, fresh homes per attempt; an attempted `'T'` counts as written and no source write follows it (push 4, Addenda 5 and 6). Safety and `ForwardAfterRetire`/`OperationCompletes` under fairness. | to be recorded in push 4's receipt pass | ASM-OBJSTORE-CAS (unestablished) |
+| TLA-048 | pass-with-recorded-scope | 13 / 17 / 7 | `TopologyMerge.tla`: two siblings' co-location, merge and recovery, local and cross-instance pairs, crashes, partitions, lapses and restarts within each configuration's bounds, the landed open path; no source opened after the publish, no source write after its `'T'`, and an instance opens only sources it owns by a published view (push 4, #251 R3-d, Addenda 5 and 9). Liveness under weak fairness for the steps the code retries; one configuration under strong claim fairness. | to be recorded in push 4's receipt pass | ASM-OBJSTORE-CAS (unestablished); strong claim fairness, for `assume-strong-claim-fairness` only |
 
 The manifest holds 312 checks at `d83af9a4`: 79 baselines, 104 negative
 controls, 129 witnesses and no known defect.
@@ -503,6 +505,8 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 | [TLA-042](#tla-042) | Peer compatibility and preservation of read/append evidence | P2 |
 | [TLA-043](#tla-043) | Control Plane project transfer and deletion sagas | D |
 | [TLA-044](#tla-044) | Persisted-format and rolling-upgrade compatibility transitions | D |
+| [TLA-045](#tla-045) | Shard split, its intent and recovery (S4) | P0 |
+| [TLA-048](#tla-048) | Merge of sibling leaves, its co-location and recovery (S6) | P0 |
 
 <a id="tla-001"></a>
 ### TLA-001 — Registry CAS, attempt-local outcomes, and incarnation fencing
@@ -1231,6 +1235,42 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Required negative control.** Enable new writes before old writers are fenced, silently decode unknown state as default, or delete the old representation before the adopted rollback boundary.
 
 **Related work:** TLA-011, 019, 042; KANI-001–004, 007, 016, 032–033, 048–060, 084.
+
+<a id="tla-045"></a>
+### TLA-045 — Shard split, its intent and recovery
+
+**Priority:** P0 · **Requirement anchors:** D1, T1, T2, T6, T10, T11  
+**Source owners:** [`src/topology/split.rs`](src/topology/split.rs); [`src/topology/actor.rs`](src/topology/actor.rs); [`src/topology/fence.rs`](src/topology/fence.rs); [`src/topology/recover.rs`](src/topology/recover.rs); [`src/topology/ops.rs`](src/topology/ops.rs); [`src/topology/store.rs`](src/topology/store.rs); [`src/topology/intent.rs`](src/topology/intent.rs); [`src/topology/gate.rs`](src/topology/gate.rs); [`src/topology/reclaim.rs`](src/topology/reclaim.rs)
+
+**Status:** pass-with-recorded-scope (S4, package 5, 2026-11-10, all 18 checks as expected on the model's own runs; registered in push 4 with manifest entry TLA-045: 2 baselines, 11 negative controls, 5 witnesses). The receipt is recorded in push 4's receipt pass.
+
+**Validate.** A split of leaf P into P0 and P1 (`docs/scaling/S4-DESIGN.md` §12) never loses or duplicates an acknowledged record (`AckedReadable`, `ChildrenExact`), never lets the parent and a child serve at once (`NoDualServe`) or a parent holding `'T'` serve at all (`RetiredNeverServes`), never reuses a home (`HomesUnique`), and, under fairness, rolls forward once `'T'` is written and completes (`ForwardAfterRetire`, `OperationCompletes`). The lease does not fence: a lapsed actor runs on, and only the writer epoch an opener bumps stops its `'T'`; the claim is an action of that open.
+
+**Why valuable.** The split's safety rests on the order of four durable steps (the barrier's park, the checkpoint, `'T'`, the topology CAS) against an actor that may be slow, crashed or fenced, and a claimant on any instance. A test samples interleavings; the model enumerates them within its bounds.
+
+**Starting model and boundary.** One leaf, two records (one per half; which half is KANI-106's), the actor on one instance, writer epochs up to `MaxEpoch`, attempts up to `MaxHomes` with fresh homes each, one crash anywhere. An attempted `'T'` counts as written and the actor never resumes after it (Addendum 6, package 5's `'T'`-outcome commit); no source write follows `'T'` (Addendum 5, the gate's final flag). Placement and routing are abstract.
+
+**Required negative controls.** Serve the source under a live intent, publish before `'T'`, roll back after `'T'`, checkpoint before the barrier, reuse a home, decide before the fence, claim without the fence, delete a successor's intent, let a fenced actor reopen, serve under `'T'` before the publish (the 11 in the manifest).
+
+**Related work:** TLA-011, 019, 048; KANI-106.
+
+<a id="tla-048"></a>
+### TLA-048 — Merge of sibling leaves, its co-location and recovery
+
+**Priority:** P0 · **Requirement anchors:** D1, T1, T2, T10, T11, T12  
+**Source owners:** [`src/topology/merge.rs`](src/topology/merge.rs); [`src/topology/recover/merge.rs`](src/topology/recover/merge.rs); [`src/topology/fence.rs`](src/topology/fence.rs); [`src/topology/actor.rs`](src/topology/actor.rs); [`src/topology/policy_loop.rs`](src/topology/policy_loop.rs); [`src/fleet/colocate.rs`](src/fleet/colocate.rs); [`src/fleet.rs`](src/fleet.rs); [`src/topology/gate.rs`](src/topology/gate.rs); [`src/topology/intent.rs`](src/topology/intent.rs); [`src/topology/store.rs`](src/topology/store.rs)
+
+**Status:** pass-with-recorded-scope (S6, package 1, 2026-11-10/11, all 37 checks as expected under weak fairness on 0a7842535's claim order; registered in push 4 with manifest entry TLA-048: 13 baselines, 17 negative controls, 7 witnesses). The receipt is recorded in push 4's receipt pass.
+
+**Validate.** A merge of two sibling sources into a fresh home (`docs/scaling/S6-DESIGN.md` §7.2-§7.4) never loses an acknowledged record (`AckedReadable`), never rolls back once either source holds `'T'` (`NoRollbackWithT`), never ends an intent with `'T'` in a source before the publish (`NoTEndedUnpublished`), and, under weak fairness for the steps the code retries, co-locates the pair and completes (`MergeHappens`, `OperationCompletes`), whether the actor finishes, crashes, is partitioned or is left `Unfinished`.
+
+**Why valuable.** A merge has two logs, two writers and a claimant that must fence the other source; its liveness depends on who opens a cold source (a request, the fleet's eager move-in, the lapsed open). The first runs found a cold local pair whose dead actor's intent stayed live for good, which the lapsed open now fixes.
+
+**Starting model and boundary.** Two sources with one record each, instances with a spare the fleet can add, the ring's picks, loads under `SHARDS_PER_INSTANCE_MAX`, attempts into fresh homes, and crashes, partitions, lease lapses and bystander restarts bounded per configuration. The claimant's act is one step; one actor process at a time; `M`'s engine is abstract. No source is opened after the publish (#251 R3-d), no source write follows its `'T'` (Addendum 5), and an instance opens only sources it owns by a published view (Addendum 9). A published merge is reclaimed with nothing opened in the code (#251 B6), which fences less than the model, the safe direction.
+
+**Required negative controls.** Clone one source only, checkpoint before the barrier, fence only one source at the claim, roll back after one `'T'`, reclaim an unpublished merge, end a `'T'`d intent unpublished, open under a fresh lease, the maintenance open before the claim or waiting for its own claim, no eager move-in, no lapsed open, no heartbeat reclaim, no ask for an instance, the actor alone, the pre-fix open path (570cce46b), and unbounded restarts (the 17 in the manifest).
+
+**Related work:** TLA-011, 019, 045; KANI-108.
 
 
 ## 5. Kani proof catalog

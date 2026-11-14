@@ -4670,6 +4670,683 @@
         "verification/tla/seal/evidence/TLA-003-F6_pre-fix_plain-append-resumes-owed-final.txt",
         "verification/tla/seal/evidence/TLA-003-M2_dupack-after-foreign-close.txt"
       ]
+    },
+    {
+      "id": "TLA-045",
+      "kind": "tla",
+      "title": "Shard split and its recovery: intent, barrier, checkpoint, seeded clones, 'T', publish and the claimant's roll back or forward",
+      "status": "pass-with-recorded-scope",
+      "owner": "the split operation (split::split and Started::finish: the home CAS, the intent, the barrier's park, the checkpoint, the children's seeded clones, the parent's 'T', the topology CAS and the release), its actor and lease (actor.rs), the open path's fence and claim (fence.rs, recover.rs), the operations' store and intents (ops.rs, store.rs, intent.rs), the gate's final flag (gate.rs) and the published operation's reclaim (reclaim.rs)",
+      "source_paths": [
+        "src/topology/split.rs",
+        "src/topology/actor.rs",
+        "src/topology/fence.rs",
+        "src/topology/recover.rs",
+        "src/topology/ops.rs",
+        "src/topology/store.rs",
+        "src/topology/intent.rs",
+        "src/topology/gate.rs",
+        "src/topology/reclaim.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/topology/TopologyReconfiguration.tla"
+      ],
+      "requirements": [
+        "D1",
+        "T1",
+        "T2",
+        "T6",
+        "T10",
+        "T11"
+      ],
+      "models": [
+        "TLA-011",
+        "TLA-019",
+        "TLA-048",
+        "KANI-106"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-FENCE",
+        "ASM-OBJSTORE-CAS",
+        "ASM-LINEAGE-CONTRACT"
+      ],
+      "input_scope": "CONDITIONAL DESIGN CHECK: the writer epoch's fence rests on ASM-SLATEDB-FENCE and the topology and intent CASes on the unestablished ASM-OBJSTORE-CAS. One leaf P split into P0 and P1, two records r0 and r1 (one per half; the half a record's hash names is KANI-106's), the actor on one instance and the parent's log openable by every instance of Insts, writer epochs up to MaxEpoch and split attempts up to MaxHomes, each taking fresh homes; the actor may crash once anywhere, its lease may lapse while it runs (the lease does not fence: only the writer epoch stops its 'T'), and an opener bumps the epoch before it re-reads 'T' and the intent and claims a lapsed intent by CAS. An attempted 'T' counts as written and the actor never resumes after it (Addendum 6); no source write follows 'T' (Addendum 5). Safety: AckedReadable, NoDualServe, RetiredNeverServes, ChildrenExact, HomesUnique; liveness under Fairness: ForwardAfterRetire, OperationCompletes. Routing and placement are abstract.",
+      "checks": [
+        {
+          "id": "TLA-045/baseline",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_baseline.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/liveness",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_liveness.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-actor-reopens-after-fence",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_actor_reopens_after_fence.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-checkpoint-before-barrier",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_checkpoint_before_barrier.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-claim-without-fence",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_claim_without_fence.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ChildrenExact"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-decide-before-fence",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_decide_before_fence.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-delete-successor-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_delete_successor_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ForwardAfterRetire"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-publish-before-retire",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_publish_before_retire.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoDualServe"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-reuse-home",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_reuse_home.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HomesUnique"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-reuse-home-children",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_reuse_home_children.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "ChildrenExact"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-rollback-after-retire",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_rollback_after_retire.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-serve-source-under-intent",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_serve_source_under_intent.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/nc-serve-under-t-before-publish",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_nc_serve_under_t_before_publish.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RetiredNeverServes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/witness-claim-rolled-back",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_witness_claim_rolled_back.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ClaimRolledBack"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/witness-claim-rolled-forward",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_witness_claim_rolled_forward.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ClaimRolledForward"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/witness-published",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_witness_published.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_Published"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/witness-reclaimed-published",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_witness_reclaimed_published.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReclaimedPublished"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-045/witness-stale-clone-unpublished",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyReconfiguration.tla",
+          "config": "verification/tla/topology/MC_TopologyReconfiguration_witness_stale_clone_unpublished.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_StaleCloneUnpublished"
+          },
+          "deadlock_check": false
+        }
+      ]
+    },
+    {
+      "id": "TLA-048",
+      "kind": "tla",
+      "title": "Merge of two sibling leaves, its co-location and recovery: both sources' 'T', the union clone, the claimant's fences and the lapsed open",
+      "status": "pass-with-recorded-scope",
+      "owner": "the merge operation (merge::merge and Started::finish: still_owned, both barriers and checkpoints, the union clone into a fresh home, both 'T's, the topology and terminal CASes), its recovery (recover::merge: the claim, the other source's maintenance open, the decision; a published merge reclaimed with nothing opened), the open path's fence (fence.rs), the actor (actor.rs), the policy's co-location (policy_loop.rs, fleet/colocate.rs), the fleet's eager move-in and beat opens (fleet.rs), the gate's final flag (gate.rs) and the intents' store (intent.rs, store.rs)",
+      "source_paths": [
+        "src/topology/merge.rs",
+        "src/topology/recover/merge.rs",
+        "src/topology/fence.rs",
+        "src/topology/actor.rs",
+        "src/topology/policy_loop.rs",
+        "src/fleet/colocate.rs",
+        "src/fleet.rs",
+        "src/topology/gate.rs",
+        "src/topology/intent.rs",
+        "src/topology/store.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/topology/TopologyMerge.tla"
+      ],
+      "requirements": [
+        "D1",
+        "T1",
+        "T2",
+        "T10",
+        "T11",
+        "T12"
+      ],
+      "models": [
+        "TLA-011",
+        "TLA-019",
+        "TLA-045",
+        "KANI-108"
+      ],
+      "assumptions": [
+        "ASM-SLATEDB-FENCE",
+        "ASM-OBJSTORE-CAS"
+      ],
+      "input_scope": "CONDITIONAL DESIGN CHECK: the writer epoch's fence rests on ASM-SLATEDB-FENCE and the CASes on the unestablished ASM-OBJSTORE-CAS. Two sibling sources S0 and S1 with one record each, each with its own log and writer (an open makes every other engine of that source stale), instances Insts with Spare among them, the ring picks Ring0 and Ring1, loads LoadA and LoadB under Cap (SHARDS_PER_INSTANCE_MAX), merge attempts up to MaxAtt (each into a fresh home), crashes, partitions, lease lapses and bystander restarts bounded per configuration, local and cross-instance pairs, and the landed open path (570cce46b); the claimant's act is one step, one actor process at a time, M's engine abstract; no source is opened after the publish (#251 R3-d), no source write follows its 'T' (Addendum 5), and an instance opens only sources it owns by a published view (Addendum 9). Safety: AckedReadable, NoRollbackWithT, NoTEndedUnpublished and the configurations' invariants; liveness under weak fairness for the steps the code retries (MergeHappens, OperationCompletes), and once under the strong claim fairness assumption.",
+      "checks": [
+        {
+          "id": "TLA-048/assume-strong-claim-fairness",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_assume_strong_claim_fairness.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-048/baseline-cross",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_baseline_cross.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/baseline-local",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_baseline_local.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/colocate-partner",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_colocate_partner.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/colocate-spare",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_colocate_spare.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/landed-baseline-cross",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_landed_baseline_cross.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/landed-baseline-local",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_landed_baseline_local.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/landed-liveness-cross",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_landed_liveness_cross.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/landed-liveness-local",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_landed_liveness_local.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/landed-liveness-unfinished",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_landed_liveness_unfinished.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/liveness-cross",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_liveness_cross.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/liveness-local",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_liveness_local.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/liveness-unfinished",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_liveness_unfinished.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-actor-only",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_actor_only.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MergeHappens"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-checkpoint-before-barrier",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_checkpoint_before_barrier.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-claim-fences-one-source",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_claim_fences_one_source.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoRollbackWithT"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-clone-one-source",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_clone_one_source.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-landed-unbounded-restarts",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_landed_unbounded_restarts.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-maint-before-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_maint_before_claim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-maint-waits-own-claim",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_maint_waits_own_claim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-no-ask",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_no_ask.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MergeHappens"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-no-eager-move-in",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_no_eager_move_in.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-no-heartbeat-reclaim",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_no_heartbeat_reclaim.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-no-lapsed-open",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_no_lapsed_open.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-open-path-570cce46b",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_open_path_570cce46b.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-open-under-fresh-lease",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_open_under_fresh_lease.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-reclaim-unpublished",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_reclaim_unpublished.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "AckedReadable"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-rollback-after-one-t",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_rollback_after_one_t.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoRollbackWithT"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-t-ended-unpublished",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_t_ended_unpublished.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoTEndedUnpublished"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-unbounded-restarts",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_unbounded_restarts.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-ClaimRolledBack",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_ClaimRolledBack.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ClaimRolledBack"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-FencedSiblingReopens",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_FencedSiblingReopens.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_FencedSiblingReopens"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-ForwardFromOneT",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_ForwardFromOneT.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ForwardFromOneT"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-Published",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_Published.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_Published"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-UnfinishedThenForward",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_UnfinishedThenForward.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnfinishedThenForward"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-UnfinishedThenRolledBack",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_UnfinishedThenRolledBack.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnfinishedThenRolledBack"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/witness-UnheldFirstOpen",
+          "role": "witness",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_witness_UnheldFirstOpen.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_UnheldFirstOpen"
+          },
+          "deadlock_check": false
+        }
+      ]
     }
   ]
 }

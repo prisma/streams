@@ -84,7 +84,7 @@ Do not read these whole. Find the heading first, then read only that range
 **Formal verification (Kani and TLA+)**
 - [verification/README.md](../verification/README.md): toolchain setup, commands, receipts, what stales what.
 - [manifest.json](../verification/manifest.json) (the implemented obligations) and [assumptions.md](../verification/assumptions.md) (the assumption ledger).
-- Group mappings: [seal](../verification/tla/seal/README.md), [durability](../verification/tla/durability/README.md), [history](../verification/tla/history/README.md). Kani harnesses live next to their owners as `src/**/proofs.rs`. Regression seeds are in `verification/regressions/<ID>/`.
+- Group mappings: [seal](../verification/tla/seal/README.md), [durability](../verification/tla/durability/README.md), [history](../verification/tla/history/README.md), [topology](../verification/tla/topology/README.md). Kani harnesses live next to their owners as `src/**/proofs.rs`. Regression seeds are in `verification/regressions/<ID>/`.
 - [The roadmap](PRISMA-STREAMS-FORMAL-VERIFICATION-ROADMAP.md) is the full planned catalog, not a set of results. Read it by anchor.
 
 **Quality policy**
