@@ -123,6 +123,38 @@ mod tests {
         store.put(&path, raw.into()).await.unwrap();
     }
 
+    /// **The started loop revalidates on its own.** With the topology stored and a 10 ms period,
+    /// the directory, booted without an ETag, holds the stored topology's within 5 s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn the_started_loop_revalidates_on_its_own() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards = crate::config::validation::InitialShards::new(2).unwrap();
+        let v1 = crate::registry::load_or_init_topology(&store, shards, 1 << 20)
+            .await
+            .unwrap();
+        let cell = crate::tenant::CellId::new("test-cell").unwrap();
+        let registry = Arc::new(crate::registry::Registry::new(store.clone(), &cell));
+        let dir = directory(v1.shards.clone());
+        let clock: Arc<dyn crate::runtime::Clock> = Arc::new(crate::runtime::ManualClock::at(0));
+        let tasks = crate::tasks::TaskSupervisor::new();
+        super::start(
+            registry,
+            dir.clone(),
+            clock,
+            Duration::from_millis(10),
+            &tasks,
+        );
+        let started = std::time::Instant::now();
+        while dir.prefixes().etag.is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the loop never revalidated"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(tasks.shutdown(Duration::from_secs(1)).await);
+    }
+
     /// **A revalidation installs a newer topology, and an unchanged or older one changes
     /// nothing.** The first read installs the stored topology and learns its ETag; the next
     /// finds it unchanged. A split published as version 2 is installed, and the directory then
