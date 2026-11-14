@@ -514,3 +514,40 @@ fn a_run_keeps_each_entrys_home() {
     assert_eq!(homes, [5, 9]);
     assert_eq!(decoded[0].1, run);
 }
+
+/// A footer entry that names its run's entry count, first offset or last offset wrongly, each
+/// alone and with the footer, its CRC and the trailer otherwise consistent, is refused by both
+/// decoders (`format`'s test copy and `whole`, which a split reads its parent through): a run is
+/// checked against every field of its footer entry, not against any one of them.
+#[test]
+fn a_footer_entry_disagreeing_with_its_run_in_one_field_is_refused() {
+    let u64_at =
+        |p: &Parts, at: usize| u64::from_le_bytes(p.footer[at..at + 8].try_into().unwrap());
+    let span = |p: &Parts| {
+        (0..2)
+            .map(|i| p.entry(i))
+            .find(|&e| u64_at(p, e + 28) < u64_at(p, e + 36))
+            .expect("a sample run whose first is below its last")
+    };
+    let mut count = parts();
+    let entries = u32::from_le_bytes(count.footer[44..48].try_into().unwrap()) + 1;
+    count.footer[44..48].copy_from_slice(&entries.to_le_bytes());
+    let total = u64::from_le_bytes(count.t[16..24].try_into().unwrap()) + 1;
+    count.t[16..24].copy_from_slice(&total.to_le_bytes());
+    let mut first = parts();
+    let e = span(&first);
+    let moved = u64_at(&first, e + 28) + 1;
+    first.footer[e + 28..e + 36].copy_from_slice(&moved.to_le_bytes());
+    let mut last = parts();
+    let e = span(&last);
+    let moved = u64_at(&last, e + 36) - 1;
+    last.footer[e + 36..e + 44].copy_from_slice(&moved.to_le_bytes());
+    for (what, p) in [("entry count", count), ("first", first), ("last", last)] {
+        let raw = p.object(false);
+        assert!(decode_object(&raw).is_none(), "a wrong {what} decoded");
+        assert!(
+            super::whole::decode_object(&raw).is_none(),
+            "a wrong {what} decoded whole"
+        );
+    }
+}
