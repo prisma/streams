@@ -461,7 +461,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
 mod tests {
     use super::{
         FleetRead, Heartbeat, OverrideEntry, Overrides, Pacing, document_owners, fair_share, fold,
-        may_shed, moved_document, past_share, pick, well_under,
+        may_shed, moved_document, past_share, pick, reserved_by_member, well_under,
     };
     use crate::runtime::{Clock, ManualClock};
     use std::time::Duration;
@@ -737,6 +737,25 @@ mod tests {
             Some((twos[1].clone(), "streams-1".to_owned()))
         );
         assert_eq!(read(2).plan(&prefixes, "streams-1", 60), None);
+        // Holding only the source and three reserved, streams-2 is past the share with nothing
+        // it may shed: a reserved shard is no shard to move.
+        let held: Vec<String> = ones.iter().chain([&source]).cloned().collect();
+        assert_eq!(read(3).plan(&held, "streams-2", 60), None, "only reserved");
+    }
+
+    /// Every member's reservation is read from its beat, none for one that reserves none.
+    #[test]
+    fn each_members_reservation_is_read_from_its_beat() {
+        let beat = |instance: &str, reserved: u32| -> Heartbeat {
+            let json = format!(
+                r#"{{"instance":"{instance}","ts_ms":0,"rps":0.0,"owned_shards":[],"draining":false,"reserved_shards":{reserved}}}"#
+            );
+            serde_json::from_str(&json).unwrap()
+        };
+        let (candidacies, _) = fold(vec![beat("splits", 2), beat("idle", 0)], 0);
+        let reserved = reserved_by_member(&candidacies);
+        let want = [("splits".to_owned(), 2), ("idle".to_owned(), 0)];
+        assert_eq!(reserved, want.into_iter().collect());
     }
 
     #[test]
