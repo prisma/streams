@@ -151,8 +151,9 @@ pub(super) fn of_engines(
 
 #[cfg(test)]
 mod tests {
-    use super::{GroupTiming, TIMING_RING, TopStreams, rates, share};
+    use super::{GroupTiming, ShardLoad, TIMING_RING, TopStreams, of_engines, rates, share};
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
 
     const NOW: i64 = 1_000_000;
 
@@ -219,5 +220,53 @@ mod tests {
     #[test]
     fn an_idle_shard_has_no_load() {
         assert_eq!(rates(&[], NOW, 15_000), (0, 0, 0));
+    }
+
+    /// A real engine over an in-memory store.
+    async fn open_engine(prefix: &str) -> Arc<crate::shard::ShardEngine> {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = crate::keyspace::db_builder(prefix, store.clone())
+            .build()
+            .await
+            .expect("open db");
+        let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+            .await
+            .expect("load maintenance");
+        let config = crate::shard::ShardConfig::default();
+        crate::shard::ShardEngine::start(
+            prefix.into(),
+            Arc::new(db),
+            store,
+            config,
+            None,
+            maintenance,
+        )
+    }
+
+    /// Each engine's load in the beat: its timing ring's rates over the window, its resident
+    /// handles against the cap, and its busiest stream's part of its appends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn each_engines_load_reads_its_ring_its_handles_and_its_busiest_stream() {
+        let engine = open_engine("01").await;
+        engine.timings.lock().unwrap().extend([
+            group(NOW - 15_000, 1_500, 30_000, 1_500_000),
+            group(NOW - 1, 1_500, 30_000, 1_500_000),
+        ]);
+        let top = TopStreams {
+            tails: BTreeMap::new(),
+            shares: BTreeMap::from([("01".to_owned(), (1, 4))]),
+        };
+        let loads = of_engines(&[("01".to_owned(), engine)], 9, NOW, 15_000, &top);
+        let load = ShardLoad {
+            prefix: "01".into(),
+            appends_per_s: 200,
+            append_bytes_per_s: 4_000,
+            committer_busy_pct: 20,
+            resident_streams: 0,
+            handle_max_resident: 9,
+            top_stream_appends_per_s: 50,
+        };
+        assert_eq!(loads, [load]);
     }
 }
