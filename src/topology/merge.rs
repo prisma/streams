@@ -23,6 +23,7 @@ use super::{fence, intent, sentinel, store};
 use crate::keyspace::SENTINEL;
 use crate::keyspace::range::Range;
 use crate::shard::ShardEngine;
+use crate::shard::seal::fold::FoldReport;
 use crate::shard_directory::{Adoption, RetirementReason, ShardDirectory};
 use crate::spill::gc::merge::{Rows, merged_sentinel};
 use crate::spill::{gc, lineage, runindex};
@@ -375,10 +376,9 @@ async fn begin(
 async fn prepare(dir: &ShardDirectory, store: &dyn ObjectStore, pair: &Pair) -> Result<(), String> {
     for (source, _) in &pair.sources {
         for _ in 0..8 {
-            match source.fold_once().await {
-                Ok(report) if report.more => {}
-                _ => break,
-            }
+            let Ok(FoldReport { more: true, .. }) = source.fold_once().await else {
+                break;
+            };
         }
         let gate = &source.gc_state().gate;
         gate.set_collection_off(true);
@@ -603,9 +603,7 @@ async fn publish(
         })
     });
     retire(reroute);
-    let bits = u128::from_str_radix(&pair.prefix, 2).unwrap_or(0);
-    let shift = 128 - u32::try_from(pair.prefix.len()).unwrap_or(0).min(128);
-    let route = bits.checked_shl(shift).unwrap_or(0).to_be_bytes();
+    let route = super::ops::route_of(&pair.prefix);
     // The merge is published: `M` failing to open here opens on its next request, and the merge
     // goes on to retire its sources.
     let engine = match open_merged(dir, &route, &pair.prefix).await {
@@ -615,12 +613,7 @@ async fn publish(
             None
         }
     };
-    let drained = tokio::time::Instant::now() + DRAIN;
-    while pair.sources.iter().any(|(s, _)| s.queued_ops() > 0)
-        && tokio::time::Instant::now() < drained
-    {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    drain(pair, DRAIN).await;
     for (source, _) in &pair.sources {
         // A newer topology no longer has the source's prefix as a leaf (the variant's meaning).
         dir.retire(&source.prefix, RetirementReason::Split, |_, _| true);
@@ -631,6 +624,17 @@ async fn publish(
     })
 }
 
+/// Wait, at most `wait`, until neither source holds a queued operation: what the release
+/// re-routed is answered before the sources retire.
+async fn drain(pair: &Pair, wait: Duration) {
+    let drained = async {
+        while pair.sources.iter().any(|(s, _)| s.queued_ops() > 0) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    drop(tokio::time::timeout(wait, drained).await);
+}
+
 /// `M` opened here. Its prefix is the one the split retired, so the directory may still be
 /// closing that incarnation: an open it holds off (`Opening`) is retried within `OPEN_WAIT`.
 async fn open_merged(
@@ -638,18 +642,20 @@ async fn open_merged(
     route: &[u8; 16],
     prefix: &str,
 ) -> Result<Arc<ShardEngine>, String> {
-    let deadline = tokio::time::Instant::now() + OPEN_WAIT;
-    loop {
-        match dir.resolve(route, Adoption::Internal).await {
-            Ok(engine) => return Ok(engine),
-            Err(crate::shard_directory::ResolveError::Opening { .. })
-                if tokio::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+    let opening = async {
+        loop {
+            match dir.resolve(route, Adoption::Internal).await {
+                Ok(engine) => return Ok(engine),
+                Err(crate::shard_directory::ResolveError::Opening { .. }) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(format!("open {prefix}: {e:?}")),
             }
-            Err(e) => return Err(format!("open {prefix}: {e:?}")),
         }
-    }
+    };
+    tokio::time::timeout(OPEN_WAIT, opening)
+        .await
+        .unwrap_or_else(|_| Err(format!("open {prefix}: still opening after {OPEN_WAIT:?}")))
 }
 
 /// Undo a merge before `'T'`: collection resumes on both sources, their touched marks are dropped
