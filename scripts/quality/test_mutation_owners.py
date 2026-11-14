@@ -170,8 +170,12 @@ class MutationOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             command = mutation_command(entry, root, root / 'result', root / 'selected.diff')
-        at = command.index('--build-timeout')
-        self.assertEqual((command[at + 1], command[command.index('--timeout') + 1]), ('900', '90'))
+        # The test limit is relative to the baseline, at least 90 s (gate
+        # decision of 2026-11-14, section 1).
+        self.assertEqual([command[command.index(flag) + 1] for flag in
+                          ('--build-timeout', '--minimum-test-timeout', '--timeout-multiplier')],
+                         ['900', '90', '3'])
+        self.assertNotIn('--timeout', command)
 
     def test_a_shard_lists_and_tests_its_round_robin_share_and_nothing_else(self):
         entry = source_map()['src/sse/session.rs']

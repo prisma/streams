@@ -418,6 +418,26 @@ class TempCopy(unittest.TestCase):
         self.assertFalse(out.exists())
 
 
+class MutantTimeout(unittest.TestCase):
+    """An explicit --timeout is also the unmutated baseline's limit in
+    cargo-mutants, and one absolute number failed on CI's 4 vCPUs a baseline
+    the Mac passed: fleet_heartbeat's 44 mutants never ran on push 4. The
+    limit is relative to the same runner's baseline, at least 90 s (gate
+    decision of 2026-11-14, section 1)."""
+
+    def test_every_owners_run_scales_its_test_limit_from_its_baseline(self):
+        fake, outcome, _ = run_driver(PUSHED, {})
+        self.assertIsNone(outcome)
+        runs = [c for c in fake.commands if c[:2] == ['cargo', 'mutants'] and '--list' not in c]
+        self.assertEqual(len(runs), 3)
+        for command in runs:
+            self.assertNotIn('--timeout', command)
+            self.assertNotIn('-t', command)
+            for flag, value in (('--minimum-test-timeout', '90'), ('--timeout-multiplier', '3'),
+                                ('--build-timeout', '900')):
+                self.assertEqual(command[command.index(flag) + 1], value, flag)
+
+
 class PushedDeal(unittest.TestCase):
     """A push's job g of G runs group g of the deal by owner, only when its
     own packing is the plan job's (gate decision of 2026-11-11, H2). Every

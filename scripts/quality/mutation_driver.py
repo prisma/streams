@@ -78,7 +78,11 @@ def mutation_command(entry, out, output, diff, share=None):
         command.extend(('--file', path))
     command.extend(('--package', entry.package))
     command.extend(cargo_test_args(entry.test_filters))
-    command.extend(('--profile', 'quality', '--jobs', '1', '--timeout', '90',
+    # Each mutant's test limit is 3 times this runner's own baseline, at least
+    # 90 s; an explicit --timeout would also cap the baseline with one absolute
+    # number (gate decision of 2026-11-14, section 1).
+    command.extend(('--profile', 'quality', '--jobs', '1',
+                    '--minimum-test-timeout', '90', '--timeout-multiplier', '3',
                     '--build-timeout', '900', '--gitignore', 'true', '--output', str(output)))
     command.extend(shard_args(share))
     return command

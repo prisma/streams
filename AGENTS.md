@@ -315,6 +315,10 @@ inside the checkout must be git-ignored.
 CI runs each mutant's test process under a 10 GiB `RLIMIT_DATA` through cargo's target
 runner (`prlimit`, set in the `mutants` step), so a mutant that allocates without end
 aborts and is listed incomplete; local runs are uncapped (macOS has no `prlimit`).
+A mutant's test limit is 3 times its owner's baseline test on the same runner, at least
+90 s (`--minimum-test-timeout 90 --timeout-multiplier 3`); the baseline itself is bounded
+only by the tests' own deadlines. CI runs libtest on 4 vCPUs, so reproduce a CI mutant or
+baseline result locally with `RUST_TEST_THREADS=4`.
 
 Miri and the saved fuzz corpus: `scripts/quality/nightly.sh miri`,
 `scripts/quality/nightly.sh corpus` (under a minute).
