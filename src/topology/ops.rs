@@ -181,13 +181,7 @@ impl Parts {
                 ResolveError::NotOwner { owner, .. } => Refused::NotOwner(owner),
                 other => Refused::Unavailable(format!("{other:?}")),
             })?;
-        let resident = self.dir.open_count().saturating_add(2);
-        if resident > usize::try_from(self.shards_max).unwrap_or(usize::MAX) {
-            return Err(Refused::InstanceFull {
-                resident,
-                max: self.shards_max,
-            });
-        }
+        room_for_split(self.dir.open_count(), self.shards_max)?;
         let op_id = format!(
             "split-{prefix}-v{}-{}",
             snapshot.shards.version,
@@ -209,18 +203,42 @@ impl Parts {
         let unread = |e: anyhow::Error| Refused::Unavailable(format!("fleet: {e}"));
         let now = crate::shard::now_ms();
         let (desired, _) = self.fleet.read_desired_state().await.map_err(unread)?;
-        let young_count =
-            desired.is_some_and(|d| now.saturating_sub(d.computed_at_ms) < FLEET_SETTLE_MS);
         let (overrides, _) = self.fleet.read_overrides().await.map_err(unread)?;
-        let young_move = overrides
-            .entries
-            .values()
-            .any(|entry| now.saturating_sub(entry.ms) < self.move_cooldown_ms);
-        if young_count || young_move {
-            return Err(Refused::Busy("fleet"));
+        let counted_at = desired.map(|d| d.computed_at_ms);
+        let moved_at = overrides.entries.values().map(|entry| entry.ms);
+        if settled(now, counted_at, moved_at, self.move_cooldown_ms) {
+            Ok(())
+        } else {
+            Err(Refused::Busy("fleet"))
         }
-        Ok(())
     }
+}
+
+/// Room for a split on an instance holding `open` shards: the parent open beside both children,
+/// at most `shards_max`; else `instance_full`.
+fn room_for_split(open: usize, shards_max: u32) -> Result<(), Refused> {
+    let resident = open.saturating_add(2);
+    if resident > usize::try_from(shards_max).unwrap_or(usize::MAX) {
+        return Err(Refused::InstanceFull {
+            resident,
+            max: shards_max,
+        });
+    }
+    Ok(())
+}
+
+/// Whether the fleet settled at `now`: its count, published at `counted_at`, at least
+/// [`FLEET_SETTLE_MS`] old, and no override, each stamped at its `moved_at`, younger than
+/// `cooldown_ms`.
+fn settled(
+    now: i64,
+    counted_at: Option<i64>,
+    mut moved_at: impl Iterator<Item = i64>,
+    cooldown_ms: i64,
+) -> bool {
+    let young_count = counted_at.is_some_and(|at| now.saturating_sub(at) < FLEET_SETTLE_MS);
+    let young_move = moved_at.any(|at| now.saturating_sub(at) < cooldown_ms);
+    !(young_count || young_move)
 }
 
 /// The first route hash of `prefix`'s range: its bits, then zeros.
