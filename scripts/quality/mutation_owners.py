@@ -190,8 +190,14 @@ OWNERS = (
     owner('topology_policy', 'src/topology/policy.rs', 'topology::policy::'),
     owner('topology_policy_reason', 'src/topology/policy/reason.rs',
           'topology::policy::reason dst_tests::topology_policy::'),
+    # The loop's view, its tracker and its co-location pick are unit tests; the two policy DSTs
+    # that wait at most 30 s prove the loop runs, publishes its decision and reads the fleet's
+    # documents fresh (a policy DST that waits longer answers a "never acts" mutant only by
+    # running out its clock: gate decision 2026-11-14 section 5).
     owner('topology_policy_loop', 'src/topology/policy_loop.rs',
-          'topology::policy:: topology::policy_loop:: dst_tests::topology_policy::'),
+          'topology::policy:: topology::policy_loop:: '
+          'dst_tests::topology_policy::one_stream_carrying_a_shards_appends_holds_hot_entity '
+          'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal'),
     # Its own unit tests (topology::recover::merge::tests, push 4's fix: every claimant witness,
     # the roll forward's act and the publish) beside the recovery table and the two claimant DSTs.
     owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::recover::merge::tests:: topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
@@ -415,9 +421,11 @@ OWNERS = (
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
           'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology:: '
           'dst_tests::topology_policy::a_merge_whose_actor_died'),
-    # Each shard's load in the beat: the rates are unit tests, the beat the policy DST reads.
+    # Each shard's load in the beat: the rates and each engine's load are unit tests; the
+    # busiest stream's measure from live tails is the hot-entity DST (30 s wait).
     owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',
-          'fleet::heartbeat::shard_load:: dst_tests::topology_policy::'),
+          'fleet::heartbeat::shard_load:: '
+          'dst_tests::topology_policy::one_stream_carrying_a_shards_appends_holds_hot_entity'),
     owner('runtime_handoff', 'src/bootstrap/runtime_handoff.rs', 'bootstrap::'),
     owner('process_executor', 'src/bootstrap/process_executor.rs', 'bootstrap::'),
     owner('sharddir_health', 'src/sharddir/health.rs', 'sharddir::'),
