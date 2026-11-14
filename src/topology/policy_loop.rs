@@ -689,6 +689,13 @@ mod tests {
             None,
             "a third that does not accept"
         );
+        let mut holds_another = view(2, 2, Some((0, true)), true);
+        holds_another.leaves.push(leaf("1", "c"));
+        assert_eq!(
+            target(&holds_another).as_deref(),
+            Some("c"),
+            "a third holding a leaf other than the half"
+        );
     }
 
     use crate::topology::intent::{Intent, Outcome, State};
@@ -735,5 +742,178 @@ mod tests {
             .await
             .unwrap();
         assert!(intent_live(&store).await, "a corrupt intent fails closed");
+    }
+
+    use super::{Seen, congested, instances, live, load, member};
+    use crate::fleet::Heartbeat;
+    use crate::topology::model::{Snapshot, Topology};
+    use crate::topology::policy::{Axis, Usage};
+
+    fn snapshot(topology: &Topology) -> Snapshot {
+        Snapshot {
+            shards: topology.shards.clone(),
+            etag: None,
+            installed_at: None,
+        }
+    }
+
+    fn split(topology: &Topology, prefix: &str) -> Topology {
+        let (reserved, homes) = topology.reserve_homes();
+        reserved.split(prefix, homes, "op").unwrap()
+    }
+
+    /// `Seen` dates an operation's end from the first pass that saw the version change, and a
+    /// leaf an operation made from the first pass that saw it, kept until the leaf is gone; a
+    /// cell's first leaves were born with it (0), and the version it was first seen at ended
+    /// nothing.
+    #[test]
+    fn seen_dates_a_leaf_from_its_first_sight_and_an_operation_from_its_version_change() {
+        let v1 = crate::config::validation::InitialShards::new(2)
+            .unwrap()
+            .topology(1 << 20);
+        let v2 = split(&v1, "0");
+        let v3 = split(&v2, "00");
+        let (s1, s2, s3) = (snapshot(&v1), snapshot(&v2), snapshot(&v3));
+        let mut seen = Seen::default();
+        seen.observe(&s1, 10);
+        assert_eq!(seen.changed_ms, None, "a first sight ends no operation");
+        assert_eq!(
+            seen.born(&s1, "0", 10),
+            0,
+            "a first leaf is born with the cell"
+        );
+        seen.observe(&s1, 20);
+        assert_eq!(seen.changed_ms, None, "the same version ends no operation");
+        seen.observe(&s2, 30);
+        assert_eq!(seen.changed_ms, Some(30), "a new version ends an operation");
+        assert_eq!(
+            seen.born(&s2, "00", 30),
+            30,
+            "a split's leaf at first sight"
+        );
+        assert_eq!(seen.born(&s2, "00", 40), 30, "its first sight is kept");
+        assert_eq!(seen.born(&s2, "01", 40), 40);
+        assert_eq!(
+            seen.born(&s2, "1", 40),
+            0,
+            "a first leaf stays born with the cell"
+        );
+        seen.observe(&s2, 50);
+        assert_eq!(seen.changed_ms, Some(30), "a re-read of the version");
+        seen.observe(&s3, 60);
+        assert_eq!(seen.changed_ms, Some(60));
+        let kept: Vec<&String> = seen.born.keys().collect();
+        assert_eq!(kept, ["01"], "the split leaf's first sight is dropped");
+    }
+
+    /// A beat at `ts_ms` from `instance` holding RSS `rss_mb`, with `extra` JSON fields.
+    fn beat(instance: &str, ts_ms: i64, rss_mb: f64, extra: &str) -> Heartbeat {
+        let document = format!(
+            r#"{{"instance":"{instance}","ts_ms":{ts_ms},"rps":0.0,"rss_mb":{rss_mb:?},"owned_shards":[],"draining":false{extra}}}"#
+        );
+        serde_json::from_str(&document).unwrap()
+    }
+
+    /// `instance`'s fresh beat, draining.
+    fn draining(instance: &str, ts_ms: i64) -> Heartbeat {
+        let mut beat = beat(instance, ts_ms, 0.0, "");
+        beat.draining = true;
+        beat
+    }
+
+    const NOW: i64 = 10_000;
+    const STALE: i64 = 1_000;
+
+    /// A member is a beat no older than the stale bound, not draining and not withdrawn; `live`
+    /// counts the members.
+    #[test]
+    fn a_member_is_fresh_not_draining_and_not_withdrawn() {
+        let at_bound = beat("a", NOW - STALE, 0.0, "");
+        let past = beat("b", NOW - STALE - 1, 0.0, "");
+        let draining = draining("c", NOW);
+        let withdrawn = beat("d", NOW, 0.0, r#","withdrawn":"scale-in""#);
+        let fresh = beat("e", NOW, 0.0, "");
+        assert!(member(&at_bound, NOW, STALE), "a beat at the stale bound");
+        assert!(!member(&past, NOW, STALE), "a beat past it");
+        assert!(!member(&draining, NOW, STALE), "a draining instance");
+        assert!(!member(&withdrawn, NOW, STALE), "a withdrawn instance");
+        let beats = [at_bound, past, draining, withdrawn, fresh];
+        assert_eq!(live(&beats, NOW, STALE), 2);
+    }
+
+    /// The cell is congested while a beat within the stale bound counted a refusal.
+    #[test]
+    fn only_a_fresh_beats_refusals_congest_the_cell() {
+        let refusing = |ts_ms: i64, n: u64| beat("a", ts_ms, 0.0, &format!(r#","refusals":{n}"#));
+        assert!(congested(&[refusing(NOW - STALE, 3)], NOW, STALE));
+        assert!(!congested(&[refusing(NOW, 0)], NOW, STALE), "no refusal");
+        assert!(
+            !congested(&[refusing(NOW - STALE - 1, 3)], NOW, STALE),
+            "a stale beat's"
+        );
+        assert!(!congested(&[], NOW, STALE));
+    }
+
+    /// An instance's room is the leaves it owns; it accepts a shard as a member whose RSS is below
+    /// the shed line, and with no shed line (0) at any RSS.
+    #[test]
+    fn an_instance_accepts_as_a_member_below_its_shed_line() {
+        use crate::topology::policy::{Instance, Leaf};
+        let leaf = |prefix: &str, owner: &str| Leaf {
+            prefix: prefix.into(),
+            born_ms: 0,
+            owner: owner.into(),
+            beat_ms: None,
+            load: std::collections::BTreeMap::new(),
+        };
+        let leaves = [leaf("00", "a"), leaf("01", "a"), leaf("1", "b")];
+        let beats = [
+            beat("a", NOW, 499.0, ""),
+            beat("b", NOW, 500.0, ""),
+            beat("c", NOW - STALE - 1, 0.0, ""),
+            draining("d", NOW),
+        ];
+        let instance = |id: &str, resident_shards: u32, accepting: bool| Instance {
+            id: id.into(),
+            resident_shards,
+            accepting,
+        };
+        assert_eq!(
+            instances(&leaves, &beats, NOW, STALE, 500),
+            [
+                instance("a", 2, true),
+                instance("b", 1, false),
+                instance("c", 0, false),
+                instance("d", 0, false),
+            ]
+        );
+        let accepting: Vec<bool> = instances(&leaves, &beats, NOW, STALE, 0)
+            .into_iter()
+            .map(|i| i.accepting)
+            .collect();
+        assert_eq!(accepting, [true, true, false, false], "no shed line");
+    }
+
+    /// A leaf's load is its owner's report for that prefix, by axis: appends against the cell's
+    /// ceiling with the busiest stream's share, streams against the shard's resident limit, the
+    /// committer against 100%; nothing for a prefix the beat does not report.
+    #[test]
+    fn a_leafs_load_is_its_owners_report_for_its_prefix() {
+        let loads = r#","shard_loads":[{"prefix":"00","appends_per_s":1},{"prefix":"01","appends_per_s":7,"committer_busy_pct":30,"resident_streams":5,"handle_max_resident":9,"top_stream_appends_per_s":4}]"#;
+        let beat = beat("a", NOW, 0.0, loads);
+        let usage = |used: u64, safe: u64, top_entity: u64| Usage {
+            used,
+            safe,
+            top_entity,
+        };
+        assert_eq!(
+            load(100, &beat, "01"),
+            std::collections::BTreeMap::from([
+                (Axis::Appends, usage(7, 100, 4)),
+                (Axis::Streams, usage(5, 9, 0)),
+                (Axis::Committer, usage(30, 100, 0)),
+            ])
+        );
+        assert!(load(100, &beat, "1").is_empty(), "an unreported prefix");
     }
 }
