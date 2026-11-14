@@ -897,3 +897,48 @@ fn a_hot_leaf_the_fleet_axis_marks_is_held() {
         Decision::Hold(Hold::HotEntity)
     );
 }
+
+/// **An axis with no measured capacity never binds, and a leaf using nothing is not hot.** The
+/// appends axis uses 50 of 100 with no hot entity; the streams axis is unmeasured (safe 0) though
+/// one stream carries all of its use. The binding axis is appends, so the leaf is not hot, and a
+/// leaf using none of its appends capacity is not hot either.
+#[test]
+fn an_unmeasured_axis_never_binds_and_an_idle_leaf_is_not_hot() {
+    let used = |used, safe, top_entity| Usage {
+        used,
+        safe,
+        top_entity,
+    };
+    let load = BTreeMap::from([
+        (Axis::Appends, used(50, 100, 0)),
+        (Axis::Streams, used(9, 0, 9)),
+    ]);
+    assert_eq!(super::binding(&load), Some(&used(50, 100, 0)));
+    assert!(!super::hot(&load), "the binding axis carries no hot entity");
+    let idle = BTreeMap::from([(Axis::Appends, used(0, 100, 0))]);
+    assert!(!super::hot(&idle), "nothing used is not hot");
+}
+
+/// **A pair is quiet on the axes either side measures**: one side uses 10 of 100 appends, the
+/// other an unmeasured streams axis (safe 0). Under 50% the pair is quiet: the unmeasured axis is
+/// no constraint, not a capacity of zero.
+#[test]
+fn an_unmeasured_axis_does_not_keep_a_pair_from_being_quiet() {
+    let a = BTreeMap::from([(Axis::Appends, usage(10))]);
+    let unmeasured = Usage {
+        used: 5,
+        safe: 0,
+        top_entity: 0,
+    };
+    let b = BTreeMap::from([(Axis::Streams, unmeasured)]);
+    assert!(super::quiet(&a, &b, 50));
+}
+
+/// **A leaf at the deepest prefix is never split.** Of a leaf at `MAX_DEPTH` bits and the leaf
+/// `1`, a doubling splits only `1`.
+#[test]
+fn a_leaf_at_the_deepest_prefix_is_never_split() {
+    let deepest = "0".repeat(super::MAX_DEPTH);
+    let leaves = [leaf(&deepest, "a", 90), leaf("1", "a", 90)];
+    assert_eq!(super::deepest_first(&leaves), ["1"]);
+}
