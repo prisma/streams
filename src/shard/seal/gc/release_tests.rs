@@ -270,3 +270,29 @@ async fn no_release_is_logged_while_collection_is_off() {
     );
     rig.engine.begin_close();
 }
+
+/// A lineage object already at the name this opening logs to stands (`PutMode::Create`): the name
+/// is unique per opening, so one already there was written by this opening and is not replaced. A
+/// log at seq 0 and a released-all marker planted before the pass keep their bytes, and the
+/// pass's release rows still go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_lineage_object_already_at_its_name_stands() {
+    let rig = gc_rig("release-stands").await;
+    let ids = held(&rig, &[7], 2).await;
+    zero(&rig, &ids).await;
+    let root = rig.engine.object_root(7);
+    let log = lineage::release_log_path(&root, rig.engine.home(), rig.engine.writer_epoch, 0);
+    let all = lineage::released_all_path(&root, rig.engine.home());
+    let planted = lineage::encode(&[(ObjectKind::Segment, 4, 9)]);
+    for path in [&log, &all] {
+        let path = object_store::path::Path::from(path.as_str());
+        object_store::ObjectStoreExt::put(&*rig.store, &path, planted.clone().into())
+            .await
+            .unwrap();
+    }
+    rig.engine.gc_pass().await;
+    assert_eq!(object(&rig, log).await.as_deref(), Some(&planted[..]));
+    assert_eq!(object(&rig, all).await.as_deref(), Some(&planted[..]));
+    assert_eq!(releases(&rig).await, []);
+    rig.engine.begin_close();
+}
