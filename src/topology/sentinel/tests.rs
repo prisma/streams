@@ -350,3 +350,20 @@ fn a_child_counts_no_entry_its_stream_already_released() {
         Err(PlanError::Corrupt(gc::head_key(&low)))
     );
 }
+
+/// Each refusal of a plan reads as its cause, naming the row or object it is about.
+#[test]
+fn a_plan_refusal_reads_as_its_cause() {
+    assert_eq!(
+        PlanError::Retired.to_string(),
+        "the source holds 'T': a retired parent"
+    );
+    assert_eq!(
+        PlanError::UnknownTag(0x7a).to_string(),
+        "sentinel tag 0x7a has no split rule"
+    );
+    assert_eq!(
+        PlanError::NotSentinel(vec![0xab, 0x01]).to_string(),
+        "not a sentinel row: ab01"
+    );
+}
