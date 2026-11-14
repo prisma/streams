@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ed5c2d1f5e092e04539b2f070cc9c040f9257d9fea91c430359a9d395993b049",
+      "log_sha256": "349e0911e66d3dfc606a4e82e67feef8db28bc43a18eff90d6290900e77a76c4",
       "role": "baseline",
-      "seconds": 66.5,
+      "seconds": 118.7,
       "verdict": "pass"
     },
     {
@@ -17,27 +17,27 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "fc31f8ae8a9b009f1703dd4e50943be88fa63c053af349adf2991377e04fcbfa",
+      "log_sha256": "3e9986db6c0363d083bfe1b09cb8d844916a19ca82c91e0e8306565258cfd450",
       "role": "baseline",
-      "seconds": 112.3,
+      "seconds": 84.2,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/one-byte",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "fa20079d628a97a392c4285ede61198639bbe8fcc1dc06f3e37b84b0c11b22d9",
+      "log_sha256": "ccea31ca34a24524d4f591f0b87de764a2cb35a4f1a43649cd006cf2cb980614",
       "role": "baseline",
-      "seconds": 99.2,
+      "seconds": 88.4,
       "verdict": "pass"
     },
     {
       "check": "KANI-099/capped",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5727d944d316120526a4f01d872e30074ed5cef1f848c5f677b36ce7e69218b4",
+      "log_sha256": "0708909bcbb531548646e61c5cf0ab1d48f22ebf7d76ea99f818cc164788215c",
       "role": "baseline",
-      "seconds": 144.2,
+      "seconds": 214.8,
       "verdict": "pass"
     },
     {
@@ -48,7 +48,7 @@
       "failed_checks": [
         "\"a bloom admits every key it holds\""
       ],
-      "log_sha256": "a63f9dd0b29918c0c3ee678a165ad57ef6b0a7889dfb5ddc5db3427c8d64a353",
+      "log_sha256": "0fe7e358afdac7642489aae11dd038bbf8dad06a3ec4c449c36a55247b297050",
       "mutated": {
         "src/spill/directory/row.rs": {
           "baseline": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
@@ -56,7 +56,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 103.5,
+      "seconds": 81.8,
       "verdict": "fail"
     },
     {
@@ -67,7 +67,7 @@
       "failed_checks": [
         "\"every probe lies inside the bloom\""
       ],
-      "log_sha256": "93fe44d132733858e0feb3f91c389481281c1c72dbbec3873bdd126a540d3cbe",
+      "log_sha256": "b19d1c1ecef8aea96e1b3eae857ebcd07c85962957c538a967090f0c4d12a654",
       "mutated": {
         "src/spill/directory/row.rs": {
           "baseline": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
@@ -75,7 +75,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 128.6,
+      "seconds": 159.8,
       "verdict": "fail"
     }
   ],
@@ -87,8 +87,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -146,18 +146,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "fedf21ae2313f6584a3ac0d8c79c15c15a133ee00f61eaba28dbaa5df7ae7eac",
+  "inputs_sha256": "d0812f8f0699adb3d4684eef1bb37e4ef8cb27922bacf643225e7f5b43c3bd24",
   "run_on": {
     "dirty_tree": false,
-    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

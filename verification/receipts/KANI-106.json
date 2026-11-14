@@ -4,18 +4,18 @@
       "check": "KANI-106/entity-route",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d5e1ea96295db59ebb716eae3419664f01188410d972be29f99241c24c660d8b",
+      "log_sha256": "6bcbd262a0f2c26fdf7a3c413379473040c835bd21c647e267ea3c083ff171be",
       "role": "baseline",
-      "seconds": 44.6,
+      "seconds": 43.7,
       "verdict": "pass"
     },
     {
       "check": "KANI-106/entity-key",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "8b965023a3f7ead677b361b392433c5f6c101ae618d6fdf8a5147a8f9818fb39",
+      "log_sha256": "315b5a200e28a6f13d4883e43d4ecae1686c604a152e3eaa86828b80d0a1baf6",
       "role": "baseline",
-      "seconds": 41.3,
+      "seconds": 45.8,
       "verdict": "pass"
     },
     {
@@ -24,15 +24,15 @@
       "failed_checks": [
         "\"a prefix holds an entity exactly when it holds its route\""
       ],
-      "log_sha256": "f4f42e665c81efb96977c41ca547aada42e15532dfb78b3ff26b95a4c06c4b27",
+      "log_sha256": "252b353cc21fae231e014586700021bfb61e94c7919df3a1d4a5928c4ddc7a7f",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "1e72142920a6ef4495384d6bd43661c19448c5221fa8d2e669115e6839c3b765",
-          "control": "4951912d67b988f5549707efee88fc0284ecbd1f3e6fb33d623bc5744b9fcc45"
+          "baseline": "962a49851b3ca013d5e6227658058f215e651f0e61efb3edc6fe9ce12bca4d76",
+          "control": "a6ac7062637ce1dd870af8c61492157b500ae4e031741b03b3886638943bcd62"
         }
       },
       "role": "negative-control",
-      "seconds": 40.0,
+      "seconds": 153.6,
       "verdict": "fail"
     },
     {
@@ -41,15 +41,15 @@
       "failed_checks": [
         "\"a prefix holds an entity exactly when it holds its route\""
       ],
-      "log_sha256": "8352ffef858ab3f5812f67f5e38d173abb9ca04a45cfe0630f7f0a6fd7c00933",
+      "log_sha256": "1c58217e263afd35b346b2b8d49f4eb34a177abb006d02d5223a48a37746d4df",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "1e72142920a6ef4495384d6bd43661c19448c5221fa8d2e669115e6839c3b765",
-          "control": "be2be1b33c0838e8e0b181cf9a41438b702997d6d8e454a2410feb835fb1d0a1"
+          "baseline": "962a49851b3ca013d5e6227658058f215e651f0e61efb3edc6fe9ce12bca4d76",
+          "control": "c056207f60ed4c64815879308e0640c5442d0d727016f6f86118518431a81ee6"
         }
       },
       "role": "negative-control",
-      "seconds": 40.9,
+      "seconds": 119.4,
       "verdict": "fail"
     },
     {
@@ -58,15 +58,15 @@
       "failed_checks": [
         "\"an entity key lies in its hash's range\""
       ],
-      "log_sha256": "cbdb56c7df727a9f3f01c40af04febab33043356077eb736632dece78a303865",
+      "log_sha256": "a0ec754508a12f4ba81e7b0c1a699e489c36c985afc7eb3985877cfd4c71b964",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "1e72142920a6ef4495384d6bd43661c19448c5221fa8d2e669115e6839c3b765",
-          "control": "09024705ce5a47684396935fa38920a4cdcb31d0aa8ae5df6d26ba0d129a451a"
+          "baseline": "962a49851b3ca013d5e6227658058f215e651f0e61efb3edc6fe9ce12bca4d76",
+          "control": "5f7251023d61ec1fbcbb4ee77b601294165cce49fd7d6975ba4f8548ff1019c1"
         }
       },
       "role": "negative-control",
-      "seconds": 41.1,
+      "seconds": 78.0,
       "verdict": "fail"
     },
     {
@@ -75,7 +75,7 @@
       "failed_checks": [
         "\"an entity key never lies in the sentinel\""
       ],
-      "log_sha256": "06a99181ea42f31ea54780053b0c1ad28c5d30819e140a3d73f6fad2c9aa3033",
+      "log_sha256": "a47ff2c691b1a36cf1b2dba82406388558a0b3f5bc200817ffcf42148d2c1a18",
       "mutated": {
         "src/keyspace/proofs.rs": {
           "baseline": "8c606d5aa3fe341fa913b6b69fd177cfd684213cce0636333e58eca04ea7a482",
@@ -83,7 +83,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 38.2,
+      "seconds": 75.9,
       "verdict": "fail"
     }
   ],
@@ -95,12 +95,12 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/keyspace.rs": "1e72142920a6ef4495384d6bd43661c19448c5221fa8d2e669115e6839c3b765",
+      "src/keyspace.rs": "962a49851b3ca013d5e6227658058f215e651f0e61efb3edc6fe9ce12bca4d76",
       "src/keyspace/proofs.rs": "8c606d5aa3fe341fa913b6b69fd177cfd684213cce0636333e58eca04ea7a482",
       "src/keyspace/range.rs": "3f76210fbe57ae47081362c7f1007069b2212593f13242fa8040dc87a1f4c607",
       "verification/kani/controls/KANI-106-family-byte-first.patch": "6f55f945effde431e84bef801ebba0358fb4cc30dba95ff78e67213f3683d35b",
@@ -156,18 +156,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "11ae56f08065ba7c82d48820d31dc63d50a6f29afc1413c1ae0e86c9af91c355",
+  "inputs_sha256": "28091e542fab82312fa42fcc32053fa58e858e6c8e7891076cbf8dd7c4f32dd4",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b01f50a89ef292a16e232ab2720ac950290fe5dd"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

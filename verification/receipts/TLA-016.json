@@ -5,10 +5,10 @@
       "depth": 24,
       "distinct_states": 102027,
       "expected": "pass",
-      "log_sha256": "b777a223c997dac3b5f297bc682c70cc2b3cfee65c3d6d7adf18445ff7ccdfad",
+      "log_sha256": "0333a80cf4e43af96b69b13ba0c871ab9ef7fb74039abb7137118c6d6cad7906",
       "property": null,
       "role": "baseline",
-      "seconds": 5.8,
+      "seconds": 4.9,
       "states_generated": 271927,
       "states_left": 0,
       "verdict": "pass"
@@ -18,10 +18,10 @@
       "depth": 27,
       "distinct_states": 2168636,
       "expected": "pass",
-      "log_sha256": "f4fca2735d02bbdf2abc8b3bf26077c75a2845deb274cdbdc1ddeb841b8c3cb5",
+      "log_sha256": "b55ba44eb60b956485cae9f0a37f44bec304a9fc38362d398aa9eda3e1e5315e",
       "property": null,
       "role": "baseline",
-      "seconds": 119.9,
+      "seconds": 119.7,
       "states_generated": 6154503,
       "states_left": 0,
       "verdict": "pass"
@@ -31,10 +31,10 @@
       "depth": 33,
       "distinct_states": 3130346,
       "expected": "pass",
-      "log_sha256": "478b05865985bf6c6a2ed7ec6c0ef0c24531e2b8c0cdf2e6ae8859a0631c9dd9",
+      "log_sha256": "0e44e7f9accb2854e42ddfe06cdcaa4e6fad8a044d8724f837d35ffaef9e4065",
       "property": null,
       "role": "baseline",
-      "seconds": 117.6,
+      "seconds": 117.2,
       "states_generated": 8313250,
       "states_left": 0,
       "verdict": "pass"
@@ -42,92 +42,92 @@
     {
       "check": "TLA-016/nc-prebuilt-remainder",
       "depth": 11,
-      "distinct_states": 5222,
+      "distinct_states": 5263,
       "expected": "violation:I1_AckedReadableAfterRestart",
-      "log_sha256": "e1fcdba9d79794ab7f824ae5337f22bcd1919257591f2f718e0cf2f855b0ee52",
+      "log_sha256": "c7c089476f2cde54b1fb809b2dc4d9227e3ed0ce916dba11d9edc84ac258cada",
       "property": "I1_AckedReadableAfterRestart",
       "role": "negative-control",
-      "seconds": 1.8,
-      "states_generated": 10956,
-      "states_left": 2371,
+      "seconds": 1.5,
+      "states_generated": 11079,
+      "states_left": 2382,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/nc-durable-boundary",
       "depth": 9,
-      "distinct_states": 1446,
+      "distinct_states": 1424,
       "expected": "violation:F2_SealFlushLeavesNoSealedPage",
-      "log_sha256": "aa0ff3391dc7bf98eabd4426a8d7b5d365d4aef3c3a3e97dbcf9524c5e97b7bc",
+      "log_sha256": "942d0992d96c013803df6190a663244672684226563fccfad6950000c25ed8ef",
       "property": "F2_SealFlushLeavesNoSealedPage",
       "role": "negative-control",
       "seconds": 1.0,
-      "states_generated": 2848,
-      "states_left": 743,
+      "states_generated": 2800,
+      "states_left": 735,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/nc-remainder-keeps-index",
       "depth": 8,
-      "distinct_states": 686,
+      "distinct_states": 667,
       "expected": "violation:W_IndexMatchesPending",
-      "log_sha256": "67f107515c6164a84c7144caea703575fd293e422add5f6a6a9793eb3fb0491d",
+      "log_sha256": "7426e8d5681b551a94e38e70b4518602543712b069730f270fd42e23e5f517b5",
       "property": "W_IndexMatchesPending",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 1284,
-      "states_left": 383,
+      "states_generated": 1253,
+      "states_left": 374,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealDurable",
       "depth": 10,
-      "distinct_states": 2720,
+      "distinct_states": 2839,
       "expected": "violation:Witness_SealDurable",
-      "log_sha256": "61c7a268914b67fce0555307399d4a02e05e7ea12cf32e0702782ba326300ffe",
+      "log_sha256": "81c345796f286e41a459249adcd05b405105bdf6af54f7de5459fbd255e248a0",
       "property": "Witness_SealDurable",
       "role": "witness",
       "seconds": 1.1,
-      "states_generated": 5559,
-      "states_left": 1308,
+      "states_generated": 5786,
+      "states_left": 1362,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-RemainderCarriesLatePage",
       "depth": 9,
-      "distinct_states": 1595,
+      "distinct_states": 1473,
       "expected": "violation:Witness_RemainderCarriesLatePage",
-      "log_sha256": "5e8d554eb99c07a475a61a1851aef3250b71ac89db5b57079ef2cfe3679dc43f",
+      "log_sha256": "eff73424f5c061d8cf42661d76cab3c0c369c99872e13cdd0f8b1c7f126e2368",
       "property": "Witness_RemainderCarriesLatePage",
       "role": "witness",
       "seconds": 1.0,
-      "states_generated": 3138,
-      "states_left": 820,
+      "states_generated": 2892,
+      "states_left": 762,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-SealGroupCarriesAppend",
       "depth": 8,
-      "distinct_states": 835,
+      "distinct_states": 784,
       "expected": "violation:Witness_SealGroupCarriesAppend",
-      "log_sha256": "d8ccdd4038197d83b182682234bfa9b664fea7f144ca6e4532432bc9e8661e48",
+      "log_sha256": "75ba40f7aa6a6fb5a7c69fcb9421fdbf551b0f3120cc74b4213b84e6cfe17164",
       "property": "Witness_SealGroupCarriesAppend",
       "role": "witness",
-      "seconds": 0.9,
-      "states_generated": 1583,
-      "states_left": 459,
+      "seconds": 1.0,
+      "states_generated": 1466,
+      "states_left": 434,
       "verdict": "violation"
     },
     {
       "check": "TLA-016/witness-CrashAfterSealRecovered",
       "depth": 10,
-      "distinct_states": 3495,
+      "distinct_states": 3284,
       "expected": "violation:Witness_CrashAfterSealRecovered",
-      "log_sha256": "d8a113f8e256e16cd8d1ae0429b3849713208366d673654c6cbf6b6095874669",
+      "log_sha256": "88c93adcecb2e11315caabea80b7c95309ce5c1d1cf7986a27da8d8089fd7e19",
       "property": "Witness_CrashAfterSealRecovered",
       "role": "witness",
-      "seconds": 1.2,
-      "states_generated": 7209,
-      "states_left": 1661,
+      "seconds": 1.1,
+      "states_generated": 6676,
+      "states_left": 1580,
       "verdict": "violation"
     }
   ],
@@ -142,17 +142,17 @@
       "ASM-SLATEDB-MERGE": "afbf38d680268f74202a5a0c1354980421ea0fc62bec7ff5964624c1140b96c0"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
       "src/shard/handle_load.rs": "3f79d770b04f2cc14b78c9bdbe1172ff1fc77f6745b0bb64565dbd423feeb16c",
-      "src/shard/seal.rs": "dfcbd5b793ac064c59a9dd7cd4312521bad97e3a601bd3a09c92e939f22beb0d",
-      "src/shard/seal/open.rs": "a187392dc9dd2eac71e8b54c28458c2b574c043d582dde7159469814077ef589",
-      "src/shard/seal/steps.rs": "fb7853e4217b8a631b648ade4dab4153911f40400b7dfae1f8b5b0b513158582",
+      "src/shard/seal.rs": "51d8705b9f0e1cc135a5218d888440026715bc5d710d59f851fa87ca3856c103",
+      "src/shard/seal/open.rs": "e986ba1b87ae73a50124c1556c1d02756a17b911792f7013202d4f70d9993d32",
+      "src/shard/seal/steps.rs": "50269d810a44fcd8be536f115f83b520a8f6d711c49e8cf3f0c10049d65f0175",
       "src/shard/transaction/finalize.rs": "46531bf4fc7c3f078636034435af338c150fb3052e11e98502d9900bbf8b94e6",
       "src/shard/transaction/overlay.rs": "ecee27e6ad3b2fab9cfb2ff72926016adb9854dbea4755ccae3d21d6862f8642",
-      "src/shard/transaction/seal.rs": "edb4c2a84caf0f75b013567f40253a0404d42a4ed3511b7e2ae029e067a4b3b4",
+      "src/shard/transaction/seal.rs": "a1901811f11193007fc287bc13d2ad6f236a9243ad11a6ea98755a9bbccd0e3e",
       "src/spill/directory.rs": "293a27f9c4eb95c4c6d70c53e550b4e837ce49751d0faa2da75b225c88cec830",
       "src/spill/directory/row.rs": "1cd7416fb1333fcf073d50500ae41a8a01cefaa523bb50127dc5190e887fea6c",
       "src/spill/pending.rs": "43ba766ba80d6d6f919c785dbbe3fb10b559fba0a8a68fefa2f2fdc31fdd3290",
@@ -217,18 +217,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "cc548f8b957bbc88bb3f6ea38702fed5e25f09a8707255d32c9f60277f79d7f9",
+  "inputs_sha256": "6dc58d06e5e162ff8bae62a7d2902da73a082ca8180e15e7efd69484eef58cc1",
   "run_on": {
     "dirty_tree": false,
-    "revision": "5884a1c5aaa0fcb05041ecd50f4e02a5e5ac2b1b"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

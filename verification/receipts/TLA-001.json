@@ -5,10 +5,10 @@
       "depth": 24,
       "distinct_states": 108329,
       "expected": "pass",
-      "log_sha256": "7f8d13419da9011cb0df1869613f30bfe78925d412ab6c6048b2e0e1d629cc1c",
+      "log_sha256": "b3987e0ed108734bdba0f01ac86396c410f69a6dc5646342cd47b0d262598aca",
       "property": null,
       "role": "baseline",
-      "seconds": 4.4,
+      "seconds": 3.2,
       "states_generated": 319781,
       "states_left": 0,
       "verdict": "pass"
@@ -18,10 +18,10 @@
       "depth": 34,
       "distinct_states": 7643540,
       "expected": "pass",
-      "log_sha256": "5b6d51bf31723a37dff815332488c4831cb331e5542bdc9b4257dc9f0e13a26f",
+      "log_sha256": "ce988d7f31c00e95dfe9f24160de199004a2ab1460470f562c002a6bcd95aa5e",
       "property": null,
       "role": "baseline",
-      "seconds": 171.0,
+      "seconds": 145.5,
       "states_generated": 22253299,
       "states_left": 0,
       "verdict": "pass"
@@ -29,79 +29,79 @@
     {
       "check": "TLA-001/nc-leaked-outcome",
       "depth": 9,
-      "distinct_states": 2660,
+      "distinct_states": 2692,
       "expected": "violation:UniqueAllocation",
-      "log_sha256": "5d5af6fbd79042c73f24f02e547c0691ef0ea3031bbf5373f45bf7dd3ffbb693",
+      "log_sha256": "3f985955ad1be6c67d875bab16e63d9c34b1968a246da519fa1f4f4a94dfa2a4",
       "property": "UniqueAllocation",
       "role": "negative-control",
-      "seconds": 1.2,
-      "states_generated": 6636,
-      "states_left": 1282,
+      "seconds": 1.1,
+      "states_generated": 6740,
+      "states_left": 1291,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/nc-dropped-incarnation-check",
       "depth": 10,
-      "distinct_states": 5376,
+      "distinct_states": 5118,
       "expected": "violation:IncarnationFenced",
-      "log_sha256": "5e7c7939ec9fa68ea2c74efcdefe98d44e1e4ec27f15eb239ef58c0fe2be61d8",
+      "log_sha256": "98f88ed0fb7c6bcfff2ac2aa0170348337d2035e8fcab99fda24c5fb6bbb7d00",
       "property": "IncarnationFenced",
       "role": "negative-control",
-      "seconds": 1.2,
-      "states_generated": 13823,
-      "states_left": 2237,
+      "seconds": 1.1,
+      "states_generated": 13121,
+      "states_left": 2160,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/nc-missing-etag-overwrite",
       "depth": 7,
-      "distinct_states": 990,
+      "distinct_states": 986,
       "expected": "violation:AllocatorCountsWrites",
-      "log_sha256": "faf40981568cba17751588a8d9a13d60d5f04c820b305bd6dbb83ef19b799590",
+      "log_sha256": "e5bcbc71193eab30af63e4c0c45a44b60afb879ab9a479dbc316c377c44c65d1",
       "property": "AllocatorCountsWrites",
       "role": "negative-control",
       "seconds": 1.0,
-      "states_generated": 2262,
-      "states_left": 630,
+      "states_generated": 2249,
+      "states_left": 629,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/nc-client-retry",
       "depth": 7,
-      "distinct_states": 659,
+      "distinct_states": 759,
       "expected": "violation:AllocatorCountsWrites",
-      "log_sha256": "c34e0f0afae165f52b17f619dea20e05b4e4b6606f75acff25eff83b052b4cf0",
+      "log_sha256": "6007f00baa8de85d394d4d36441064e2c264e7935c99aac36b439423f403d237",
       "property": "AllocatorCountsWrites",
       "role": "negative-control",
-      "seconds": 1.1,
-      "states_generated": 1334,
-      "states_left": 433,
+      "seconds": 1.0,
+      "states_generated": 1518,
+      "states_left": 507,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/nc-client-retry-recreate",
       "depth": 9,
-      "distinct_states": 4577,
+      "distinct_states": 5006,
       "expected": "violation:RecreateAnswerTruthful",
-      "log_sha256": "fbebfd430a3c86d0a952943af327d6b44ce22f55e7c2c68f5675959d33b53a9b",
+      "log_sha256": "9bd7af54619f3871aa3bc752b81c9fc39d144d66ed45314e951c3dfcded33d03",
       "property": "RecreateAnswerTruthful",
       "role": "negative-control",
       "seconds": 1.1,
-      "states_generated": 11147,
-      "states_left": 2441,
+      "states_generated": 12441,
+      "states_left": 2575,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/witness-LoserRetriesThenApplies",
       "depth": 9,
-      "distinct_states": 2891,
+      "distinct_states": 2661,
       "expected": "violation:Witness_LoserRetriesThenApplies",
-      "log_sha256": "fa954c592a76b081e24b5391f02594c70c47ec5a38a216e7cd840932d64a2999",
+      "log_sha256": "e23589daebec61aed10846a0fdc431271f11292207d820deff9b335bc99a2461",
       "property": "Witness_LoserRetriesThenApplies",
       "role": "witness",
-      "seconds": 1.2,
-      "states_generated": 7302,
-      "states_left": 1359,
+      "seconds": 1.1,
+      "states_generated": 6633,
+      "states_left": 1285,
       "verdict": "violation"
     },
     {
@@ -109,7 +109,7 @@
       "depth": 4,
       "distinct_states": 61,
       "expected": "violation:Witness_AmbiguousAfterWrite",
-      "log_sha256": "7c92279370b8aedd8ddc479c0ef5aa31b26ca6fd5a601adf9df5772cc6c46d85",
+      "log_sha256": "4dcc9b8ae9dc5f80d5910f5500c9e0ff421d68598bcf451af63c66842c2313a8",
       "property": "Witness_AmbiguousAfterWrite",
       "role": "witness",
       "seconds": 0.9,
@@ -120,14 +120,14 @@
     {
       "check": "TLA-001/witness-StaleMutatorFenced",
       "depth": 9,
-      "distinct_states": 2969,
+      "distinct_states": 3157,
       "expected": "violation:Witness_StaleMutatorFenced",
-      "log_sha256": "c2f54744405ecdf55f1088427d38de07713ccfb738056ccb4df0da27def5e1b9",
+      "log_sha256": "bafd0fa96ac5bc23d673db79d7af9fd423da487d57ef335ae26641e05fb6caa6",
       "property": "Witness_StaleMutatorFenced",
       "role": "witness",
       "seconds": 1.1,
-      "states_generated": 7516,
-      "states_left": 1381,
+      "states_generated": 8050,
+      "states_left": 1442,
       "verdict": "violation"
     },
     {
@@ -135,7 +135,7 @@
       "depth": 3,
       "distinct_states": 16,
       "expected": "violation:Witness_MissingTokenRefused",
-      "log_sha256": "21d31df84ac1eb9fcd926cdbb5b65188dc4bc0e0f7f14408e2000dc2286e6845",
+      "log_sha256": "23f3d086d734b929eeec13c078f8f2b214a2d0bc76439d3a3bd07bba03be255d",
       "property": "Witness_MissingTokenRefused",
       "role": "witness",
       "seconds": 0.8,
@@ -146,66 +146,66 @@
     {
       "check": "TLA-001/witness-Recreated",
       "depth": 8,
-      "distinct_states": 1578,
+      "distinct_states": 1539,
       "expected": "violation:Witness_Recreated",
-      "log_sha256": "fa6a7a78a40dd1a20ab1279df655c5f8a0ef6467e80583713115aaf5e4af0bb1",
+      "log_sha256": "d32f0bae59d7be84bc12ad0192ec8580fa46dd9f05cc74d0d29a12d15333bba0",
       "property": "Witness_Recreated",
       "role": "witness",
       "seconds": 1.0,
-      "states_generated": 3905,
-      "states_left": 789,
+      "states_generated": 3818,
+      "states_left": 770,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/witness-ConflictExhausted",
       "depth": 12,
-      "distinct_states": 11989,
+      "distinct_states": 12114,
       "expected": "violation:Witness_ConflictExhausted",
-      "log_sha256": "37e78b308aff889082c2361e876d6108936404763334baac60d66948659b056e",
+      "log_sha256": "1dc57a5741e90ea864342f0d208b1eecb5242dab0543a853945d19b11a2405dc",
       "property": "Witness_ConflictExhausted",
       "role": "witness",
-      "seconds": 1.5,
-      "states_generated": 30608,
-      "states_left": 4595,
+      "seconds": 1.2,
+      "states_generated": 30994,
+      "states_left": 4625,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/witness-DeclinedOnTombstone",
       "depth": 6,
-      "distinct_states": 396,
+      "distinct_states": 384,
       "expected": "violation:Witness_DeclinedOnTombstone",
-      "log_sha256": "5bfbe54d37ee17fa65120debd9975c3b38d7c0c7ef03603a2f4d72a29b76dcd8",
+      "log_sha256": "8403e8d6a1106b977d3af435648e5024b0dc7dc6babea88ebe693beeab31b3dd",
       "property": "Witness_DeclinedOnTombstone",
       "role": "witness",
-      "seconds": 1.0,
-      "states_generated": 844,
-      "states_left": 240,
+      "seconds": 0.9,
+      "states_generated": 807,
+      "states_left": 235,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/witness-ReplacementAllocatesWhileStaleFenced",
       "depth": 12,
-      "distinct_states": 14123,
+      "distinct_states": 13585,
       "expected": "violation:Witness_ReplacementAllocatesWhileStaleFenced",
-      "log_sha256": "95a108b085a1f88fee669af15fd8cc2fffe9d956604e31ed4bedb4396b36d4ab",
+      "log_sha256": "345fe4489c33854f0abd33e29a283272a3917a242e9a1813bb3045c55399b550",
       "property": "Witness_ReplacementAllocatesWhileStaleFenced",
       "role": "witness",
-      "seconds": 1.5,
-      "states_generated": 36815,
-      "states_left": 5128,
+      "seconds": 1.4,
+      "states_generated": 35236,
+      "states_left": 4990,
       "verdict": "violation"
     },
     {
       "check": "TLA-001/witness-AmbiguousRecreateRetried",
       "depth": 9,
-      "distinct_states": 3030,
+      "distinct_states": 2951,
       "expected": "violation:Witness_AmbiguousRecreateRetried",
-      "log_sha256": "76454522f6fde5a47c33f66efa0bc9573f777af2a8b1da1f7cf29b09c915f2d6",
+      "log_sha256": "597a613c3fcd4c75af97c8d2859365302b9522e619be9a5b73e4ff5cf4d8ea3e",
       "property": "Witness_AmbiguousRecreateRetried",
       "role": "witness",
-      "seconds": 1.1,
-      "states_generated": 7661,
-      "states_left": 1395,
+      "seconds": 1.0,
+      "states_generated": 7456,
+      "states_left": 1378,
       "verdict": "violation"
     }
   ],
@@ -220,12 +220,12 @@
       "ASM-SEAL-PATH": "542beac28eae85449dc38251d8df4b77cc5a4103bda5c77b2ce8745a4102fecd"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/creation/claim.rs": "4aff49936aa61a148d80c5aa4910cd778fbcb6884167c5b3529c32ed35ed5c46",
       "src/bootstrap/s3_store.rs": "80a219f3807a7819fb3ccd52a92a8e29396b48871459fb1eaa1f1bbcee5d3512",
-      "src/registry.rs": "16a8838be2cb4c4f82d5f7d934a8a05fab92f67bced453738e16b77703c34239",
+      "src/registry.rs": "6723bb6918ebc2395fd7e920c9fb8e90f2ebe9b550dd9e2b6b0b1c5d5d0b1056",
       "src/registry/fork_debt.rs": "b802b8ef61f2bc83e9b3b61cea56e3a7005c7f8269c3f54ec98c6f75c66889c1",
       "src/registry/replaced.rs": "f5aae2c3a84be2241679c85ff2271792b893982b221b120bfb4369068dc23833",
       "verification/tla/seal/MC_RegistryCas.tla": "6007fb56dc12605267e3128ff1016047307e9a3522c6fe103758c5a45b88a9f8",
@@ -300,22 +300,55 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "2bce89a6dbe0246f67b3b25651dddf7696c4fc50c3e44b50dc8ab76b63390050",
+  "inputs_sha256": "78fb3ae58501fdb0c7fde0a8e48cd31f15d24c29eeeaf1d2340998ed6becc58d",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b81ecc34edee22f4de358054dd52fef9e9de222d"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {
     "java": "17.0.1",
+    "kani": "0.68.0",
     "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"

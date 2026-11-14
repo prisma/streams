@@ -1,0 +1,166 @@
+{
+  "checks": [
+    {
+      "check": "KANI-108/exact-sum",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "3d104cf509497deeebdc5c9ad8dc29670405dfa3a7fdeb0a7025575b9729e72d",
+      "role": "baseline",
+      "seconds": 101.5,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-108/nc-wrapping-sum",
+      "expected": "fail:a merged row only for one length and a sum that fits",
+      "failed_checks": [
+        "\"a merged row only for one length and a sum that fits\""
+      ],
+      "log_sha256": "039410584a55c532c34fe635a0128403b1106db3ba3224c47a40a53aa53f8006",
+      "mutated": {
+        "src/spill/gc.rs": {
+          "baseline": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
+          "control": "a39fd370cfd9fbb990e35b1cff701850bdffd7bf5761354239cfc1920a0d90b2"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 99.2,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-108/nc-later-creation",
+      "expected": "fail:the merged row keeps the earlier creation",
+      "failed_checks": [
+        "\"the merged row keeps the earlier creation\""
+      ],
+      "log_sha256": "2f0c12e189a3c72a986a287910db9a859bc0a772823033a7c27222621480ad2e",
+      "mutated": {
+        "src/spill/gc.rs": {
+          "baseline": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
+          "control": "d2eda1373a79a766a085172d2be626664edb4b9e11ee7dce393cfb90e05700f8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 47.6,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-108",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/spill/gc.rs": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
+      "src/spill/gc/proofs.rs": "2d3d4913b2fe82f99fa4007852d1d527cca331b33c5129dbe550fd2691ca2f1b",
+      "verification/kani/controls/KANI-108-later-creation.patch": "d6c22fd6b99529863e4fd341df3fbf2e38a9d0e490e7b0e8e66e29ec308e02f4",
+      "verification/kani/controls/KANI-108-wrapping-sum.patch": "f6634dc975ab98527581f392b910a2cb3e7dc46bcbb331d49447e93134325648"
+    },
+    "manifest_entry": "6c81a6afca7f595bc144942d69b82267c2a2c1aef23fcdf6aaf1671bb3f7d947",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "b80145f7ae05541f8de4a1eb00862aec5dcff4e9a26fac1cfcd839b1cd726913",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

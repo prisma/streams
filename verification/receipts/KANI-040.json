@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "2c98cade5463377f6282e3981d952ce622fcb98740e65648d238231478a87a6e",
+      "log_sha256": "64abfb188e656de69fef381e39e5a43abc2025adf7c1650403ef8726dd6b79bd",
       "role": "baseline",
-      "seconds": 126.6,
+      "seconds": 128.2,
       "verdict": "pass"
     },
     {
@@ -19,15 +19,15 @@
       "failed_checks": [
         "\"a plain seal never joins a claim that owes a final record\""
       ],
-      "log_sha256": "d5013ba00020e7e789019547962f4b4a5ef6ae9b107b8d3379a67d5a94328374",
+      "log_sha256": "3f8062fd572a06676deaf2caaa4b7fe955ae5a2584735640e0fd66f088b965f2",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
-          "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-          "control": "044d06b0f1cd37448cd3a780461dc4c5bf66f4c6b0fba7b979a8301c4269acb5"
+          "baseline": "09dd48ed5ba0af5065a4a6dae46612fed9ee784a9cd10d526dc4921d75ae6277",
+          "control": "48bd4a66e348802ddcf2f4fb709b0c7a83743f777d2983bd8b668a854af1724f"
         }
       },
       "role": "negative-control",
-      "seconds": 108.1,
+      "seconds": 100.8,
       "verdict": "fail"
     },
     {
@@ -38,15 +38,15 @@
       "failed_checks": [
         "\"only the claim's own operation, or a plain seal joining a claim that owes no final record, renews it\""
       ],
-      "log_sha256": "bc478ca070a9fc4cacf2a6aab0f9590a8e778ef410867ec8be31ae9e0e293b6f",
+      "log_sha256": "f08669a880b129eb2e109b18d07986a9cece4be262524dac9a5a0d26f575744d",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
-          "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-          "control": "58ae716a6d93134d397cf62a10053cb6fbb9efc3c04616fe8144f36464438fe5"
+          "baseline": "09dd48ed5ba0af5065a4a6dae46612fed9ee784a9cd10d526dc4921d75ae6277",
+          "control": "c2ca4df7abea909e685d4756395046746c2de11f99edf2c432296350269f480b"
         }
       },
       "role": "negative-control",
-      "seconds": 80.3,
+      "seconds": 146.7,
       "verdict": "fail"
     },
     {
@@ -57,15 +57,15 @@
       "failed_checks": [
         "a declined step carries no installation"
       ],
-      "log_sha256": "6bb938b6890eadd70e17067fe87b8bc5175e90b8ce391652718abd73e3e6262c",
+      "log_sha256": "7ce3ee09db2e9d19deef0fca251a5f05ebf5684e9574bb629285953de27c54a7",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
-          "baseline": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-          "control": "6a5be81f94895e2136e56f09a3eb7f2d33c62a2fe681e180f37c4755ea43e95e"
+          "baseline": "09dd48ed5ba0af5065a4a6dae46612fed9ee784a9cd10d526dc4921d75ae6277",
+          "control": "cb450b2ea6d1a06a3fbf668c4cbbe4586f390e5a16dc5ea5a27507c1d0706fac"
         }
       },
       "role": "negative-control",
-      "seconds": 90.5,
+      "seconds": 201.5,
       "verdict": "fail"
     }
   ],
@@ -77,13 +77,13 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/application/lifecycle/claims.rs": "45b061a670d4fabfd99898ca50ccfb4aa2cf0e9377e25cd0e86c68dcee68adc3",
-      "src/application/lifecycle/claims/proofs.rs": "2362d88931c57984d911ad4b15ce53b18324adca0d9d08cfaa691d4d53b7a7c9",
+      "src/application/lifecycle/claims.rs": "09dd48ed5ba0af5065a4a6dae46612fed9ee784a9cd10d526dc4921d75ae6277",
+      "src/application/lifecycle/claims/proofs.rs": "c15c81799b4c2119169e84166ef975344d1f0b5b53b89e898013566c184a1c14",
       "verification/kani/controls/KANI-040-install-without-a-claim.patch": "10f0886c2f9583be570a8ed9c0bd2f6a9b7c418a6844a38f9d6f1eaf9a1f5b18",
       "verification/kani/controls/KANI-040-plain-seal-joins-owed-final.patch": "698984591d099647a684c74217847c969ebebf30b912129085deaa3cbea095ca",
       "verification/kani/controls/KANI-040-renew-the-wrong-operation.patch": "104a6500498cc4f7792e3ccb04eb1c610a9b9c9e90ad5deaa6df6ddc0b4978c4"
@@ -136,18 +136,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "95fc53040ad49315d7dcd73c8b0203e29381e464328ff398a8bf309d22671291",
+  "inputs_sha256": "0920954c5525ac886b2526ff73c15f0a21565b75f4462458f940b87471da725a",
   "run_on": {
     "dirty_tree": false,
-    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

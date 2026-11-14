@@ -1,0 +1,379 @@
+{
+  "checks": [
+    {
+      "check": "TLA-045/baseline",
+      "depth": 29,
+      "distinct_states": 14898,
+      "expected": "pass",
+      "log_sha256": "244fe7b4479ebfcab0cf60f4c74027e5f26d408f799efef81ae1f525f0a006fa",
+      "property": null,
+      "role": "baseline",
+      "seconds": 1.7,
+      "states_generated": 48901,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-045/liveness",
+      "depth": 29,
+      "distinct_states": 14898,
+      "expected": "pass",
+      "log_sha256": "22f521314bad6f482e3bcbadfa726a89e5809777862b86e01f7a8bf87e088e65",
+      "property": null,
+      "role": "baseline",
+      "seconds": 3.5,
+      "states_generated": 48901,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-045/nc-actor-reopens-after-fence",
+      "depth": 13,
+      "distinct_states": 2749,
+      "expected": "violation:AckedReadable",
+      "log_sha256": "544d3097e7324d4f51cc67958c8ed0918548859747934b48d3b49c2fc6be49e7",
+      "property": "AckedReadable",
+      "role": "negative-control",
+      "seconds": 1.6,
+      "states_generated": 6726,
+      "states_left": 961,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-checkpoint-before-barrier",
+      "depth": 9,
+      "distinct_states": 408,
+      "expected": "violation:AckedReadable",
+      "log_sha256": "8331fed8b78cd0641474a4f281061d563f84ae51adc73ecffee3e8021e331f1e",
+      "property": "AckedReadable",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 799,
+      "states_left": 159,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-claim-without-fence",
+      "depth": 10,
+      "distinct_states": 616,
+      "expected": "violation:ChildrenExact",
+      "log_sha256": "b5188f111a1d7a65e9e7368cc70a516fe9779e5b8b244392b05980fc11ace98f",
+      "property": "ChildrenExact",
+      "role": "negative-control",
+      "seconds": 1.2,
+      "states_generated": 1250,
+      "states_left": 247,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-decide-before-fence",
+      "depth": 11,
+      "distinct_states": 589,
+      "expected": "violation:AckedReadable",
+      "log_sha256": "4d9a0039189734f5a378fcbb6701361168e5b551bd0e2ea690d66e6e12186fae",
+      "property": "AckedReadable",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 1100,
+      "states_left": 242,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-delete-successor-intent",
+      "distinct_states": 15194,
+      "expected": "violation:ForwardAfterRetire",
+      "log_sha256": "cc27e7fcac130244c40a744a871f817c5fc1c6cb40e4b275b8b4ddc2599c3820",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 2.4,
+      "states_generated": 46638,
+      "states_left": 0,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-publish-before-retire",
+      "depth": 9,
+      "distinct_states": 270,
+      "expected": "violation:NoDualServe",
+      "log_sha256": "f898a5b812c99926987d6450ae60c19af706ee7e4ed3bf5a894e91ea1cd2abd6",
+      "property": "NoDualServe",
+      "role": "negative-control",
+      "seconds": 1.4,
+      "states_generated": 491,
+      "states_left": 116,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-reuse-home",
+      "depth": 8,
+      "distinct_states": 200,
+      "expected": "violation:HomesUnique",
+      "log_sha256": "a2c53b043ed27c03021ffee62c6faa76af1862918cb556bfdd3bbd202db402b9",
+      "property": "HomesUnique",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 374,
+      "states_left": 79,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-reuse-home-children",
+      "depth": 17,
+      "distinct_states": 6090,
+      "expected": "violation:ChildrenExact",
+      "log_sha256": "f9ae9c607630a1ea77035f75c97711dad8c221657aec5bc7ed6300d37d934446",
+      "property": "ChildrenExact",
+      "role": "negative-control",
+      "seconds": 1.5,
+      "states_generated": 16317,
+      "states_left": 1184,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-rollback-after-retire",
+      "depth": 11,
+      "distinct_states": 957,
+      "expected": "violation:AckedReadable",
+      "log_sha256": "52f7a98e199509f44a568d95d67d3fd513b3b96506874e11408b41766c553dd0",
+      "property": "AckedReadable",
+      "role": "negative-control",
+      "seconds": 1.1,
+      "states_generated": 1880,
+      "states_left": 373,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-serve-source-under-intent",
+      "depth": 11,
+      "distinct_states": 556,
+      "expected": "violation:AckedReadable",
+      "log_sha256": "88098082135218cedf0ed2a16d79a476192248723b880394946eec3183e6ce22",
+      "property": "AckedReadable",
+      "role": "negative-control",
+      "seconds": 1.1,
+      "states_generated": 1127,
+      "states_left": 211,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/nc-serve-under-t-before-publish",
+      "depth": 10,
+      "distinct_states": 473,
+      "expected": "violation:RetiredNeverServes",
+      "log_sha256": "c038f6ad9a9f52e4226115967cff8cc586f880e2d821081a179b748645ec24a0",
+      "property": "RetiredNeverServes",
+      "role": "negative-control",
+      "seconds": 1.0,
+      "states_generated": 873,
+      "states_left": 184,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/witness-claim-rolled-back",
+      "depth": 7,
+      "distinct_states": 67,
+      "expected": "violation:Witness_ClaimRolledBack",
+      "log_sha256": "8b513300c08cc92dfa8f9caa6b27583a23be9b61d8fdc3fc4f9e5f69babd9c5a",
+      "property": "Witness_ClaimRolledBack",
+      "role": "witness",
+      "seconds": 1.2,
+      "states_generated": 112,
+      "states_left": 26,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/witness-claim-rolled-forward",
+      "depth": 10,
+      "distinct_states": 497,
+      "expected": "violation:Witness_ClaimRolledForward",
+      "log_sha256": "e568308bb4dd9aa06e5d2e941c52ac093b3e2b93ab6051b74e0c68b07a66f0de",
+      "property": "Witness_ClaimRolledForward",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 943,
+      "states_left": 199,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/witness-published",
+      "depth": 10,
+      "distinct_states": 411,
+      "expected": "violation:Witness_Published",
+      "log_sha256": "0353345583e6a52523c1ab104a7e31167fc39f4d898d31d0145aed001af16b9e",
+      "property": "Witness_Published",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 772,
+      "states_left": 155,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/witness-reclaimed-published",
+      "depth": 10,
+      "distinct_states": 510,
+      "expected": "violation:Witness_ReclaimedPublished",
+      "log_sha256": "40361426e24c23ef883e39884bc4d354d954c289d0c8055f6b9c5326ccb51052",
+      "property": "Witness_ReclaimedPublished",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 947,
+      "states_left": 204,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-045/witness-stale-clone-unpublished",
+      "depth": 17,
+      "distinct_states": 5486,
+      "expected": "violation:Witness_StaleCloneUnpublished",
+      "log_sha256": "9044fc4f357dc8e3420fab60e52324d6e8c18b4c2bf47895601323a4022309a3",
+      "property": "Witness_StaleCloneUnpublished",
+      "role": "witness",
+      "seconds": 1.1,
+      "states_generated": 14333,
+      "states_left": 1135,
+      "verdict": "violation"
+    }
+  ],
+  "complete": true,
+  "id": "TLA-045",
+  "inputs": {
+    "assumptions": {
+      "ASM-LINEAGE-CONTRACT": "ce6f37d8d180ff751216f81cd4f7df089b1a743437c7fd52e895f1266c41ad90",
+      "ASM-OBJSTORE-CAS": "2ae43f6d8ddd2a496b3982846370ab5d1cfe7fa2bd95be7317c703122518bf13",
+      "ASM-SLATEDB-FENCE": "aaf42501ec695bf435971d321d4e18244ff9f99adbaa293615d054dec2c1cfbd"
+    },
+    "files": {
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/topology/actor.rs": "6041f398abfebcbfdd1fa5ac7cec375521aa2ef9703b229025a08bc224ecabaf",
+      "src/topology/fence.rs": "656e93bf4a723d0009d5fd9facda12017637dd8bc8e721558f53a1e7565a877c",
+      "src/topology/gate.rs": "a21a9cc4235cac98aebac6072bc465d280d8beef50366a2f60638385a483cfaf",
+      "src/topology/intent.rs": "84b738543c2a3dd7846f2d0af3c0af12006d7733d85517790ccb291cd8b93df1",
+      "src/topology/ops.rs": "96b2dc2a79446432ab7bcac07d0b71cff39292539406117f6f31b2e7ccff6864",
+      "src/topology/reclaim.rs": "7b070c62cc6cb48909dfd5c522dc381ab37f64828dc1ef89cad9de3c534cae76",
+      "src/topology/recover.rs": "61eadd00bb8a86b59edbac1eef04954eda96ba4a416feccafab3de99f705247e",
+      "src/topology/split.rs": "45201fbdc9d15f2facacd74a8e3e45e71cb831c5e89de85a0f7e511b17fbea65",
+      "src/topology/store.rs": "d5995e41507b208e9a1980de8d2d7b17e4bf131374a4e07df60bd9e7f13bfbb9",
+      "verification/tla/topology/MC_TopologyReconfiguration_baseline.cfg": "cde17348b48717d2a2470c0042a3b26f1bd62f799b3c0862e44bc5934d7408ff",
+      "verification/tla/topology/MC_TopologyReconfiguration_liveness.cfg": "964872eeee2c0a721d5aabf70a22496eac49a605733c860f502ce86cc5d9bbf8",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_actor_reopens_after_fence.cfg": "dee7f2226520f3f94b6f9ec41e5b5ef6345de88d07a8947e5b68c6b596317361",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_checkpoint_before_barrier.cfg": "3a9d3143c9f446bfd3ddb3c3d50c8ae1292991e4b0513c17ec3afc00e0a91e7b",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_claim_without_fence.cfg": "a23858504758d59b0849f44328805ab3ed7819c21f4272ab35124d12a52f3d62",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_decide_before_fence.cfg": "f7d289742b13937adcc4e10cec53b38971f514a08c5056683b4a369203b361b0",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_delete_successor_intent.cfg": "66ec171799c5ee0277bf83eb9b85a8799d7a7586c8e99eeb4a77cb1fdea9164d",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_publish_before_retire.cfg": "a53b0c8ac08327cdb39554a6f210b6db86e1c5e19da42e60d307f360d66dc2ee",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_reuse_home.cfg": "f39fb99eff5c3f3b2b38a10ef06a086c098a58476adebacf5e4f74c1fddad6f6",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_reuse_home_children.cfg": "2d834087238ce587ae0ee5fac0348b56b286ba8effd2d13ee5872526b60ee242",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_rollback_after_retire.cfg": "2d907f9a3b45c876cbbb2b1df61549322f7375e63f5dd18bc3b2b0ad3f4c58dd",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_serve_source_under_intent.cfg": "f950f06ebd77ac78aa34bcbe50d5d2d904c2f9d52410965f708611da96b170b4",
+      "verification/tla/topology/MC_TopologyReconfiguration_nc_serve_under_t_before_publish.cfg": "e06d43d8c72f9112013711a041bcde2ab15ddc63e03855e61c03ef96c31090dc",
+      "verification/tla/topology/MC_TopologyReconfiguration_witness_claim_rolled_back.cfg": "39e2dd3811f2481afb18bf918056f4648781b51712f4576dd34e161e61c2994e",
+      "verification/tla/topology/MC_TopologyReconfiguration_witness_claim_rolled_forward.cfg": "09be5504f43f0db362afba16a4191b6feb31603be7c89eb004dd6b614b5f31ff",
+      "verification/tla/topology/MC_TopologyReconfiguration_witness_published.cfg": "0e5c03dc28388d018f0ec6dc5eec61f4f48d259b047c8442f78aafc4d8d74079",
+      "verification/tla/topology/MC_TopologyReconfiguration_witness_reclaimed_published.cfg": "f20da5f6fd42f427aa3999c8852174cdcd03c9de7d710daf8f668c282a0a9afb",
+      "verification/tla/topology/MC_TopologyReconfiguration_witness_stale_clone_unpublished.cfg": "a287bed591c4a92aa9f51135190e499085d4a97fe0ca08a06937aaa1d73a1614",
+      "verification/tla/topology/TopologyReconfiguration.tla": "fc5b9c931ccbce611bc131a1f8188b220c16211e0927087d3757f95e097e9353"
+    },
+    "manifest_entry": "a3831e8e59b8173ebe0e2c26c7a6059543a73acff10dc32e8154799d533e24b0",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "0c50eb0a335b383e5003fa34c0d76b7772fe422dae6daa282a99f464b42d53a2",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

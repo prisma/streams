@@ -6,9 +6,9 @@
       "covers_satisfied": 4,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "7cd0ba1ea6258bb5b0525bfa8eceab683cd57129f4e1bf7f5ada77fdee6bb507",
+      "log_sha256": "1b0eeb5ee56d7ee599ce2ddbee58a246cbf26655982f98a1ea5646b6a7f76537",
       "role": "baseline",
-      "seconds": 116.1,
+      "seconds": 192.5,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a sealed span below the tail holds only positions before its end\""
       ],
-      "log_sha256": "74b04b9bed61f588c429986e7851a8d6eee0f21ce44a1f886e39d456319bc170",
+      "log_sha256": "b98d2f7105328a3b8dddcd3b31f0e4d1df8b32e4c7e0d87b8699318e811dfd24",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 123.2,
+      "seconds": 159.6,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the local offset is relative to its span's start\""
       ],
-      "log_sha256": "f0921a92cb4c328a39909f98c5616c05c3b4e79fb839a6aaee5f5a04ae609d9c",
+      "log_sha256": "7a1feb300e4407880799b9b71d4597945db2ab003d948a12b1e4d4c9a5d75c00",
       "mutated": {
         "src/sse/source/spans.rs": {
           "baseline": "a23a4ffcd7726ef863cda91e7e86e3d9cc560d100756dc887a21201e27bb5fec",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 151.7,
+      "seconds": 235.7,
       "verdict": "fail"
     }
   ],
@@ -59,8 +59,8 @@
       "ASM-LINEAGE-CONTRACT": "ce6f37d8d180ff751216f81cd4f7df089b1a743437c7fd52e895f1266c41ad90"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -117,18 +117,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "e6ec199418fb4a22a54e4493ce096f1cbae1f3e642cd788f79a9295bd07c3675",
+  "inputs_sha256": "e9759ce23f869a8227ae7f01fa001cf260278fb903be5bf31430686c31f40755",
   "run_on": {
     "dirty_tree": false,
-    "revision": "da3008f569fea77e2e8408d28bef5abe7b1e3f19"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

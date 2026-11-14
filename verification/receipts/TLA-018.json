@@ -5,10 +5,10 @@
       "depth": 26,
       "distinct_states": 36695,
       "expected": "pass",
-      "log_sha256": "57d11daa22ce055f56232ae7819e2746c8a501efd0375bc5c870218d40a9e713",
+      "log_sha256": "d54557d8ee3a8e397ac3e7c15978cff8c1747e370386bdcbb0c32104a8f02b9a",
       "property": null,
       "role": "baseline",
-      "seconds": 2.1,
+      "seconds": 1.4,
       "states_generated": 126457,
       "states_left": 0,
       "verdict": "pass"
@@ -18,10 +18,10 @@
       "depth": 26,
       "distinct_states": 175364,
       "expected": "pass",
-      "log_sha256": "ca417494cbaed328d8d39a60123cbac595e8046996d8f0c7d2b3c243517dd440",
+      "log_sha256": "de173fb21ad58a7bed81b45bd072867350d6298077dae8747f99dcf293957c49",
       "property": null,
       "role": "baseline",
-      "seconds": 4.1,
+      "seconds": 2.8,
       "states_generated": 605294,
       "states_left": 0,
       "verdict": "pass"
@@ -31,10 +31,10 @@
       "depth": 26,
       "distinct_states": 40034,
       "expected": "pass",
-      "log_sha256": "a67d59db1f992e5e0570eab105f0509beb83a90db2663aa9d4669baf7557c0a0",
+      "log_sha256": "4d3842793fd5f58040911cbc290e362b8146b5b2f516905e6e70b8cfbb8aefa5",
       "property": null,
       "role": "baseline",
-      "seconds": 1.8,
+      "seconds": 1.5,
       "states_generated": 137692,
       "states_left": 0,
       "verdict": "pass"
@@ -44,10 +44,10 @@
       "depth": 26,
       "distinct_states": 184223,
       "expected": "pass",
-      "log_sha256": "bd3d00f35a3f602b2de3cd54186d5ec1ffa3041f2a04c4c1fd4ca7ec84eb178c",
+      "log_sha256": "c4ee9e09d1fc761704f1c6b0f39530f4274669cbabb1a6ca4cdd465b05d76ac4",
       "property": null,
       "role": "baseline",
-      "seconds": 3.8,
+      "seconds": 2.6,
       "states_generated": 635795,
       "states_left": 0,
       "verdict": "pass"
@@ -57,10 +57,10 @@
       "depth": 36,
       "distinct_states": 2384983,
       "expected": "pass",
-      "log_sha256": "58fabfc72448c65c3b3401a83b3eaa82e881f01d4bf21d42719a65cd597c243f",
+      "log_sha256": "39ed6727dd6576faa00399c8f514e19859858af7156afbbfa760c3b217e8f08a",
       "property": null,
       "role": "baseline",
-      "seconds": 28.5,
+      "seconds": 23.0,
       "states_generated": 9456693,
       "states_left": 0,
       "verdict": "pass"
@@ -68,105 +68,105 @@
     {
       "check": "TLA-018/nc-late-directory",
       "depth": 9,
-      "distinct_states": 748,
+      "distinct_states": 740,
       "expected": "violation:NoShortRead",
-      "log_sha256": "18f248721ccb730335bad8255bf8c8c053bca0afc603183301a84341a40803f0",
+      "log_sha256": "78c84686c26737eedd8b3f57472f9c9d7fba7ebeebab7b94ba01c9b988b19343",
       "property": "NoShortRead",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 1597,
-      "states_left": 379,
+      "states_generated": 1582,
+      "states_left": 375,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-hole-consumed",
       "depth": 10,
-      "distinct_states": 1387,
+      "distinct_states": 1389,
       "expected": "violation:NoSkip",
-      "log_sha256": "1ab9d4fcfd7e3489ff227488afa91346d126e669bee4d95120ecb83a673b617e",
+      "log_sha256": "c0ef2c763ab4c6f508af39699ab03eb068e2f5b34755aeecc902f852f5909a4e",
       "property": "NoSkip",
       "role": "negative-control",
-      "seconds": 1.1,
-      "states_generated": 3037,
-      "states_left": 641,
+      "seconds": 1.0,
+      "states_generated": 3069,
+      "states_left": 638,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-summary-under",
       "depth": 10,
-      "distinct_states": 1451,
+      "distinct_states": 1479,
       "expected": "violation:NoSkip",
-      "log_sha256": "664a45d45e87ca4f4566e94245d69d4473a1caa00a57507ff1363a446075c794",
+      "log_sha256": "6e36841e729698fcd0b7a1c94da7ee214b37196ab3e60fa8b68980286d1e8fe6",
       "property": "NoSkip",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 3274,
-      "states_left": 681,
+      "states_generated": 3347,
+      "states_left": 693,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/nc-second-lock",
-      "depth": 8,
-      "distinct_states": 521,
+      "depth": 9,
+      "distinct_states": 581,
       "expected": "violation:NoReadError",
-      "log_sha256": "873897def300dd43f4585c20b05f36bbf7e3132e32afa16b44d3d39fed6935e1",
+      "log_sha256": "b678e1368ff40b56bee7646566c2d60a92a372e19d923d0901283a93f1816fd4",
       "property": "NoReadError",
       "role": "negative-control",
       "seconds": 0.9,
-      "states_generated": 1053,
-      "states_left": 263,
+      "states_generated": 1176,
+      "states_left": 295,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-ReadSpansBoundary",
       "depth": 11,
-      "distinct_states": 2338,
+      "distinct_states": 2327,
       "expected": "violation:Witness_ReadSpansBoundary",
-      "log_sha256": "6943cfe3451272d6ffddcc806f9418ec62215f0e5fd8c6518f338f6301fb5a19",
+      "log_sha256": "6e4e6dc6f78da971fa357a52c2cf60982dce874b54b36cfa7ab2110ded019750",
       "property": "Witness_ReadSpansBoundary",
       "role": "witness",
-      "seconds": 1.1,
-      "states_generated": 5489,
-      "states_left": 978,
+      "seconds": 0.9,
+      "states_generated": 5457,
+      "states_left": 974,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-RingServed",
       "depth": 9,
-      "distinct_states": 527,
+      "distinct_states": 551,
       "expected": "violation:Witness_RingServed",
-      "log_sha256": "2dcf01e130fe2c9208f816841aac18bb4eec583386a584a9c186f3cf7901007a",
+      "log_sha256": "07606e0f2b309c194613c8c61421146c138feeefc8299eda79115f777b414cda",
       "property": "Witness_RingServed",
       "role": "witness",
       "seconds": 0.9,
-      "states_generated": 1093,
-      "states_left": 277,
+      "states_generated": 1130,
+      "states_left": 291,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-SummarySkip",
       "depth": 12,
-      "distinct_states": 9605,
+      "distinct_states": 9899,
       "expected": "violation:Witness_SummarySkip",
-      "log_sha256": "8872cbc148a612bfcdd17477248e8ebaae5ffae014b2e24a2aaad49cb7a74cfd",
+      "log_sha256": "568ba6b083c03ffa788caad111b5f0a8699973ac09e63298b3d65c5de3d99376",
       "property": "Witness_SummarySkip",
       "role": "witness",
-      "seconds": 1.2,
-      "states_generated": 23167,
-      "states_left": 4325,
+      "seconds": 1.1,
+      "states_generated": 24120,
+      "states_left": 4348,
       "verdict": "violation"
     },
     {
       "check": "TLA-018/witness-UnsealedReadRacesSeal",
       "depth": 8,
-      "distinct_states": 514,
+      "distinct_states": 502,
       "expected": "violation:Witness_UnsealedReadRacesSeal",
-      "log_sha256": "31acce7c1f63d6f4f44b8f57495f6b5c889580a14e09d30d01fce9a49ca36c92",
+      "log_sha256": "49d16a5a34c7377ef690aa072bcd810e335447bd167cc9b8966ed6453f957369",
       "property": "Witness_UnsealedReadRacesSeal",
       "role": "witness",
       "seconds": 0.9,
-      "states_generated": 1043,
-      "states_left": 258,
+      "states_generated": 1014,
+      "states_left": 253,
       "verdict": "violation"
     }
   ],
@@ -179,13 +179,13 @@
       "ASM-SLATEDB-DURABLE": "3de897ef389f93ed0b1366a6a0aec12ae1e8fbe1c4c04c79470f40413be152a9"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/application/read.rs": "fb17605e72428461475aaeb8d77e1e84b2c67e9f452f29a25d6aa2801b019214",
       "src/shard/record.rs": "a2ae8660c5d19532026f43064eda81c94cdfc26e36128c5df46295937f05ab80",
       "src/shard/seal/read.rs": "cbed9f83e5ebb7196c622b0c8f3db42b364497c43f00135cfd2a7b3ef4428ec1",
-      "src/shard/seal/steps.rs": "fb7853e4217b8a631b648ade4dab4153911f40400b7dfae1f8b5b0b513158582",
+      "src/shard/seal/steps.rs": "50269d810a44fcd8be536f115f83b520a8f6d711c49e8cf3f0c10049d65f0175",
       "src/shard/tail_ring.rs": "84a3a9235828685289afea1d390043158e68b65e06aedd83a707d2e5e2bb212f",
       "src/shard/transaction/overlay.rs": "ecee27e6ad3b2fab9cfb2ff72926016adb9854dbea4755ccae3d21d6862f8642",
       "src/spill/directory.rs": "293a27f9c4eb95c4c6d70c53e550b4e837ce49751d0faa2da75b225c88cec830",
@@ -254,22 +254,55 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "67b9f2250b9253a98e3339bf09860422107b7d064666fde6f4b3e39db49849ea",
+  "inputs_sha256": "73e72d1afc4fd9fe31caa572de02d2acd55abc126679cc0bfd9778a6e852252e",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b81ecc34edee22f4de358054dd52fef9e9de222d"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {
     "java": "17.0.1",
+    "kani": "0.68.0",
     "platform": "aarch64-apple-darwin",
     "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
     "tlc": "2.19"

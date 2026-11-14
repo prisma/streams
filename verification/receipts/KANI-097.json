@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "11ea5b02a9e310b2d7d6024c20117bdf11873776cb8dbfb506570d5ca7d0eee2",
+      "log_sha256": "d074d18ca20e9bb142be967e7916ab3cbd197c426327c5fa25b9daed77db6207",
       "role": "baseline",
-      "seconds": 158.4,
+      "seconds": 58.1,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1f0d9d75f891c9b5db37ed92dac295765e64ddcd89e6e91b69bb582c632485cd",
+      "log_sha256": "216abd10d2bef51c561f5ae7a7350d8b10b8f9e978e695220320ed34f5381044",
       "role": "baseline",
-      "seconds": 82.5,
+      "seconds": 66.8,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "376050d6fdb09e2b4cb2fb2d58fbb0c2d64afb71e0d1e4178ce71262398880d3",
+      "log_sha256": "f8db163ca1747c4b5611f45d9f573cd4424d8384ff3bea6a3a9fc9b0d998ca3c",
       "role": "baseline",
-      "seconds": 103.8,
+      "seconds": 103.5,
       "verdict": "pass"
     },
     {
@@ -41,7 +41,7 @@
       "failed_checks": [
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "fe545da3f39a0412d5de449d2fc475812d739988eb7186e9e856f236e8335a1e",
+      "log_sha256": "d40fc6e04c70c410d3b470a3ba04dfcaa4dc8661f3b152932a0e6d10aaefe08d",
       "mutated": {
         "src/crypto_page/varint.rs": {
           "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
@@ -49,7 +49,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 137.5,
+      "seconds": 58.2,
       "verdict": "fail"
     },
     {
@@ -61,7 +61,7 @@
         "\"the first record is at the page timestamp and none goes back\"",
         "\"an accepted body is exactly the minimal encoding of its tables and payloads\""
       ],
-      "log_sha256": "c93d098091192b23fab08a805d438533447ee027b815caeebf2f8ddbe946e9d8",
+      "log_sha256": "d7ee983b59a0b44d00e172d30f913896141c1f35e0e7718a26e6b4ef45466ce8",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
@@ -69,7 +69,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 84.2,
+      "seconds": 78.9,
       "verdict": "fail"
     },
     {
@@ -80,7 +80,7 @@
       "failed_checks": [
         "\"the first record is at the page timestamp and none goes back\""
       ],
-      "log_sha256": "b5ccd17d9a4974a82a2e782ce483e7d7d98d46b87b2986bf05683161613f19a3",
+      "log_sha256": "fb7b5879008996a9d7ad492f58497c19a041059287a1113deeb4335689d9504a",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
@@ -88,7 +88,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 67.4,
+      "seconds": 63.0,
       "verdict": "fail"
     },
     {
@@ -99,7 +99,7 @@
       "failed_checks": [
         "\"the lengths tile the payload bytes exactly\""
       ],
-      "log_sha256": "69e1b7bff19fc637974015639cdc4d33adca182d4fde806ca84c1c75f486c010",
+      "log_sha256": "02f06b49951917cd8960437525ef0c55450d31d56af73a05ad264da99f58d97d",
       "mutated": {
         "src/crypto_page/body.rs": {
           "baseline": "0b8038c2ed72315430f8dd7293b78639d29ca2e7224e5d41889ef2005ffb91c1",
@@ -107,7 +107,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 60.8,
+      "seconds": 53.9,
       "verdict": "fail"
     }
   ],
@@ -119,8 +119,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -181,18 +181,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "0352744675024e8c94044c1c0da244e10e83fe02621d0b2e02be8251be2664a8",
+  "inputs_sha256": "46fa89aaff7df460f253fdb1538bd1e07a41d1a6a0e71fbbf470140b5e0aafcb",
   "run_on": {
     "dirty_tree": false,
-    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {

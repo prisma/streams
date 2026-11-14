@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "6ae3965ec3ed571f455421dedda5236ce011826040e5a64cee4cf0edf4d661ac",
+      "log_sha256": "7a2c24a62a133d8a91c0207a340be79a613362eceec32d01cf32d227b174bd7d",
       "role": "baseline",
-      "seconds": 55.7,
+      "seconds": 52.2,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "a4e8cdb8dfc1b9a9f9a9aecb6a06a0da20ab006691cd2dd726b6f0450fdf6036",
+      "log_sha256": "2065f085d426183727de22c5796b7806440f11f6cc07b353104e448a1b5ba391",
       "role": "baseline",
-      "seconds": 86.5,
+      "seconds": 82.4,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "7dbddc7f42c7bf08fcdba796f4b173492db744c3850e512ad6f889cddcef05ac",
+      "log_sha256": "01ebc3775bbbb1148644f3f97676282f0523145b89107324eb5b3a72f3c34dff",
       "role": "baseline",
-      "seconds": 111.8,
+      "seconds": 50.0,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "35c8b9aef346a10a95d9fc003985ea5c435cfe6ce6f3dea8340c6b11ec23b2aa",
+      "log_sha256": "ce35a60adaf503a364e4138131ae20e4f82fb85cfc8980de65715041fe40e4d8",
       "role": "baseline",
-      "seconds": 111.5,
+      "seconds": 50.1,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "7fa9c4bcae5a5f15215ea69678b39891d647c5cb088f6a0c7bb2691eae8632ee",
+      "log_sha256": "5db16a6b290a7e5cbeafb27f08b24380258dfff599260f539ba99de48274a666",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 51.2,
+      "seconds": 54.8,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"an admitted page is exactly one whole page with its tag\""
       ],
-      "log_sha256": "7065eafc570fdc077e6b29105e9262316575d97aba8a5f7552f64935155b830d",
+      "log_sha256": "74bd650b710525222f83d2a4d1722976ae59c3f67d1782c29d3a850ae99f39da",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 55.5,
+      "seconds": 53.9,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"an admitted page holds 1 to 4,096 records\""
       ],
-      "log_sha256": "95e9e01661cb512ccb2c2384adcc40dc3aa3b0ec1f488cfe19150c03f6e0323a",
+      "log_sha256": "c12762cc0fd0489a9d181ba2184387faaed990b7fa04be6bf540fe7fc3d94099",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 50.2,
+      "seconds": 51.8,
       "verdict": "fail"
     },
     {
@@ -109,7 +109,7 @@
       "failed_checks": [
         "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "ee3df83a62792e12a82863974ada11fe42138067883ec84875b76000b45652db",
+      "log_sha256": "f2fc8f9ff200243f5fbf685e0541decb05e2a4bcf47ce3bd54ac235e4899ba85",
       "mutated": {
         "src/crypto_page/header.rs": {
           "baseline": "1aed88e68a1a6cdc29c003bd57009c25c8438e1e68632b10a95570769d392b81",
@@ -117,7 +117,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 86.3,
+      "seconds": 51.6,
       "verdict": "fail"
     },
     {
@@ -128,7 +128,7 @@
       "failed_checks": [
         "\"an admitted page ends at the offset naming it\""
       ],
-      "log_sha256": "00036a299f42b59a57adea114d79d08585a2b24dcbf9c71ba70fdfdf0bbcb9cc",
+      "log_sha256": "99fde7b454b61459a2e699b0899d721768a74a41ef4931ee252e1c3b48b14a61",
       "mutated": {
         "src/crypto_page.rs": {
           "baseline": "d02605bd52438d04b1c0f876f916556117dadd9be1b54b5d8ba0d963230517e1",
@@ -136,7 +136,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 128.8,
+      "seconds": 51.8,
       "verdict": "fail"
     }
   ],
@@ -148,8 +148,8 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "c92f2cbd158ef4d67864896bb2977da34b90ff325c86fc0a729f4b180014b3bc",
-      "Cargo.toml": "c4e12f701dae96c271ca8c2a5d264bc5224835eeee6622e806a87fd127f59faf",
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
@@ -212,18 +212,50 @@
           {
             "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
             "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
           }
         ],
         "git": "https://github.com/prisma/slatedb.git",
-        "rev": "b10b0e87b12602875b19f2b1500694372cb0f620",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
         "upstream": "https://github.com/slatedb/slatedb.git"
       }
     }
   },
-  "inputs_sha256": "242cbf9e8317e4c21c802096aedc3ab66ddee2b1fa2962ceccb6c0f975febab0",
+  "inputs_sha256": "9de1d8c1aff25171d8ce5de41a8ec263d73a425927f06e006a865bfd4cabd97b",
   "run_on": {
     "dirty_tree": false,
-    "revision": "78d03da280c2058469fe752415c2fb97e0a6ec39"
+    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
   },
   "schema": 2,
   "tools": {
