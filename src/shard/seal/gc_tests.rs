@@ -948,3 +948,38 @@ async fn a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed
     read_all(&rig, &oracle, &BTreeSet::from([victim]), "the other stream").await;
     rig.engine.begin_close();
 }
+
+/// **An engine placed by the directory keeps its log path and its topology's homes.** Before a
+/// place, `log_path` is the static path and no home has a root; once placed at `shards/10-2` under
+/// a split of `1`, `log_path` is that path and `home_root` gives each home the topology names its
+/// path (home 1's `shards/1`, home 2's `shards/10-2`), and none for a home it does not name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_placed_engine_keeps_its_log_path_and_its_topologys_home_roots() {
+    let rig = gc_rig("placed").await;
+    let static_path = rig.engine.log_path();
+    assert_eq!(rig.engine.home_root(1), None, "unplaced: no topology");
+    let topology = crate::config::validation::InitialShards::new(2)
+        .unwrap()
+        .topology(1 << 20);
+    let (reserved, homes) = topology.reserve_homes();
+    let split = reserved.split("1", homes, "op").unwrap();
+    let snapshot = Arc::new(crate::topology::model::Snapshot {
+        shards: split.shards,
+        etag: None,
+        installed_at: None,
+    });
+    rig.engine.place(
+        "shards/10-2".to_string(),
+        Arc::new(move || Some(snapshot.clone())),
+    );
+    assert_ne!(static_path, "shards/10-2");
+    assert_eq!(rig.engine.log_path(), "shards/10-2");
+    assert_eq!(rig.engine.home_root(1).as_deref(), Some("shards/1"));
+    assert_eq!(rig.engine.home_root(2).as_deref(), Some("shards/10-2"));
+    assert_eq!(
+        rig.engine.home_root(77),
+        None,
+        "a home the topology does not name"
+    );
+    rig.engine.begin_close();
+}
