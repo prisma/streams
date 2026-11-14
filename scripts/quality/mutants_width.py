@@ -6,11 +6,14 @@ A push's (or a pull request's) in-diff mutants are dealt by owner. Each owner
 is listed with the driver's own command. An owner without mutants is dropped.
 The rest are packed by modeled cost into groups, one job each, with the
 nightly's packer (mutation_owners.schedule_groups) and the push's cost model:
-- 9.5 minutes of baseline per owner in a job (491-563 s of build plus 0-43 s
-  of test on the 4-vCPU runner, run 42806184646);
-- 5.1 minutes a mutant;
+- 13 minutes of baseline per owner in a job (12.9 measured over push 4's 71
+  baselines on the 4-vCPU runner, the cold first build in a job included, run
+  43585422069);
+- 5.2 minutes a mutant (5.19 pooled over its 1,153);
 - 1.0 and 0.25 for harness-lib owners;
-- every job's own 50 minutes (setup, the cold build) outside its cap.
+- every job's 50 minutes of margin outside its cap: not setup (about 2 minutes),
+  but what absorbs an owner whose mutants cost more than the pooled figure
+  (gate decision of 2026-11-14, section 2).
 An owner too large for the cap is split into round-robin parts. The cap is the
 first of CAPS whose packing takes at most MAX_JOBS groups, and the width is
 the number of groups. A selection the last cap cannot fit is refused: split
@@ -35,8 +38,8 @@ from pathlib import Path
 
 from mutation_owners import OWNERS, SCHEDULE_JOBS, CostModel, owner_shares, schedule_groups
 
-PUSH_MODEL = CostModel(1, (9.5, 5.1), (('harness-lib', (1.0, 0.25)),))
-JOB_FIXED_MINUTES = 50.0
+PUSH_MODEL = CostModel(1, (13.0, 5.2), (('harness-lib', (1.0, 0.25)),))
+JOB_FIXED_MINUTES = 50.0  # Margin, not setup: see the docstring.
 CAPS = (120.0, 150.0, 180.0, 210.0, 250.0)
 MAX_JOBS = 48
 NIGHT_JOBS = SCHEDULE_JOBS
@@ -59,7 +62,7 @@ class Deal:
         return max(1, len(self.groups))
 
     def minutes(self, group):
-        """The modeled minutes of one job, its fixed cost included."""
+        """The modeled minutes of one job, its margin included."""
         return JOB_FIXED_MINUTES + sum(share.minutes for share in group)
 
     @property

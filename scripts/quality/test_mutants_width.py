@@ -78,7 +78,7 @@ class PushDeal(unittest.TestCase):
         dealt = deal({'o0': 100, 'o1': 1}, owners)
         parts = sorted((share.part, share.parts) for group in dealt.groups for share in group
                        if share.owner.name == 'o0')
-        # 9.5 + ceil(100 / parts) x 5.1 <= 120 first holds at five parts.
+        # 13 + ceil(100 / parts) x 5.2 <= 120 first holds at five parts.
         self.assertEqual(parts, [(part, 5) for part in range(5)])
 
     def test_the_cap_climbs_the_ladder_until_the_jobs_fit(self):
@@ -86,7 +86,7 @@ class PushDeal(unittest.TestCase):
         # whose packing takes at most 48 jobs (n = 20 packs 60 jobs at 120
         # to 210, 30 at 250).
         owners = service(60)
-        for count, expected in ((5, (120.0, 20)), (10, (150.0, 30)), (15, (180.0, 30)),
+        for count, expected in ((5, (120.0, 20)), (10, (150.0, 30)), (14, (180.0, 30)),
                                 (16, (210.0, 30)), (20, (250.0, 30))):
             with self.subTest(count=count):
                 dealt = deal({entry.name: count for entry in owners}, owners)
@@ -99,10 +99,10 @@ class PushDeal(unittest.TestCase):
 
     def test_49_groups_at_the_last_cap_are_refused_and_48_are_not(self):
         owners = service(49)
-        # 9.5 + 47 x 5.1 = 249.2 fits 250 alone and two never share a job.
-        self.assertEqual(deal({entry.name: 47 for entry in owners[:48]}, owners).width, 48)
+        # 13 + 45 x 5.2 = 247 fits 250 alone and two never share a job.
+        self.assertEqual(deal({entry.name: 45 for entry in owners[:48]}, owners).width, 48)
         with self.assertRaises(Refused):
-            deal({entry.name: 47 for entry in owners}, owners)
+            deal({entry.name: 45 for entry in owners}, owners)
 
     def test_without_a_mutant_the_deal_is_one_empty_job(self):
         dealt = deal({'append': 0, 'billing': 0})
@@ -120,8 +120,10 @@ class PushDeal(unittest.TestCase):
         entry = service(1)[0]
         harness = MutationOwner('h', ('src/h.rs',), ('h::',), 'harness-lib')
         self.assertEqual(PUSH_MODEL.minutes(entry, 0), 0)
-        self.assertEqual(PUSH_MODEL.minutes(entry, 3), 9.5 + 3 * 5.1)
-        self.assertEqual(PUSH_MODEL.minutes(entry, 3, parts=2), 9.5 + 2 * 5.1)
+        # Measured on push 4 (run 43585422069): a baseline 12.9 min over 71,
+        # a mutant 5.19 pooled (gate decision of 2026-11-14, section 2).
+        self.assertEqual(PUSH_MODEL.minutes(entry, 3), 13.0 + 3 * 5.2)
+        self.assertEqual(PUSH_MODEL.minutes(entry, 3, parts=2), 13.0 + 2 * 5.2)
         self.assertEqual(PUSH_MODEL.minutes(harness, 4), 1.0 + 4 * 0.25)
         self.assertEqual((JOB_FIXED_MINUTES, CAPS, MAX_JOBS),
                          (50.0, (120.0, 150.0, 180.0, 210.0, 250.0), 48))

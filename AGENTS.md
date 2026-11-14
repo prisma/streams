@@ -289,7 +289,7 @@ scripts/quality/mutations.sh    # zero MISSED, TIMEOUT and incomplete; ~1 min pe
 CI deals a push's leg by owner over the `mutants` job's matrix of 360-min jobs
 (`scripts/quality/mutants_width.py`, gate decision of 2026-11-11). The `mutants-plan` job
 lists each selected owner's in-diff mutants and packs the owners by modeled cost:
-- 9.5 min a baseline per owner per job, 5.1 a mutant, 50 a job;
+- 13 min a baseline per owner per job, 5.2 a mutant, 50 of margin a job;
 - an owner too large for the cap is split into round-robin parts;
 - the cap is the first of 120, 150, 180, 210 or 250 net minutes that takes at most 48 jobs.
 Job `g` runs group `g` (`QUALITY_MUTANT_GROUP=g/G`): it packs again and measures nothing
