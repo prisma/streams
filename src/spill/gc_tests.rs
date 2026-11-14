@@ -3,9 +3,10 @@
 
 use super::directory::{DirEntry, KeySummary};
 use super::gc::{
-    Decrements, Garbage, Head, HeadState, ObjectKind, Refcount, decode_garbage, decode_head,
-    decode_refcount, decrement, encode_garbage, encode_head, encode_refcount, garbage_key,
-    head_key, less, live_entries, parse_head_key,
+    Decrements, Garbage, Head, HeadState, ObjectKind, Refcount, Release, decode_garbage,
+    decode_head, decode_refcount, decode_release, decrement, encode_garbage, encode_head,
+    encode_refcount, encode_release, garbage_key, head_key, less, live_entries, merged_refcount,
+    parse_head_key,
 };
 use super::object::ObjectId;
 
@@ -180,4 +181,54 @@ fn a_head_owes_while_reclaimed_is_below_head() {
     assert!(!at(10, 10).owes(), "everything below the head is reclaimed");
     assert!(!at(0, 0).owes(), "an empty stream owes nothing");
     assert!(!Head::requested(5).owes(), "a request owes nothing yet");
+}
+
+/// A release row decodes only at the format's version with nothing after its three varints: a
+/// row of another version, or one with a trailing byte, is refused.
+#[test]
+fn a_release_row_decodes_only_at_its_version_and_whole() {
+    let release = Release {
+        object_len: 420,
+        zero_ms: 7,
+        due_ms: 9,
+    };
+    let row = encode_release(&release);
+    assert_eq!(decode_release(&row), Some(release));
+    let mut trailing = row.clone();
+    trailing.push(0);
+    assert_eq!(decode_release(&trailing), None, "a trailing byte");
+    let mut other = row;
+    other[0] = other[0].wrapping_add(1);
+    assert_eq!(decode_release(&other), None, "another version");
+}
+
+/// A merge's row for an object both sources count (S6 §8): the exact sum of live bytes and
+/// chunks, the earlier creation and the one length; refused for two lengths or a sum past u64.
+#[test]
+fn a_merged_refcount_sums_both_rows_or_refuses() {
+    let row = |live_bytes, live_chunks, created_ms, object_len| Refcount {
+        live_bytes,
+        live_chunks,
+        created_ms,
+        object_len,
+    };
+    assert_eq!(
+        merged_refcount(row(300, 2, 50, 420), row(100, 1, 40, 420)),
+        Some(row(400, 3, 40, 420))
+    );
+    assert_eq!(
+        merged_refcount(row(300, 2, 50, 420), row(100, 1, 40, 421)),
+        None,
+        "two lengths"
+    );
+    assert_eq!(
+        merged_refcount(row(u64::MAX, 2, 50, 420), row(1, 1, 40, 420)),
+        None,
+        "live bytes past u64"
+    );
+    assert_eq!(
+        merged_refcount(row(1, u64::MAX, 50, 420), row(1, 1, 40, 420)),
+        None,
+        "live chunks past u64"
+    );
 }
