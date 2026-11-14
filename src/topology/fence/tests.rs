@@ -77,3 +77,50 @@ async fn a_fenced_open_of_a_prefix_that_is_no_leaf_never_reaches_the_log() {
         handed.lock().unwrap()
     );
 }
+
+/// The `'T'` row's key is the sentinel, `FF` × 16, then `'T'`, at pinned bytes: a split's or
+/// merge's actor writes it and every later open reads it.
+#[test]
+fn the_retired_row_is_keyed_at_pinned_bytes() {
+    assert_eq!(
+        crate::crypto::hex(&super::retired_key()),
+        "ffffffffffffffffffffffffffffffff54"
+    );
+}
+
+/// **A read of a log closed for any reason but a newer writer is no fence.** One read of the fence
+/// on an engine whose log was closed fails as a store error, not as `Fenced`: only a newer
+/// writer's fence makes the held open close and reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_read_of_a_closed_log_is_a_store_error_not_a_fence() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = crate::keyspace::db_builder("shards/0", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let engine = crate::shard::ShardEngine::start(
+        "0".to_string(),
+        Arc::new(db),
+        store,
+        crate::shard::ShardConfig::default(),
+        None,
+        maintenance,
+    );
+    engine.db.close().await.unwrap();
+    let topology = crate::config::validation::InitialShards::new(2)
+        .unwrap()
+        .topology(1 << 20);
+    let snapshot = crate::topology::model::Snapshot {
+        shards: topology.shards,
+        etag: None,
+        installed_at: None,
+    };
+    match super::read(&engine, &snapshot).await {
+        Err(super::ReadFailure::Other(error)) => assert!(error.starts_with("'T': "), "{error}"),
+        Err(super::ReadFailure::Fenced) => panic!("a closed log read as a fence"),
+        Ok(_) => panic!("a closed log read"),
+    }
+}
