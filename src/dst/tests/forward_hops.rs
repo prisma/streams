@@ -183,3 +183,63 @@ async fn a_forward_from_a_newer_topology_makes_its_receiver_revalidate() {
     );
     shutdown(cell).await;
 }
+
+/// **A `409` that names no owner carries no topology version.** At C, the stream's owner, a
+/// create of the stream under another content type is refused `409` as a conflict: no
+/// `Streams-Replay-To`, so no `Streams-Topology-Version` either (only a `not_ring_owner` names
+/// the version it was refused under).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_conflict_that_names_no_owner_carries_no_topology_version() {
+    let cell = cell(1, 1, 1).await;
+    let path = format!("/v1/stream/{NAME}");
+    let text = ("content-type", "text/plain");
+    let (status, headers, _) = hreq(cell.c.1, "PUT", &path, &[text], b"").await;
+    assert_eq!(
+        (
+            status,
+            headers.get("streams-replay-to").map(String::as_str),
+            headers.get("streams-topology-version").map(String::as_str),
+        ),
+        (409, None, None)
+    );
+    shutdown(cell).await;
+}
+
+/// **A `409` from a newer topology makes the forwarder revalidate.** The store holds version 3;
+/// A routes by version 1, B by 2, and C, at 3, believes A owns the shards. C's `409` (version 3)
+/// travels back through B to A, and A, seeing the newer version on it, reads the stored topology:
+/// A is at version 3 after the request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_owners_409_from_a_newer_topology_makes_the_forwarder_revalidate() {
+    let cell = cell(1, 2, 3).await;
+    owned_by(&cell.c.0, "inst-a");
+    cell.c
+        .0
+        .peer
+        .set_peer("inst-a", &format!("http://{}", cell.a.1));
+    let mut stored = crate::config::validation::InitialShards::new(1)
+        .unwrap()
+        .topology(1 << 20);
+    stored.version = 3;
+    stored.shards = cell.a.0.shards.prefixes().shards.clone();
+    stored.shards.version = 3;
+    let raw = serde_json::to_vec(&stored).unwrap();
+    let path = object_store::path::Path::from("topology.json");
+    object_store::ObjectStoreExt::put(&*cell.store, &path, raw.into())
+        .await
+        .unwrap();
+    let (status, headers, _) = append_at_a(&cell).await;
+    assert_eq!(
+        (
+            status,
+            headers.get("streams-topology-version").map(String::as_str)
+        ),
+        (409, Some("3"))
+    );
+    assert_eq!(
+        cell.a.0.shards.prefixes().shards.version,
+        3,
+        "A revalidated"
+    );
+    shutdown(cell).await;
+}
