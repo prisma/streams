@@ -653,6 +653,9 @@ async fn settle_engines(
 }
 
 #[cfg(test)]
+mod install_tests;
+
+#[cfg(test)]
 mod directory_tests {
     use super::*;
     use crate::ownership::OwnershipService;
