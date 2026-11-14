@@ -152,3 +152,123 @@ async fn a_rolled_back_splits_child_paths_are_swept_and_the_live_leaf_is_not_tou
     );
     engine_shutdown(&state).await;
 }
+
+/// A cell's two shards `0` and `1`, homes 0 and 1, at version 1.
+fn two_shards() -> crate::topology::model::Topology {
+    crate::config::validation::InitialShards::new(2)
+        .unwrap()
+        .topology(1 << 20)
+}
+
+/// A directory over `topology` whose opener opens nothing: the view reads only the store.
+fn view_dir(topology: &crate::topology::model::Topology) -> crate::shard_directory::ShardDirectory {
+    let opener: crate::sharddir::OpenFn =
+        Box::new(|_, _| Box::pin(std::future::ready(Err(anyhow::anyhow!("no engine here")))));
+    crate::shard_directory::ShardDirectory::new(
+        topology.shards.clone(),
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: std::time::Duration::from_secs(5),
+            open_wait: std::time::Duration::from_millis(50),
+        },
+        |_| opener,
+    )
+}
+
+/// An intent of `op_id` over `sources`, at `state`, having seen `version_seen`.
+fn an_intent(
+    op_id: &str,
+    sources: &[(&str, u32)],
+    state: crate::topology::intent::State,
+    version_seen: u64,
+) -> crate::topology::intent::Intent {
+    crate::topology::intent::Intent {
+        kind: "split".to_string(),
+        op_id: op_id.to_string(),
+        sources: sources
+            .iter()
+            .map(|(p, h)| ((*p).to_string(), *h))
+            .collect(),
+        children: vec![2, 3],
+        version_seen,
+        state,
+        lease_owner: "inst-a".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    }
+}
+
+/// **A leaf shows `splitting` exactly while a live intent names it, prefix and home both.** Under
+/// a live intent naming `1` at home 1, `1` is splitting and `0` serving; one naming `1` at a home
+/// it does not live at, or a terminal intent naming it, leaves both serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_leaf_is_splitting_exactly_while_a_live_intent_names_its_prefix_and_home() {
+    use crate::topology::intent::State;
+    let topology = two_shards();
+    let cases = [
+        (
+            "a live intent",
+            State::Preparing,
+            1,
+            ["serving", "splitting"],
+        ),
+        ("another home", State::Preparing, 7, ["serving", "serving"]),
+        (
+            "a terminal intent",
+            State::RolledBack,
+            1,
+            ["serving", "serving"],
+        ),
+    ];
+    for (what, state, home, want) in cases {
+        let store: Store = Arc::new(object_store::memory::InMemory::new());
+        let intent = an_intent("op-s", &[("1", home)], state, 1);
+        crate::topology::intent::create(&*store, &intent)
+            .await
+            .unwrap();
+        let dir = view_dir(&topology);
+        let ownership = crate::ownership::OwnershipService::new("");
+        let view = crate::topology::view::topology(&dir, &ownership, &store).await;
+        let states: Vec<&str> = view["shards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["state"].as_str().unwrap())
+            .collect();
+        assert_eq!(states, want, "{what}");
+    }
+}
+
+/// **An intent reads `Published` only once the stored topology is past what it saw and names it
+/// as its last operation.** The stored topology is a split of `1` at version 2 by `op-s`: an
+/// intent of `op-s` that saw version 1 is published; one that saw version 2, or another
+/// operation's that saw version 1, is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_intent_is_published_only_past_its_version_and_as_the_last_operation() {
+    use crate::topology::intent::State;
+    let topology = two_shards();
+    let (reserved, homes) = topology.reserve_homes();
+    let split = reserved.split("1", homes, "op-s").unwrap();
+    let cases = [
+        ("its own, past what it saw", "op-s", 1, "Published"),
+        ("its own, at what it saw", "op-s", 2, "Preparing"),
+        ("another operation's", "op-x", 1, "Preparing"),
+    ];
+    for (what, op_id, seen, want) in cases {
+        let store: Store = Arc::new(object_store::memory::InMemory::new());
+        let stored = serde_json::to_vec(&split).unwrap();
+        object_store::ObjectStoreExt::put(&*store, &"topology.json".into(), stored.into())
+            .await
+            .unwrap();
+        let intent = an_intent(op_id, &[("1", 1)], State::Preparing, seen);
+        crate::topology::intent::create(&*store, &intent)
+            .await
+            .unwrap();
+        let dir = view_dir(&topology);
+        let ownership = crate::ownership::OwnershipService::new("");
+        let view = crate::topology::view::topology(&dir, &ownership, &store).await;
+        assert_eq!(view["intent"]["state"], want, "{what}");
+    }
+}

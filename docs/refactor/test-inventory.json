@@ -1525,6 +1525,17 @@
     "scenarios": []
   },
   {
+    "name": "a_leaf_is_splitting_exactly_while_a_live_intent_names_its_prefix_and_home",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a1ad9536f80f412767e7724addc2efd73dd821975b2039ebf73e179deed1dd3e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/never_leaf_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_leaf_the_balancer_moved_here_splits_here_under_load",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -5049,6 +5060,17 @@
       "CRT-003",
       "SEC-004"
     ]
+  },
+  {
+    "name": "an_intent_is_published_only_past_its_version_and_as_the_last_operation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "34ec943f293bac544d33c615666324c96b09fefb072fae488ee1cac9c93a6f39",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/never_leaf_k.rs",
+    "scenarios": []
   },
   {
     "name": "an_intent_naming_another_incarnation_holds_nothing",
