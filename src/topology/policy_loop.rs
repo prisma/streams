@@ -382,14 +382,15 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
                 prefix: prefix.clone(),
                 born_ms: seen.born(&snapshot, prefix, now_ms),
                 load: beat
-                    .map(|beat| load(cell, beat, prefix))
+                    .map(|beat| load(cell.appends_ceiling, beat, prefix))
                     .unwrap_or_default(),
                 beat_ms: beat.map(|beat| beat.ts_ms),
                 owner,
             }
         })
         .collect();
-    let instances = instances(cell, &leaves, &beats, now_ms);
+    let (stale, shed) = (cell.limits.beat_stale_ms, cell.rss_shed_mb);
+    let instances = instances(&leaves, &beats, now_ms, stale, shed);
     let docs = standing.doc_times();
     // Fleet documents the tick has not read lately are treated as just changed: no topology
     // operation starts on a stale view of the fleet (S4 §10.1 rule 1).
@@ -400,32 +401,39 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
         me: cell.me.clone(),
         instances,
         split_demand: standing.split_demand(),
-        live: live(cell, &beats, now_ms),
+        live: live(&beats, now_ms, cell.limits.beat_stale_ms),
         beats_fresh,
         intent_live,
         last_op_end_ms: seen.changed_ms,
         desired_computed_ms: unseen(docs.desired_computed_ms),
         youngest_override_ms: unseen(docs.youngest_override_ms),
-        congested: beats
-            .iter()
-            .any(|beat| beat.refusals > 0 && now_ms - beat.ts_ms <= cell.limits.beat_stale_ms),
+        congested: congested(&beats, now_ms, cell.limits.beat_stale_ms),
         leaves,
     }
 }
 
-/// The live instances in `beats`: fresh, not draining, not withdrawn (the members the fleet's
-/// planner folds).
-fn live(cell: &Cell, beats: &[Heartbeat], now_ms: i64) -> u32 {
-    let live = beats.iter().filter(|beat| {
-        now_ms - beat.ts_ms <= cell.limits.beat_stale_ms
-            && !beat.draining
-            && beat.withdrawn.is_none()
-    });
+/// Whether a beat no older than `stale_ms` counted a refusal more instances could relieve.
+fn congested(beats: &[Heartbeat], now_ms: i64, stale_ms: i64) -> bool {
+    beats
+        .iter()
+        .any(|beat| beat.refusals > 0 && now_ms - beat.ts_ms <= stale_ms)
+}
+
+/// Whether `beat` is from a member the fleet's planner folds: no older than `stale_ms`, not
+/// draining, not withdrawn.
+fn member(beat: &Heartbeat, now_ms: i64, stale_ms: i64) -> bool {
+    now_ms - beat.ts_ms <= stale_ms && !beat.draining && beat.withdrawn.is_none()
+}
+
+/// The live instances in `beats`: the members (`member`).
+fn live(beats: &[Heartbeat], now_ms: i64, stale_ms: i64) -> u32 {
+    let live = beats.iter().filter(|beat| member(beat, now_ms, stale_ms));
     u32::try_from(live.count()).unwrap_or(u32::MAX)
 }
 
-/// `prefix`'s load as its owner's beat reports it, by axis against its safe capacity.
-fn load(cell: &Cell, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
+/// `prefix`'s load as its owner's beat reports it, by axis against its safe capacity (appends
+/// against `appends_ceiling`).
+fn load(appends_ceiling: u64, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
     let Some(shard) = beat.shard_loads.iter().find(|shard| shard.prefix == prefix) else {
         return BTreeMap::new();
     };
@@ -439,7 +447,7 @@ fn load(cell: &Cell, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
             Axis::Appends,
             Usage {
                 used: shard.appends_per_s,
-                safe: cell.appends_ceiling,
+                safe: appends_ceiling,
                 top_entity: shard.top_stream_appends_per_s,
             },
         ),
@@ -451,8 +459,15 @@ fn load(cell: &Cell, beat: &Heartbeat, prefix: &str) -> BTreeMap<Axis, Usage> {
     ])
 }
 
-/// Each beating instance's room: the leaves the ring gives it, and its RSS below the shed line.
-fn instances(cell: &Cell, leaves: &[Leaf], beats: &[Heartbeat], now_ms: i64) -> Vec<Instance> {
+/// Each beating instance's room: the leaves the ring gives it, and whether it accepts a shard:
+/// a member (`member`) whose RSS is below the shed line `rss_shed_mb` (0: none).
+fn instances(
+    leaves: &[Leaf],
+    beats: &[Heartbeat],
+    now_ms: i64,
+    stale_ms: i64,
+    rss_shed_mb: u64,
+) -> Vec<Instance> {
     beats
         .iter()
         .map(|beat| {
@@ -460,14 +475,11 @@ fn instances(cell: &Cell, leaves: &[Leaf], beats: &[Heartbeat], now_ms: i64) -> 
                 .iter()
                 .filter(|leaf| leaf.owner == beat.instance)
                 .count();
-            let below_shed = cell.rss_shed_mb == 0 || beat.rss_mb < cell.rss_shed_mb as f64;
+            let below_shed = rss_shed_mb == 0 || beat.rss_mb < rss_shed_mb as f64;
             Instance {
                 id: beat.instance.clone(),
                 resident_shards: u32::try_from(held).unwrap_or(u32::MAX),
-                accepting: now_ms - beat.ts_ms <= cell.limits.beat_stale_ms
-                    && !beat.draining
-                    && beat.withdrawn.is_none()
-                    && below_shed,
+                accepting: member(beat, now_ms, stale_ms) && below_shed,
             }
         })
         .collect()
