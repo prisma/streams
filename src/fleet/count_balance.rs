@@ -230,6 +230,15 @@ fn fold(heartbeats: Vec<Heartbeat>, now: i64) -> Folded {
     (candidacies, lags)
 }
 
+/// Each member's shards held in reserve for its own live split, every member listed: a
+/// reservation of none adds no shard to the count (`FleetRead::plan`).
+// mt-lint: allow(name-keyed-map): fleet instance -> its reserved shards
+fn reserved_by_member(candidacies: &HashMap<String, Candidacy>) -> HashMap<String, u32> {
+    let reserved =
+        |(member, candidacy): (&String, &Candidacy)| (member.clone(), candidacy.reserved_shards());
+    candidacies.iter().map(reserved).collect()
+}
+
 /// `overrides` with `prefix` moved to `to` at `now_ms` and its
 /// `rebalance_move` event, within the outbox bound, as a lag move writes them.
 pub(super) fn moved_document(
@@ -284,11 +293,7 @@ impl FleetRead {
             .inspect_err(|error| tracing::debug!(%error, "count balance: heartbeats unreadable"))
             .ok()?;
         let (candidacies, lags) = fold(heartbeats, now_ms());
-        let reserved = candidacies
-            .iter()
-            .filter(|(_, candidacy)| candidacy.reserved_shards() > 0)
-            .map(|(member, candidacy)| (member.clone(), candidacy.reserved_shards()))
-            .collect();
+        let reserved = reserved_by_member(&candidacies);
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
         let active = planning::active_members(count, me, &candidacies);
