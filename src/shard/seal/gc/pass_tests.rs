@@ -484,7 +484,10 @@ async fn a_purge_deletes_the_streams_other_rows_in_bounded_batches() {
     let keep = crate::billing::billing_meta_key(&hash);
     let billed = stream_rows(&rig, hash).await.contains(&keep);
     rig.engine.gc_state().configure(|s| s.reclaim_batch = 2);
-    purge_now(&rig.engine, hash).await;
+    let purged = tokio::time::timeout(Duration::from_secs(10), purge_now(&rig.engine, hash));
+    purged
+        .await
+        .expect("the purge ends once its rows are deleted");
     let left = stream_rows(&rig, hash).await;
     assert_eq!(left, if billed { vec![keep] } else { vec![] }, "{left:?}");
     let c = &rig.engine.gc_state().counters;
