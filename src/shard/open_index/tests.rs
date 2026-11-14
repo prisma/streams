@@ -33,6 +33,18 @@ fn identity(layout: u32, home: u32) -> (Vec<u8>, Vec<u8>) {
     (super::identity_key(), value)
 }
 
+/// **A log's identity row is the sentinel's `'Y'` key holding this binary's layout and the home**,
+/// as a split seeds each child with it (`split::seed_rows`) and a merge its merged leaf: the
+/// layout version then the home, each four bytes big-endian.
+#[test]
+fn the_identity_row_is_the_sentinels_y_holding_the_layout_and_the_home() {
+    let (key, value) = super::identity_row(0x0102_0304);
+    assert_eq!(key, [[0xFF; 16].as_slice(), b"Y"].concat());
+    let layout = crate::registry::LAYOUT_VERSION.to_be_bytes();
+    assert_eq!(value, [layout.as_slice(), &[1, 2, 3, 4]].concat());
+    assert_eq!(super::identity_row(7).1[4..], [0, 0, 0, 7]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_new_log_records_its_layout_and_home_and_reopens() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
