@@ -77,11 +77,13 @@ pub(super) fn merge_inputs(
 impl ShardEngine {
     pub(super) async fn merge_logged(self: &Arc<Self>) {
         while let Some(result) = self.merge_once().await {
-            let Err(e) = result else {
-                continue;
-            };
-            tracing::warn!(shard = %self.prefix, closed = self.is_closed(), "run-index merge failed: {e}");
-            return;
+            if let Err(e) = result {
+                tracing::warn!(shard = %self.prefix, closed = self.is_closed(), "run-index merge failed: {e}");
+                return;
+            }
+            // Between merges the loop yields its worker: a step that finished without awaiting
+            // anything never holds it for the whole run, and the engine's other tasks keep going.
+            tokio::task::yield_now().await;
         }
     }
 
