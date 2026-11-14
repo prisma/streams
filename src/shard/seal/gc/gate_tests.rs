@@ -148,3 +148,15 @@ async fn the_purge_pass_stands_down_while_collection_is_off() {
     assert_eq!((head.state, head.owes()), (HeadState::Purged, false));
     rig.engine.begin_close();
 }
+
+/// The gate holds `parked` from a split barrier's park until its resume, and only then: an
+/// engine it marks is retired by its split, never by an install that retires its prefix.
+#[test]
+fn the_gate_is_parked_from_the_barriers_park_until_its_resume() {
+    let gate = crate::topology::gate::MaintenanceGate::default();
+    assert!(!gate.parked(), "a new gate");
+    gate.set_parked(true);
+    assert!(gate.parked(), "parked by the barrier");
+    gate.set_parked(false);
+    assert!(!gate.parked(), "resumed");
+}
