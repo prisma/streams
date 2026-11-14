@@ -513,3 +513,6 @@ pub(crate) async fn merged_is_complete(
     drop(reader.close().await);
     complete
 }
+
+#[cfg(test)]
+mod tests;

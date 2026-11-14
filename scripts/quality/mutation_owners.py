@@ -187,7 +187,9 @@ OWNERS = (
           'topology::policy::reason dst_tests::topology_policy::'),
     owner('topology_policy_loop', 'src/topology/policy_loop.rs',
           'topology::policy:: topology::policy_loop:: dst_tests::topology_policy::'),
-    owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
+    # Its own unit tests (topology::recover::merge::tests, push 4's fix: every claimant witness,
+    # the roll forward's act and the publish) beside the recovery table and the two claimant DSTs.
+    owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::recover::merge::tests:: topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
     owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
     owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index:: topology::lineage::never_leaf::'),
