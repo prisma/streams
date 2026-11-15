@@ -518,4 +518,34 @@ mod tests {
             assert_eq!(key, want);
         }
     }
+
+    /// A shard or generation row's key ends at its id: a key with bytes after
+    /// it that are not a container's 16 is a row that does not decode, and
+    /// `load` leaves it out even where it sorts after the row it imitates.
+    #[test]
+    fn a_shard_or_generation_key_with_bytes_after_its_id_is_left_out() {
+        let long = |mut k: Vec<u8>| {
+            k.extend_from_slice(&[1, 2, 3]);
+            k
+        };
+        let row = |k: Vec<u8>, v: u64| (k, v.to_le_bytes().to_vec());
+        let g = QueueGauges::default();
+        g.load(&[
+            row(shard_key(DEDUP), 168),
+            row(long(shard_key(DEDUP)), 999),
+            row(generation_key(), 7),
+            row(long(generation_key()), 70),
+        ]);
+        assert_eq!(
+            g.shard()[DEDUP],
+            168,
+            "the shard row's long twin is left out"
+        );
+        g.apply("s", [1; 16], ([0; 5], [0, 0, 0, 168, 0]));
+        assert_eq!(
+            g.staged_generation(),
+            Some(8),
+            "the generation row's long twin is left out"
+        );
+    }
 }
