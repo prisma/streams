@@ -2823,12 +2823,20 @@ EDGE-261-RATIFICATION.md) left these:
   hysteresis. Red: a policy unit test (a leaf-quiet pair with
   `shards_wanted == leaves` never merges, with `leaves - 1` merges after the
   sustain) and a planner pin.
-- **A merge refused `instance_full` holds `steady` and asks for nothing**
-  (DESIGN-DECISION-convergence-stall-2026-11-11.md §2, rejected option (d) as a
-  follow-up). A merge whose actor legitimately holds `max` open leaves holds
-  `steady`, and nothing in the cell changes it except the sweep closing a cold
-  leaf. Decide whether that is live at defaults (`SHARDS_PER_INSTANCE_MAX` 7)
-  and whether the hold gets its own name.
+- **The co-location still counts `M`**
+  (DESIGN-DECISION-merge-instance-full-2026-11-15.md §6, follow-up 1). The merge
+  itself no longer needs room for `M` (#251 R5, which settled the old "a merge
+  refused `instance_full` holds `steady`" item), but the co-location's target
+  does: `+2` for the holder of a half, `+3` for another instance. At
+  `FLEET_MAX` with every instance within one of its ceiling, a pair split across
+  instances never merges. Decide whether the co-location's room drops `M` too
+  (TLA-048's `Room2`, #261 B1's numbers).
+- **Scale-in has no floor from the shard ceiling**
+  (DESIGN-DECISION-merge-instance-full-2026-11-15.md §6, follow-up 2). Ownership
+  at rest can pass `SHARDS_PER_INSTANCE_MAX` (PR #152's convergence run held
+  four leaves on one instance at a ceiling of three). With #251 R5 this no
+  longer blocks convergence. Decide what the ceiling means for ownership when
+  the RSS half of `instance_full` lands.
 - **Which beat the planner read for the convergence DST's late grow**
   (DESIGN-DECISION-converge-budget-2026-11-11.md, Open; after push 4). In green3
   (`s5/conv/final-a-075127`) the count went 3→4 at 230 s, with every beat's
