@@ -548,4 +548,46 @@ mod tests {
             "the generation row's long twin is left out"
         );
     }
+
+    /// `load` gives back what the written rows say: a gauge read from the
+    /// latest value of every row a run of moves wrote answers `shard` and
+    /// `limited` as the gauge that wrote them, per category, for a container
+    /// with two queues in one and a container with no bytes in one.
+    #[test]
+    fn a_gauge_loaded_from_its_written_rows_answers_as_the_writer() {
+        let g = QueueGauges::default();
+        g.load(&[]);
+        g.set_bound_for_tests(1_000);
+        let (a, b, c) = ([1; 16], [2; 16], [3; 16]);
+        let mut rows = BTreeMap::new();
+        // One new queue each: a's two are both active, c has no dedup bytes.
+        for (p, after) in [
+            (a, [200, 0, 0, 150, 0]),
+            (a, [100, 0, 120, 0, 0]),
+            (b, [0, 210, 90, 70, 0]),
+            (c, [40, 0, 0, 0, 30]),
+        ] {
+            rows.extend(g.apply("s", p, ([0; CATEGORIES], after)));
+            g.settle(true);
+        }
+        let read = QueueGauges::default();
+        read.set_bound_for_tests(1_000);
+        read.load(&rows.into_iter().collect::<Vec<_>>());
+        assert_eq!(read.shard(), [340, 210, 210, 220, 30]);
+        assert_eq!(read.shard(), g.shard());
+        let queues = [40, 70, 90, 120, 150, 160, 210];
+        let grid = [a, b, c].into_iter().flat_map(|p| {
+            (0..CATEGORIES).flat_map(move |cat| queues.map(move |queue| (p, cat, queue)))
+        });
+        let mut refused = 0;
+        for (p, cat, queue) in grid {
+            let want = g.limited(p, cat, queue);
+            let got = read.limited(p, cat, queue);
+            assert_eq!(got, want, "container {} cat {cat} queue {queue}", p[0]);
+            refused += usize::from(want);
+        }
+        // a: active (share 150, its queues' 150) at 150, 160, 210; delayed and
+        // dedup (shares 100) at 120 or 150 and up; b: failed (200) at 210.
+        assert_eq!(refused, 11, "the writer refuses where the shares say");
+    }
 }
