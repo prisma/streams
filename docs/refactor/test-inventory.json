@@ -4718,6 +4718,17 @@
     "scenarios": []
   },
   {
+    "name": "an_adopted_ledger_shard_stays_resident_across_the_sweep",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d3f975644b1b2e3a32c4742e2372a9fbe9bb5956bf371bb750b4028a26ffafd8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_ledger_shard.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_anonymous_denial_flood_never_drops_the_victims_denial",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6640,7 +6651,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "867670a43f6fd3cabbf2d1e756a49375efc485b81dbf84dd53823efe665125f3",
+    "function_sha256": "d05069a3645762c6d825063b3df8e60ad995d12f7722a0239a2822652b993f28",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_controller.rs",

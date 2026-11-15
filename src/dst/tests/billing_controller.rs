@@ -263,6 +263,8 @@ async fn graceful_stop_seals_and_drains_the_active_read_window() {
             .unwrap(),
     );
     assert!(state.billing.install_read_spool(spool.clone()).is_ok());
+    // Nothing else holds the ledgers' leaf: the sweep would close it under the poll.
+    super::billing_ledger_shard::adopt_the_ledger_shard(&state).await;
     crate::billing::spawn_telemetry(state.clone(), &rig.tasks);
     tokio::time::timeout(Duration::from_secs(3), async {
         while ops_metrics_records(&state).await != 1 {

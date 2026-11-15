@@ -78,6 +78,9 @@ mod topology_reclaim;
 #[path = "tests/billing_walk_custody.rs"]
 mod billing_walk_custody;
 
+#[path = "tests/billing_ledger_shard.rs"]
+mod billing_ledger_shard;
+
 #[path = "tests/billing_controller.rs"]
 mod billing_controller;
 

@@ -1147,6 +1147,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::billing_ledger_shard",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The billing sweep and the default rig's ledger shard: the sweep closes a cold, debt-free leaf and its holdoff answers a system read 503 shard_moving, so the telemetry tests adopt the ledgers' shard first as customer traffic does, and an adopted shard stays resident across a sweep; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/billing_ledger_shard.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fixture_billing",
       "path": "src/dst/dst_tests.rs",
       "reason": "Bounded waits on the usage drain shared by the billing scenarios: every round a wait takes is checked against the `_usage` ledger (drain_once answers exactly the envelopes it appended) and a wait fails once the drain appends nothing for more rounds than it takes to visit every open shard twice, so a misreporting drain fails fast instead of polling out the budget; compiler and the full DST suite exercise the module.",
