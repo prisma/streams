@@ -1,0 +1,354 @@
+{
+  "checks": [
+    {
+      "check": "TLA-046/baseline-small",
+      "depth": 25,
+      "distinct_states": 762850,
+      "expected": "pass",
+      "log_sha256": "3ad0bd9442c8389a03dccb5e913e761331797afe1327039b377795e6e31f675e",
+      "property": null,
+      "role": "baseline",
+      "seconds": 16.6,
+      "states_generated": 4363544,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-046/baseline-ranges",
+      "depth": 25,
+      "distinct_states": 762850,
+      "expected": "pass",
+      "log_sha256": "047928ae9e736ff1c7be04c8c2566270a2f72d87439d49b393fcbd27ebc62883",
+      "property": null,
+      "role": "baseline",
+      "seconds": 17.0,
+      "states_generated": 4363544,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-046/baseline-expanded",
+      "depth": 27,
+      "distinct_states": 3578015,
+      "expected": "pass",
+      "log_sha256": "f737fad1200ece9374962c421be5a5248dec094065bb69cce867bc3599accae2",
+      "property": null,
+      "role": "baseline",
+      "seconds": 104.5,
+      "states_generated": 25897392,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-046/nc-lane-open",
+      "depth": 3,
+      "distinct_states": 18,
+      "expected": "violation:RangeRowsMatch",
+      "log_sha256": "bc6c2c802c144d60067fe0db0c963abc47448599b7c0a69ab96f5c855099b892",
+      "property": "RangeRowsMatch",
+      "role": "negative-control",
+      "seconds": 0.8,
+      "states_generated": 18,
+      "states_left": 13,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-head-live",
+      "depth": 3,
+      "distinct_states": 18,
+      "expected": "violation:FrontierNeverPassesALiveImmediate",
+      "log_sha256": "3041c757756be3d404094a0b412f58fa46ffa15ae08475262bd1ae6eb20b94ab",
+      "property": "FrontierNeverPassesALiveImmediate",
+      "role": "negative-control",
+      "seconds": 0.8,
+      "states_generated": 18,
+      "states_left": 13,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-cancel-marks",
+      "depth": 3,
+      "distinct_states": 20,
+      "expected": "violation:CancelledNeverLeased",
+      "log_sha256": "6c33f090eab6834f28331be879ffdaadba3355e843a7fd6b98b26feadf76a916",
+      "property": "CancelledNeverLeased",
+      "role": "negative-control",
+      "seconds": 0.9,
+      "states_generated": 20,
+      "states_left": 15,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-scheduled-claim-sbits",
+      "depth": 6,
+      "distinct_states": 607,
+      "expected": "violation:NoMessageLost",
+      "log_sha256": "bb8d2723b62693ef5ddfa4d0ee4a4b7aab0ed956e7fa52265bb35784ffcde370",
+      "property": "NoMessageLost",
+      "role": "negative-control",
+      "seconds": 0.9,
+      "states_generated": 949,
+      "states_left": 422,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-gen-ok",
+      "depth": 8,
+      "distinct_states": 6591,
+      "expected": "violation:ReplayedSettleChangesNothing",
+      "log_sha256": "31200999a5245091ed13b3ca2ccd0247d422a879854fdbc0844faae427c71d19",
+      "property": "ReplayedSettleChangesNothing",
+      "role": "negative-control",
+      "seconds": 1.1,
+      "states_generated": 13466,
+      "states_left": 3947,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-unlease-releases",
+      "depth": 4,
+      "distinct_states": 95,
+      "expected": "violation:UnleaseKeepsBudgets",
+      "log_sha256": "d861978e0a3d43db46d01d3be6e6e1830fc81e204214522ccd7de6d2ecdb1c14",
+      "property": "UnleaseKeepsBudgets",
+      "role": "negative-control",
+      "seconds": 0.8,
+      "states_generated": 114,
+      "states_left": 73,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/nc-unlease-counts",
+      "depth": 11,
+      "distinct_states": 66882,
+      "expected": "violation:PoisonBounded",
+      "log_sha256": "0e2ff513ede7831c5bfa6aa85309ce4cd4858fabf73a866fdcb4150765b0c762",
+      "property": "PoisonBounded",
+      "role": "negative-control",
+      "seconds": 1.7,
+      "states_generated": 197486,
+      "states_left": 31855,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-UnreadableFailed",
+      "depth": 5,
+      "distinct_states": 172,
+      "expected": "violation:Witness_UnreadableFailed",
+      "log_sha256": "12a4fb9abae0ef8dcef28b874dfe13b8fcff7e9868858afb12857760dbf02a6d",
+      "property": "Witness_UnreadableFailed",
+      "role": "witness",
+      "seconds": 0.8,
+      "states_generated": 225,
+      "states_left": 128,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-UnleasedThenFailed",
+      "depth": 6,
+      "distinct_states": 1057,
+      "expected": "violation:Witness_UnleasedThenFailed",
+      "log_sha256": "d2f7f15919a322290d887963eba588f6871aaae2f6fd1ce98f0d03607410920e",
+      "property": "Witness_UnleasedThenFailed",
+      "role": "witness",
+      "seconds": 1.2,
+      "states_generated": 1776,
+      "states_left": 704,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-CancelledPassed",
+      "depth": 4,
+      "distinct_states": 102,
+      "expected": "violation:Witness_CancelledPassed",
+      "log_sha256": "1e2ba9fd31e192b90f48a5e625689ee8e0d1e48a03cfd0b7893978b67f543ca3",
+      "property": "Witness_CancelledPassed",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 124,
+      "states_left": 79,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-ExpiredIntoGap",
+      "depth": 6,
+      "distinct_states": 349,
+      "expected": "violation:Witness_ExpiredIntoGap",
+      "log_sha256": "2aa08416218bee7f08dcc369764ef6c376ff1f608fde8448d89074cb8d293b08",
+      "property": "Witness_ExpiredIntoGap",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 508,
+      "states_left": 253,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-ScheduledLeasedAndPassed",
+      "depth": 6,
+      "distinct_states": 578,
+      "expected": "violation:Witness_ScheduledLeasedAndPassed",
+      "log_sha256": "70ce0dd8826a9a79ae0a540bca6c0511e8a8ef2763339a68dd0303f006bc9dd1",
+      "property": "Witness_ScheduledLeasedAndPassed",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 893,
+      "states_left": 406,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-046/witness-StaleReceiptHeld",
+      "depth": 7,
+      "distinct_states": 2637,
+      "expected": "violation:Witness_StaleReceiptHeld",
+      "log_sha256": "9245c5adde48c462cacfa1a5a3004c939464592cf01e051aa43302b04b5eadf9",
+      "property": "Witness_StaleReceiptHeld",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 4844,
+      "states_left": 1655,
+      "verdict": "violation"
+    }
+  ],
+  "complete": true,
+  "id": "TLA-046",
+  "inputs": {
+    "assumptions": {
+      "ASM-QUEUE-REPLY-DURABLE": "fc853c395bd3c02c914fe2438b2b5db26e42eb5b9780e563a6f7c2ca686228d4"
+    },
+    "files": {
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/application/queues/delivery.rs": "4cb0dbea725787720986f7e180252e72e869317d205cabb2aafd141dda7dbccb",
+      "src/native_queue/frontier.rs": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
+      "src/native_queue/range.rs": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+      "src/native_queue/rows.rs": "004c35335b680ab20fd52f604d3a6049d0aef60b8e5ceee7f81be030d49be404",
+      "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
+      "src/shard/transaction/native_queue/admin.rs": "cf4daee1a294867f0beeb90c961acb5f727fc7da37b299e158fe4b56a48008f5",
+      "src/shard/transaction/native_queue/claim.rs": "2c9d80c445e8a3d925591143a94771bc14d9138eab1cad89f941abf900ba06b6",
+      "src/shard/transaction/native_queue/deliveries.rs": "26d68a31b2ce4044890485b9bbd115d89b672378a34cc2cfe6c951489a9fea1c",
+      "src/shard/transaction/native_queue/lane.rs": "b1fcc32389f0e337eb74b84c1970962d700f10d73609413a05e3151d60489793",
+      "src/shard/transaction/native_queue/send.rs": "d5c3b5e3237ac3ff3a434036653505961bd6391ded001ee8c7ca88b1bfe43d43",
+      "src/shard/transaction/native_queue/settle.rs": "6341f1a2c543c98d4b6d084d074e253c55f7ab660b05bfdc81f67e9e2c3ce113",
+      "src/shard/transaction/native_queue/sweep.rs": "c9926e0b3af374ec915155b9470f35665e23f4eb28cdce7125a0aaf092518f93",
+      "verification/tla/queue/MC_QueueDelivery.tla": "20610439b2f996e0952e1636cbd2fb576d564a5fba8405ac3c34e1ebb906582f",
+      "verification/tla/queue/MC_QueueDelivery_expanded.cfg": "fa275e7f051d2afe7e6407a0e9ec050fbf679e0ae0b7eb03a29b5e6d13fb963e",
+      "verification/tla/queue/MC_QueueDelivery_nc_cancel_marks.cfg": "613ee8ded2b66f7828c6c46b6b161893af89729cb4e2acfa3e1c9ca8cc1f2c7c",
+      "verification/tla/queue/MC_QueueDelivery_nc_gen_ok.cfg": "9c741632a7603ec6adf3a94ddb47a3405d6622c84de9830232ac102de5275653",
+      "verification/tla/queue/MC_QueueDelivery_nc_head_live.cfg": "f980d37dd1d4edea05685021072c6f292fcd31f0266b00139e219306d35fa786",
+      "verification/tla/queue/MC_QueueDelivery_nc_lane_open.cfg": "633f8e3b2a6725786efbe3194a51ae5c4ccb0fa789087118bec8086aea046c9b",
+      "verification/tla/queue/MC_QueueDelivery_nc_scheduled_claim_sbits.cfg": "c605a57caf282ba5ad9c33e1ddabd7b0a437e40f2fae52d1fe083c5be3dc2a96",
+      "verification/tla/queue/MC_QueueDelivery_nc_unlease_counts.cfg": "e8a809a2f30c2d22c32cfb32dba2cb0f290a68ded451a1a9e512a3d92c92d8cb",
+      "verification/tla/queue/MC_QueueDelivery_nc_unlease_releases.cfg": "ff733530b73cd7a29621b6b1c0d652271a5d0b58a66ca9278447e4d63172f780",
+      "verification/tla/queue/MC_QueueDelivery_ranges.cfg": "6472488f8a6c78275cdbb9f2e6476fa38d84dc1ebc64d62b6ce6757045537220",
+      "verification/tla/queue/MC_QueueDelivery_small.cfg": "0bcd011ae51600116de37168abc0a2e507dd1631cd53230502cd35a268b9b9e2",
+      "verification/tla/queue/MC_QueueDelivery_w_CancelledPassed.cfg": "cd684440658790119bca99772e7f4aed26db1a0b82831b20687a052f61a63446",
+      "verification/tla/queue/MC_QueueDelivery_w_ExpiredIntoGap.cfg": "44794207d75e1131628c6aa4038f2f077e7ea7921862458bbd35e11e7745f602",
+      "verification/tla/queue/MC_QueueDelivery_w_ScheduledLeasedAndPassed.cfg": "f8ef64ed6a65ee02a66bbfbfc15b4e73e103f0741c1a122968fe845d78d90971",
+      "verification/tla/queue/MC_QueueDelivery_w_StaleReceiptHeld.cfg": "f643d4ae588a3151a7513d0546a4ae4015b7d0f827335e87cc7bb5da1bf08453",
+      "verification/tla/queue/MC_QueueDelivery_w_UnleasedThenFailed.cfg": "1a2d7fe51cd02ae66b9befb75c0297ba73e7342fae461d2528deca788ac19b7b",
+      "verification/tla/queue/MC_QueueDelivery_w_UnreadableFailed.cfg": "7f09ecd9d7970f8061f50531270690d91bcbbb7fb1100a423a9718f1f1cce416",
+      "verification/tla/queue/QueueDelivery.tla": "7cc18f7a73ce0f2a93b92f6a08ac9644559eed59eec823e4ded1b5fd44d8f621"
+    },
+    "manifest_entry": "635c6bea4a43e7328357c254dd57bdcdf82bb2de261f7678773f66c22b0fab41",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "36d1b38c95e615c3c37f00d501087c6c92d8d28892e8649549c0667194ee6d1f",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "b0be0a557d877c76bb61141924b90de3aafaf7db"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

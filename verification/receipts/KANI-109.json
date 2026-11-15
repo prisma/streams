@@ -1,0 +1,229 @@
+{
+  "checks": [
+    {
+      "check": "KANI-109/bitmap",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "dfe21ee2068ac5260429aaefc84bdfd4e5ad296ed1b8e038b6d279f5d8f0a590",
+      "role": "baseline",
+      "seconds": 142.9,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-109/empty",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "f50476fdfe29f18afccb051e7e0eda8ef7fb8e1ee59b6d86a20dd7b2ce7a193f",
+      "role": "baseline",
+      "seconds": 170.0,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-109/count",
+      "expected": "pass",
+      "failed_checks": [],
+      "log_sha256": "eddfad34f85273a3f3ba229fc2908a7dd5d3df020576392a87320c71d477aa89",
+      "role": "baseline",
+      "seconds": 73.7,
+      "verdict": "pass"
+    },
+    {
+      "check": "KANI-109/nc-bits-alias-across-words",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:the bitmap holds exactly the offsets its last operations set",
+      "failed_checks": [
+        "\"the bitmap holds exactly the offsets its last operations set\"",
+        "\"an untouched offset of the row is clear\"",
+        "\"is_empty holds exactly when no offset is held\""
+      ],
+      "log_sha256": "9b9b6c585c7b5ce15acf6c6fc743582c73f50cee70b08f1838e9f5549c4673c8",
+      "mutated": {
+        "src/native_queue/range.rs": {
+          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+          "control": "f83f53b63179a690f7e8a80dce40270bda2f5b7047773cdb62eff46eab7b0086"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 56.2,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-109/nc-clear-keeps-the-bit",
+      "covers": 2,
+      "covers_satisfied": 2,
+      "expected": "fail:the bitmap holds exactly the offsets its last operations set",
+      "failed_checks": [
+        "\"the bitmap holds exactly the offsets its last operations set\"",
+        "\"is_empty holds exactly when no offset is held\""
+      ],
+      "log_sha256": "212fd60b491a70f0255cd36ef3805492f32d322e3f64785bf0fcdd88fbd047dd",
+      "mutated": {
+        "src/native_queue/range.rs": {
+          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+          "control": "edbd6f506e968fee3e5f98ebd4c58d15781e97e1264eb94f2d723e58b03a3fab"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 84.0,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-109/nc-count-first-word",
+      "expected": "fail:count is zero exactly when the bitmap is empty",
+      "failed_checks": [
+        "\"count is zero exactly when the bitmap is empty\""
+      ],
+      "log_sha256": "2e889d5f2d1da4778a33dd18c849ae00b8fadbd51419abc26ebe768d3b94c963",
+      "mutated": {
+        "src/native_queue/range.rs": {
+          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+          "control": "1ed72a6e3d884b788c21b8a6ed9dedcda39e5186d85d6ffb1c692832f9bc78d8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 66.5,
+      "verdict": "fail"
+    },
+    {
+      "check": "KANI-109/nc-empty-ignores-cancel",
+      "expected": "fail:a row is empty exactly when it holds nothing",
+      "failed_checks": [
+        "\"a row is empty exactly when it holds nothing\""
+      ],
+      "log_sha256": "27145464664b54d28d9ec44cfe9fddadecd06d67ed3e23749ccb9777bf95545d",
+      "mutated": {
+        "src/native_queue/range.rs": {
+          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+          "control": "1141b1b813c2f72281665952634b049559daa67f09885fe071c148cfee992cd8"
+        }
+      },
+      "role": "negative-control",
+      "seconds": 83.5,
+      "verdict": "fail"
+    }
+  ],
+  "complete": true,
+  "id": "KANI-109",
+  "inputs": {
+    "assumptions": {
+      "ASM-KANI-COMPILER": "ebc11be77ca1c65e8279d1958e6314d625ae2e7ef4a668d9b8dd2093d10b4f59",
+      "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
+    },
+    "files": {
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
+      "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/native_queue/range.rs": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+      "src/native_queue/range/proofs.rs": "43c1ba49aa19d67124d9c426946205b3dbfaefc0cccdb98559fcbac0c51e32b1",
+      "verification/kani/controls/KANI-109-bits-alias-across-words.patch": "460ac140d8c96f4dc718818a9d11fdc42c7bbb2482b26917480380e7bfc3c7a4",
+      "verification/kani/controls/KANI-109-clear-keeps-the-bit.patch": "e47c5476163743fdb9c1d827084f5d21811a6d864467d75f923d0f3127ba71cc",
+      "verification/kani/controls/KANI-109-count-first-word.patch": "d7b9991790fffa380e59d5ea587388a89a13bbe3e041db4f5ba5faed626a9dda",
+      "verification/kani/controls/KANI-109-empty-ignores-cancel.patch": "1b50fb6848be966009723c254bdea84a1b2f1968adf4bf3db34e6337cff6f04d"
+    },
+    "manifest_entry": "60056422a806debdf238296a584c5c494ae8d02e0f92ddef7e3d6e9ff8073952",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "d3da38830d2072325c2b19d3d58748040762f1c83a6cbb642eac4d1a5950cf11",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "b0be0a557d877c76bb61141924b90de3aafaf7db"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}
