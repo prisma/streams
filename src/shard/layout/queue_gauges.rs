@@ -241,7 +241,7 @@ impl QueueGauges {
         moved: ([u64; CATEGORIES], [u64; CATEGORIES]),
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
         let (before, after) = moved;
-        let alarm = self.bound() / 100 * SLICE_PERCENT[CLEANUP] / 10 * 8;
+        let alarm = cleanup_alarm(self.bound());
         let mut guard = self.lock();
         let Sums { written, staged } = guard.get_or_insert_with(Sums::default);
         let s = staged.get_or_insert_with(|| Staged {
@@ -376,6 +376,11 @@ fn container_key(cat: usize, container: &[u8; 16]) -> Vec<u8> {
     k.push(CONTAINER_ID + u8::try_from(cat).unwrap_or(0));
     k.extend_from_slice(container);
     k
+}
+
+/// The cleanup slice's alarm line at `bound`: 80% of the slice.
+fn cleanup_alarm(bound: u64) -> u64 {
+    bound / 100 * SLICE_PERCENT[CLEANUP] / 10 * 8
 }
 
 /// Whether a sum went from under `line` to at or over it.
@@ -589,5 +594,63 @@ mod tests {
         // a: active (share 150, its queues' 150) at 150, 160, 210; delayed and
         // dedup (shares 100) at 120 or 150 and up; b: failed (200) at 210.
         assert_eq!(refused, 11, "the writer refuses where the shares say");
+    }
+
+    /// The cleanup alarm's line is 80% of the cleanup slice (10% of the bound).
+    #[test]
+    fn the_cleanup_alarm_line_is_eighty_percent_of_its_slice() {
+        assert_eq!(cleanup_alarm(1_000), 80);
+        assert_eq!(cleanup_alarm(BOUND_BYTES), 171_798_688);
+    }
+
+    /// Over its line the cleanup slice still refuses nothing.
+    #[test]
+    fn the_cleanup_slice_refuses_nothing_over_its_line() {
+        let g = QueueGauges::default();
+        g.load(&[]);
+        g.set_bound_for_tests(1_000);
+        let c = [3; 16];
+        g.apply("s", c, ([0; 5], [0, 0, 0, 0, 150]));
+        assert_eq!(g.shard()[CLEANUP], 150, "over its 100-byte slice");
+        assert!(!g.limited(c, CLEANUP, 150), "cleanup refuses nothing");
+    }
+
+    /// A queue that leaves a category no longer counts among its container's
+    /// queues there: the queue share is of the bytes the others hold.
+    #[test]
+    fn a_queue_leaving_a_category_leaves_its_containers_queue_count() {
+        let g = QueueGauges::default();
+        g.load(&[]);
+        g.set_bound_for_tests(1_000);
+        let (a, b) = ([1; 16], [2; 16]);
+        g.apply("s", a, ([0; 5], [0, 0, 150, 0, 0]));
+        g.apply("s", a, ([0; 5], [0, 0, 100, 0, 0]));
+        g.apply("s", b, ([0; 5], [0, 0, 100, 0, 0]));
+        // 350 over the 200 line; a holds 250 of a 100 share, in two queues.
+        assert!(g.limited(a, DELAYED, 125) && !g.limited(a, DELAYED, 124));
+        g.apply("s", a, ([0, 0, 100, 0, 0], [0; 5]));
+        // 250 over the line; a's one queue left holds all of its 150.
+        assert!(g.limited(a, DELAYED, 150) && !g.limited(a, DELAYED, 140));
+    }
+
+    /// The generation row reads back as its generation, and a value of
+    /// neither 8 nor 16 bytes does not decode.
+    #[test]
+    fn a_generation_row_reads_back_and_a_value_of_another_length_does_not() {
+        let g = QueueGauges::default();
+        g.load(&[]);
+        let rows = g.apply("s", [1; 16], ([0; 5], [0, 0, 0, 168, 0]));
+        let held = rows
+            .iter()
+            .find(|(k, _)| *k == generation_key())
+            .map(|(_, v)| v.as_slice());
+        assert_eq!(held.and_then(read_generation), Some(1));
+        assert_eq!(read_generation(&7u64.to_le_bytes()), Some(7));
+        let mut twelve = 999u64.to_le_bytes().to_vec();
+        twelve.extend_from_slice(&[0; 4]);
+        assert_eq!(read_generation(&twelve), None);
+        let read = QueueGauges::default();
+        read.load(&[(shard_key(ACTIVE), twelve)]);
+        assert_eq!(read.shard()[ACTIVE], 0, "a 12-byte value is left out");
     }
 }
