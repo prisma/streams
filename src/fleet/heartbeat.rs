@@ -523,12 +523,10 @@ impl AppState {
     pub(crate) fn fleet_pressure(&self) -> (String, i64, u64) {
         // A source of the live topology intent is never a lag move's shard (S4-DESIGN §4.4).
         let sources = self.fleet.standing().topology_sources();
-        let (wedge_prefix, wedge_max_ms) = worst_wedge(
-            self.shards
-                .engines_by_prefix()
-                .into_iter()
-                .filter(|(prefix, _)| !sources.contains(prefix))
-                .map(|(prefix, engine)| (prefix, engine.wedge_ms())),
+        let engines = self.shards.engines_by_prefix().into_iter();
+        let (wedge_prefix, wedge_max_ms) = wedge_of(
+            engines.map(|(prefix, engine)| (prefix, engine.wedge_ms())),
+            &sources,
         );
         let lag = effective_lag_secs(self.shards.stall_max_secs(), wedge_max_ms);
         (wedge_prefix, wedge_max_ms, lag)
@@ -561,6 +559,12 @@ fn lag_victim_of(
         let wedged = wedge_max_ms > 0 && !wedge_prefix.is_empty() && movable(wedge_prefix);
         wedged.then(|| wedge_prefix.to_owned())
     })
+}
+
+/// `AppState::fleet_pressure`'s pick: the most wedged shard of `wedges` that no live intent names
+/// among its `sources` (S4-DESIGN §4.4), `("", 0)` when there is none.
+fn wedge_of(wedges: impl Iterator<Item = (String, i64)>, sources: &[String]) -> (String, i64) {
+    worst_wedge(wedges.filter(|(prefix, _)| !sources.contains(prefix)))
 }
 
 /// The most wedged shard of `wedges` (prefix, blocked commit write or stale
@@ -621,7 +625,7 @@ fn tenths(value: f64) -> f64 {
 mod tests {
     use super::{
         ACK_WINDOW_MS, Sampler, effective_lag_secs, ewma, lag_victim_of, megabytes, recent_p50_ms,
-        tenths, worst_wedge,
+        tenths, wedge_of, worst_wedge,
     };
     use std::time::{Duration, Instant};
 
@@ -682,6 +686,24 @@ mod tests {
         let wedges = [("a", 5), ("b", 9), ("c", 0)].map(|(prefix, ms)| (prefix.to_string(), ms));
         assert_eq!(worst_wedge(wedges.into_iter()), ("b".to_string(), 9));
         assert_eq!(worst_wedge(std::iter::empty()), (String::new(), 0));
+    }
+
+    /// The wedge the lag move may name is never a live intent's source, however wedged it is: the
+    /// most wedged of the others is, and with every shard a source there is none.
+    #[test]
+    fn the_pressures_wedge_is_never_a_live_intents_source() {
+        let wedges = || {
+            [("a", 5), ("src", 9)]
+                .map(|(p, ms)| (p.to_owned(), ms))
+                .into_iter()
+        };
+        let names = |list: &[&str]| list.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        assert_eq!(wedge_of(wedges(), &names(&["src"])), ("a".to_owned(), 5));
+        assert_eq!(wedge_of(wedges(), &[]), ("src".to_owned(), 9));
+        assert_eq!(
+            wedge_of(wedges(), &names(&["a", "src"])),
+            (String::new(), 0)
+        );
     }
 
     #[test]
