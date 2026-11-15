@@ -327,3 +327,65 @@ async fn preparing_stands_collection_down_the_undo_resumes_it_an_idle_pair_drain
     }
     drop(dir.shutdown(std::time::Duration::from_secs(5)).await);
 }
+
+/// `source`'s committer queue once it holds `n` operations, within 5 s.
+async fn queued(source: &crate::shard::ShardEngine, n: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while source.queued_ops() != n && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    source.queued_ops()
+}
+
+/// **The release's drain waits while a source holds a queued operation, and returns once none
+/// does or once its time is up** (`drain`). `00`'s committer is parked by a barrier with a second
+/// barrier queued behind it: one operation queued (a parked committer holds its queue for
+/// `HOLD`, 2 s). Resumed after 400 ms, a drain of 10 s returns after the resume, under the hold,
+/// with nothing queued. Parked again with one queued and never resumed, a drain of 300 ms returns
+/// at its time, under the hold, with the operation still queued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_drain_waits_for_queued_operations_and_returns_once_none_is_or_at_its_time() {
+    use std::time::{Duration, Instant};
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let dir = engines(&store);
+    let pair = super::Pair {
+        sources: [(opened(&dir, "00").await, 0), (opened(&dir, "01").await, 1)],
+        prefix: "0".to_string(),
+        home: 4,
+    };
+    use futures_util::future::join;
+    let source = pair.sources[0].0.clone();
+    let parked = source.barrier().await.unwrap();
+    let resumed_drain = async {
+        assert_eq!(queued(&source, 1).await, 1, "one operation queued");
+        let t0 = Instant::now();
+        let resume = async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            parked.resume();
+        };
+        let drained = async {
+            super::drain(&pair, Duration::from_secs(10)).await;
+            (t0.elapsed(), source.queued_ops())
+        };
+        join(drained, resume).await.0
+    };
+    let (behind, (waited, left)) = join(source.barrier(), resumed_drain).await;
+    assert_eq!(left, 0, "drained: {waited:?}");
+    assert!(waited >= Duration::from_millis(400), "{waited:?}");
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
+    let parked = behind.unwrap();
+    let timed_drain = async {
+        assert_eq!(queued(&source, 1).await, 1, "one operation queued again");
+        let t0 = Instant::now();
+        super::drain(&pair, Duration::from_millis(300)).await;
+        let seen = (t0.elapsed(), source.queued_ops());
+        parked.resume();
+        seen
+    };
+    let (behind, (waited, left)) = join(source.barrier(), timed_drain).await;
+    assert_eq!(left, 1, "still queued at the drain's time");
+    assert!(waited >= Duration::from_millis(300), "{waited:?}");
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
+    behind.unwrap().resume();
+    drop(dir.shutdown(Duration::from_secs(5)).await);
+}
