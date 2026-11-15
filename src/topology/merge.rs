@@ -45,9 +45,6 @@ pub(crate) enum Refused {
     /// `topology_busy`: a live intent holds the cell, or the fleet has not settled. An override is
     /// no refusal of its own (#251 B4).
     Busy(&'static str),
-    /// `instance_full`: the merge would leave this instance holding `resident` shards (both halves
-    /// and `M` until the publish), past its ceiling `max`.
-    InstanceFull { resident: usize, max: u32 },
     /// `not_ring_owner`: another instance holds a half.
     NotOwner(String),
     /// `not_mergeable`: the two are not sibling leaves, or one holds `'T'`.
@@ -66,12 +63,6 @@ impl std::fmt::Display for Refused {
         match self {
             Self::UnknownPrefix => f.write_str("unknown_prefix"),
             Self::Busy(reason) => write!(f, "topology_busy: {reason}"),
-            Self::InstanceFull { resident, max } => {
-                write!(
-                    f,
-                    "instance_full: {resident} resident shards during the merge, past {max}"
-                )
-            }
             Self::NotOwner(owner) => write!(f, "not_ring_owner: {owner}"),
             Self::NotMergeable(why) => write!(f, "not_mergeable: {why}"),
             Self::Unavailable(why) => write!(f, "topology_unavailable: {why}"),

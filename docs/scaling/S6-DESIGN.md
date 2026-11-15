@@ -496,8 +496,8 @@ which it writes itself under the live intent.
 
 0. **Preparing** (unpaused).
    - Refuse: a live intent (`409 topology_busy {reason: "intent"}`); an override on either source other
-     than the merge's own (`{reason: "override"}`); a source carrying `'T'`; the reservation (`409
-     instance_full`).
+     than the merge's own (`{reason: "override"}`); a source carrying `'T'`. The shard ceiling refuses no merge (#251 R5): the actor
+     holds `M` one past it until the publish, and one fewer after.
    - The home CAS (`next_home += 1`), then the intent create or terminal-CAS, with the lease.
    - Write the override moving `…1` to the actor; wait until the actor holds both engines as writer.
    - **The snapshot pass:** a SlateDB snapshot on each source; collection off (S4 §5.1); S4's helper

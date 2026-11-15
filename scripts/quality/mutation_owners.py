@@ -178,11 +178,11 @@ OWNERS = (
     # policy's.
     owner('topology_merge', 'src/topology/merge.rs',
           'topology::merge::tests:: dst_tests::merge_finish_k:: dst_tests::merge_k::a_merge_of '
-          'dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that '
+          'dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts '
           'dst_tests::merge_k::a_merge_waits dst_tests::merge_k::a_merge_past '
           'dst_tests::merge_k::a_merge_serves dst_tests::split_generations::a_quiesced_'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
-    owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_that_would_fill dst_tests::merge_k::a_merge_waits'),
+    owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
     owner('topology_view', 'src/topology/view.rs', 'dst_tests::split_k:: dst_tests::never_leaf_k::'),
     # The policy (S5): its rules are unit tests per edge; the loop that feeds it the tick's

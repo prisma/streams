@@ -18,9 +18,11 @@
 (* owner of …0 moves both to itself if it has room for the half and the  *)
 (* merged leaf M (resident + 2 <= Cap), else (PartnerFallback) to the     *)
 (* owner of …1 if it has room, else (AskWhenNoRoom) asks for an instance; *)
-(* the fleet adds Spare and count balance moves load onto it. A local    *)
-(* pair at its cap asks too. The merge starts only once the move's        *)
-(* cooldown passed (`fresh` false) and the actor holds both engines.      *)
+(* the fleet adds Spare and count balance moves load onto it. The merge   *)
+(* starts only once the move's cooldown passed (`fresh` false) and the    *)
+(* actor holds both engines; it never needs room for M (#251 R5: the     *)
+(* shard ceiling refuses no merge, so an instance at or past Cap merges a *)
+(* local pair and holds M one past it until the publish).                *)
 (*                                                                         *)
 (* The actor (`Started::finish`, `run`): still_owned at the pause, both   *)
 (* barriers, both checkpoints (a fenced source's flush fails: roll back), *)
@@ -182,6 +184,11 @@ Owner(s) == IF ovr[s] \in alive THEN ovr[s] ELSE RingOwner(s)
 Resident(i) == load[i] + Cardinality({s \in Src : Owner(s) = i})
 Room2(i) == Resident(i) + 2 <= Cap
 RoomM(i) == Resident(i) + 1 <= Cap
+\* The merge's old guard, room for M beside both halves (removed by #251 R5): off in
+\* the model, switched back on by its negative control (nc_merge_needs_room) with a
+\* definition override, MergeNeedsRoom <- RoomGuardOn.
+MergeNeedsRoom == FALSE
+RoomGuardOn == TRUE
 ActorAlive == pc \in {"prepared", "owned1", "ckptEarly", "parked", "quiesced", "cloned",
                       "owned2", "t0", "t1", "published"}
 BeforeT == pc \in {"prepared", "owned1", "ckptEarly", "parked", "quiesced", "cloned", "owned2"}
@@ -314,14 +321,6 @@ Colocate ==
     /\ UNCHANGED <<alive, load, eng, held, installed, dataVars, intent, actorVars,
                    crashes, parts, cstep, csrc, ghostVars>>
 
-\* A local pair whose instance cannot hold M beside it asks for an instance.
-AskForM ==
-    /\ PolicyReady /\ Owner(0) = Owner(1) /\ ~RoomM(Owner(0))
-    /\ AskWhenNoRoom /\ ~asked /\ Spare \notin alive
-    /\ asked' = TRUE
-    /\ UNCHANGED <<alive, ovr, fresh, load, eng, held, installed, dataVars, intent,
-                   actorVars, crashes, parts, cstep, csrc, ghostVars>>
-
 \* The move's cooldown passes.
 Settle ==
     /\ fresh /\ fresh' = FALSE
@@ -348,7 +347,7 @@ Balance(i) ==
 Begin ==
     /\ PolicyReady /\ Owner(0) = Owner(1)
     /\ LET a == Owner(0) IN
-       /\ RoomM(a)
+       /\ MergeNeedsRoom => RoomM(a)
        /\ \A s \in Src : eng[a][s] = "cur" /\ ~held[a][s] /\ T[s] = 0
        /\ cstep[a] = "idle"
        /\ intent' = [state |-> "live", owner |-> a, lapsed |-> FALSE, outcome |-> "",
@@ -660,7 +659,7 @@ Next ==
           \/ CloseEngine(i, s) \/ FenceStep(i, s)
     \/ \E i \in Insts : Install(i) \/ Balance(i) \/ Crash(i) \/ Restart(i)
                         \/ ClaimFence(i) \/ ClaimCAS(i) \/ Abandon(i) \/ Act(i)
-    \/ Colocate \/ AskForM \/ Settle \/ FleetAdd
+    \/ Colocate \/ Settle \/ FleetAdd
     \/ Begin \/ StillOwned("prepared", "owned1") \/ StillOwned("cloned", "owned2")
     \/ Abort \/ Park \/ Checkpoint \/ Clone
     \/ Retire(0, "owned2", "t0") \/ Retire(1, "t0", "t1") \/ Publish \/ Reclaim
@@ -679,7 +678,7 @@ Fairness ==
     /\ WF_vars(Checkpoint) /\ WF_vars(Clone) /\ WF_vars(Retire(0, "owned2", "t0"))
     /\ WF_vars(Retire(1, "t0", "t1")) /\ WF_vars(Publish) /\ WF_vars(Reclaim)
     /\ WF_vars(LeaseLapse) /\ WF_vars(Heal) /\ WF_vars(ReclaimPublished)
-    /\ WF_vars(Colocate) /\ WF_vars(AskForM) /\ WF_vars(Settle) /\ WF_vars(FleetAdd)
+    /\ WF_vars(Colocate) /\ WF_vars(Settle) /\ WF_vars(FleetAdd)
     /\ \A i \in Insts :
           /\ WF_vars(Install(i)) /\ WF_vars(Balance(i)) /\ WF_vars(ClaimFence(i))
           /\ WF_vars(ClaimCAS(i)) /\ WF_vars(Abandon(i)) /\ WF_vars(Act(i))

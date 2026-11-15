@@ -664,6 +664,68 @@ async fn a_sustained_cold_pair_merges_into_one_stored_leaf_and_keeps_every_strea
     engine_shutdown(&rig.state).await;
 }
 
+/// **A one-instance cell at its shard ceiling merges back to its root** (edge #251 amendment R5,
+/// PR #152's convergence red). `streams-1` alone serves `0` and `1` at `SHARDS_PER_INSTANCE_MAX`
+/// 3, and S4's split makes `1` into `10` and `11` (version 2), so it holds `0`, `10` and `11`, all
+/// three open, at its ceiling, with no other instance and no count change. Quiet, the policy
+/// merges `10` + `11` into `1` though the merge holds `M` past the ceiling until its publish, then
+/// `0` + `1` into `""`. The stored topology ends at version 4 with the one leaf `""`, the beat
+/// never says `split_refused`, the policy splits nothing, and every stream reads back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_one_instance_cell_at_its_shard_ceiling_merges_back_to_its_root() {
+    let fleet = seeded().await;
+    let at_ceiling = |cli: &mut crate::config::CliArgs| {
+        cli.fleet_max = 1;
+        lines(cli);
+        cli.shard_merge_sustain_secs = 3;
+        cli.shard_split_reversal_min_secs = 1;
+        cli.shards_per_instance_max = 3;
+    };
+    let halves = vec!["0".to_string(), "1".to_string()];
+    let (rig, asked) = policy_rig_at(fleet.clone(), at_ceiling, split_double, halves).await;
+    store_topology(&rig).await;
+    let one = super::merge_k::opened(&rig.state, "1").await;
+    let clock = rig.state.runtime.clock.clone();
+    crate::topology::split::split(&rig.state.shards, &one, "op-s", "streams-1", &*clock)
+        .await
+        .expect("the split publishes");
+    drop(one);
+    for prefix in ["0", "10", "11"] {
+        super::merge_k::opened(&rig.state, prefix).await;
+    }
+    assert_eq!(
+        rig.state.shards.open_count(),
+        3,
+        "all three open at the ceiling"
+    );
+    let kept = super::topology_colocation::streams_with_a_record(rig.addr, "atcap", 12).await;
+    let mut decisions = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while leaves(&rig.state) != [""] && tokio::time::Instant::now() < deadline {
+        let beat = document(&fleet, "streams-1").await;
+        assert!(beat["split_refused"].is_null(), "split_refused: {beat}");
+        if decisions.last() != Some(&beat["topology_decision"]) {
+            decisions.push(beat["topology_decision"].clone());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let held = crate::topology::intent::read(&*rig.state.data_store).await;
+    let intent = held.ok().flatten().map(|held| held.intent);
+    assert_eq!(leaves(&rig.state), [""], "{decisions:?}, {intent:?}");
+    assert!(asked.lock().unwrap().is_empty(), "nothing split");
+    let (stored, _) = crate::topology::store::read(&*rig.state.data_store)
+        .await
+        .unwrap();
+    assert_eq!(stored.version, 4);
+    assert_eq!(stored.shards.leaves.keys().collect::<Vec<_>>(), [""]);
+    for (name, before) in &kept {
+        assert_eq!(&served(rig.addr, name).await, before, "{name}");
+    }
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
 /// The records of `name` once its shard serves (a just-merged leaf may still be opening), within
 /// 20 s.
 pub(super) async fn served(addr: std::net::SocketAddr, name: &str) -> serde_json::Value {

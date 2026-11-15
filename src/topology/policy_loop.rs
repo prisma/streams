@@ -76,7 +76,6 @@ fn merge_refusal_code(refused: &super::merge::Refused) -> &'static str {
         S6::Busy("fleet") => "fleet_settling",
         S6::Busy(_) => "topology_busy",
         S6::NotOwner(_) => NOT_RING_OWNER,
-        S6::InstanceFull { .. } => INSTANCE_FULL,
         S6::Unavailable(_) => "unavailable",
         S6::NotMergeable(_) => "not_mergeable",
         S6::UnknownPrefix => "unknown_prefix",
@@ -583,7 +582,8 @@ mod tests {
     }
 
     /// S6's merge refusals answer the same holds: busy for its two reasons apart, and the rest
-    /// (instance_full and not_mergeable among them) steady, so the next pass decides again. A half
+    /// (not_mergeable among them) steady, so the next pass decides again; the shard ceiling refuses
+    /// no merge (#251 R5). A half
     /// another instance holds is the code `act` sends to the co-location.
     #[test]
     fn s6s_merge_refusals_become_the_policys_holds() {
@@ -597,10 +597,6 @@ mod tests {
             NOT_RING_OWNER
         );
         for steady in [
-            S6::InstanceFull {
-                resident: 8,
-                max: 7,
-            },
             S6::NotMergeable(String::new()),
             S6::Unavailable(String::new()),
             S6::UnknownPrefix,
@@ -612,13 +608,6 @@ mod tests {
         assert_eq!(
             merge_refusal_code(&S6::NotMergeable(String::new())),
             "not_mergeable"
-        );
-        assert_eq!(
-            merge_refusal_code(&S6::InstanceFull {
-                resident: 8,
-                max: 7
-            }),
-            "instance_full"
         );
     }
 

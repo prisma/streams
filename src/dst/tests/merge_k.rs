@@ -13,6 +13,7 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::spill::object::ObjectId;
+use object_store::ObjectStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -218,21 +219,7 @@ async fn the_merge_route_starts_a_merge_that_runs_on_to_its_publish() {
     assert_eq!(status, 202, "{started}");
     assert_eq!(started["version"], split.version);
     let op_id = started["op_id"].as_str().unwrap().to_string();
-    let t0 = std::time::Instant::now();
-    let ended = loop {
-        let held = crate::topology::intent::read(&*store)
-            .await
-            .unwrap()
-            .unwrap();
-        if held.intent.op_id == op_id && held.intent.is_terminal() {
-            break held.intent;
-        }
-        assert!(
-            t0.elapsed() < std::time::Duration::from_secs(20),
-            "the merge ends"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
+    let ended = merge_ended(&*store, &op_id).await;
     assert_eq!(ended.kind, "merge");
     assert_eq!(ended.state, crate::topology::intent::State::Reclaimed);
     let (topology, _) = crate::topology::store::read(&*store).await.unwrap();
@@ -327,6 +314,19 @@ async fn the_merge_routes_refusals() {
     engine_shutdown(&state).await;
 }
 
+/// The cell's intent once the operation `op_id` has ended, within 20 s.
+async fn merge_ended(store: &dyn ObjectStore, op_id: &str) -> crate::topology::intent::Intent {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let held = crate::topology::intent::read(store).await.unwrap().unwrap();
+        if held.intent.op_id == op_id && held.intent.is_terminal() {
+            return held.intent;
+        }
+        assert!(std::time::Instant::now() < deadline, "the merge ends");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// A `POST` of `body` to the merge route: its status and JSON body.
 async fn post_merge(addr: Addr, body: &str) -> (u16, serde_json::Value) {
     let route = "/operator/topology/merge";
@@ -395,12 +395,12 @@ async fn nothing_merged(store: &dyn object_store::ObjectStore, version: u64) {
     assert_eq!(held.intent.kind, "split", "no merge intent was written");
 }
 
-/// **A merge that would fill its instance past `SHARDS_PER_INSTANCE_MAX` is refused** (S6 §7,
-/// edge #251). The actor holds both halves and `M` until the publish, so with a ceiling of 1 the
-/// merge answers 409 `instance_full` naming the shards it would leave resident (those open here,
-/// both halves among them, plus one) and the ceiling; nothing is merged.
+/// **A merge on an instance past its `SHARDS_PER_INSTANCE_MAX` starts** (S6 §7, edge #251
+/// amendment R5). With a ceiling of 1 the actor already holds both halves: the merge answers 202
+/// with its operation and the version it saw, publishes the leaf `00` at the next version, and
+/// leaves the instance one shard below what it held before the request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_merge_that_would_fill_its_instance_is_refused() {
+async fn a_merge_on_an_instance_past_its_ceiling_starts() {
     let Rig {
         store,
         state,
@@ -409,18 +409,25 @@ async fn a_merge_that_would_fill_its_instance_is_refused() {
         ..
     } = rig().await;
     let version = split_00(&state, &parent).await;
+    drop((parent, halves_of_00(&state).await));
+    let before = state.shards.open_count();
+    assert!(before >= 2, "both halves open: {before}");
     let tasks = super::split_k::start_ops_on(&state, 1);
-    let (status, refused) = post_merge(addr, r#"{"prefix":"00"}"#).await;
-    let resident = state.shards.open_count() + 1;
-    assert!(resident >= 3, "both halves and M: {resident}");
+    let (status, started) = post_merge(addr, r#"{"prefix":"00"}"#).await;
+    let op_id = started["op_id"].as_str().unwrap_or_default().to_string();
     assert_eq!(
-        (status, refused),
-        (
-            409,
-            serde_json::json!({"error": "instance_full", "resident": resident, "max": 1})
-        )
+        (status, started),
+        (202, serde_json::json!({"op_id": op_id, "version": version}))
     );
-    nothing_merged(&*store, version).await;
+    let ended = merge_ended(&*store, &op_id).await;
+    assert_eq!(ended.state, crate::topology::intent::State::Reclaimed);
+    let (topology, _) = crate::topology::store::read(&*store).await.unwrap();
+    assert_eq!(topology.version, version + 1);
+    assert_eq!(topology.last_op.map(|op| op.op_id), Some(op_id));
+    let leaves = ["00", "000", "001"].map(|p| topology.shards.leaves.get(p));
+    assert_eq!(leaves, [Some(&ended.children[0]), None, None]);
+    let after = state.shards.open_count();
+    assert_eq!(after, before - 1, "both halves out, M in");
     tasks.cancel();
     engine_shutdown(&state).await;
 }

@@ -931,9 +931,10 @@ anything listed in `$SOAK_HOME/preserve.txt`.
   merges `<prefix>0` and `<prefix>1` the same way: 202 `{op_id, version}`,
   then both halves pause and their held appends go to the merged leaf.
   Refusals as for a split (`topology_busy` `fleet` or `intent`,
-  `not_ring_owner`, `instance_full` at its peak: both halves and the merged
-  leaf), plus 422 `not_mergeable` (a half already retired) and 404 when the
-  halves are not both leaves. Both halves must be this instance's: the
+  `not_ring_owner`), plus 422 `not_mergeable` (a half already retired) and
+  404 when the halves are not both leaves. The shard ceiling refuses no
+  merge (#251 R5): the instance holds the merged leaf one past it until the
+  publish, and one shard fewer after. Both halves must be this instance's: the
   topology policy moves a split pair onto one instance itself and merges it
   once the move's cooldown has passed.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the

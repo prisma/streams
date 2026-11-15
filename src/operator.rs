@@ -140,9 +140,9 @@ pub(crate) async fn topology_split(
 /// `POST /operator/topology/merge` `{"prefix"}` (edge change #251, S6-DESIGN §7): starts the merge
 /// of `prefix`'s halves `<prefix>0` and `<prefix>1` into `prefix` on this instance's topology loop,
 /// answered once it started, while the merge runs on. 202 `{op_id, version}`; 400 `bad_request`;
-/// 404 `unknown_prefix`; 409 `topology_busy {reason: "intent" | "fleet"}`,
-/// `instance_full {resident, max}` or `not_ring_owner {owner}`; 422 `not_mergeable`; 503
-/// `topology_unavailable`.
+/// 404 `unknown_prefix`; 409 `topology_busy {reason: "intent" | "fleet"}` or `not_ring_owner
+/// {owner}`; 422 `not_mergeable`; 503 `topology_unavailable`. The shard ceiling refuses no merge
+/// (#251 R5).
 pub(crate) async fn topology_merge(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -169,10 +169,6 @@ pub(crate) async fn topology_merge(
         Err(Refused::Busy(reason)) => (
             StatusCode::CONFLICT,
             json!({"error": "topology_busy", "reason": reason}),
-        ),
-        Err(Refused::InstanceFull { resident, max }) => (
-            StatusCode::CONFLICT,
-            json!({"error": "instance_full", "resident": resident, "max": max}),
         ),
         Err(Refused::NotOwner(owner)) => (
             StatusCode::CONFLICT,

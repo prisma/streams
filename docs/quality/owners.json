@@ -594,10 +594,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 8,
+      "count": 7,
       "owner": "crate::topology_merge",
       "path": "src/operator.rs",
-      "reason": "The operator merge route's eight JSON answers (edge change #251): 202 {op_id, version}, 400 bad_request, 404 unknown_prefix, 409 topology_busy, instance_full and not_ring_owner, 422 not_mergeable, 503 topology_unavailable; serde macro output is compiled and the merge DSTs assert each body.",
+      "reason": "The operator merge route's seven JSON answers (edge change #251; amendment R5 removed instance_full): 202 {op_id, version}, 400 bad_request, 404 unknown_prefix, 409 topology_busy and not_ring_owner, 422 not_mergeable, 503 topology_unavailable; serde macro output is compiled and the merge DSTs assert each body.",
       "syntax": "serde_json::json"
     },
     {

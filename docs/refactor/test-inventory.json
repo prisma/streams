@@ -1817,6 +1817,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_on_an_instance_past_its_ceiling_starts",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9926e9e8f7ccd489f7e7bfe61081f0fc669fb383d44e73e7de5eacac40a96b66",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_past_its_lease_reclaims_its_own_intent_and_publishes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1855,17 +1866,6 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
     "function_sha256": "d4f13a12ebb9d12cfe9c26216314b438b6182b6c25ba3ba23d9ff2d413ca6a52",
-    "mechanisms": [],
-    "configuration": [],
-    "file": "src/dst/tests/merge_k.rs",
-    "scenarios": []
-  },
-  {
-    "name": "a_merge_that_would_fill_its_instance_is_refused",
-    "attributes": [
-      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
-    ],
-    "function_sha256": "f8da5fb3fadd3261316dec395a7e0bb9b4e72cb841aff6fa21dc74dd89ec0b32",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -2082,6 +2082,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_fence_relay.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_one_instance_cell_at_its_shard_ceiling_merges_back_to_its_root",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0e602a001c2ba7f40dfdadff634d7d5bd8f0cc8cef9dbee8354f720c7bcb0a12",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
     "scenarios": []
   },
   {
@@ -10937,7 +10948,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "2cac56390b794f890974f6f89c9edb0850ffa8632c74bb1207771abff02eb70c",
+    "function_sha256": "8a2f003f3acb2451cad891a5a210d4526b96645e5bcfbdee994e72038378b190",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",

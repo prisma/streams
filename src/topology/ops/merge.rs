@@ -14,11 +14,12 @@ use crate::topology::split;
 impl Parts {
     /// Start the merge of `prefix`'s halves (S6 §7.2 step 0) and finish it under `tasks`: refused for
     /// halves that are not both leaves, a fleet that has not settled (`fleet_settled`, S4 §10.1: a
-    /// move younger than its cooldown among them), a half another instance holds (an override
-    /// placing it elsewhere among them), or an instance the merge would fill past `shards_max` (its
-    /// open shards, both halves among them, plus `M`: the actor holds all three until the
-    /// publish); else both are opened here and the merge started. An override placing a half here
-    /// does not refuse it: that is the co-location a merge of a split pair needs (`fleet::colocate`).
+    /// move younger than its cooldown among them), or a half another instance holds (an override
+    /// placing it elsewhere among them); else both are opened here and the merge started. The
+    /// shard ceiling refuses no merge (#251 R5): the actor holds both halves and `M` until the
+    /// publish, one past its count, and one fewer than before after it. An override placing a half
+    /// here does not refuse it: that is the co-location a merge of a split pair needs
+    /// (`fleet::colocate`).
     pub(super) async fn start_merge(
         &self,
         prefix: &str,
@@ -49,13 +50,6 @@ impl Parts {
                     other => Refused::Unavailable(format!("{other:?}")),
                 })?;
             engines.push(engine);
-        }
-        let resident = self.dir.open_count().saturating_add(1);
-        if resident > usize::try_from(self.shards_max).unwrap_or(usize::MAX) {
-            return Err(Refused::InstanceFull {
-                resident,
-                max: self.shards_max,
-            });
         }
         let op_id = format!(
             "merge-{prefix}-v{}-{}",

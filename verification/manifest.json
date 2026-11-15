@@ -5053,6 +5053,16 @@
           "deadlock_check": false
         },
         {
+          "id": "TLA-048/liveness-at-ceiling",
+          "role": "baseline",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_liveness_at_ceiling.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
           "id": "TLA-048/liveness-cross",
           "role": "baseline",
           "spec": "verification/tla/topology/TopologyMerge.tla",
@@ -5156,6 +5166,17 @@
           "expect": {
             "result": "violation",
             "property": "OperationCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-048/nc-merge-needs-room",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_merge_needs_room.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MergeHappens"
           },
           "deadlock_check": false
         },

@@ -42,8 +42,8 @@ move-in and beat opens (`fleet.rs`).
 
 | Model | Code |
 |---|---|
-| `Colocate`, `AskForM`, `FleetAdd`, `Settle`, `Balance` | the policy's co-location of the pair, its ask for an instance, and the fleet adding one and moving load onto it |
-| `Begin`, `StillOwned`, `Abort`, `Park`, `Checkpoint`, `Clone` | the actor's pause, both barriers and checkpoints, and the union clone into a fresh home |
+| `Colocate`, `FleetAdd`, `Settle`, `Balance` | the policy's co-location of the pair, its ask for an instance when neither side has room, and the fleet adding one and moving load onto it (a local pair asks for nothing: a merge needs no room for `M`, #251 R5) |
+| `Begin`, `StillOwned`, `Abort`, `Park`, `Checkpoint`, `Clone` | the merge's start (no room check for `M`: `MergeNeedsRoom` is off, and only `nc_merge_needs_room` turns it on), the actor's pause, both barriers and checkpoints, and the union clone into a fresh home |
 | `Retire(0, …)`, `Retire(1, …)` | `'T'` into S0 and then S1; a fenced write leaves the intent live (`Unfinished`) |
 | `Publish`, `Reclaim`, `ReclaimPublished` | the topology CAS, the terminal CAS, and the heartbeat's reclaim of a published intent |
 | `RequestOpen`, `EagerOpen` | a client request at the effective owner; the tick's eager move-in, and the lapsed open of a live intent's sources |
