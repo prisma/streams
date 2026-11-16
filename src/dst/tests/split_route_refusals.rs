@@ -41,6 +41,7 @@ async fn rig(
     let parts = crate::topology::ops::Parts {
         dir: rig.state.shards.clone(),
         fleet: rig.state.fleet.clone(),
+        ownership: rig.state.ownership.clone(),
         move_cooldown_ms: 600_000,
         clock: rig.state.runtime.clock.clone(),
         owner: "inst-a".to_string(),

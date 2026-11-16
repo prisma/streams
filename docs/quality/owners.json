@@ -1387,6 +1387,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_birth",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split's children born on its actor (GATE-DECISION-f2-children-on-actor-2026-11-16, edge change #265): two real fleet members, the ring giving both halves to the member that is not the actor; a held append is acked by the actor's child and the other member opens nothing; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_birth.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_barrier",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split's barrier on a serving engine (S4-DESIGN section 5.2): it parks the committer after its own group, a resume serves the held appends in order, and a barrier dropped unreleased closes the engine; compiler and the full DST suite exercise the module.",

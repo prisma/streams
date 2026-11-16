@@ -640,6 +640,7 @@ pub(super) fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::Task
     let parts = crate::topology::ops::Parts {
         dir: state.shards.clone(),
         fleet: state.fleet.clone(),
+        ownership: state.ownership.clone(),
         move_cooldown_ms: 600_000,
         clock: state.runtime.clock.clone(),
         owner: "inst-a".to_string(),

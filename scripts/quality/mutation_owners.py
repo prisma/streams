@@ -183,6 +183,10 @@ OWNERS = (
           'dst_tests::merge_k::a_merge_waits dst_tests::merge_k::a_merge_past '
           'dst_tests::merge_k::a_merge_serves dst_tests::split_generations::a_quiesced_'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
+    # A split's children born on its actor (GATE-DECISION-f2-children-on-actor A2): its unit test and
+    # the two-member birth DSTs, each a few seconds.
+    owner('topology_split_birth', 'src/topology/split/birth.rs',
+          'topology::split::birth dst_tests::fleet_birth::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),
     owner('topology_actor', 'src/topology/actor.rs', 'topology::actor dst_tests::split_k::'),
     owner('topology_view', 'src/topology/view.rs', 'dst_tests::split_k:: dst_tests::never_leaf_k::'),
