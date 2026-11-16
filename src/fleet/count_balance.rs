@@ -60,8 +60,8 @@ fn past_share(owned: usize, shards: usize, members: usize) -> bool {
 /// the share move at the same ticks, so each takes a different target: the
 /// one at its own rank, by name, among the members past the share, of the
 /// members below it ordered by fewest shards. Only a shard `movable` admits
-/// moves: one with no override that names a member, so a count move never
-/// undoes a lag move or another count move. None when `me` is within the share, or no member
+/// moves: one with no override naming a member, or one past the return window (F2 A5), so a
+/// count move never undoes a recent lag or count move. None when `me` is within the share, or no member
 /// is below it, or none of its shards may move.
 pub(crate) fn pick(
     owners: &[(String, String)],
@@ -279,6 +279,8 @@ struct FleetRead {
     sources: Vec<String>,
     overrides: Overrides,
     version: Option<UpdateVersion>,
+    /// An override stamped before now less `REBALANCE_RETURN_SECS` no longer pins its shard (A5).
+    aged_before_ms: i64,
 }
 
 impl FleetRead {
@@ -298,6 +300,7 @@ impl FleetRead {
         let count = desired.map_or(1, |desired| desired.count);
         let active = planning::active_members(count, me, &candidacies);
         let (overrides, version) = state.fleet.read_overrides().await.ok()?;
+        let window = Duration::from_secs(state.config.fleet.rebalance_return_secs);
         Some(Self {
             active,
             lags,
@@ -305,6 +308,8 @@ impl FleetRead {
             sources: state.fleet.standing().topology_sources(),
             overrides,
             version,
+            aged_before_ms: now_ms()
+                .saturating_sub(window.as_millis().try_into().unwrap_or(i64::MAX)),
         })
     }
 
@@ -334,15 +339,13 @@ impl FleetRead {
                     .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
             },
             // An override to a non-member is void (every reader ignores it),
-            // so its shard moves as one with none.
+            // so its shard moves as one with none; so does one past the return window.
             |prefix| {
                 let real = owners[..held].iter().any(|(p, _)| p == prefix);
                 let source = self.sources.iter().any(|p| p == prefix);
-                let unowned = self
-                    .overrides
-                    .entries
-                    .get(prefix)
-                    .is_none_or(|entry| !self.active.contains(&entry.to));
+                let unowned = self.overrides.entries.get(prefix).is_none_or(|entry| {
+                    !self.active.contains(&entry.to) || entry.ms < self.aged_before_ms
+                });
                 real && !source && unowned
             },
         )
@@ -690,12 +693,43 @@ mod tests {
                 ..Default::default()
             },
             version: None,
+            aged_before_ms: i64::MIN,
         };
         let prefixes: Vec<String> = ["00", "01", "10", "11"].map(str::to_owned).to_vec();
         assert_eq!(
             read.plan(&prefixes, "streams-1", 60),
             Some(("00".to_owned(), "streams-2".to_owned()))
         );
+    }
+
+    /// **An override pins its shard for one return window, not for ever** (F2 A5): `streams-1`
+    /// holds all four shards by overrides naming it; with `00` stamped at the window's edge none
+    /// may move, 1 ms before it `00` moves to `streams-2`.
+    #[test]
+    fn an_override_older_than_the_return_window_may_move() {
+        let entry = |ms| OverrideEntry {
+            to: "streams-1".to_owned(),
+            ms,
+        };
+        let entries = |ms_00| [("00", ms_00), ("01", 1_000), ("10", 1_000), ("11", 1_000)];
+        let read = |ms_00: i64| FleetRead {
+            active: members(2),
+            lags: [("streams-2".to_owned(), 0)].into_iter().collect(),
+            reserved: std::collections::HashMap::new(),
+            sources: Vec::new(),
+            overrides: Overrides {
+                entries: entries(ms_00)
+                    .map(|(p, ms)| (p.to_owned(), entry(ms)))
+                    .into(),
+                ..Default::default()
+            },
+            version: None,
+            aged_before_ms: 1_000,
+        };
+        let prefixes: Vec<String> = ["00", "01", "10", "11"].map(str::to_owned).to_vec();
+        assert_eq!(read(1_000).plan(&prefixes, "streams-1", 60), None, "young");
+        let moved = read(999).plan(&prefixes, "streams-1", 60);
+        assert_eq!(moved, Some(("00".to_owned(), "streams-2".to_owned())));
     }
 
     /// **A member's split reservation counts as shards it holds, and a split's source never moves**
@@ -728,6 +762,7 @@ mod tests {
             sources: vec![source.clone()],
             overrides: Overrides::default(),
             version: None,
+            aged_before_ms: i64::MIN,
         };
         let mut prefixes: Vec<String> = ones.iter().chain(&twos).cloned().collect();
         prefixes.sort();
