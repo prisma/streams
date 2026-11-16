@@ -9,6 +9,7 @@ use crate::native_queue::{
     keys,
 };
 
+mod admin;
 mod avail;
 mod budgets;
 mod caps;
