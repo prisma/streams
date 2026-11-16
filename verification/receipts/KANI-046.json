@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "86199793471195166f62c04b6285c65fa33b35b9a15d81d704ce612ef7b550e1",
+      "log_sha256": "275398e0504ad2454cc2f5c666e779ab6f03b24e24ae174aa0ae8b9ac3b678e5",
       "role": "baseline",
-      "seconds": 43.0,
+      "seconds": 105.4,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the boundary moves forward from the snapshot's boundary within the log\""
       ],
-      "log_sha256": "1303a0cf39eee02c783fd86377343c3ecb5b626a1e51a444bcc43b7f5403b64c",
+      "log_sha256": "0d1a603fa426eddb6240fd144a5e2d0d3f2a2bfa6257da5e3dd68bbd6c339815",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 124.4,
+      "seconds": 106.1,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the boundary moves forward from the snapshot's boundary within the log\""
       ],
-      "log_sha256": "ad5e0efbd03cb49f47b5704f1385729381ea6621c035106c405ef44fd35db223",
+      "log_sha256": "a2e3475b58db01b9b545754378fd809e980cd2f9f552f048bc22fc4b4f5954c6",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 206.4,
+      "seconds": 49.5,
       "verdict": "fail"
     },
     {
@@ -57,7 +57,7 @@
       "failed_checks": [
         "attempt to subtract with overflow"
       ],
-      "log_sha256": "a0edd7f070c8827dd4c91e096190eecdafa7b718f8dc739992d589c5844f84bf",
+      "log_sha256": "907eef4d04d7c136fdc11f7352af03e6399f185f9bfbf16efc498ee198c94363",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -65,7 +65,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 164.4,
+      "seconds": 95.0,
       "verdict": "fail"
     }
   ],
@@ -84,7 +84,7 @@
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/shard/commit_plan.rs": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
       "src/shard/commit_plan/proofs.rs": "8261cd8738051f9028800b24a54ad0499518c56b4114248b4ed82fff16673c12",
-      "src/shard/transaction/seal.rs": "a1901811f11193007fc287bc13d2ad6f236a9243ad11a6ea98755a9bbccd0e3e",
+      "src/shard/transaction/seal.rs": "b9f58a9ed80b35596c09123937c5de41efaffa884b4249a43ecbc5c1a8bd64a4",
       "verification/kani/controls/KANI-046-seal-from-anywhere.patch": "b5aef3caa7747bffdb66b50ac1396688fb3831d7c0686edbe9234e3170f3d77f",
       "verification/kani/controls/KANI-046-seal-past-the-ledger.patch": "71268baff61c1a5f1ddfd3a97624217f1db4e23f70ac3347fa12118aebc7a4ba",
       "verification/kani/controls/KANI-046-seal-past-the-log.patch": "fce7aace6e92df12c353d408092796c04917e3224b6f104cb85336d26d2ef144"
@@ -177,10 +177,10 @@
       }
     }
   },
-  "inputs_sha256": "f14436400b0e77634022796468179b4cb96cc36f0e4fbd58f74cc93ab9ab7d54",
+  "inputs_sha256": "eff9f09338a425b82ffc57e6920b6af396d59278c653ea06286a18acc0602ad8",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "12e7cae5076007f4ab4ea07280b7266a45bf3a22"
   },
   "schema": 2,
   "tools": {

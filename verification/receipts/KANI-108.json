@@ -4,9 +4,9 @@
       "check": "KANI-108/exact-sum",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "3d104cf509497deeebdc5c9ad8dc29670405dfa3a7fdeb0a7025575b9729e72d",
+      "log_sha256": "10fb300fca8e02fce34a6e21232f21da690369f35d5e16969edea02243746792",
       "role": "baseline",
-      "seconds": 101.5,
+      "seconds": 62.0,
       "verdict": "pass"
     },
     {
@@ -15,15 +15,15 @@
       "failed_checks": [
         "\"a merged row only for one length and a sum that fits\""
       ],
-      "log_sha256": "039410584a55c532c34fe635a0128403b1106db3ba3224c47a40a53aa53f8006",
+      "log_sha256": "e3947223d7bff9fe63aeef44b7c74f9fbf5a904c78d1b9df5ffa4fed79b8f74d",
       "mutated": {
         "src/spill/gc.rs": {
-          "baseline": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
-          "control": "a39fd370cfd9fbb990e35b1cff701850bdffd7bf5761354239cfc1920a0d90b2"
+          "baseline": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
+          "control": "fda799a303395072b84d7fdb13480de85d44fc2c793e42eeac62796e1a857b07"
         }
       },
       "role": "negative-control",
-      "seconds": 99.2,
+      "seconds": 98.6,
       "verdict": "fail"
     },
     {
@@ -32,15 +32,15 @@
       "failed_checks": [
         "\"the merged row keeps the earlier creation\""
       ],
-      "log_sha256": "2f0c12e189a3c72a986a287910db9a859bc0a772823033a7c27222621480ad2e",
+      "log_sha256": "140ab6ee7b21025336f721f3593cb3d42f2f87d48a35dc6d40e8f012933f56d3",
       "mutated": {
         "src/spill/gc.rs": {
-          "baseline": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
-          "control": "d2eda1373a79a766a085172d2be626664edb4b9e11ee7dce393cfb90e05700f8"
+          "baseline": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
+          "control": "d6d68ec7bfac10b0dcafb4fa3d5c1d667788e44b47e2899a988c9eb4aee47758"
         }
       },
       "role": "negative-control",
-      "seconds": 47.6,
+      "seconds": 100.7,
       "verdict": "fail"
     }
   ],
@@ -57,7 +57,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/spill/gc.rs": "1929de93e9d0e73edfbf590f1c00ab283af74acfac70f0962a2ed50803a1146b",
+      "src/spill/gc.rs": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
       "src/spill/gc/proofs.rs": "2d3d4913b2fe82f99fa4007852d1d527cca331b33c5129dbe550fd2691ca2f1b",
       "verification/kani/controls/KANI-108-later-creation.patch": "d6c22fd6b99529863e4fd341df3fbf2e38a9d0e490e7b0e8e66e29ec308e02f4",
       "verification/kani/controls/KANI-108-wrapping-sum.patch": "f6634dc975ab98527581f392b910a2cb3e7dc46bcbb331d49447e93134325648"
@@ -150,10 +150,10 @@
       }
     }
   },
-  "inputs_sha256": "b80145f7ae05541f8de4a1eb00862aec5dcff4e9a26fac1cfcd839b1cd726913",
+  "inputs_sha256": "74972cfdbad816848b4fb9a4d3d15bab64fe029343a957026fb2539c29f2a7e6",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "12e7cae5076007f4ab4ea07280b7266a45bf3a22"
   },
   "schema": 2,
   "tools": {

@@ -4,18 +4,18 @@
       "check": "KANI-106/entity-route",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "5ed813a581c35ea9b56621a63c629054d24c679ed763433cd78af5dcb8120f0f",
+      "log_sha256": "4ca7fa63cb96ba967f260d5ef1a9d69e3a44820f1c60cfcd6d9c548b9dafb59e",
       "role": "baseline",
-      "seconds": 131.3,
+      "seconds": 157.2,
       "verdict": "pass"
     },
     {
       "check": "KANI-106/entity-key",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "6df879e9ff92a90923837c7803b7a2291206602607568194b5849adfcb9f6700",
+      "log_sha256": "a10500aa1918a648f9ecd11f859e65cb8de6fa4960f6aa947ab110b70b11c1ea",
       "role": "baseline",
-      "seconds": 124.9,
+      "seconds": 99.1,
       "verdict": "pass"
     },
     {
@@ -24,15 +24,15 @@
       "failed_checks": [
         "\"a prefix holds an entity exactly when it holds its route\""
       ],
-      "log_sha256": "a88dc54cba76920d4d1e18ad6fa11fb62c5cb28bb5eae0ca5b89f72266a8b0aa",
+      "log_sha256": "cfad8bb2ed75f0a5b203d943c1ef38bf8e46978c9c2211bcf9b89e585e24f723",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "8d3e121bcb5fed8b1e461479de5f8b5742da4fe50ef66be365e29b6021974f99",
-          "control": "aed7b324fae0e32d3918764f28af399bd69b9d6070de3a00f50b873e74cef6ee"
+          "baseline": "e91db6b9ab57c9c3e5d79e1ec951a3e533188cec60775c56e4b16c7206df9da0",
+          "control": "40be5a629fea82aa0f53570ebd4cc1042fc08d3760166c95d0648b1382c4c953"
         }
       },
       "role": "negative-control",
-      "seconds": 45.7,
+      "seconds": 53.1,
       "verdict": "fail"
     },
     {
@@ -41,15 +41,15 @@
       "failed_checks": [
         "\"a prefix holds an entity exactly when it holds its route\""
       ],
-      "log_sha256": "7b94e180f45582b16e6d75b512f947a0241672d76d10f2e336e051bfeabfe12d",
+      "log_sha256": "ba232fb676b59380b8a29f1f4b2866a5ad2002589e2548291d34c1d9329b7e57",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "8d3e121bcb5fed8b1e461479de5f8b5742da4fe50ef66be365e29b6021974f99",
-          "control": "092b1a7d00c5ec1cecda7a7e7aeadcc6526233c56c258f7da46648553a755e3c"
+          "baseline": "e91db6b9ab57c9c3e5d79e1ec951a3e533188cec60775c56e4b16c7206df9da0",
+          "control": "16260ec69544178164f42d8bb352b342e552d230b771568dc81f09b2384a9737"
         }
       },
       "role": "negative-control",
-      "seconds": 83.0,
+      "seconds": 100.8,
       "verdict": "fail"
     },
     {
@@ -58,15 +58,15 @@
       "failed_checks": [
         "\"an entity key lies in its hash's range\""
       ],
-      "log_sha256": "44ed2641793c87951c4728e9a588ed04868ab4216074e7d0e597f6321724f456",
+      "log_sha256": "0dc2a12bf9fea500b3aa93eda9e6e842bc08a467eb1c6ca2aa08b759f7650fec",
       "mutated": {
         "src/keyspace.rs": {
-          "baseline": "8d3e121bcb5fed8b1e461479de5f8b5742da4fe50ef66be365e29b6021974f99",
-          "control": "a141380e31d7973ce82b18e3858bd9dfdd5d1c382477c177a160451db564a149"
+          "baseline": "e91db6b9ab57c9c3e5d79e1ec951a3e533188cec60775c56e4b16c7206df9da0",
+          "control": "fd8b78b782e8009c3cd9600ce9248c27d059b05487257b06b6ba0e1751677218"
         }
       },
       "role": "negative-control",
-      "seconds": 87.1,
+      "seconds": 55.2,
       "verdict": "fail"
     },
     {
@@ -75,7 +75,7 @@
       "failed_checks": [
         "\"an entity key never lies in the sentinel\""
       ],
-      "log_sha256": "7deb0fca9a7245ac73f225c82a41ed2e2a9bf26362a5e1c944f60847164648b1",
+      "log_sha256": "273e5015ea22ac8b5cb50190e8d04341093b6e92293ca1d4bf8dc603fffad5f2",
       "mutated": {
         "src/keyspace/proofs.rs": {
           "baseline": "8c606d5aa3fe341fa913b6b69fd177cfd684213cce0636333e58eca04ea7a482",
@@ -83,7 +83,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 81.1,
+      "seconds": 54.2,
       "verdict": "fail"
     }
   ],
@@ -100,7 +100,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/keyspace.rs": "8d3e121bcb5fed8b1e461479de5f8b5742da4fe50ef66be365e29b6021974f99",
+      "src/keyspace.rs": "e91db6b9ab57c9c3e5d79e1ec951a3e533188cec60775c56e4b16c7206df9da0",
       "src/keyspace/proofs.rs": "8c606d5aa3fe341fa913b6b69fd177cfd684213cce0636333e58eca04ea7a482",
       "src/keyspace/range.rs": "3f76210fbe57ae47081362c7f1007069b2212593f13242fa8040dc87a1f4c607",
       "verification/kani/controls/KANI-106-family-byte-first.patch": "6f55f945effde431e84bef801ebba0358fb4cc30dba95ff78e67213f3683d35b",
@@ -196,10 +196,10 @@
       }
     }
   },
-  "inputs_sha256": "96c01dc0b8d3b3aa73ead117f46424642b0544a914c2a85a9c9feae1b4d8f91c",
+  "inputs_sha256": "04aa4a1697f24a087d592135baed8afec6da997a1d6577e6db88cfaba3865750",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b0be0a557d877c76bb61141924b90de3aafaf7db"
+    "revision": "12e7cae5076007f4ab4ea07280b7266a45bf3a22"
   },
   "schema": 2,
   "tools": {
