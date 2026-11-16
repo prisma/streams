@@ -1386,6 +1386,14 @@ before marking it complete."
 
 ## 10. Smaller items
 
+- **A billing sweep's close arms a 503 on a healthy cold shard (defect, found 2026-11-15; GATE-DECISION-mutation-timeout-2026-11-14 §7, question 3).** `sweep_owned_outboxes` opens a cold, debt-free leaf to look at its outbox. `close_scheduler_engine` then closes it with `SweepEviction`, and `ledger_after` arms `HOLDOFF_BASE` (3 s, `src/sharddir.rs:49`) for it even though `is_evidence` says a sweep's close is no evidence. A customer's first request in that window gets 503 `shard_moving` with Retry-After (`src/sharddir.rs:544`): about 3 s in every 300 s per cold shard. It predates push 4 and does not gate #149. Rank 12 / PR 6.1.1-B already removed the strike drift, so this is the remaining part.
+  - **Red first:** a DST in which a customer's first request lands within 3 s of a sweep's close of a debt-free cold leaf, and today reads 503. Then check what the `closing` branch answers while the old engine terminates (`closing_outcome`). If that is also a 503, the fix is the wait, not only the ledger line.
+  - **Direction:** a `SweepEviction` of a prefix with zero strikes arms no holdoff. The first request after it waits for the closing engine to terminate, then opens within the open deadline, instead of answering 503. A prefix that carries strikes keeps the holdoff they earned. Shutdown, IndexRepair and Split are not touched.
+  - **Refused directions:**
+    - the sweep leaving open a leaf it opened only to look, which is OOM review item 6 reversed (16 engines resident on an idle instance);
+    - an adoption stamp on the system ledgers' shard in product code (the shape of 53a110ecd's test helper), which would pin one leaf resident for good.
+  - **Ledgers:** it is an edge change (a 503 that stops being sent), so it needs a record, a WIRE-MATRIX row and ratification.
+  - **Tests that stay:** `billing_ledger_shard::an_adopted_ledger_shard_stays_resident_across_the_sweep` pins the sweep's close and the helper, not the 3 s, so it survives the fix unchanged. `graceful_stop_seals_and_drains_the_active_read_window` keeps its helper.
 - **Item 50 cleanup.** 45f8711c added the holder rule (`Arc::strong_count > 1`)
   beside the counted admission pin. `has_pressure` and the `live_subs` term
   are deleted (2026-10-08: CI's mutation leg found their equivalent
