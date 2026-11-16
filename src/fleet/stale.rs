@@ -9,20 +9,38 @@
 //! the stored topology, the newest version: an entry for a prefix that is no leaf of it is stale
 //! whatever any instance's installed topology says, and a child a newer version made is one of its
 //! leaves. A cell without a stored topology, or one whose topology cannot be read, prunes nothing.
+//!
+//! A live split's children are not stale (GATE-DECISION-f2-children-on-actor-2026-11-16 A4): its
+//! actor writes their entries before its topology CAS makes them leaves (`topology::split::birth`),
+//! so an entry the intent keeps (`intent::Live::keeps`) is spared while the intent is live. The
+//! intent is read only when an entry would be dropped, and an intent that cannot be read prunes
+//! nothing.
 
 use object_store::{ObjectStore, UpdateVersion};
 
 use super::{FleetDocument, FleetRepository, Overrides};
 
-/// `overrides` without the entries whose prefix is no leaf of the stored topology (see the
-/// module); unchanged when the stored topology cannot be read.
+/// `overrides` without the entries whose prefix is no leaf of the stored topology and no child the
+/// live intent keeps (see the module); unchanged when the stored topology or the intent cannot be
+/// read.
 pub(crate) async fn pruned(mut overrides: Overrides, store: &dyn ObjectStore) -> Overrides {
     let Ok((stored, _)) = crate::topology::store::read(store).await else {
         return overrides;
     };
+    let leaf = |prefix: &String| stored.shards.leaves.contains_key(prefix);
+    if overrides.entries.keys().all(leaf) {
+        return overrides;
+    }
+    let Ok(held) = crate::topology::intent::read(store).await else {
+        return overrides;
+    };
+    let live = held
+        .filter(|held| !held.intent.is_terminal())
+        .map(|held| crate::topology::intent::Live::of(held.intent));
+    let kept = |prefix: &String| live.as_ref().is_some_and(|live| live.keeps(prefix));
     overrides
         .entries
-        .retain(|prefix, _| stored.shards.leaves.contains_key(prefix));
+        .retain(|prefix, _| leaf(prefix) || kept(prefix));
     overrides
 }
 

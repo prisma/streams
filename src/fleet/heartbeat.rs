@@ -263,8 +263,7 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
             _ = cancel.cancelled() => break,
             () = prune_stale_overrides(&state) => {}
         }
-        let sources = live.as_ref().map(|l| l.sources.clone()).unwrap_or_default();
-        state.fleet.standing().set_topology_sources(sources);
+        state.fleet.standing().set_topology_intent(live.clone());
         let reserved_shards = reserved_by(live.as_ref(), &instance);
         let topology_intent = live.map(|l| l.op_id);
         sampler.observe(
