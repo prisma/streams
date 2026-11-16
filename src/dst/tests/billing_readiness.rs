@@ -301,3 +301,50 @@ async fn the_rollup_report_states_the_stored_figures_admission_holds() {
     assert_eq!(totals[3], Value::from(table.published_ms()));
     engine_shutdown(&cell.state).await;
 }
+
+/// Under shadow or enforce, `/health` and `/readyz` hold an instance unready until every auth feed
+/// has published its first snapshot, naming each feed still missing (review item 6); under `off`
+/// the feeds are not read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn readiness_waits_for_every_auth_feed_under_shadow() {
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Shadow,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let options = HttpRigOptions {
+        auth_service: Some(svc.clone()),
+        ..Default::default()
+    };
+    let rig = http_rig_build(mem(), RigRuntime::first(), options).await;
+    let missing = |feeds: &str| (503, format!("auth feeds not yet published: {feeds}"));
+    assert_eq!(health(rig.addr).await, missing("jwks, policies, grants"));
+    let now = crate::shard::now_ms() / 1000;
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys: std::collections::HashMap::new(),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    assert_eq!(health(rig.addr).await, missing("policies, grants"));
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: std::collections::HashMap::new(),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (status, _, body) = hreq(rig.addr, "GET", "/readyz", &[], b"").await;
+    let readyz = (status, String::from_utf8_lossy(&body).into_owned());
+    assert_eq!(readyz, missing("grants"), "/readyz answers as /health");
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: std::collections::HashMap::new(),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    assert_eq!(health(rig.addr).await, (200, "ok".to_string()));
+    engine_shutdown(&rig.state).await;
+}

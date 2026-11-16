@@ -9646,6 +9646,17 @@
     "scenarios": []
   },
   {
+    "name": "readiness_waits_for_every_auth_feed_under_shadow",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e2efade0dac45250e50d7f4403a97bd29d41cbdb8ea28c950ff786878b6a6f4b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_readiness.rs",
+    "scenarios": []
+  },
+  {
     "name": "reads_of_a_thousand_streams_in_one_window_bill_once_each",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

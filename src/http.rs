@@ -1035,7 +1035,7 @@ async fn debug_usage_reconcile(
 /// `/v1/debug` only through its one gate, `debug::gated`.
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/health", get(health_axum))
+        .route("/health", get(readiness::health_axum))
         // R23-5 / R24-E: separate the two questions a platform asks. /livez: is the process
         // alive (restart me if not)? /readyz: are the INITIAL data-plane dependencies validated,
         // and is this instance out of every never-ready failure state? Deliberately narrower than
@@ -1047,7 +1047,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         // does not validate delete permission, LIST or range semantics, conditional puts, or every
         // prefix the fleet and telemetry paths use. Mid-life degradation: /v1/debug/store.
         .route("/livez", get(|| async { "alive" }))
-        .route("/readyz", get(health_axum))
+        .route("/readyz", get(readiness::health_axum))
         .route("/operator/billing.json", get(billing_readiness_axum))
         .route("/v1/segments/{*name}", get(get_segments))
         .merge(internal_routes::table())
@@ -1396,73 +1396,6 @@ async fn product_list_axum(
     );
     crate::audit::observe_denial(&state, "/v1/streams", &Method::GET, &resp);
     resp
-}
-
-/// Health: in BILLING_MODE=required an instance is NOT ready until
-/// its billing prerequisites hold (round-22 item 10) — the read spool
-/// is open and, on a rollup owner, the rollup DB is open. Both are
-/// opened synchronously at startup, so a 503 here means startup-order
-/// bugs or a lost OnceLock, and the platform should not route yet.
-async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
-    if let Some(reason) = state.tasks.readiness_reason() {
-        return (StatusCode::SERVICE_UNAVAILABLE, reason).into_response();
-    }
-    // Review item 6: in shadow/enforce an instance is NOT ready until
-    // every auth feed has published an INITIAL snapshot — routing
-    // traffic to a cell that would fail-closed (or shadow-count
-    // nothing but noise) helps nobody.
-    if state.auth.mode != crate::auth::AuthMode::Off {
-        let feeds = state.auth.feed_json(crate::shard::now_ms() / 1000);
-        let unpublished = [
-            ("jwks", &feeds["jwks"]["ageSecs"]),
-            ("policies", &feeds["policies"]["ageSecs"]),
-            ("grants", &feeds["grants"]["ageSecs"]),
-        ]
-        .iter()
-        .filter(|(_, age)| age.is_null())
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>();
-        if !unpublished.is_empty() {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("auth feeds not yet published: {}", unpublished.join(", ")),
-            )
-                .into_response();
-        }
-    }
-    // A process that has never opened a shard cannot serve a single
-    // append; answering `ok` keeps it in the load balancer forever
-    // (CHAOS-2). Report unready so rollouts halt and traffic drains.
-    if let Some(reason) = state.shards.unready_reason() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("shard storage unavailable: {reason}"),
-        )
-            .into_response();
-    }
-    if state.config.cli.billing_required() {
-        let spool_ok = state.billing.read_spool_open();
-        let rollup_ok = !state.config.cli.runs_rollup() || state.rollup.installed();
-        if !spool_ok || !rollup_ok {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("billing not ready (spool={spool_ok}, rollup={rollup_ok})"),
-            )
-                .into_response();
-        }
-    }
-    // R28: identity headers so the campaign verifier can compare the
-    // running build against its manifest without auth (body stays "ok"
-    // for existing probes).
-    (
-        [
-            ("x-streams-git", env!("STREAMS_GIT_COMMIT")),
-            ("x-streams-build-unix", env!("STREAMS_BUILD_UNIX")),
-            ("x-streams-boot-id", state.runtime.identity.boot_id.as_str()),
-        ],
-        "ok",
-    )
-        .into_response()
 }
 
 /// GET /operator/billing.json — the billing-readiness surface
@@ -2785,6 +2718,7 @@ mod internal_routes;
 mod maintenance_view;
 #[path = "http/read.rs"]
 mod read_adapter;
+mod readiness;
 mod serve;
 mod telemetry_append;
 pub(crate) use internal_routes::InternalOperation;
