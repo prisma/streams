@@ -222,6 +222,24 @@ async fn a_fold_after_a_purge_request_still_drops_what_the_trim_released() {
     assert_eq!(released[&HASH], Released::new(0, &[iv(1, 2)]));
 }
 
+/// A fold drops the entries of the chunks a trim released into an interval
+/// and keeps the held chunk below them (F2, `kept_entries`): after the
+/// fold the queue's index names exactly the held chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_fold_keeps_the_held_chunk_below_a_released_interval_and_drops_the_interval() {
+    let (e, _db, _c) = clocked("nq-trim-fold-k", QueueConfig::default()).await;
+    for body in ["a", "b", "c"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 3).await;
+    ack(&e, &leased[1..]).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(e.intervals(&HASH).await.unwrap(), [iv(1, 2)]);
+    e.fold_once().await.unwrap();
+    let spans: Vec<(u64, u64)> = chunks(&e).await.iter().map(|c| c.0).collect();
+    assert_eq!(spans, [(0, 0)], "the held chunk alone");
+}
+
 /// **The cleaner's read of a chunk's hold** (S3b-DESIGN §7.4; the cleaner
 /// ruling of 2026-11-16, Q2, T1). Four seals: `a` alone; `b` with a
 /// scheduled `s`; `d` with `e`; `g` alone. A claim of three leases `a`, `b`
