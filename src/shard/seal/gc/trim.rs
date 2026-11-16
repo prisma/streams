@@ -441,15 +441,29 @@ impl ShardEngine {
             durability_filter: slatedb::config::DurabilityLevel::Remote,
             ..crate::native_queue::scan_options()
         };
-        let mut rows = self
-            .db
-            .scan_with_options(from..to, &durable)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        while let Some(kv) = rows.next().await.map_err(|e| e.to_string())? {
-            out.push(intervals::decode(&kv.key, &kv.value)?);
-        }
-        Ok(out)
+        let rows = self.db.scan_with_options(from..to, &durable).await;
+        decoded(rows.map_err(|e| e.to_string())?).await
     }
+}
+
+/// A queue's released intervals as `snapshot` holds them, at its sequence and the default (Memory)
+/// durability: the split's plan, which reads them with the sentinel rows from one snapshot
+/// (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote` here: its cap is recomputed per read.
+pub(crate) async fn intervals_at(
+    snapshot: &slatedb::DbSnapshot,
+    hash: &[u8; 16],
+) -> Result<Vec<Interval>, String> {
+    let (from, to) = intervals::key_range(hash);
+    let options = crate::native_queue::scan_options();
+    let rows = snapshot.scan_with_options(from..to, &options).await;
+    decoded(rows.map_err(|e| e.to_string())?).await
+}
+
+/// The intervals `rows` hold, each decoded.
+async fn decoded(mut rows: slatedb::DbIterator) -> Result<Vec<Interval>, String> {
+    let mut out = Vec::new();
+    while let Some(kv) = rows.next().await.map_err(|e| e.to_string())? {
+        out.push(intervals::decode(&kv.key, &kv.value)?);
+    }
+    Ok(out)
 }

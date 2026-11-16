@@ -568,3 +568,158 @@ async fn a_cleaners_copy_of_a_queue_chunk_keeps_every_count_through_a_split_and_
     assert_eq!((st, &v["stats"]["queuedMessages"]), (200, &json!(0)), "{v}");
     engine_shutdown(&cell.state).await;
 }
+
+/// A queue in `00` with five chunks (one message sealed per chunk), all five leased: the second and
+/// third acked, folded and trimmed once (a Trimming `'H'` row and one `'k'` interval behind the
+/// held first chunk), then the fourth and fifth acked, so the next trim pass releases two more.
+pub(super) async fn trimmed_once_then_acked(cell: &Cell) -> String {
+    cell.parent.gc_state().configure(|s| s.auto = false);
+    let (name, hash, _) = queue_in_00(cell).await;
+    for n in 0..5 {
+        send(cell, &name, n..n + 1).await;
+        cell.parent.seal_requested().await.expect("seal");
+    }
+    let leased = claim(cell, &name, 5).await;
+    let tokens = |at: [usize; 2]| at.map(|i| leased[i].2.clone());
+    let ok = [json!("ok"), json!("ok")];
+    assert_eq!(ack(cell, &name, &tokens([1, 2])).await, ok);
+    cell.parent.fold_once().await.expect("fold");
+    assert_eq!(
+        cell.parent.trim_pass().await.unwrap().released,
+        2,
+        "the first trim"
+    );
+    assert_eq!(
+        cell.parent.intervals(&hash).await.unwrap().len(),
+        1,
+        "one interval"
+    );
+    assert_eq!(ack(cell, &name, &tokens([3, 4])).await, ok);
+    while cell.parent.fold_once().await.expect("fold").more {}
+    name
+}
+
+/// The split of `cell`'s `00`, which must reach its park: what `at_park` returns there, the
+/// children's `'R'` rows summed per object, and the parent's at the park.
+async fn split_parked<F: std::future::Future<Output = ()>>(
+    cell: &Cell,
+    op_id: &str,
+    before_park: F,
+) -> (
+    BTreeMap<ObjectId, (u64, u64)>,
+    BTreeMap<ObjectId, (u64, u64)>,
+) {
+    use super::split_purged::counted;
+    use crate::topology::gate::PausePoint;
+    let (reached, mut park) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    cell.parent
+        .gc_state()
+        .gate
+        .pause_at_park(PausePoint { reached, go });
+    let clock = cell.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&cell.state.shards, &cell.parent, op_id, "inst-a", &*clock);
+    let mut split = std::pin::pin!(split);
+    let ended = |r: Result<crate::topology::split::Published, crate::topology::split::Refused>| {
+        panic!(
+            "the split ended before its park: {:?}",
+            r.err().map(|e| e.to_string())
+        )
+    };
+    let (_, ()) = futures_util::future::join(
+        async {
+            tokio::select! { r = &mut split => ended(r), Ok(()) = &mut park => {} }
+        },
+        before_park,
+    )
+    .await;
+    let at_park = counted(&cell.parent).await;
+    assert!(go_tx.send(()).is_ok(), "the split waits for go");
+    let published = split.await.expect("the split publishes");
+    let mut summed: BTreeMap<ObjectId, (u64, u64)> = BTreeMap::new();
+    for (_, _, child) in &published.children {
+        for (id, (chunks, bytes)) in counted(child).await {
+            let at = summed.entry(id).or_default();
+            (at.0, at.1) = (at.0 + chunks, at.1 + bytes);
+        }
+    }
+    (summed, at_park)
+}
+
+/// **A trim between Preparing's reads does not refuse the split** (GATE-DECISION-f1b-trim-race).
+/// A trimmed queue's next trim pass runs to completion right after Preparing read the parent's log,
+/// releasing two more chunks into its interval. Preparing's plan counts from what it read, at one
+/// sequence, so its sum check passes: the split parks once and publishes, and the children's
+/// `'R'` rows sum to the parent's at the park, per object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_trim_between_preparings_reads_does_not_refuse_the_split() {
+    use crate::topology::gate::PausePoint;
+    let cell = cell().await;
+    trimmed_once_then_acked(&cell).await;
+    let (reached, read) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    cell.parent
+        .gc_state()
+        .gate
+        .pause_after_reads(PausePoint { reached, go });
+    let trim_between = async {
+        super::split_k::parked(read).await;
+        let second = cell.parent.trim_pass().await.unwrap();
+        assert_eq!(
+            second.released, 2,
+            "the second trim, between Preparing's reads"
+        );
+        assert!(go_tx.send(()).is_ok(), "Preparing waits for go");
+    };
+    let (summed, at_park) = split_parked(&cell, "op-trim-between", trim_between).await;
+    assert_eq!(
+        summed, at_park,
+        "the children's 'R' rows sum to the parent's"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// Wait until a split waits for `engine`'s gate exclusively (no new shared hold is granted), at
+/// most 10 s.
+async fn until_a_split_waits(engine: &crate::shard::ShardEngine) {
+    let t0 = Instant::now();
+    while engine.gc_state().gate.try_shared().is_some() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the split waits for the gate"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// **A trim batch not yet durable does not refuse the split** (GATE-DECISION-f1b-trim-race). A
+/// trimmed queue's next trim pass writes its batch (its `'R'` decrements and its `'k'` interval)
+/// and holds before the WAL flush, so the log holds it in memory only, while Preparing reads the
+/// log and plans. Preparing reads both at one sequence, so its sum check passes; once the split
+/// waits for the gate the hold is released, the trim finishes, and the split parks once and
+/// publishes with the children's `'R'` rows summing to the parent's at the park, per object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_trim_batch_not_yet_durable_does_not_refuse_the_split() {
+    let cell = cell().await;
+    trimmed_once_then_acked(&cell).await;
+    let hold = cell.parent.hold_next_written_batch();
+    let trim = async {
+        let second = cell.parent.trim_pass().await.unwrap();
+        assert_eq!(second.released, 2, "the second trim");
+    };
+    let split = async {
+        hold.wait_entered().await;
+        let waiting = async {
+            until_a_split_waits(&cell.parent).await;
+            hold.release();
+        };
+        split_parked(&cell, "op-trim-written", waiting).await
+    };
+    let ((), (summed, at_park)) = futures_util::future::join(trim, split).await;
+    assert_eq!(
+        summed, at_park,
+        "the children's 'R' rows sum to the parent's"
+    );
+    engine_shutdown(&cell.state).await;
+}

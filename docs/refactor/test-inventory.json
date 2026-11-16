@@ -3954,7 +3954,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d8f99a86431812c5a61ea90bac441eae7da28a5437f24f0911eb0b745cdb233c",
+    "function_sha256": "485be2c61a826d23a29c6ce7b1d87751b714072e684533b880951dcb16d5975c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
@@ -4430,6 +4430,28 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
     "function_sha256": "5b055547a42501629ee42431146fbdc37a7b3941d228683ffc74ad89190c0f54",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_trim_batch_not_yet_durable_does_not_refuse_the_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "beb670a8edcb649872ba728cd7a2c7c29cae9def514566766d1bb9f947e1f58d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_trim_between_preparings_reads_does_not_refuse_the_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "96acfcdd48727108286fda2cf2a61fe965aa3049ebd0ab29c68e4f043de7240b",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_split.rs",
