@@ -168,6 +168,7 @@ async fn the_sweeper_posts_the_wake_up_a_sweep_asks_for_and_no_other() {
     let asked = NqOut::Swept {
         next_deadline: Some(9),
         wake: Some(wake),
+        lane_sealed: false,
     };
     let Some((hash, posted)) = e.wake_of(due(1), Ok(asked)) else {
         panic!("the wake-up the sweep asked for is posted");
@@ -186,6 +187,7 @@ async fn the_sweeper_posts_the_wake_up_a_sweep_asks_for_and_no_other() {
     let none = NqOut::Swept {
         next_deadline: Some(9),
         wake: None,
+        lane_sealed: false,
     };
     assert!(e.wake_of(due(1), Ok(none)).is_none(), "none asked");
     assert!(

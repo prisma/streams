@@ -88,9 +88,9 @@ async fn send_and_cancel(e: &ShardEngine, run: &mut Run) {
     ];
     op(e, send_op(sent)).await.unwrap();
     for o in 0..6 {
-        run.bytes.0 += stored(&run.db, o).await;
+        run.bytes.0 += stored(e, o);
     }
-    run.bytes.1 = stored(&run.db, 3).await;
+    run.bytes.1 = stored(e, 3);
     op(e, NqOp::Cancel { offsets: vec![3] }).await.unwrap();
     let st = state(&run.db).await;
     assert_eq!(
@@ -104,8 +104,8 @@ async fn send_and_cancel(e: &ShardEngine, run: &mut Run) {
     );
 }
 
-/// At +0 s the lane leases 0, passes 1 (scheduled, unresolved: its page
-/// stays) and leases 2; 0 is retried a second later. Returns 2's lease
+/// At +0 s the lane leases 0, passes 1 (scheduled, unresolved) and leases
+/// 2; 0 is retried a second later. Returns 2's lease
 /// generation.
 async fn first_claim(e: &ShardEngine, run: &Run) -> u32 {
     let leased = claim(e, 2).await;
@@ -131,8 +131,8 @@ async fn first_claim(e: &ShardEngine, run: &Run) -> u32 {
     leased[1].lease_gen
 }
 
-/// After a restart, at +6 s: the lane passes 3 (cancelled: its page and
-/// bytes go) and 4 (scheduled), and leases 5; then 0's retry (due +1 s)
+/// After a restart, at +6 s: the lane passes 3 (cancelled: its bytes leave
+/// the gauge) and 4 (scheduled), and leases 5; then 0's retry (due +1 s)
 /// and 4's scheduled entry (due +5 s), in (due, offset) order. Returns the
 /// leases, each with its generation.
 async fn second_claim(e: &ShardEngine, run: &Run) -> Vec<(u64, u32)> {
@@ -170,12 +170,11 @@ async fn second_claim(e: &ShardEngine, run: &Run) -> Vec<(u64, u32)> {
         "four open deliveries; the scheduled bits stay until their messages end"
     );
     let at = |ms: i64| u64::try_from(ms).unwrap();
-    let (a, d, l, m, p) = (
+    let (a, d, l, m) = (
         keys::AVAIL,
         keys::DELIVERY,
         keys::LEASES,
         keys::SCHEDULED_AT,
-        keys::PAGE,
     );
     assert_eq!(
         rows(&run.db).await,
@@ -192,16 +191,15 @@ async fn second_claim(e: &ShardEngine, run: &Run) -> Vec<(u64, u32)> {
             (l, at(c + 36_000)),
             (m, 1),
             (m, 4),
-            (p, 0),
-            (p, 1),
-            (p, 2),
-            (p, 4),
-            (p, 5),
             (keys::STATE, 0),
             (b't', 0),
             (keys::RANGE, 0),
         ],
-        "exact rows after the second claim: no row for 3, no retry for 0"
+        "exact rows after the second claim: no row for 3, no retry for 0, no page row"
+    );
+    assert!(
+        (0..6).all(|o| e.unsealed_page_for_tests(&HASH, o).is_some()),
+        "every page, the cancelled one's too, stays in the queue's stream"
     );
     leased.iter().map(|v| (v.offset, v.lease_gen)).collect()
 }
@@ -212,7 +210,14 @@ async fn second_claim(e: &ShardEngine, run: &Run) -> Vec<(u64, u32)> {
 async fn expiry(e: &ShardEngine, run: &Run) {
     let retention = state(&run.db).await.cfg.retention_ms;
     set_clock(&run.db, run.c + 10_000 + retention).await;
-    let swept = op(e, NqOp::Sweep).await.unwrap();
+    let swept = op(
+        e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     assert!(matches!(swept, NqOut::Swept { .. }), "{swept:?}");
     let st = state(&run.db).await;
     assert_eq!(

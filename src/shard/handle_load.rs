@@ -16,7 +16,7 @@ pub(super) struct LoadedTail {
 impl ShardEngine {
     /// A stream's stored state: its tail from the stream segment, else the
     /// queue segment (the default tail when neither holds one), and, for a
-    /// stream with unsealed records, its pending row, whose pages must tile
+    /// stream or queue with unsealed records, its pending row, whose pages must tile
     /// `[absorbed, next)` exactly or the load fails (layout 6). Both are read
     /// from one snapshot: a seal that commits between two plain reads would
     /// pair the tail from before it with the pending row from after it.
@@ -32,7 +32,7 @@ impl ShardEngine {
             let tail = stored_tail(&raw)?;
             #[cfg(test)]
             self.layout.seal.after_tail_load().await;
-            let pending = if native_queue || tail.absorbed == tail.next {
+            let pending = if tail.absorbed == tail.next {
                 PendingPages::default()
             } else {
                 self.check_unsealed_index(&snapshot, hash).await?;

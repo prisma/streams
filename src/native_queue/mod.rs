@@ -257,6 +257,23 @@ pub(crate) struct SettleItem {
     pub code: Option<String>,
 }
 
+/// A sealed page read outside the committer for an operation: its offset
+/// and the page (S3b-DESIGN §6.2).
+pub(crate) type PreparedPage = (u64, bytes::Bytes);
+
+/// Where a preparation of a queue's sealed pages reads from
+/// (`ShardEngine::prepare_queue_pages`, S3b-DESIGN §6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrepareFrom {
+    /// The queue's frontier, as its state row records it (a claim, a
+    /// sweep whose lane is sealed).
+    Frontier,
+    /// This offset or the frontier on, whichever is later (a peek).
+    From(u64),
+    /// This one offset, unless the frontier passed it (a read by id).
+    At(u64),
+}
+
 /// Operations the committer applies to one queue.
 #[derive(Debug)]
 pub(crate) enum NqOp {
@@ -284,6 +301,11 @@ pub(crate) enum NqOp {
         max: usize,
         max_bytes: u64,
         lease_ms: i64,
+        /// The lane's sealed pages the claim's handler read before it
+        /// submitted (S3b-DESIGN §6.2): `(offset, page)`, from the frontier
+        /// it read on. The committer serves those at or past its own staged
+        /// frontier and drops the rest.
+        prepared: Vec<(u64, bytes::Bytes)>,
     },
     Settle {
         items: Vec<SettleItem>,
@@ -309,11 +331,19 @@ pub(crate) enum NqOp {
     Peek {
         after: Option<u64>,
         limit: usize,
+        /// The untaken sealed pages from `after` on (as `Claim`'s).
+        prepared: Vec<(u64, bytes::Bytes)>,
     },
     Message {
         offset: u64,
+        /// The message's page, when it is sealed and untaken.
+        prepared: Vec<(u64, bytes::Bytes)>,
     },
-    Sweep,
+    Sweep {
+        /// The lane's sealed pages from the frontier, when an earlier
+        /// sweep answered `lane_sealed` (as `Claim`'s).
+        prepared: Vec<(u64, bytes::Bytes)>,
+    },
     /// A collection pass covered the debt up to `generation` (§8.2): clear
     /// it, keeping any debt recorded after the pass captured it.
     ClearDebt {
@@ -349,8 +379,8 @@ pub(crate) struct DeliveryView {
     pub available_at: i64,
     pub lease_deadline: i64,
     pub failure: Option<FailureView>,
-    /// The sealed page, when the claim read it from the availability
-    /// entry; `None`: read it by its page key.
+    /// The message's page, when the claim served it; `None`: read it from
+    /// the queue's stream.
     #[serde(skip)]
     pub page: Option<bytes::Bytes>,
     /// The message's bytes (its metadata row's), what a claim reserves
@@ -453,6 +483,10 @@ pub(crate) enum NqOut {
     Swept {
         next_deadline: Option<i64>,
         wake: Option<WakeRequest>,
+        /// The lane's expiry is due at a frontier below the stream's sealed
+        /// boundary, whose pages the committer does not hold: a sweep with
+        /// them prepared walks it (S3b-DESIGN §6.2).
+        lane_sealed: bool,
     },
     Wakeup {
         url: Option<String>,

@@ -195,7 +195,7 @@ impl CommitTransaction<'_> {
             // the lane's first, and expires here.
             st.state.lane_expire_at = t + cfg.retention_ms;
         }
-        self.nq_put(st, keys::page(&hash, page.last), page.bytes);
+        self.stage_pages(local, hash, offset, vec![page]);
         if let Some(tag) = &m.dedup_tag {
             let expires = t + cfg.dedup_window_ms;
             self.nq_put(st, keys::dedup(&hash, tag), encode_dedup(offset, expires));
@@ -203,7 +203,6 @@ impl CommitTransaction<'_> {
             st.state.dedup_entries += 1;
         }
         local.fields.next = offset + 1;
-        local.fields.absorbed = local.fields.next;
         local.fields.logical += m.envelope.len() as u64;
         local.fields.ts = local.fields.ts.max(t);
         st.state.queued_messages += 1;

@@ -173,6 +173,7 @@ async fn claim_within(e: &ShardEngine) -> Option<Vec<DeliveryView>> {
         max: CLAIM,
         max_bytes: 1 << 20,
         lease_ms: 30_000,
+        prepared: Vec::new(),
     };
     let answer = tokio::time::timeout(UNHELD_WITHIN, e.submit_native_queue(HASH, claim))
         .await
@@ -306,6 +307,11 @@ async fn a_cold_touch_reads_the_store_a_pinned_number_of_times() {
     let earlier = super::claim(&e, 1).await;
     let ack = |d: &DeliveryView| super::settle(vec![(d.offset, d.lease_gen, SettleKind::Ack)]);
     super::op(&e, ack(&earlier[0])).await.unwrap();
+    // The earlier message's page is sealed: a queue's handle is held until
+    // a seal takes its unsealed pages (S3b part 2), and only then evicted.
+    e.seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .unwrap();
     let flush = FlushOptions {
         flush_type: FlushType::MemTable,
     };
@@ -324,6 +330,7 @@ async fn a_cold_touch_reads_the_store_a_pinned_number_of_times() {
         max: 1,
         max_bytes: 1 << 20,
         lease_ms: 30_000,
+        prepared: Vec::new(),
     };
     let (claimed, out) = reads_of(&store, &e, claim).await;
     let NqOut::Claimed { deliveries, .. } = out else {

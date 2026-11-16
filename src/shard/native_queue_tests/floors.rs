@@ -35,6 +35,7 @@ fn claim_op(max: usize, max_bytes: u64) -> NqOp {
         max,
         max_bytes,
         lease_ms: LEASE,
+        prepared: Vec::new(),
     }
 }
 

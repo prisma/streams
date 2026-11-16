@@ -184,10 +184,9 @@ async fn a_sent_message_is_claimed_decrypted_and_acked() {
         (&json!(1), &json!(1), &json!(0), &json!(0))
     );
     let (engine, hash) = queue_engine(&state, "jobs").await;
-    let page = crate::native_queue::keys::page(&hash, 0);
     assert!(
-        engine.db.get(page).await.unwrap().is_none(),
-        "the acked page is deleted"
+        engine.stream_page_for_tests(hash, 0).await.is_some(),
+        "the acked page stays in the queue's stream until its chunk is retired"
     );
     let row = crate::native_queue::keys::by_offset(&hash, crate::native_queue::keys::DELIVERY, 0);
     assert!(
@@ -270,7 +269,12 @@ async fn retry_and_an_expired_lease_redeliver_with_the_next_attempt() {
     tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
     let (engine, hash) = queue_engine(&state, "rq").await;
     engine
-        .submit_native_queue(hash, crate::native_queue::NqOp::Sweep)
+        .submit_native_queue(
+            hash,
+            crate::native_queue::NqOp::Sweep {
+                prepared: Vec::new(),
+            },
+        )
         .await
         .unwrap();
     let third = claim_one(addr, "rq", 30_000).await;
@@ -388,6 +392,9 @@ async fn a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_
         q(addr, "PUT", "/v1/queues/poison", Value::Null).await.0,
         201
     );
+    // The pages stay unsealed in the queue stream's handle, where the
+    // test corrupts one.
+    queue_engine(&state, "poison").await.0.pause_seal(true);
     for n in 0..3 {
         let body = json!({ "body": { "n": n } });
         assert_eq!(
@@ -396,10 +403,9 @@ async fn a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_
         );
     }
     let (engine, hash) = queue_engine(&state, "poison").await;
-    let page = crate::native_queue::keys::page(&hash, 1);
-    let mut raw = engine.db.get(&page).await.unwrap().unwrap().to_vec();
-    *raw.last_mut().unwrap() ^= 0xFF;
-    engine.db.put(&page, &raw).await.unwrap();
+    // The second message's page, unsealed in the queue stream's handle,
+    // will not open: its clear header admits, its last byte is flipped.
+    engine.corrupt_unsealed_page_for_tests(&hash, 1);
     let (st, v) = q(
         addr,
         "POST",
@@ -697,12 +703,20 @@ async fn a_deleted_queue_is_fenced_then_gone_without_rows() {
     assert!(gone, "the cleanup finishes");
     assert_eq!(queue_rows(&engine, &hash).await, 0, "no queue row remains");
     for offset in 0..3 {
-        let page = crate::native_queue::keys::page(&hash, offset);
         assert!(
-            engine.db.get(page).await.unwrap().is_none(),
+            engine.unsealed_page_for_tests(&hash, offset).is_none(),
             "page {offset}"
         );
     }
+    assert!(
+        engine
+            .db
+            .get(crate::spill::pending::pending_key(&hash))
+            .await
+            .unwrap()
+            .is_none(),
+        "the queue stream's pending row"
+    );
     assert_eq!(
         q(addr, "PUT", "/v1/queues/zq", Value::Null).await.0,
         201,
@@ -775,5 +789,108 @@ async fn queue_streams_are_refused_on_the_stream_surfaces() {
     )
     .await;
     assert_eq!(st, 204);
+    engine_shutdown(&state).await;
+}
+
+/// The pending view of a queue whose messages are sealed (S3b-DESIGN §6.2,
+/// edge change #262): each page reads at most 1 MiB of sealed pages, so
+/// sixteen 120 KiB messages (about 90 KiB each as stored: zstd keeps this
+/// text at about three quarters) do not fit one page of `limit=100`. The first
+/// page ends where its read reached, with a cursor; following the cursors
+/// shows every message once, in send order, and the last page has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_pending_view_of_a_sealed_queue_pages_by_its_cursor_through_every_message() {
+    let (state, addr) = http_rig(mem()).await;
+    assert_eq!(q(addr, "PUT", "/v1/queues/big", Value::Null).await.0, 201);
+    let mut sent = Vec::new();
+    for seed in 0..16 {
+        let body = json!({ "body": super::fixture_storage::noise_text(120 * 1024, seed) });
+        let (st, v) = q(addr, "POST", "/v1/queues/big/messages", body).await;
+        assert_eq!(st, 201, "{v}");
+        sent.push(v["id"].as_str().unwrap().to_string());
+    }
+    let (engine, hash) = queue_engine(&state, "big").await;
+    engine
+        .seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .unwrap();
+    assert!(engine.unsealed_page_for_tests(&hash, 0).is_none(), "sealed");
+    let (mut shown, mut pages, mut cursor) = (Vec::new(), Vec::new(), None::<String>);
+    loop {
+        let path = match &cursor {
+            Some(c) => format!("/v1/queues/big/groups/default/pending?limit=100&cursor={c}"),
+            None => "/v1/queues/big/groups/default/pending?limit=100".to_string(),
+        };
+        let (st, v) = q(addr, "GET", &path, Value::Null).await;
+        assert_eq!(st, 200, "{v}");
+        let ids: Vec<String> = v["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        pages.push(ids.len());
+        shown.extend(ids);
+        match v["next"].as_str() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+        assert!(pages.len() < 16, "the view ends: {pages:?}");
+    }
+    assert!(
+        pages[0] < 16 && pages.len() > 1,
+        "the first page ends early: {pages:?}"
+    );
+    assert_eq!(shown, sent, "every message once, in order");
+    engine_shutdown(&state).await;
+}
+
+/// A view that a seal races at every attempt answers 503 `read_failed`,
+/// retryable, never a page it cannot prove exact or an absence it cannot
+/// tell (edge change #262): with nothing sealed and the queue's sealed
+/// boundary lifted after every committer answer, as if a seal had moved it
+/// each time, the pending view and a read by id of an acked message read
+/// again three times and then answer 503; unraced, the same requests answer
+/// the pending message and 404 `reclaimed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_view_a_seal_races_at_every_attempt_answers_503_read_failed() {
+    let (state, addr) = http_rig(mem()).await;
+    assert_eq!(q(addr, "PUT", "/v1/queues/race", Value::Null).await.0, 201);
+    // Nothing sealed: a raced read has read nothing past its start.
+    let (engine, _) = queue_engine(&state, "race").await;
+    engine.pause_seal(true);
+    for body in ["a", "b"] {
+        let (st, _) = q(
+            addr,
+            "POST",
+            "/v1/queues/race/messages",
+            json!({ "body": body }),
+        )
+        .await;
+        assert_eq!(st, 201);
+    }
+    let leased = claim_one(addr, "race", 60_000).await;
+    let (id, token) = (
+        leased["id"].as_str().unwrap().to_string(),
+        leased["token"].clone(),
+    );
+    let acked = settle(addr, "race", json!([{ "token": token, "op": "ack" }])).await;
+    assert_eq!(acked, ["ok"]);
+    let pending = "/v1/queues/race/groups/default/pending";
+    let by_id = format!("/v1/queues/race/messages/{id}");
+    engine.race_queue_seals_for_tests(1);
+    for path in [pending, by_id.as_str()] {
+        let (st, v) = q(addr, "GET", path, Value::Null).await;
+        assert_eq!(
+            (st, &v["error"]["code"]),
+            (503, &json!("read_failed")),
+            "{path}: {v}"
+        );
+    }
+    engine.race_queue_seals_for_tests(0);
+    let (st, v) = q(addr, "GET", pending, Value::Null).await;
+    assert_eq!((st, v["messages"].as_array().map(Vec::len)), (200, Some(1)));
+    let (st, v) = q(addr, "GET", &by_id, Value::Null).await;
+    assert_eq!((st, &v["error"]["code"]), (404, &json!("reclaimed")));
     engine_shutdown(&state).await;
 }

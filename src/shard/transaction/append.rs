@@ -235,7 +235,7 @@ impl CommitTransaction<'_> {
     /// as the stream's unsealed pages of the group (one merge operand on its
     /// pending row at finish, so every page of the group commits or none
     /// does, layout 6 b1) and in its ring batch. Returns their stored bytes.
-    fn stage_pages(
+    pub(super) fn stage_pages(
         &mut self,
         local: &mut StreamOverlay,
         _stream: [u8; 16],

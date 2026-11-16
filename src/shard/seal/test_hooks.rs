@@ -96,6 +96,10 @@ pub(crate) struct SealHooks {
     pub(crate) commits_sent: AtomicU64,
     /// Bytes the sealed-range GETs asked for (HIS-018's amplification bound).
     pub(crate) get_bytes: AtomicU64,
+    /// What a queue view's check after the committer's answer adds to the
+    /// queue's sealed boundary, as if a seal had moved it every time
+    /// (edge change #262's raced-seal pin).
+    pub(crate) queue_seal_race: AtomicU64,
 }
 
 impl SealState {

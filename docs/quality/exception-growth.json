@@ -2377,9 +2377,9 @@
       "scope": "function",
       "lint": "clippy::unwrap_used",
       "metrics": {
-        "scope_lines": 26,
+        "scope_lines": 23,
         "nested_items": 1,
-        "syntax_facts": 58,
+        "syntax_facts": 54,
         "unwrap_sites": 1,
         "unwrap_site::2d2744e7bc528b78": 1,
         "unwrap_site:ordinary-call::d219899823fff6b4": 1,
@@ -2392,8 +2392,7 @@
         "unwrap_site:path::c0822dc255906d30": 1,
         "unwrap_site:path::94bf3c3a2631f97f": 2,
         "unwrap_site:path::0c3741575880196e": 1,
-        "unwrap_site:path::c1a240ffcdea4dd7": 2,
-        "unwrap_site:path::aacd698176101d66": 1,
+        "unwrap_site:path::c1a240ffcdea4dd7": 1,
         "unwrap_site:path::19ba354f7e839268": 2,
         "unwrap_site:path::b278a6ba8bb3bc45": 4,
         "unwrap_site:path::6162591f71d8fe40": 1,
@@ -2402,8 +2401,8 @@
         "unwrap_site:path::df43c7b495c27e78": 1,
         "unwrap_site:path::01c72b1e6b4c9869": 1
       },
-      "rationale": "S16: New layout 6A package 4 code (f3 billing, the sealer and sealed reads); the gate pairs it with the unwrap_used contracts that vanished from src/shard.rs (note_trim_debt, resident_absorbed, trim_stats, decode_dirty_value) by its rename heuristic, so a new reviewed exception counts as growth. The poisoned-lock reason is in source.",
-      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28"
+      "rationale": "S16: New layout 6A package 4 code (f3 billing, the sealer and sealed reads); the gate pairs it with the unwrap_used contracts that vanished from src/shard.rs (note_trim_debt, resident_absorbed, trim_stats, decode_dirty_value) by its rename heuristic, so a new reviewed exception counts as growth. The poisoned-lock reason is in source. Updated 2026-11-10 for S3b part 2 step 1: queues are sealed like streams, so the three-line native-queue skip is deleted and the scope only shrank (scope_lines 26 -> 23, syntax_facts 58 -> 54, path fingerprint aacd698176101d66 gone, c1a240ffcdea4dd7 2 -> 1); no metric grew and the unwrap site is unchanged (ROW-DECISION-seal-snapshot-2026-11-10).",
+      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement, and ask Fable 5.1 if you are uncertain. Bring 6A to completion.\"), layout 6A package 4 batch 5, S16, approved 2026-10-28; metrics updated to the shrunken contract by Fable under the owner's delegation of 2026-11-03 (\"Let fable decide please\"), 2026-11-10"
     },
     {
       "path": "src/shard/seal/steps.rs",

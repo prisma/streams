@@ -14,16 +14,17 @@ use crate::native_queue::rows::{Cause, DState, decode_dedup, decode_scheduled};
 impl CommitTransaction<'_> {
     pub(super) async fn nq_sweep(
         &mut self,
-        hash: [u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        clock: (i64, u64),
+        prepared: &[(u64, bytes::Bytes)],
+        t: i64,
     ) -> NqResult {
-        let (t, next) = clock;
+        let hash = local.handle.hash;
         let steps = [
             self.nq_sweep_leases(&hash, st, t).await?,
             self.nq_sweep_retries(&hash, st, t).await?,
             self.nq_sweep_untaken(&hash, st, t).await?,
-            self.nq_sweep_lane(&hash, st, (t, next)).await?,
+            self.nq_sweep_lane(local, st, (prepared, t)).await?,
             self.nq_sweep_failures(&hash, st, t).await?,
             self.nq_sweep_dedup(&hash, st, t).await?,
         ];
@@ -36,9 +37,11 @@ impl CommitTransaction<'_> {
         }
         self.nq_refresh_floors(&hash, st).await?;
         let wake = self.nq_wake(&hash, st, t).await?;
+        let due = st.state.lane_expire_at;
         Ok(NqOut::Swept {
             next_deadline: Self::nq_roster_target(st, t, Some(more_due)),
             wake,
+            lane_sealed: due != 0 && due <= t && st.state.frontier < local.fields.absorbed,
         })
     }
 
@@ -186,25 +189,34 @@ impl CommitTransaction<'_> {
     /// the first live one, whose expiry it records.
     async fn nq_sweep_lane(
         &mut self,
-        hash: &[u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        clock: (i64, u64),
+        lane: (&[(u64, bytes::Bytes)], i64),
     ) -> Result<usize, NqRefusal> {
-        let (t, next) = clock;
+        let (prepared, t) = lane;
+        let (hash, next) = (&local.handle.hash, local.fields.next);
         let due = st.state.lane_expire_at;
         if due == 0 || due > t {
             return Ok(0);
         }
-        let pages = self
-            .nq_lane_pages(hash, st, st.state.frontier, SWEEP_STEP)
-            .await?;
+        let pages = Self::nq_lane_run(local, prepared, st.state.frontier, SWEEP_STEP)?;
         if pages.is_empty() {
-            st.state.lane_expire_at = 0;
-            st.state_dirty = true;
+            // Empty only when the frontier reached the end: below the sealed
+            // boundary the pages are elsewhere, and the expiry stays due.
+            if st.state.frontier >= next {
+                st.state.lane_expire_at = 0;
+                st.state_dirty = true;
+            }
             return Ok(0);
         }
         let mut moved = 0;
         for page in &pages {
+            if page.offset != st.state.frontier {
+                // The frontier stands below the stream's sealed boundary:
+                // its pages are not here, and a claim's prepared pages
+                // carry the lane past them (S3b-DESIGN §6.2).
+                return Ok(moved);
+            }
             let mut range = self.nq_range(hash, st, page.offset).await?;
             let step = at_frontier(&range, (page.offset, page.ts), st.state.cfg.retention_ms, t);
             if step == AtFrontier::Live {
@@ -212,7 +224,7 @@ impl CommitTransaction<'_> {
                 st.state_dirty = true;
                 return Ok(moved);
             }
-            self.nq_frontier_step(hash, st, page, (step, &mut range, t));
+            Self::nq_frontier_step(st, page, (step, &mut range));
             Self::nq_set_range(st, page.offset, range);
             // The next page's time is this walk's next step to set, or
             // this page's (a lower bound) at the walk's end.

@@ -4,14 +4,17 @@
 //! subscriptions and deletion.
 use serde::Serialize;
 
+use super::delivery::RESEAL_RETRIES;
 use super::envelope::{self, Shown};
 use super::{
     FailureClass, Message, QueueFailure, QueueKey, QueueService, QueueTarget, fail, unexpected,
 };
-use crate::native_queue::{DeliveryState, DeliveryView, NqOp, NqOut, QueueConfig};
+use crate::native_queue::{DeliveryState, DeliveryView, NqOp, NqOut, PrepareFrom, QueueConfig};
 
 /// The longest page of the failed and pending views.
 const MAX_PAGE: usize = 1_000;
+/// The untaken sealed pages one page of the pending view reads at most.
+const PEEK_PREPARE_BYTES: usize = 1 << 20;
 
 /// One page of messages and the id to continue after.
 #[derive(Serialize, Debug)]
@@ -142,13 +145,9 @@ impl QueueService {
             None => None,
         };
         let limit = at.limit.unwrap_or(100).clamp(1, MAX_PAGE);
-        let op = match view {
-            View::Failed => NqOp::ListFailed { after, limit },
-            View::Pending => NqOp::Peek { after, limit },
-        };
-        let (items, next) = match self.op(t, op).await? {
-            NqOut::Deliveries { items, next } => (items, next),
-            other => return Err(unexpected(&other)),
+        let (items, next) = match view {
+            View::Failed => self.views(t, NqOp::ListFailed { after, limit }).await?,
+            View::Pending => self.pending(t, after, limit).await?,
         };
         let shown = Shown {
             failure: view == View::Failed,
@@ -178,10 +177,7 @@ impl QueueService {
         let Some(offset) = t.offsets(&[id.to_string()]).pop() else {
             return Err(super::message_not_found());
         };
-        let view = match self.op(t, NqOp::Message { offset }).await? {
-            NqOut::Message(view) => view,
-            other => return Err(unexpected(&other)),
-        };
+        let view = self.message_view(t, offset).await?;
         let Some(env) = read(t, key, &view).await? else {
             return Err(QueueFailure::from(
                 crate::native_queue::NqRefusal::Reclaimed,
@@ -200,6 +196,94 @@ impl QueueService {
             message: envelope::message(t, &view, env, shown),
             delivery,
         })
+    }
+
+    /// The deliveries a view's operation answers, and its cursor.
+    async fn views(
+        &self,
+        t: &QueueTarget,
+        op: NqOp,
+    ) -> Result<(Vec<DeliveryView>, Option<u64>), QueueFailure> {
+        match self.op(t, op).await? {
+            NqOut::Deliveries { items, next } => Ok((items, next)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// The pending view's page after `after` (S3b-DESIGN §6.2): its untaken
+    /// sealed pages are read here, at most `PEEK_PREPARE_BYTES` of them. The
+    /// page is exact only up to the offset that read reached, so it ends
+    /// there and its cursor continues from there; a read a seal raced is
+    /// read again.
+    async fn pending(
+        &self,
+        t: &QueueTarget,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<DeliveryView>, Option<u64>), QueueFailure> {
+        let from = after.map_or(0, |a| a.saturating_add(1));
+        let mut retries = 0;
+        loop {
+            let (prepared, through) = t
+                .engine
+                .prepare_queue_pages(t.hash, PrepareFrom::From(from), PEEK_PREPARE_BYTES)
+                .await
+                .map_err(read_failed)?;
+            let covered = prepared.last().map_or(through, |(o, _)| o + 1);
+            let op = NqOp::Peek {
+                after,
+                limit,
+                prepared,
+            };
+            let (items, next) = self.views(t, op).await?;
+            let raced = sealed_boundary(t).await? > through;
+            if raced && retries < RESEAL_RETRIES {
+                retries += 1;
+                continue;
+            }
+            if !raced && covered >= through {
+                return Ok((items, next));
+            }
+            return cut_at(items, next, (from, covered));
+        }
+    }
+
+    /// One message's view (S3b-DESIGN §6.2): its page is read here when it
+    /// is sealed and untaken, and read again when a seal took it after a
+    /// read that found it unsealed; a seal that does so each of four times
+    /// answers 503 `read_failed`, never a message's absence it cannot tell.
+    async fn message_view(
+        &self,
+        t: &QueueTarget,
+        offset: u64,
+    ) -> Result<DeliveryView, QueueFailure> {
+        let mut retries = 0;
+        loop {
+            let (prepared, through) = t
+                .engine
+                .prepare_queue_pages(t.hash, PrepareFrom::At(offset), 1)
+                .await
+                .map_err(read_failed)?;
+            let unread = prepared.is_empty() && offset >= through;
+            let failure = match self.op(t, NqOp::Message { offset, prepared }).await {
+                Ok(NqOut::Message(view)) => return Ok(view),
+                Ok(other) => return Err(unexpected(&other)),
+                Err(failure) => failure,
+            };
+            let raced = unread && sealed_boundary(t).await? > offset;
+            if raced && retries < RESEAL_RETRIES {
+                retries += 1;
+                continue;
+            }
+            if raced {
+                // A seal took the page each time it was read: whether the
+                // message is still there is not known.
+                return Err(read_failed(
+                    "a seal moved the message's page while it was read".to_owned(),
+                ));
+            }
+            return Err(failure);
+        }
     }
 
     /// Update the default group's configuration and the admission budget
@@ -323,6 +407,44 @@ impl QueueService {
 
 /// The envelope a listing or a read by id shows: a message whose envelope
 /// will not open is shown without a body (S3b-DESIGN §6.5).
+/// A queue's pages could not be read.
+fn read_failed(error: String) -> QueueFailure {
+    fail(FailureClass::Unavailable, "read_failed", error)
+}
+
+/// The queue stream's sealed boundary now, as a view checks it after the
+/// committer answered.
+async fn sealed_boundary(t: &QueueTarget) -> Result<u64, QueueFailure> {
+    let sealed = t
+        .engine
+        .queue_sealed_boundary(t.hash)
+        .await
+        .map_err(read_failed)?;
+    #[cfg(test)]
+    let sealed = sealed + t.engine.queue_seal_race_for_tests();
+    Ok(sealed)
+}
+
+/// A pending page cut at `covered`, the offset its read of sealed pages
+/// reached: its items before it, and a cursor that continues there. A read
+/// that reached nothing past `from` is a failure the client retries.
+fn cut_at(
+    mut items: Vec<DeliveryView>,
+    next: Option<u64>,
+    (from, covered): (u64, u64),
+) -> Result<(Vec<DeliveryView>, Option<u64>), QueueFailure> {
+    items.retain(|v| v.offset < covered);
+    if let Some(n) = next.filter(|n| *n < covered) {
+        return Ok((items, Some(n)));
+    }
+    match covered.checked_sub(1).filter(|c| *c >= from) {
+        Some(cursor) => Ok((items, Some(cursor))),
+        None => Err(read_failed(
+            "a seal moved the queue's pages while the view read them".to_owned(),
+        )),
+    }
+}
+
 async fn read(
     t: &QueueTarget,
     key: &QueueKey,
@@ -403,5 +525,59 @@ mod tests {
         assert!(super::check_wakeup_url("http://example.com/hook").is_err());
         assert!(super::check_wakeup_url("https://example.com:8443/hook").is_err());
         assert!(super::check_wakeup_url("not a url").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::{DeliveryView, cut_at};
+    use crate::native_queue::DeliveryState;
+
+    fn views(offsets: &[u64]) -> Vec<DeliveryView> {
+        offsets
+            .iter()
+            .map(|&offset| DeliveryView {
+                offset,
+                state: DeliveryState::Pending,
+                lease_gen: 0,
+                attempt: 0,
+                cycle: 0,
+                enqueued_at: 0,
+                available_at: 0,
+                lease_deadline: 0,
+                failure: None,
+                page: None,
+                bytes: 0,
+            })
+            .collect()
+    }
+
+    fn offsets(cut: &(Vec<DeliveryView>, Option<u64>)) -> (Vec<u64>, Option<u64>) {
+        (cut.0.iter().map(|v| v.offset).collect(), cut.1)
+    }
+
+    /// A page cut where its read of sealed pages reached keeps what lies
+    /// before it and continues there; a cursor before the cut stands; a read
+    /// that reached nothing past the page's start is a retryable failure.
+    #[test]
+    fn a_pending_page_is_cut_where_its_read_reached_and_continues_there() {
+        let cut = cut_at(views(&[3, 4, 9, 12]), None, (3, 10)).unwrap();
+        assert_eq!(offsets(&cut), (vec![3, 4, 9], Some(9)));
+        let cut = cut_at(views(&[3, 4]), Some(4), (3, 10)).unwrap();
+        assert_eq!(offsets(&cut), (vec![3, 4], Some(4)), "a full page's cursor");
+        let cut = cut_at(views(&[3, 11]), Some(11), (3, 6)).unwrap();
+        assert_eq!(
+            offsets(&cut),
+            (vec![3], Some(5)),
+            "a cursor past the cut moves back"
+        );
+        let cut = cut_at(views(&[12]), None, (3, 6)).unwrap();
+        assert_eq!(
+            offsets(&cut),
+            (vec![], Some(5)),
+            "nothing before the cut: continue there"
+        );
+        let failed = cut_at(views(&[7]), None, (5, 5)).unwrap_err();
+        assert_eq!(failed.code, "read_failed");
     }
 }

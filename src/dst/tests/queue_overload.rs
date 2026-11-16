@@ -576,6 +576,66 @@ async fn a_claim_reserves_read_memory_only_for_what_it_returns() {
     engine_shutdown(&cell.state).await;
 }
 
+/// A claim of sealed messages holds read memory for exactly the pages it
+/// read outside the committer while the committer serves them (S3b-DESIGN
+/// §6.4, F3), not only for the messages it returns: two sealed messages of
+/// about 7.5 KiB each are prepared together, so with room for one page but
+/// not two a claim of one is refused `503 read_memory_busy`, Retry-After 1,
+/// before it leases anything (nothing leased, both still due). Before, the
+/// prepared pages were held by nothing and the claim was served. With room
+/// it is served at attempt 1, and every hold is released once it answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claim_of_sealed_messages_holds_exactly_the_pages_it_read() {
+    use crate::admission::read_memory::ReadHold;
+    let cell = open_cell(CellSpec::queues(1)).await;
+    let admission = &cell.state.admission;
+    admission.set_read_memory_capacity(READ_MEMORY);
+    assert_eq!(ask(&cell, 0, "PUT", "/v1/queues/jobs", "").await.0, 201);
+    for seed in [2, 3] {
+        let text = super::fixture_storage::noise_text(10 * 1024, seed);
+        let message = format!("{{\"body\":\"{text}\"}}");
+        let sent = ask(&cell, 0, "POST", "/v1/queues/jobs/messages", &message).await;
+        assert_eq!(sent, SENT);
+    }
+    let engine = jobs_engine(&cell, 0).await;
+    engine
+        .seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .unwrap();
+    let other = ReadHold::reserve(admission, None, 0, READ_MEMORY - 12 * 1024).await;
+    let other = other.expect("room for one page, not two");
+    let path = "/v1/queues/jobs/groups/default:claim";
+    let claim = r#"{"max":1,"leaseMs":60000}"#;
+    let refused = ask(&cell, 0, "POST", path, claim).await;
+    let leased = |stats: serde_json::Value| {
+        (
+            stats["stats"]["leased"].clone(),
+            stats["stats"]["due"].clone(),
+        )
+    };
+    assert_eq!(
+        (
+            refused,
+            leased(cell.json(0, "GET", "/v1/queues/jobs").await)
+        ),
+        (
+            (503, Some("read_memory_busy".into()), Some("1".into())),
+            (serde_json::json!(0), serde_json::json!(2))
+        ),
+        "no room for the prepared pages: refused before a lease"
+    );
+    drop(other);
+    let (status, _, body) = cell.call(0, "POST", path, claim.as_bytes()).await;
+    let claimed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, &claimed["messages"][0]["attempt"]),
+        (200, &serde_json::json!(1)),
+        "served from its sealed page"
+    );
+    assert_eq!(admission.read_memory().0, 0, "every hold released");
+    engine_shutdown(&cell.state).await;
+}
+
 /// A claim of one message from project 0's queue `jobs` for a minute: its
 /// lease token.
 async fn lease_one(cell: &Cell) -> String {
@@ -692,7 +752,11 @@ async fn claim_reply(cell: &Cell, i: usize, max: usize) -> serde_json::Value {
 async fn drain_round(cell: &Cell, n: usize) {
     assert_eq!(send(cell, 1, n).await, SENT);
     let v = claim_reply(cell, 1, 10).await;
-    assert_eq!(v["messages"].as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(
+        v["messages"].as_array().map(Vec::len),
+        Some(1),
+        "round {n}: {v}"
+    );
     assert_eq!(v.get("limited"), None, "the drain is never limited: {v}");
     let token = v["messages"][0]["token"].as_str().unwrap();
     let body = format!(r#"{{"ops":[{{"token":"{token}","op":"ack"}}]}}"#);

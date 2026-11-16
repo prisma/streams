@@ -134,13 +134,13 @@ impl ClaimBudget {
 impl CommitTransaction<'_> {
     pub(super) async fn nq_claim(
         &mut self,
-        hash: [u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        args: (usize, u64, i64),
-        clock: (i64, u64),
+        args: (usize, u64, i64, Vec<(u64, bytes::Bytes)>),
+        t: i64,
     ) -> NqResult {
-        let (max, max_bytes, lease_ms) = args;
-        let (t, next) = clock;
+        let (max, max_bytes, lease_ms, prepared) = args;
+        let (hash, next) = (local.handle.hash, local.fields.next);
         if st.state.paused {
             return Ok(NqOut::Claimed {
                 deliveries: Vec::new(),
@@ -176,7 +176,7 @@ impl CommitTransaction<'_> {
                 limited: true,
             });
         }
-        let (candidates, after) = self.nq_candidates(&hash, st, max, t).await?;
+        let (candidates, after) = self.nq_candidates(local, st, (max, &prepared), t).await?;
         let mut budget = ClaimBudget {
             max,
             max_bytes,
@@ -254,11 +254,12 @@ impl CommitTransaction<'_> {
     /// read).
     async fn nq_candidates(
         &self,
-        hash: &[u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        max: usize,
+        claim: (usize, &[(u64, bytes::Bytes)]),
         t: i64,
     ) -> Result<(Vec<Candidate>, [Option<i64>; 2]), NqRefusal> {
+        let (hash, (max, prepared)) = (&local.handle.hash, claim);
         let want = due_want(max);
         let mut out: Vec<Candidate> = Vec::new();
         let mut next = [None; 2];
@@ -278,9 +279,7 @@ impl CommitTransaction<'_> {
             });
             out.extend(due);
         }
-        let lane = self
-            .nq_lane_pages(hash, st, st.state.frontier, want)
-            .await?;
+        let lane = Self::nq_lane_run(local, prepared, st.state.frontier, want)?;
         out.extend(lane.into_iter().map(Candidate::Lane));
         out.sort_unstable_by_key(Candidate::key);
         Ok((out, next))
@@ -307,7 +306,7 @@ impl CommitTransaction<'_> {
         if step == AtFrontier::Live && !budget.fits(page.bytes()) {
             return Ok(None);
         }
-        self.nq_frontier_step(hash, st, page, (step, &mut range, t));
+        Self::nq_frontier_step(st, page, (step, &mut range));
         Self::nq_advance(st, page, following, next);
         if step != AtFrontier::Live {
             Self::nq_set_range(st, page.offset, range);
@@ -329,31 +328,24 @@ impl CommitTransaction<'_> {
         Ok(Some(leased))
     }
 
-    /// What passing a page that is not leased does: a resolved scheduled
-    /// message's page goes; a cancelled one's page and bytes go; an expired
-    /// one enters the gap.
+    /// What passing a page that is not leased does: a scheduled offset's
+    /// bit goes; a cancelled one's bytes leave the queued gauge; an expired
+    /// one enters the gap. The page itself stays in the queue's stream: its
+    /// chunk is retired once nothing in it is referenced (S3b-DESIGN §7.3).
     pub(super) fn nq_frontier_step(
-        &mut self,
-        hash: &[u8; 16],
         st: &mut NativeStage,
         page: &LanePage,
-        at: (AtFrontier, &mut crate::native_queue::range::RangeRow, i64),
+        at: (AtFrontier, &mut crate::native_queue::range::RangeRow),
     ) {
-        let (step, range, t) = at;
+        let (step, range) = at;
         match step {
-            AtFrontier::Scheduled { resolved } => {
-                range.skip.clear(page.offset);
-                if resolved {
-                    self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
-                }
-            }
+            AtFrontier::Scheduled { .. } => range.skip.clear(page.offset),
             AtFrontier::Cancelled => {
                 range.cancel.clear(page.offset);
                 st.state.queued_bytes = st
                     .state
                     .queued_bytes
                     .saturating_sub(u64::from(page.bytes()));
-                self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
             }
             AtFrontier::Expired => {
                 st.state.gap_count += 1;
@@ -363,7 +355,6 @@ impl CommitTransaction<'_> {
                     .state
                     .queued_bytes
                     .saturating_sub(u64::from(page.bytes()));
-                self.nq_delete_page(hash, st, (page.offset, page.bytes()), t);
             }
             AtFrontier::Live => {}
         }

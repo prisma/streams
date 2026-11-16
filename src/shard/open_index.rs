@@ -128,16 +128,17 @@ type IndexWrite = (Vec<u8>, Option<Vec<u8>>);
 /// The index writes a repair stages in one batch.
 const REPAIR_BATCH: usize = 1024;
 
-/// Recomputes both indexes from every stream tail (S3a §4.1) and writes the difference, in batches
-/// of `REPAIR_BATCH`, deleting the repair marker in the last: `'W'` names exactly the tails with
-/// unsealed pages, `'M'` every billed tail at its usage version (an acknowledged one is re-emitted
+/// Recomputes both indexes from every stream and queue tail (S3a §4.1) and writes the difference,
+/// in batches of `REPAIR_BATCH`, deleting the repair marker in the last: `'W'` names exactly the
+/// tails with unsealed pages, `'M'` every billed tail at its usage version (an acknowledged one is re-emitted
 /// once, which the rollup deduplicates), and no row names a stream without a tail. A tail that does
 /// not decode is left out (its stream fails alone when loaded).
 pub(crate) async fn repair_indexes(db: &Db) -> Result<Repair, slatedb::Error> {
     let mut tails = std::collections::BTreeMap::new();
     let mut rows = db.scan(..).await?;
     while let Some(row) = rows.next().await? {
-        let Some(hash) = crate::keyspace::tail_hash(&row.key) else {
+        let tail = crate::keyspace::tail_hash(&row.key);
+        let Some(hash) = tail.or_else(|| crate::keyspace::queue_tail_hash(&row.key)) else {
             continue;
         };
         if let Ok(tail) = stored_tail(&row.value) {
@@ -183,13 +184,22 @@ pub(crate) async fn repair_indexes(db: &Db) -> Result<Repair, slatedb::Error> {
     Ok(repair)
 }
 
+/// An unsealed-index member's stored tail: a stream's, else a queue's (its own key, S3b-DESIGN
+/// §5.1), whose unsealed pages the index names as it names a stream's.
+async fn member_tail(db: &Db, hash: &[u8; 16]) -> Result<Option<bytes::Bytes>, slatedb::Error> {
+    match db.get(&super::tail_key(hash)).await? {
+        Some(raw) => Ok(Some(raw)),
+        None => db.get(&super::queue_tail_key(hash)).await,
+    }
+}
+
 /// The unabsorbed bytes over the `'W'` members' tails, and whether a member's tail is gone or
 /// sealed (a stale index row, which only a repair fixes).
 async fn unsealed_bytes(db: &Db) -> anyhow::Result<(u64, bool)> {
     let members = unsealed_members(db).await?;
     let bytes: Vec<Option<u64>> = futures_util::stream::iter(members)
         .map(|hash| async move {
-            let raw = db.get(&super::tail_key(&hash)).await?;
+            let raw = member_tail(db, &hash).await?;
             Ok::<_, slatedb::Error>(match raw.as_deref().map(stored_tail) {
                 Some(Ok(tail)) if tail.absorbed < tail.next => Some(tail.unabsorbed_bytes),
                 Some(Err(e)) => {

@@ -326,3 +326,69 @@ pub(crate) async fn seal_bounded(engine: &Arc<ShardEngine>) -> seal::SealReport 
         .expect("the requested seal did not finish within 30 s")
         .unwrap()
 }
+
+impl ShardEngine {
+    /// Tests: the page at `offset` of the resident stream or queue `hash`
+    /// among its unsealed pages (a queue's messages are its stream's pages,
+    /// S3b part 2), or `None`.
+    pub(crate) fn unsealed_page_for_tests(
+        &self,
+        hash: &[u8; 16],
+        offset: u64,
+    ) -> Option<bytes::Bytes> {
+        let handle = self.streams.lock().unwrap().get(hash).cloned()?;
+        let st = handle.state.lock().unwrap();
+        st.pending
+            .from(offset)
+            .find(|p| p.0 == offset)
+            .map(|p| p.2.clone())
+    }
+
+    /// Tests: flip the last byte of the unsealed page at `offset` in the
+    /// resident stream's memory, as a store fault would leave a page whose
+    /// clear header admits and whose envelope will not open.
+    pub(crate) fn corrupt_unsealed_page_for_tests(&self, hash: &[u8; 16], offset: u64) {
+        let handle = self
+            .streams
+            .lock()
+            .unwrap()
+            .get(hash)
+            .cloned()
+            .expect("a resident handle");
+        let mut st = handle.state.lock().unwrap();
+        assert!(
+            st.pending.from(offset).any(|p| p.0 == offset),
+            "page {offset} is not unsealed: pause the sealer first (`pause_seal`)"
+        );
+        st.pending.map_page_for_tests(offset, |raw| {
+            let mut raw = raw.to_vec();
+            *raw.last_mut().unwrap() ^= 0xFF;
+            bytes::Bytes::from(raw)
+        });
+    }
+}
+
+impl ShardEngine {
+    /// Tests: the page at `offset` of the stream or queue `hash`, through
+    /// the stream read path (sealed or unsealed), or `None`.
+    pub(crate) async fn stream_page_for_tests(
+        &self,
+        hash: [u8; 16],
+        offset: u64,
+    ) -> Option<bytes::Bytes> {
+        let handle = self.stream_handle(hash).await.ok()?;
+        let window = RingScan {
+            from: offset,
+            to: offset.saturating_add(1),
+            max_bytes: usize::MAX,
+        };
+        let read = self
+            .read_stream_window(&handle, window, None, Deliver::Durable)
+            .await
+            .ok()?;
+        read.frames
+            .iter()
+            .find(|s| s.first() == offset)
+            .map(|s| s.page().raw().clone())
+    }
+}

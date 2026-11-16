@@ -5,7 +5,6 @@
 //! the claim that takes it when due reads neither a row nor the page.
 #![cfg(test)]
 use super::{HASH, claim, clocked, msg, op, send_op, set_clock, state};
-use crate::native_queue::keys::page as shard_page_key;
 use crate::native_queue::range::RangeRow;
 use crate::native_queue::rows::{DState, DeliveryRow, MessageFacts, decode_scheduled};
 use crate::native_queue::{INLINE_PAGE_MAX, QueueConfig, SendMessage, keys};
@@ -54,19 +53,38 @@ async fn an_untaken_immediate_message_has_no_row_but_its_page() {
         .unwrap();
     assert_eq!(
         families(&db).await,
-        [keys::PAGE, keys::PAGE, keys::PAGE, keys::STATE, b't'],
-        "three pages, the state row and the queue stream's tail: no metadata, \
+        [keys::STATE, b't'],
+        "the state row and the queue stream's tail: no page, metadata, \
          availability or range row"
     );
     let s = state(&db).await;
     assert_eq!((s.frontier, s.queued_messages), (0, 3));
+    // The pages are the queue stream's: its pending row holds all three,
+    // unsealed, and the unsealed index names the queue (S3b part 2).
+    let raw = db
+        .get(crate::spill::pending::pending_key(&HASH))
+        .await
+        .unwrap()
+        .expect("the queue stream's pending row");
+    let pages = crate::spill::pending::PendingPages::tiled(&raw, 0, 3).expect("[0, 3) exactly");
+    assert_eq!(
+        pages.from(0).map(|p| (p.0, p.1)).collect::<Vec<_>>(),
+        [(0, 0), (1, 1), (2, 2)]
+    );
+    assert!(
+        db.get(crate::shard::open_index::unsealed_key(&HASH))
+            .await
+            .unwrap()
+            .is_some(),
+        "the unsealed index names the queue"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_claim_leases_the_lane_from_its_page_and_moves_the_frontier() {
     let (e, db, c) = clocked("nq-lane-claim", QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
-    let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
+    let page = e.unsealed_page_for_tests(&HASH, 0).unwrap();
     let d = claim(&e, 1).await;
     assert_eq!(d.len(), 1);
     assert_eq!(
@@ -113,7 +131,7 @@ async fn a_small_scheduled_message_rides_in_its_scheduled_entry() {
     let (e, db, c) = clocked("nq-sched-inline", QueueConfig::default()).await;
     let at = c + 60_000;
     op(&e, send_op(vec![scheduled("hello", at)])).await.unwrap();
-    let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
+    let page = e.unsealed_page_for_tests(&HASH, 0).unwrap();
     let entry = db
         .get(keys::by_time(&HASH, keys::AVAIL, at, 0))
         .await
@@ -180,7 +198,7 @@ async fn a_page_rides_inline_up_to_the_limit_exactly_and_not_a_byte_past_it() {
     .unwrap();
     let (mut at_limit, mut past) = (false, false);
     for off in 0..u64::try_from(INLINE_PAGE_MAX / 2).unwrap() {
-        let page = db.get(shard_page_key(&HASH, off)).await.unwrap().unwrap();
+        let page = e.unsealed_page_for_tests(&HASH, off).unwrap();
         let entry = db
             .get(keys::by_time(&HASH, keys::AVAIL, at, off))
             .await
@@ -208,7 +226,7 @@ async fn a_claim_of_a_large_scheduled_message_leaves_its_page_to_the_page_key() 
     )
     .await
     .unwrap();
-    let page = db.get(shard_page_key(&HASH, 0)).await.unwrap().unwrap();
+    let page = e.unsealed_page_for_tests(&HASH, 0).unwrap();
     assert!(page.len() > INLINE_PAGE_MAX);
     set_clock(&db, at).await;
     let d = claim(&e, 1).await;
@@ -240,7 +258,7 @@ async fn a_claim_at_a_due_scheduled_messages_retention_end_takes_it_into_the_gap
     let retention = QueueConfig::default().retention_ms;
     let at = c + 60_000;
     op(&e, send_op(vec![scheduled("late", at)])).await.unwrap();
-    let page = super::stored(&db, 0).await;
+    let page = super::stored(&e, 0);
     assert_eq!(state(&db).await.inline_bytes, page, "the page rides inline");
     set_clock(&db, at + retention).await;
     assert!(
@@ -257,16 +275,17 @@ async fn a_claim_at_a_due_scheduled_messages_retention_end_takes_it_into_the_gap
     assert!(by_offset.unwrap().is_none(), "its by-offset row is gone");
 }
 
-/// A cancelled scheduled message at the frontier keeps its page until the frontier passes it.
+/// A cancelled scheduled message at the frontier holds the frontier until the next claim passes
+/// it; its page stays in the queue's stream until its chunk is retired (S3b-DESIGN §7.3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_cancelled_scheduled_message_at_the_frontier_keeps_its_page_until_passed() {
+async fn a_cancelled_scheduled_message_at_the_frontier_is_passed_by_the_next_claim() {
     let (e, db, c) = clocked("nq-avail-cancel-at-frontier", QueueConfig::default()).await;
     let sent = vec![scheduled("s", c + 60_000), msg("m")];
     op(&e, send_op(sent)).await.unwrap();
     let cancel = op(&e, crate::native_queue::NqOp::Cancel { offsets: vec![0] }).await;
     assert_eq!(cancel.unwrap().count(), 1);
     assert!(
-        db.get(shard_page_key(&HASH, 0)).await.unwrap().is_some(),
+        e.unsealed_page_for_tests(&HASH, 0).is_some(),
         "page 0 stays"
     );
     assert_eq!(state(&db).await.frontier, 0);
@@ -274,15 +293,16 @@ async fn a_cancelled_scheduled_message_at_the_frontier_keeps_its_page_until_pass
     assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [1]);
     assert_eq!(state(&db).await.frontier, 2);
     assert!(
-        db.get(shard_page_key(&HASH, 0)).await.unwrap().is_none(),
-        "passed, it goes"
+        e.unsealed_page_for_tests(&HASH, 0).is_some(),
+        "passed, it stays in the stream"
     );
 }
 
-/// An open delivery that ends with the frontier at its offset keeps its page for the frontier,
-/// which then passes it and leases the next message.
+/// An open delivery that ends with the frontier at its offset leaves the frontier there, and the
+/// next claim passes it and leases the next message; the page stays in the queue's stream until
+/// its chunk is retired (S3b-DESIGN §7.3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_delivery_ending_at_the_frontier_keeps_its_page_for_the_frontier_to_pass() {
+async fn a_delivery_ending_at_the_frontier_is_passed_by_the_next_claim() {
     let (e, db, c) = clocked("nq-avail-end-at-frontier", QueueConfig::default()).await;
     let mut sent: Vec<SendMessage> = (0..18).map(|i| msg(&format!("m{i}"))).collect();
     sent.push(scheduled("s", c + 1));
@@ -302,14 +322,91 @@ async fn a_delivery_ending_at_the_frontier_keeps_its_page_for_the_frontier_to_pa
     let ack = vec![(18, d[0].lease_gen, crate::native_queue::SettleKind::Ack)];
     op(&e, super::settle(ack)).await.unwrap();
     assert!(
-        db.get(shard_page_key(&HASH, 18)).await.unwrap().is_some(),
+        e.unsealed_page_for_tests(&HASH, 18).is_some(),
         "page 18 stays"
     );
     op(&e, send_op(vec![msg("next")])).await.unwrap();
     let d = claim(&e, 1).await;
     assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [19]);
     assert!(
-        db.get(shard_page_key(&HASH, 18)).await.unwrap().is_none(),
-        "passed, it goes"
+        e.unsealed_page_for_tests(&HASH, 18).is_some(),
+        "passed, it stays in the stream"
     );
+}
+
+/// A claim of `max` carrying `prepared` pages, as a handler submits it.
+fn claim_prepared(max: usize, prepared: Vec<(u64, bytes::Bytes)>) -> crate::native_queue::NqOp {
+    crate::native_queue::NqOp::Claim {
+        max,
+        max_bytes: 1 << 20,
+        lease_ms: 30_000,
+        prepared,
+    }
+}
+
+/// The lane's sealed pages from `from`, as a claim's handler reads them
+/// (`application::queues::delivery::prepare_lane`).
+async fn sealed_pages(
+    e: &crate::shard::ShardEngine,
+    from: u64,
+    to: u64,
+) -> Vec<(u64, bytes::Bytes)> {
+    let handle = e.stream_handle(HASH).await.unwrap();
+    let window = crate::shard::RingScan {
+        from,
+        to,
+        max_bytes: usize::MAX,
+    };
+    let read = e
+        .read_stream_window(&handle, window, None, crate::shard::Deliver::Durable)
+        .await
+        .unwrap();
+    read.frames
+        .iter()
+        .map(|s| (s.first(), s.page().raw().clone()))
+        .collect()
+}
+
+/// Once a seal takes a backlog's pages, the committer holds none of them:
+/// a claim with nothing prepared leases nothing from the lane and moves no
+/// frontier, and one whose handler prepared the sealed pages leases them
+/// from the frontier on, serving a prepared page only at its own offset
+/// and dropping one the frontier has passed (S3b-DESIGN §6.2-§6.3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sealed_lane_is_leased_from_the_pages_its_handler_prepared() {
+    let (e, db, _c) = clocked("nq-lane-sealed", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
+        .await
+        .unwrap();
+    e.seal_once(crate::shard::seal::Trigger::Requested)
+        .await
+        .unwrap();
+    assert!(e.unsealed_page_for_tests(&HASH, 0).is_none(), "sealed");
+    let none = op(&e, claim_prepared(1, Vec::new())).await.unwrap();
+    assert!(
+        matches!(&none, crate::native_queue::NqOut::Claimed { deliveries, .. } if deliveries.is_empty()),
+        "{none:?}"
+    );
+    assert_eq!(state(&db).await.frontier, 0, "nothing passed unread");
+    let prepared = sealed_pages(&e, 0, 3).await;
+    assert_eq!(prepared.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 1, 2]);
+    let crate::native_queue::NqOut::Claimed { deliveries, .. } =
+        op(&e, claim_prepared(2, prepared.clone())).await.unwrap()
+    else {
+        panic!("a claim answers deliveries");
+    };
+    assert_eq!(
+        deliveries.iter().map(|d| d.offset).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(deliveries[0].page.as_deref(), Some(&prepared[0].1[..]));
+    // The same prepared window again: 0 and 1 are behind the frontier and
+    // dropped; 2 is served.
+    let crate::native_queue::NqOut::Claimed { deliveries, .. } =
+        op(&e, claim_prepared(2, prepared)).await.unwrap()
+    else {
+        panic!("a claim answers deliveries");
+    };
+    assert_eq!(deliveries.iter().map(|d| d.offset).collect::<Vec<_>>(), [2]);
+    assert_eq!(state(&db).await.frontier, 3);
 }

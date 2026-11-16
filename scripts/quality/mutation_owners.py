@@ -216,6 +216,7 @@ OWNERS = (
           'shard::seal:: dst_tests::idle_release:: '
           'shard::open_index::tests::an_engine_names_its_objects_with_its_logs_home'),
     owner('shard_seal_steps', 'src/shard/seal/steps.rs', 'shard::seal::'),
+    owner('shard_seal_queue_cut', 'src/shard/seal/queue_cut.rs', 'shard::seal::queue_cut:: shard::native_queue_tests::'),
     owner('shard_seal_open', 'src/shard/seal/open.rs', 'shard::seal:: shard::billing_read_tests::'),
     owner('shard_seal_read', 'src/shard/seal/read.rs', 'dst_tests::read_reserve:: shard::seal::read_tests:: shard::seal::read::plan_tests:: shard::seal::runs::runs_tests::a_read_the_directory_tiles_alone_fetches_no_footer shard::seal::fold_tests:: shard::seal::consolidate_tests:: dst_tests::reads_raw:: dst_tests::reads_applied:: shard::seal::gc_tests::'),
     owner('spill_directory_row', 'src/spill/directory/row.rs', 'spill::directory_tests:: shard::seal::'),
@@ -345,6 +346,7 @@ OWNERS = (
     owner('commit_op', 'src/shard/commit_op.rs', 'shard::'),
     owner('queue_maintenance', 'src/shard/queue_maintenance.rs', 'native_queue'),
     owner('nq_submit', 'src/shard/native_queue_submit.rs', 'native_queue queue_overload::'),
+    owner('nq_prepare', 'src/shard/native_queue_submit/prepare.rs', 'native_queue queue_product:: queue_overload::'),
     owner('nq_admin', 'src/shard/transaction/native_queue/admin.rs', 'native_queue'),
     owner('nq_claim', 'src/shard/transaction/native_queue/claim.rs', 'native_queue'),
     owner('nq_deliveries', 'src/shard/transaction/native_queue/deliveries.rs', 'native_queue'),

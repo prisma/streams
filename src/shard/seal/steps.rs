@@ -135,7 +135,7 @@ impl ShardEngine {
         sp.check_abort(super::test_hooks::SealStep::WalFlushed)?;
         // (2)
         let snapshot_at = Instant::now();
-        let windows = self.seal_snapshot();
+        let windows = self.admitted_windows(self.seal_snapshot());
         let mut report = SealReport::default();
         if !windows.is_empty() {
             self.seal_windows(sp, &windows, &mut report).await?;
@@ -207,9 +207,6 @@ impl ShardEngine {
         let mut out = Vec::new();
         let mut capped = false;
         for handle in self.rotated_unsealed() {
-            if handle.native_queue.load(Ordering::Relaxed) {
-                continue;
-            }
             if budget.spent() {
                 capped = true;
                 break;
@@ -284,6 +281,35 @@ impl ShardEngine {
             #[cfg(test)]
             applied_beyond,
         })
+    }
+
+    /// The snapshot's windows less any queue window holding a page that
+    /// does not admit at its own offset (S3b-DESIGN F5): a queue's pages are
+    /// read back and served by offset, so such a window is not sealed, as a
+    /// window that does not tile is not, and its pages stay unsealed.
+    fn admitted_windows(&self, windows: Vec<Window>) -> Vec<Window> {
+        windows
+            .into_iter()
+            .filter(|w| {
+                let queue = w.handle.native_queue.load(Ordering::Relaxed);
+                let admits = !queue || super::queue_cut::admits(&w.pages);
+                if !admits {
+                    self.layout
+                        .seal
+                        .counters
+                        .snapshot_gaps
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::error!(
+                        shard = %self.prefix,
+                        queue = %crate::crypto::hex(&w.handle.hash[..4]),
+                        "a queue page in [{}, {}) does not admit at its offset; not sealed",
+                        w.from,
+                        w.upto
+                    );
+                }
+                admits
+            })
+            .collect()
     }
 
     /// Steps 3-7a for a non-empty snapshot.
@@ -583,7 +609,8 @@ pub(super) fn durable_pages(
 fn chunk_inputs(windows: &[Window], max_pages: usize) -> Vec<ChunkInput> {
     let mut inputs = Vec::new();
     for window in windows {
-        for run in window.pages.chunks(max_pages) {
+        let queue = window.handle.native_queue.load(Ordering::Relaxed);
+        for run in super::queue_cut::runs(&window.pages, queue, max_pages) {
             let Some(&(first, _, _)) = run.first() else {
                 continue;
             };

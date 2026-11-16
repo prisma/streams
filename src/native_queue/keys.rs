@@ -1,8 +1,9 @@
 //! Queue row keys (docs/QUEUES-DESIGN.md §5; layout 8, S3a-DESIGN §2.3):
 //! every row of a queue is `hash ‖ 'Q' ‖ family ‖ suffix`, big-endian so key
 //! order is numeric order, and a queue's rows are one range beside its
-//! hash's other rows. The message pages are the `'p'` family (`page`), one
-//! message per page, and the queue stream's tail is `shard::queue_tail_key`.
+//! hash's other rows. A message is one page of the queue's stream (S3b part
+//! 2): its pending row while unsealed, a segment's chunk once sealed, so no
+//! family holds pages; the queue stream's tail is `shard::queue_tail_key`.
 //! The shard-wide roster is under the sentinel (`roster`).
 
 /// The queue's state row: configuration, clock, cursor, frontier,
@@ -31,9 +32,6 @@ pub(crate) const FAIL_EXPIRY: u8 = b'e';
 pub(crate) const DEDUP: u8 = b'u';
 /// Dedup expiry index: (expiresAt, tag).
 pub(crate) const DEDUP_EXPIRY: u8 = b'v';
-/// A message's sealed page, by its last offset (`page`): one message per
-/// page, so the page's last offset is the message's.
-pub(crate) const PAGE: u8 = b'p';
 
 /// Where a queue row's family byte sits: after the queue's hash and the
 /// `'Q'` family byte.
@@ -142,11 +140,6 @@ pub(crate) async fn roster_rows(db: &slatedb::Db) -> std::collections::BTreeMap<
         }
     }
     out
-}
-
-/// The message page of the queue `hash` whose last offset is `last`.
-pub(crate) fn page(hash: &[u8; 16], last: u64) -> Vec<u8> {
-    by_offset(hash, PAGE, last)
 }
 
 /// (time, offset) of a time-ordered index key under `prefix`.

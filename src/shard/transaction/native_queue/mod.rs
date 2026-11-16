@@ -108,8 +108,9 @@ impl CommitTransaction<'_> {
                 max,
                 max_bytes,
                 lease_ms,
+                prepared,
             } => {
-                self.nq_claim(hash, st, (max, max_bytes, lease_ms), (t, local.fields.next))
+                self.nq_claim(local, st, (max, max_bytes, lease_ms, prepared), t)
                     .await
             }
             NqOp::Settle { items } => self.nq_settle(hash, st, items, t).await,
@@ -129,9 +130,15 @@ impl CommitTransaction<'_> {
             } => self.nq_redrive(hash, st, (offsets, all, limit), t).await,
             NqOp::Discard { offsets } => self.nq_discard(hash, st, offsets, t).await,
             NqOp::ListFailed { after, limit } => self.nq_list_failed(hash, st, after, limit).await,
-            NqOp::Peek { after, limit } => self.nq_peek(hash, st, (after, limit)).await,
-            NqOp::Message { offset } => self.nq_message(hash, st, offset).await,
-            NqOp::Sweep => self.nq_sweep(hash, st, (t, local.fields.next)).await,
+            NqOp::Peek {
+                after,
+                limit,
+                prepared,
+            } => self.nq_peek(local, st, (after, limit, &prepared)).await,
+            NqOp::Message { offset, prepared } => {
+                self.nq_message(local, st, (offset, &prepared)).await
+            }
+            NqOp::Sweep { prepared } => self.nq_sweep(local, st, &prepared, t).await,
             NqOp::ClearDebt {
                 generation,
                 bytes,

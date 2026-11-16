@@ -296,21 +296,39 @@ impl Envelope {
     }
 }
 
-/// The envelope of the message at `offset`, by a point get of its page
-/// (§6.1): `None` once the page is gone.
+/// The envelope of the message at `offset`, from its page as the queue's
+/// stream holds it, unsealed or sealed, through the stream read path
+/// (S3b-DESIGN §6.2): `None` when the stream holds no page there.
 pub(super) async fn read(
     t: &QueueTarget,
     key: &QueueKey,
     offset: u64,
 ) -> Result<Option<Envelope>, ReadFailure> {
-    let raw = t
+    use crate::shard::record::RangeReadError;
+    let handle = t
         .engine
-        .db
-        .get(crate::native_queue::keys::page(&t.hash, offset))
+        .stream_handle(t.hash)
         .await
         .map_err(|e| ReadFailure::Store(e.to_string()))?;
-    raw.map(|raw| open(t, key, offset, raw).map_err(ReadFailure::Unreadable))
+    let window = crate::shard::RingScan {
+        from: offset,
+        to: offset.saturating_add(1),
+        max_bytes: usize::MAX,
+    };
+    let read = t
+        .engine
+        .read_stream_window(&handle, window, None, crate::shard::Deliver::Durable)
+        .await
+        .map_err(|e| match e {
+            RangeReadError::Corrupt(c) => ReadFailure::Unreadable(format!("queue page: {c:?}")),
+            RangeReadError::Store(e) => ReadFailure::Store(e.to_string()),
+        })?;
+    read.frames
+        .iter()
+        .find(|slice| slice.first() == offset)
+        .map(|slice| open(t, key, offset, slice.page().raw().clone()))
         .transpose()
+        .map_err(ReadFailure::Unreadable)
 }
 
 /// The envelope in the sealed page of the message at `offset`, as stored

@@ -938,6 +938,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::the_pending_view_of_a_sealed_queue_pages_by_its_cursor_through_every_message",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "The send bodies of the sealed pending-view DST (S3b-DESIGN section 6.2, edge change #262): exact request documents to the queue routes; serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::a_view_a_seal_races_at_every_attempt_answers_503_read_failed",
+      "path": "src/dst/tests/queue_product.rs",
+      "reason": "The raced-seal DST (edge change #262): exact request documents and expected error codes of the queue routes; serde macro output is compiled and asserted by the queue DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 2,
       "owner": "crate::list",
       "path": "src/product/queues.rs",

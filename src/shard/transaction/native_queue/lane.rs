@@ -9,6 +9,7 @@
 //! The committer reads a page's clear header only: its offset, time and
 //! length. The envelope is sealed under a key that only requests carry.
 use super::super::CommitTransaction;
+use super::super::overlay::StreamOverlay;
 use super::stage::NativeStage;
 use crate::native_queue::range::{RangeRow, index_of};
 use crate::native_queue::{NqRefusal, keys};
@@ -62,38 +63,72 @@ impl CommitTransaction<'_> {
         st.ranges_dirty.insert(index);
     }
 
-    /// Up to `limit` pages from `from` on, in offset order, staged pages
-    /// included. A page whose header does not name its own offset is
-    /// refused: the committer never serves a page it cannot place.
-    pub(super) async fn nq_lane_pages(
-        &self,
-        hash: &[u8; 16],
-        st: &NativeStage,
+    /// Up to `limit` of the queue stream's unsealed pages from `from` on,
+    /// in offset order: the pages its handle holds, then the group's own
+    /// (S3b-DESIGN §6.1). A sealed offset (below the boundary) is not among
+    /// them. A page whose header does not name its own offset is refused:
+    /// the committer never serves a page it cannot place.
+    pub(super) fn nq_lane_pages(
+        local: &StreamOverlay,
         from: u64,
         limit: usize,
     ) -> Result<Vec<LanePage>, NqRefusal> {
-        if limit == 0 {
-            return Ok(Vec::new());
+        let st = local
+            .handle
+            .state
+            .lock()
+            .map_err(|_| NqRefusal::Internal("a queue stream's state is poisoned".into()))?;
+        let group = local.frames.pending.iter().filter(|p| p.1 >= from);
+        let mut out = Vec::new();
+        for (first, _, raw) in st.pending.from(from).chain(group).take(limit) {
+            let checked = crate::crypto_page::CheckedPage::admit(raw.clone(), *first)
+                .map_err(|e| NqRefusal::Internal(format!("queue page {first}: {e:?}")))?;
+            out.push(LanePage {
+                offset: *first,
+                ts: checked.ts_ms(),
+                raw: raw.clone(),
+            });
         }
-        let start = keys::page(hash, from);
-        let end = super::stage::family_range(hash, keys::PAGE).1;
-        let prefix = keys::family(hash, keys::PAGE).len();
-        let rows = self
-            .nq_scan(st, (start, end), limit)
-            .await
-            .map_err(NqRefusal::Internal)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (k, v) in rows {
-            let offset = keys::decode_offset_key(prefix, &k)
-                .ok_or_else(|| NqRefusal::Internal("queue page key".into()))?;
-            let raw = bytes::Bytes::from(v);
-            let checked = crate::crypto_page::CheckedPage::admit(raw.clone(), offset)
+        Ok(out)
+    }
+
+    /// The lane's run from `from`: the pages prepared outside the
+    /// committer below the stream's sealed boundary, then its unsealed ones
+    /// (`nq_lane_pages`), at most `limit`, in offset order and without a gap
+    /// (S3b-DESIGN §6.2, §6.3). The run ends at the first offset it holds no
+    /// page for, so no walk steps over a message; a prepared page is served
+    /// only at the offset its header names, and one behind `from` is dropped.
+    pub(super) fn nq_lane_run(
+        local: &StreamOverlay,
+        prepared: &[(u64, bytes::Bytes)],
+        from: u64,
+        limit: usize,
+    ) -> Result<Vec<LanePage>, NqRefusal> {
+        let sealed = local.fields.absorbed;
+        let mut out = Vec::new();
+        let mut expect = from;
+        for (offset, raw) in prepared.iter().filter(|(o, _)| (from..sealed).contains(o)) {
+            if out.len() >= limit || *offset != expect {
+                return Ok(out);
+            }
+            let checked = crate::crypto_page::CheckedPage::admit(raw.clone(), *offset)
                 .map_err(|e| NqRefusal::Internal(format!("queue page {offset}: {e:?}")))?;
             out.push(LanePage {
-                offset,
+                offset: *offset,
                 ts: checked.ts_ms(),
-                raw,
+                raw: raw.clone(),
             });
+            expect += 1;
+        }
+        if expect < sealed || out.len() >= limit {
+            return Ok(out);
+        }
+        for page in Self::nq_lane_pages(local, expect, limit - out.len())? {
+            if page.offset != expect {
+                break;
+            }
+            out.push(page);
+            expect += 1;
         }
         Ok(out)
     }
@@ -117,19 +152,5 @@ impl CommitTransaction<'_> {
                 .saturating_add(st.state.cfg.retention_ms)
         };
         st.state_dirty = true;
-    }
-
-    /// Delete a page the frontier has passed or whose message ended
-    /// behind it, recording its bytes as debt.
-    pub(super) fn nq_delete_page(
-        &mut self,
-        hash: &[u8; 16],
-        st: &mut NativeStage,
-        page: (u64, u32),
-        t: i64,
-    ) {
-        let (offset, bytes) = page;
-        self.nq_delete(st, keys::page(hash, offset));
-        Self::nq_debt(st, u64::from(bytes), t);
     }
 }

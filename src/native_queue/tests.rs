@@ -358,7 +358,7 @@ fn queue_scans_cache_their_blocks() {
 
 /// Every queue family's byte (S3a-DESIGN rev 3 §2.3), the reserved one included: `'k'` the
 /// released interval, whose writer is S3b's.
-const QUEUE_FAMILIES: [u8; 14] = [
+const QUEUE_FAMILIES: [u8; 13] = [
     keys::STATE,
     keys::SCHEDULED_AT,
     keys::AVAIL,
@@ -369,7 +369,6 @@ const QUEUE_FAMILIES: [u8; 14] = [
     keys::FAIL_EXPIRY,
     keys::DEDUP,
     keys::DEDUP_EXPIRY,
-    keys::PAGE,
     b't', // the queue stream's tail (`shard::queue_tail_key`)
     keys::RANGE,
     b'k', // released interval (S3b)
@@ -436,7 +435,6 @@ fn every_queue_key_is_pinned() {
             hex(keys::dedup_expiry(&hash, at, &tag)),
             format!("{h}5176{t}{}", "22".repeat(16)),
         ),
-        (hex(keys::page(&hash, off)), format!("{h}5170{o}")),
         (hex(crate::shard::queue_tail_key(&hash)), format!("{h}5174")),
         (
             hex(keys::roster(at, &hash)),

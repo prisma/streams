@@ -269,6 +269,20 @@
     "scenarios": []
   },
   {
+    "name": "a_claim_of_sealed_messages_holds_exactly_the_pages_it_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "94f7981f1000b4ec85830117228bd50ad0a53c808b8c6c62fd9697013e3ed8c9",
+    "mechanisms": [],
+    "configuration": [
+      "for seed in [2, 3] {",
+      "let text = super::fixture_storage::noise_text(10 * 1024, seed);"
+    ],
+    "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_claim_reserves_read_memory_only_for_what_it_returns",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -716,7 +730,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "d3b2f429fbaf3735e00e4cc0f78d204d224fdf9a8e70f019a6c6860e3be32056",
+    "function_sha256": "2ae2cb8a11025ded912bd586c3879dfc01eec8b895b3fc295d04fa572ccf3da6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
@@ -1966,7 +1980,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "82d9b5fc3fc19d7b4569fde1c83d8f97f9602c957e6255b3caf9ac73df0a98c2",
+    "function_sha256": "eabc7a0ac12e0fd2c760a1972ca1d40cbb1367f9d3e94f42a2b6ac3065308b28",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
@@ -3493,7 +3507,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e801b86b6be54068318124fc01d15f2c55235c72e87ede80091c77c58731fc62",
+    "function_sha256": "9a1cb2201bb73f36938592afc4e923ff2a244a4e3dbe0271eb5a5b39da751107",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
@@ -4317,6 +4331,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_usage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_view_a_seal_races_at_every_attempt_answers_503_read_failed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0ebb7d5791d01cfddd5d97b4cda03796ccacfd3986ac626bdb99448fb72fbe96",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_product.rs",
     "scenarios": []
   },
   {
@@ -9872,7 +9897,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "bc7f2dff3edaf97c9bb69f2e1afe0a2e9a77fd7b51df128fea217b96da4374ae",
+    "function_sha256": "45a3b2e099dbb95e6e6e97e241107a2fb55b1f6ad708699859d2f321c3e1da9e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_product.rs",
@@ -11101,6 +11126,20 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_barrier.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_pending_view_of_a_sealed_queue_pages_by_its_cursor_through_every_message",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "465562180d40d7adc45d3849fb23aa5df223f53747839b60a1e60d2813ee816d",
+    "mechanisms": [],
+    "configuration": [
+      "for seed in 0..16 {",
+      "let body = json!({ \"body\": super::fixture_storage::noise_text(120 * 1024, seed) });"
+    ],
+    "file": "src/dst/tests/queue_product.rs",
     "scenarios": []
   },
   {

@@ -1,10 +1,10 @@
 //! An operator's reads and actions on a queue (docs/QUEUES-DESIGN.md §6.7, §8.2) where they meet
 //! the lane: peek and message read an untaken message from its page, a cancelled one is neither
-//! listed nor read nor cancelled a second time, and a delete step records the pages it deletes as
-//! collection debt.
+//! listed nor read nor cancelled a second time, and a queue created again starts its frontier
+//! past the earlier incarnation's offsets.
 #![cfg(test)]
-use super::{HASH, claim, clocked, msg, op, send_op, state, stored};
-use crate::native_queue::{DeliveryState, NqOp, NqOut, NqRefusal, QueueConfig, keys};
+use super::{claim, clocked, create, engine, msg, op, send_op, state, stored};
+use crate::native_queue::{DeliveryState, NqOp, NqOut, NqRefusal, QueueConfig};
 
 /// Four messages sent at the queue's clock: 0 is leased, so the frontier is at 1; 2 is cancelled
 /// untaken, then cancelled again. A peek lists 0 by its delivery and 1 and 3 from the lane, and a
@@ -26,6 +26,7 @@ async fn the_lanes_untaken_messages_are_peeked_and_read_and_a_cancelled_one_is_c
     let peek = NqOp::Peek {
         after: None,
         limit: 10,
+        prepared: Vec::new(),
     };
     let NqOut::Deliveries { items, next } = op(&e, peek).await.unwrap() else {
         panic!("a peek answers deliveries")
@@ -34,41 +35,64 @@ async fn the_lanes_untaken_messages_are_peeked_and_read_and_a_cancelled_one_is_c
     let (leased, pending) = (DeliveryState::Leased, DeliveryState::Pending);
     assert_eq!(listed, [(0, leased), (1, pending), (3, pending)]);
     assert_eq!(next, None, "a page short of its limit has no cursor");
-    let three = (3, stored(&db, 3).await, c);
+    let three = (3, stored(&e, 3), c);
     let last = &items[2];
     assert_eq!(
         (last.offset, u64::from(last.bytes), last.available_at),
         three
     );
-    let NqOut::Message(v) = op(&e, NqOp::Message { offset: 3 }).await.unwrap() else {
+    let by_id = |offset| NqOp::Message {
+        offset,
+        prepared: Vec::new(),
+    };
+    let NqOut::Message(v) = op(&e, by_id(3)).await.unwrap() else {
         panic!("an untaken message is read from its page")
     };
     let read = (v.offset, u64::from(v.bytes), v.available_at);
     assert_eq!((read, v.state), (three, DeliveryState::Pending));
-    let cancelled = op(&e, NqOp::Message { offset: 2 }).await;
+    let cancelled = op(&e, by_id(2)).await;
     assert_eq!(cancelled.unwrap_err(), NqRefusal::Reclaimed);
 }
 
-/// A delete step deletes the pages first, and each deleted page's stored bytes become collection
-/// debt in the state row that every step but the last writes.
+/// A queue created again on the stream an earlier incarnation used starts its frontier at the
+/// stream's next offset: the earlier incarnation's offsets are behind it, so a cancel naming one
+/// cancels nothing and the new queue's one message stays queued and is the one claimed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_delete_step_records_the_pages_it_deletes_as_collection_debt() {
-    let (e, db, _c) = clocked("nq-admin-delete-debt", QueueConfig::default()).await;
-    op(&e, send_op(vec![msg("a"), msg("bb"), msg("ccc")]))
+async fn a_queue_created_again_starts_its_frontier_past_the_earlier_incarnations_offsets() {
+    let (e, db) = engine("nq-recreate").await;
+    create(&e, QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
         .await
         .unwrap();
-    let mut pages = 0;
-    for offset in 0..3 {
-        pages += stored(&db, offset).await;
-    }
-    assert_eq!(state(&db).await.debt_bytes, 0);
     op(&e, NqOp::BeginDelete).await.unwrap();
-    let step = op(&e, NqOp::DeleteStep { max_rows: 3 }).await.unwrap();
-    assert!(matches!(step, NqOut::DeleteStepped { remaining: true }));
-    for offset in 0..3 {
-        let page = db.get(keys::page(&HASH, offset)).await.unwrap();
-        assert!(page.is_none(), "page {offset} is deleted first");
+    let mut done = false;
+    for _ in 0..100 {
+        if let NqOut::DeleteStepped { remaining: false } =
+            op(&e, NqOp::DeleteStep { max_rows: 7 }).await.unwrap()
+        {
+            done = true;
+            break;
+        }
     }
-    let debt = state(&db).await.debt_bytes;
-    assert_eq!(debt, pages, "the deleted pages are the step's debt");
+    assert!(done, "the delete never finished");
+    create(&e, QueueConfig::default()).await;
+    assert_eq!(
+        state(&db).await.frontier,
+        3,
+        "the frontier starts at the stream's next offset"
+    );
+    op(&e, send_op(vec![msg("d")])).await.unwrap();
+    let cancelled = op(&e, NqOp::Cancel { offsets: vec![1] }).await.unwrap();
+    assert_eq!(
+        cancelled.count(),
+        0,
+        "an earlier incarnation's offset cancels nothing"
+    );
+    let s = state(&db).await;
+    assert_eq!(
+        (s.queued_messages, s.counters.cancelled, s.frontier),
+        (1, 0, 3)
+    );
+    let d = claim(&e, 5).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), vec![3]);
 }

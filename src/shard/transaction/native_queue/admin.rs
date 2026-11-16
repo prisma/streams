@@ -8,9 +8,8 @@ use crate::native_queue::rows::{DState, MessageFacts, StateRow};
 use crate::native_queue::{DeliveryView, GroupConfig, QueueConfig};
 
 /// Every row family a queue owns, deleted family by family (§8.2), its
-/// pages first and its state row last.
-const FAMILIES: [u8; 12] = [
-    keys::PAGE,
+/// state row last. Its pages are its stream's, not rows of these families.
+const FAMILIES: [u8; 11] = [
     keys::SCHEDULED_AT,
     keys::AVAIL,
     keys::DELIVERY,
@@ -55,8 +54,6 @@ impl CommitTransaction<'_> {
             ..StateRow::default()
         };
         st.exists = true;
-        // A queue is absorbed in place from its first row (§5.6).
-        local.fields.absorbed = local.fields.next;
         Self::nq_tick(st, now_ms());
         Ok(NqOut::Config { cfg, created: true })
     }
@@ -87,9 +84,9 @@ impl CommitTransaction<'_> {
         NqOut::Deleting
     }
 
-    /// One bounded step of a queue delete: pages first, then every other
-    /// family, the state row last. `remaining` is false once nothing is
-    /// left.
+    /// One bounded step of a queue delete: every family, the state row
+    /// last, then the stream's unsealed pages at once (its pending row).
+    /// `remaining` is false once nothing is left.
     pub(super) async fn nq_delete_step(
         &mut self,
         local: &mut StreamOverlay,
@@ -97,7 +94,6 @@ impl CommitTransaction<'_> {
         st: &mut NativeStage,
         max_rows: usize,
     ) -> NqResult {
-        let t = now_ms().max(st.state.clock);
         let mut budget = max_rows.max(1);
         for fam in FAMILIES {
             let rows = self
@@ -105,8 +101,8 @@ impl CommitTransaction<'_> {
                 .await
                 .map_err(NqRefusal::Internal)?;
             let n = rows.len();
-            for row in rows {
-                self.nq_delete_any(st, (fam, t), row);
+            for (k, _) in rows {
+                self.nq_delete(st, k);
             }
             budget -= n;
             if budget == 0 {
@@ -115,22 +111,17 @@ impl CommitTransaction<'_> {
         }
         st.exists = false;
         st.state_dirty = false;
+        // The stream's unsealed pages go with its pending row, retired from
+        // the shard's unsealed ledger.
+        let unsealed = local.fields.unabsorbed_bytes;
+        self.batch.delete(crate::spill::pending::pending_key(&hash));
+        local.frames.retired_bytes += unsealed;
+        local.fields.unabsorbed_bytes = 0;
         local.fields.absorbed = local.fields.next;
         if let Some(at) = st.state.roster_at {
             self.batch.delete(keys::roster(at, &hash));
         }
         Ok(NqOut::DeleteStepped { remaining: false })
-    }
-
-    /// Delete one row of a deleting queue; a page records its bytes as
-    /// debt.
-    fn nq_delete_any(&mut self, st: &mut NativeStage, family: (u8, i64), row: (Vec<u8>, Vec<u8>)) {
-        let (fam, t) = family;
-        let (k, v) = row;
-        if fam == keys::PAGE {
-            Self::nq_debt(st, v.len() as u64, t);
-        }
-        self.nq_delete(st, k);
     }
 
     /// Cancel queue-wide (§6.7; S3b-DESIGN §5.6): a held message ends, its
@@ -320,11 +311,12 @@ impl CommitTransaction<'_> {
     /// on: no page lies at or past the stream's next offset.
     pub(super) async fn nq_peek(
         &self,
-        hash: [u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        page: (Option<u64>, usize),
+        page: (Option<u64>, usize, &[crate::native_queue::PreparedPage]),
     ) -> NqResult {
-        let (after, limit) = page;
+        let hash = local.handle.hash;
+        let (after, limit, prepared) = page;
         let from = after.map_or(0, |a| a.saturating_add(1));
         let mut items: std::collections::BTreeMap<u64, DeliveryView> =
             std::collections::BTreeMap::new();
@@ -347,7 +339,10 @@ impl CommitTransaction<'_> {
             }
         }
         let lane_from = from.max(st.state.frontier);
-        for v in self.nq_lane_views(&hash, st, lane_from, limit).await? {
+        for v in self
+            .nq_lane_views(local, st, (lane_from, prepared), limit)
+            .await?
+        {
             items.entry(v.offset).or_insert(v);
         }
         let items: Vec<DeliveryView> = items.into_values().take(limit).collect();
@@ -383,14 +378,15 @@ impl CommitTransaction<'_> {
     /// read, as pending views.
     async fn nq_lane_views(
         &self,
-        hash: &[u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        from: u64,
+        lane: (u64, &[(u64, bytes::Bytes)]),
         limit: usize,
     ) -> Result<Vec<DeliveryView>, NqRefusal> {
+        let (from, prepared) = lane;
         let mut out = Vec::new();
-        for p in self.nq_lane_pages(hash, st, from, limit).await? {
-            out.extend(self.nq_lane_view(hash, st, &p).await?);
+        for p in Self::nq_lane_run(local, prepared, from, limit)? {
+            out.extend(self.nq_lane_view(&local.handle.hash, st, &p).await?);
         }
         Ok(out)
     }
@@ -420,10 +416,12 @@ impl CommitTransaction<'_> {
     /// stream's next offset); `Reclaimed` when it is resolved.
     pub(super) async fn nq_message(
         &self,
-        hash: [u8; 16],
+        local: &StreamOverlay,
         st: &mut NativeStage,
-        offset: u64,
+        at: (u64, &[(u64, bytes::Bytes)]),
     ) -> NqResult {
+        let (offset, prepared) = at;
+        let hash = local.handle.hash;
         if let Some(row) = self.nq_delivery(&hash, st, offset).await? {
             return Ok(NqOut::Message(view(offset, &row.facts(), Some(&row))));
         }
@@ -431,7 +429,7 @@ impl CommitTransaction<'_> {
             return Ok(NqOut::Message(view(offset, &sched.facts, None)));
         }
         if offset >= st.state.frontier {
-            let pages = self.nq_lane_pages(&hash, st, offset, 1).await?;
+            let pages = Self::nq_lane_run(local, prepared, offset, 1)?;
             if let Some(p) = pages.first().filter(|p| p.offset == offset)
                 && let Some(v) = self.nq_lane_view(&hash, st, p).await?
             {

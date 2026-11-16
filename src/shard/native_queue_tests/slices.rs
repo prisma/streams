@@ -53,6 +53,7 @@ async fn claim_on(e: &ShardEngine, hash: [u8; 16], max: usize) -> (Vec<u64>, boo
         max,
         max_bytes: 1 << 20,
         lease_ms: 30_000,
+        prepared: Vec::new(),
     };
     match op_on(e, hash, claim).await.unwrap() {
         NqOut::Claimed {

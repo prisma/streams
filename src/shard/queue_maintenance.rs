@@ -19,6 +19,8 @@ use futures_util::StreamExt;
 
 /// How often the sweeper reads the roster.
 const SWEEP_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+/// The sealed lane pages one sweep reads at most (one segment chunk).
+const SWEEP_PREPARE_BYTES: usize = 1 << 20;
 /// How often the collector considers a pass.
 const COLLECT_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 /// Debt that starts a pass at once (efficient under load).
@@ -361,19 +363,69 @@ impl ShardEngine {
         let now = now_ms();
         let next = next.filter(|_| roster.iter().all(|(_, at)| *at <= now));
         let due = roster.into_iter().filter(|(_, at)| *at <= now);
-        let wakes: Vec<_> =
-            futures_util::stream::iter(due)
-                .map(|(hash, _)| async move {
-                    (hash, self.submit_native_queue(hash, NqOp::Sweep).await)
-                })
-                .buffer_unordered(SWEEPS_AT_ONCE)
-                .filter_map(|(hash, swept)| async move { self.wake_of(hash, swept) })
-                .collect()
-                .await;
+        let wakes: Vec<_> = futures_util::stream::iter(due)
+            .map(|(hash, _)| async move { (hash, self.sweep_queue(hash).await) })
+            .buffer_unordered(SWEEPS_AT_ONCE)
+            .filter_map(|(hash, swept)| async move { self.wake_of(hash, swept) })
+            .collect()
+            .await;
         futures_util::stream::iter(wakes)
             .for_each_concurrent(NOTICES_AT_ONCE, |(hash, wake)| self.notify(hash, wake))
             .await;
         next
+    }
+
+    /// Sweep one queue; when the sweep finds its lane's expiry due at
+    /// sealed pages, read them and sweep again with them (S3b-DESIGN §6.2):
+    /// the committer reads no queue page from the store, and a sweep with
+    /// nothing sealed due costs one trip as before. The first sweep's
+    /// wake-up stands unless the second asks its own; a page that cannot be
+    /// read leaves the lane for the queue's next turn.
+    pub(super) async fn sweep_queue(&self, hash: [u8; 16]) -> crate::native_queue::NqResult {
+        use crate::native_queue::NqOut;
+        let swept = self
+            .submit_native_queue(
+                hash,
+                NqOp::Sweep {
+                    prepared: Vec::new(),
+                },
+            )
+            .await;
+        let Ok(NqOut::Swept {
+            lane_sealed: true,
+            wake: first,
+            ..
+        }) = &swept
+        else {
+            return swept;
+        };
+        let first = first.clone();
+        let from = crate::native_queue::PrepareFrom::Frontier;
+        let prepared = match self
+            .prepare_queue_pages(hash, from, SWEEP_PREPARE_BYTES)
+            .await
+        {
+            Ok((pages, _)) => pages,
+            Err(error) => {
+                tracing::warn!(shard = %self.prefix, "queue lane unreadable: {error}");
+                return swept;
+            }
+        };
+        match self
+            .submit_native_queue(hash, NqOp::Sweep { prepared })
+            .await
+        {
+            Ok(NqOut::Swept {
+                next_deadline,
+                wake,
+                lane_sealed,
+            }) => Ok(NqOut::Swept {
+                next_deadline,
+                wake: wake.or(first),
+                lane_sealed,
+            }),
+            Ok(_) | Err(_) => swept,
+        }
     }
 
     /// The wake-up a sweep asks for, if any; a refused sweep is retried at

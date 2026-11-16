@@ -227,9 +227,6 @@ impl CommitTransaction<'_> {
             self.nq_unschedule(hash, st, (offset, &row.facts(), row.inline), &mut range);
         }
         Self::nq_set_range(st, offset, range);
-        if offset < st.state.frontier {
-            self.nq_delete_page(hash, st, (offset, row.bytes), t);
-        }
         if undone {
             st.state.queued_messages = st.state.queued_messages.saturating_sub(1);
             st.state.queued_bytes = st.state.queued_bytes.saturating_sub(u64::from(row.bytes));
@@ -239,8 +236,8 @@ impl CommitTransaction<'_> {
     }
 
     /// End an unresolved scheduled message no delivery opened (expired
-    /// untaken, or cancelled): its scheduled rows go, and its page too once
-    /// the frontier is past it.
+    /// untaken, or cancelled): its scheduled rows go. Its page stays in the
+    /// queue's stream until its chunk is retired (S3b-DESIGN §7.3).
     pub(super) async fn nq_end_scheduled(
         &mut self,
         hash: &[u8; 16],
@@ -252,9 +249,6 @@ impl CommitTransaction<'_> {
         let mut range = self.nq_range(hash, st, offset).await?;
         self.nq_unschedule(hash, st, (offset, facts, inline), &mut range);
         Self::nq_set_range(st, offset, range);
-        if offset < st.state.frontier {
-            self.nq_delete_page(hash, st, (offset, facts.bytes), t);
-        }
         st.state.queued_messages = st.state.queued_messages.saturating_sub(1);
         st.state.queued_bytes = st.state.queued_bytes.saturating_sub(u64::from(facts.bytes));
         Self::nq_debt(st, ROW_CHARGE, t);

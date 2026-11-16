@@ -154,6 +154,13 @@ pub(crate) fn tail_hash(key: &[u8]) -> Option<[u8; 16]> {
     (rest == [STREAM, TAIL_TAG] && *hash != SENTINEL).then_some(*hash)
 }
 
+/// The queue whose tail `key` is (`hash ‖ 'Q' ‖ 't'`, S3b-DESIGN §5.1: a
+/// queue's tail is its own key), or `None` for any other key.
+pub(crate) fn queue_tail_hash(key: &[u8]) -> Option<[u8; 16]> {
+    let (hash, rest) = key.split_first_chunk::<16>()?;
+    (rest == [QUEUE_TAG, TAIL_TAG] && *hash != SENTINEL).then_some(*hash)
+}
+
 /// A queue row key: the queue's hash and the `'Q'` family byte, with room
 /// for `extra` more bytes.
 pub(crate) fn queue_row(hash: &[u8; 16], extra: usize) -> Vec<u8> {
@@ -444,6 +451,22 @@ mod tests {
         ];
         for key in others {
             assert_eq!(tail_hash(&key), None, "{key:02x?}");
+        }
+        let queue = crate::shard::queue_tail_key(&[7; 16]);
+        assert_eq!(
+            (tail_hash(&queue), super::queue_tail_hash(&queue)),
+            (None, Some([7; 16]))
+        );
+        let mut sentinel_queue = SENTINEL.to_vec();
+        sentinel_queue.extend_from_slice(&[QUEUE_TAG, b't']);
+        let not_queue_tails = [
+            tail,
+            crate::native_queue::keys::state(&[7; 16]),
+            [&queue[..], b"x"].concat(),
+            sentinel_queue,
+        ];
+        for key in not_queue_tails {
+            assert_eq!(super::queue_tail_hash(&key), None, "{key:02x?}");
         }
     }
 }

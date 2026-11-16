@@ -136,9 +136,7 @@ fn applied_from(
 /// Why a stream's live tail no longer matches its snapshot, if it does not.
 fn moved_since_snapshot(local: &StreamOverlay, adv: &SealAdvance) -> Option<String> {
     let f = &local.fields;
-    let moved = local.handle.native_queue.load(Ordering::Relaxed)
-        || local.frames.sealed.is_some()
-        || !seal_fits(f, adv.from, adv.upto, adv.bytes);
+    let moved = local.frames.sealed.is_some() || !seal_fits(f, adv.from, adv.upto, adv.bytes);
     moved.then(|| {
         format!(
             "stream {} moved since its snapshot: absorbed {} next {} unsealed {} B, seal [{}, {}) {} B",

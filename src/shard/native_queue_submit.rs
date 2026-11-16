@@ -5,6 +5,8 @@
 //! own maintenance waits for room.
 use tokio::sync::{mpsc, oneshot};
 
+mod prepare;
+
 use super::{CommitOp, ShardEngine};
 use crate::native_queue::{NqOp, NqRefusal, NqResult};
 

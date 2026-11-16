@@ -74,7 +74,14 @@ async fn a_sweep_that_moves_nothing_leaves_the_state_row_untouched() {
     op(&e, send_op(vec![msg("a")])).await.unwrap();
     let before = db.get(keys::state(&HASH)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    op(&e, NqOp::Sweep).await.unwrap();
+    op(
+        &e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(db.get(keys::state(&HASH)).await.unwrap(), before);
 }
 
@@ -186,18 +193,17 @@ async fn an_untaken_message_enters_the_gap_at_its_retention_end_exactly() {
     set_clock(&db, c + RETENTION).await;
     assert_eq!(
         swept(&e).await.0,
-        Some(c + RETENTION + HOUR_MS),
-        "only debt is left"
+        None,
+        "nothing is left: an untaken message had no row, so its expiry leaves no debt"
     );
     let s = state(&db).await;
     assert_eq!(
         (s.gap_count, s.counters.expired, s.queued_messages),
         (1, 1, 0)
     );
-    let page = crate::native_queue::keys::page(&HASH, 0);
     assert!(
-        !has(&db, page).await,
-        "the expired message's page is deleted"
+        e.unsealed_page_for_tests(&HASH, 0).is_some(),
+        "the expired message's page stays in the stream until its chunk is retired"
     );
 }
 
@@ -226,8 +232,10 @@ async fn a_failed_message_is_discarded_at_its_failure_expiry_exactly() {
         !has(&db, row).await,
         "the discarded message's delivery ends"
     );
-    let page = crate::native_queue::keys::page(&HASH, 0);
-    assert!(!has(&db, page).await, "and its page is deleted");
+    assert!(
+        e.unsealed_page_for_tests(&HASH, 0).is_some(),
+        "and its page stays in the stream until its chunk is retired"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
@@ -404,8 +412,8 @@ async fn a_sweep_walks_the_lane_only_once_its_expiry_is_due() {
     );
     assert_eq!(walked, (2, 1, 1, 1));
     assert!(
-        db.get(keys::page(&HASH, 1)).await.unwrap().is_none(),
-        "the expired page goes"
+        e.unsealed_page_for_tests(&HASH, 1).is_some(),
+        "the expired page stays in the queue's stream until its chunk is retired"
     );
 }
 

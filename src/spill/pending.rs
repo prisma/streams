@@ -162,4 +162,12 @@ impl PendingPages {
     pub(crate) fn is_empty(&self) -> bool {
         self.pages.is_empty()
     }
+
+    /// Tests: replace the bytes of the page whose first offset is `first`.
+    #[cfg(test)]
+    pub(crate) fn map_page_for_tests(&mut self, first: u64, f: impl FnOnce(&Bytes) -> Bytes) {
+        if let Some(page) = self.pages.iter_mut().find(|p| p.0 == first) {
+            page.2 = f(&page.2);
+        }
+    }
 }

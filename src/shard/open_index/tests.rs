@@ -322,6 +322,48 @@ async fn an_open_repairs_a_stale_unsealed_member() {
     assert_eq!(ledger.unabsorbed_frame_bytes, 70);
 }
 
+/// A queue's tail is its own key (`hash ‖ 'Q' ‖ 't'`, S3b-DESIGN §5.1) and its unsealed pages
+/// are named in 'W' like a stream's: an open reads a member's tail by either key, so an indexed
+/// queue keeps its row and its bytes in the ledger with no repair, and a repair finds queue tails
+/// as it finds stream tails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_open_and_a_repair_read_a_queues_tail_as_they_read_a_streams() {
+    let (indexed, unindexed) = ([4; 16], [5; 16]);
+    let mut rows = vec![
+        (crate::shard::queue_tail_key(&indexed), tail(0, 3, 90, None)),
+        (super::unsealed_key(&indexed), Vec::new()),
+    ];
+    let plain = seeded("queue-open", &rows).await;
+    let ledger = super::load_or_rebuild_maintenance(&plain).await.unwrap();
+    assert_eq!(
+        (
+            ledger.unabsorbed_frame_bytes,
+            super::unsealed_members(&plain).await.unwrap()
+        ),
+        (90, vec![indexed]),
+        "the queue's row stays and its bytes are counted"
+    );
+    rows.push((
+        crate::shard::queue_tail_key(&unindexed),
+        tail(2, 6, 40, None),
+    ));
+    let marked = seeded("queue-repair", &rows).await;
+    let repair = super::repair_indexes(&marked).await.unwrap();
+    assert_eq!(
+        repair,
+        super::Repair {
+            unsealed_added: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        super::unsealed_members(&marked).await.unwrap(),
+        [indexed, unindexed]
+    );
+    let ledger = super::load_or_rebuild_maintenance(&marked).await.unwrap();
+    assert_eq!(ledger.unabsorbed_frame_bytes, 130);
+}
+
 /// The open indexes' keys and the repair marker's, byte for byte (S3a §2.4): the sentinel, the
 /// tag, then the stream's hash ('W', 'M') or nothing ('X').
 #[test]

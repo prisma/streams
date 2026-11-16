@@ -124,12 +124,19 @@ impl QueueService {
         let wait = input.wait_ms.unwrap_or(0).clamp(0, MAX_WAIT_MS);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(wait.unsigned_abs());
         let waiter = crate::native_queue::waiter(&t.hash);
+        let mut resealed = 0;
         loop {
             // Registered before the claim, so a send between the claim and
             // the wait is not missed.
             let mut woken = std::pin::pin!(waiter.notified());
             woken.as_mut().enable();
-            let (deliveries, paused, limited) = match self.op(t, op.clone_claim()).await? {
+            let (prepared, through, hold) = prepare_lane(t, op.max_bytes, deadline).await?;
+            let answer = self.op(t, op.clone_claim(prepared)).await;
+            // The prepared pages are the committer's now: their hold ends
+            // here, before the reply's own reservation and before a park
+            // (S3b-DESIGN §6.4).
+            drop(hold);
+            let (deliveries, paused, limited) = match answer? {
                 NqOut::Claimed {
                     deliveries,
                     paused,
@@ -137,6 +144,19 @@ impl QueueService {
                 } => (deliveries, paused, limited),
                 other => return Err(unexpected(&other)),
             };
+            // A seal that committed after the preparation moved the lane's
+            // head out of the committer's memory before it was prepared:
+            // prepare again at once.
+            let raced = deliveries.is_empty() && !paused && resealed < RESEAL_RETRIES;
+            let sealed = t
+                .engine
+                .queue_sealed_boundary(t.hash)
+                .await
+                .map_err(|e| fail(FailureClass::Unavailable, "claim_read_failed", e))?;
+            if raced && sealed > through {
+                resealed += 1;
+                continue;
+            }
             let now = tokio::time::Instant::now();
             if !deliveries.is_empty() || paused || now >= deadline {
                 self.reserve_leased(t, &deliveries).await?;
@@ -374,12 +394,54 @@ struct ClaimOp {
 }
 
 impl ClaimOp {
-    fn clone_claim(&self) -> NqOp {
+    fn clone_claim(&self, prepared: Vec<(u64, bytes::Bytes)>) -> NqOp {
         NqOp::Claim {
             max: self.max,
             max_bytes: self.max_bytes,
             lease_ms: self.lease_ms,
+            prepared,
         }
+    }
+}
+
+/// The times one claim prepares again after a seal raced its preparation.
+pub(super) const RESEAL_RETRIES: u32 = 3;
+
+/// The lane's sealed pages a claim may lease (S3b-DESIGN §6.2), from the
+/// queue's frontier on, at most `max_bytes` of them; the sealed boundary they
+/// were read up to; and the read hold of exactly their bytes (§6.4, F3),
+/// never the claim's budget. Room for them is waited for until `deadline`;
+/// with none by then the claim is refused as one whose leased messages find
+/// no room is (`503 read_memory_busy`), before it leases anything.
+async fn prepare_lane(
+    t: &QueueTarget,
+    max_bytes: u64,
+    deadline: tokio::time::Instant,
+) -> Result<
+    (
+        Vec<crate::native_queue::PreparedPage>,
+        u64,
+        Option<crate::admission::read_memory::ReadHold>,
+    ),
+    QueueFailure,
+> {
+    use crate::admission::park::ReadReservation;
+    let budget = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    let (pages, sealed) = t
+        .engine
+        .prepare_queue_pages(t.hash, crate::native_queue::PrepareFrom::Frontier, budget)
+        .await
+        .map_err(|e| fail(FailureClass::Unavailable, "claim_read_failed", e))?;
+    let bytes: u64 = pages.iter().map(|(_, raw)| raw.len() as u64).sum();
+    if bytes == 0 {
+        return Ok((pages, sealed, None));
+    }
+    match crate::admission::park::reserve_read_until(bytes, deadline).await {
+        ReadReservation::Reserved(hold) => Ok((pages, sealed, Some(hold))),
+        ReadReservation::Unscoped => Ok((pages, sealed, None)),
+        ReadReservation::NoRoom => Err(memory_refused(
+            crate::admission::read_memory::ReadRefusal::Instance,
+        )),
     }
 }
 

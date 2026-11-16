@@ -18,6 +18,7 @@ mod floors;
 mod interleave;
 mod reads;
 mod roster;
+mod sealed;
 mod slices;
 mod sweeps;
 mod touched;
@@ -86,10 +87,19 @@ async fn roster(db: &Db) -> Option<i64> {
 
 /// A sweep's next deadline and wake-up.
 async fn swept(e: &ShardEngine) -> (Option<i64>, Option<crate::native_queue::WakeRequest>) {
-    match op(e, NqOp::Sweep).await.unwrap() {
+    match op(
+        e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap()
+    {
         NqOut::Swept {
             next_deadline,
             wake,
+            ..
         } => (next_deadline, wake),
         other => panic!("sweep answered {other:?}"),
     }
@@ -124,11 +134,12 @@ async fn create(e: &ShardEngine, cfg: QueueConfig) {
     assert!(matches!(out, NqOut::Config { created: true, .. }));
 }
 
-/// The stored length of the page at `offset`: what the queued gauges and a
-/// claim's byte limit count (S3b-DESIGN §14.3).
-async fn stored(db: &Db, offset: u64) -> u64 {
-    let page = db.get(crate::native_queue::keys::page(&HASH, offset)).await;
-    page.unwrap().expect("a page").len() as u64
+/// The stored length of the page at `offset` in the queue's stream: what
+/// the queued gauges and a claim's byte limit count (S3b-DESIGN §14.3).
+fn stored(e: &ShardEngine, offset: u64) -> u64 {
+    e.unsealed_page_for_tests(&HASH, offset)
+        .expect("a page")
+        .len() as u64
 }
 
 async fn state(db: &Db) -> StateRow {
@@ -142,6 +153,7 @@ async fn claim(e: &ShardEngine, max: usize) -> Vec<crate::native_queue::Delivery
             max,
             max_bytes: 1 << 20,
             lease_ms: 30_000,
+            prepared: Vec::new(),
         },
     )
     .await
@@ -198,25 +210,16 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
         panic!()
     };
     assert!(r.iter().all(|r| r.outcome == SettleOutcome::Ok));
-    // The acked message's page and rows are gone; the others stay.
-    assert!(
-        db.get(crate::native_queue::keys::page(&HASH, 0))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    // The acked message's rows are gone; every page stays in the queue's
+    // stream until its chunk is retired (S3b-DESIGN §7.3).
+    assert!(e.unsealed_page_for_tests(&HASH, 0).is_some());
     assert!(
         db.get(keys::by_offset(&HASH, keys::DELIVERY, 0))
             .await
             .unwrap()
             .is_none()
     );
-    assert!(
-        db.get(crate::native_queue::keys::page(&HASH, 2))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(e.unsealed_page_for_tests(&HASH, 2).is_some());
     // The retried message comes back with its second attempt, beside the third.
     let again = claim(&e, 10).await;
     let mut seen: Vec<_> = again.iter().map(|d| (d.offset, d.attempt)).collect();
@@ -248,28 +251,77 @@ async fn a_sent_message_is_claimed_acked_and_its_rows_and_page_are_deleted() {
     );
 }
 
+/// The queue's stored tail and whether the unsealed index names it.
+async fn tail_and_index(db: &Db) -> (crate::shard::TailFields, bool) {
+    let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
+    let tail = decode_tail_for_tests(&raw.expect("the tail is in the queue segment")).unwrap();
+    let indexed = db
+        .get(crate::shard::open_index::unsealed_key(&HASH))
+        .await
+        .unwrap()
+        .is_some();
+    (tail, indexed)
+}
+
+/// A queue's messages are its stream's pages (S3b part 2): its tail holds
+/// them unsealed, its pending row stores them and the unsealed index names
+/// it, exactly until a seal takes them; then they are the stream's sealed
+/// chunks, with no billing row and no usage final for the queue (F12). A
+/// delete takes the unsealed rest with the pending row. This replaces the
+/// part 1 tripwire that every queue writer left the tail sealed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_queue_tail_is_absorbed_in_place_and_never_marked_for_absorption() {
+async fn a_queue_tail_holds_its_unsealed_pages_and_the_index_names_it_until_its_seal() {
     let (e, db) = engine("nq-tail").await;
     create(&e, QueueConfig::default()).await;
+    assert!(
+        db.get(crate::shard::open_index::unsealed_key(&HASH))
+            .await
+            .unwrap()
+            .is_none(),
+        "after the create"
+    );
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     assert!(
         db.get(tail_key(&HASH)).await.unwrap().is_none(),
         "no stream-segment tail"
     );
-    let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
-    let tail = decode_tail_for_tests(&raw.expect("the tail is in the queue segment")).unwrap();
-    assert_eq!((tail.next, tail.absorbed, tail.unabsorbed_bytes), (2, 2, 0));
-    assert!(
-        db.get(crate::spill::pending::pending_key(&HASH))
-            .await
-            .unwrap()
-            .is_none(),
-        "no pending row: the sealer never sees a queue"
+    let bytes = stored(&e, 0) + stored(&e, 1);
+    let (tail, indexed) = tail_and_index(&db).await;
+    assert_eq!(
+        (tail.next, tail.absorbed, tail.unabsorbed_bytes, indexed),
+        (2, 0, bytes, true),
+        "after a send: two unsealed pages"
     );
     assert!(
-        e.layout.unsealed().is_empty(),
-        "nothing held for the sealer"
+        e.layout.unsealed().iter().any(|h| h.hash == HASH),
+        "held for the sealer"
+    );
+    e.seal_once(super::seal::Trigger::Requested).await.unwrap();
+    let (tail, indexed) = tail_and_index(&db).await;
+    assert_eq!(
+        (tail.next, tail.absorbed, tail.unabsorbed_bytes, indexed),
+        (2, 2, 0, false),
+        "after the seal: every page in a chunk"
+    );
+    for gone in [
+        crate::spill::pending::pending_key(&HASH),
+        crate::billing::billing_meta_key(&HASH),
+        crate::billing::usage_debt_key(&HASH),
+    ] {
+        assert!(db.get(&gone).await.unwrap().is_none(), "{gone:?}");
+    }
+    op(&e, send_op(vec![msg("c")])).await.unwrap();
+    assert!(tail_and_index(&db).await.1, "a send after the seal");
+    op(&e, NqOp::BeginDelete).await.unwrap();
+    while !matches!(
+        op(&e, NqOp::DeleteStep { max_rows: 2 }).await.unwrap(),
+        NqOut::DeleteStepped { remaining: false }
+    ) {}
+    let (tail, indexed) = tail_and_index(&db).await;
+    assert_eq!(
+        (tail.next, tail.absorbed, tail.unabsorbed_bytes, indexed),
+        (3, 3, 0, false),
+        "after the delete's last step"
     );
 }
 
@@ -380,6 +432,7 @@ async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
             max: 1,
             max_bytes: 1 << 20,
             lease_ms: 1_000,
+            prepared: Vec::new(),
         },
     )
     .await
@@ -409,7 +462,14 @@ async fn an_expired_lease_is_moved_by_the_sweep_and_a_late_extend_is_refused() {
         "a late extend is refused: {:?}",
         r[0].outcome
     );
-    op(&e, NqOp::Sweep).await.unwrap();
+    op(
+        &e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     let s = state(&db).await;
     assert_eq!((s.leased, s.retrying), (0, 1));
     let NqOut::Settled(r) = op(&e, settle(vec![(0, d[0].lease_gen, SettleKind::Ack)]))
@@ -463,12 +523,17 @@ async fn a_deleted_queue_leaves_no_row_and_no_page() {
     }
     for off in 0..20u64 {
         assert!(
-            db.get(crate::native_queue::keys::page(&HASH, off))
-                .await
-                .unwrap()
-                .is_none()
+            e.unsealed_page_for_tests(&HASH, off).is_none(),
+            "page {off}"
         );
     }
+    assert!(
+        db.get(crate::spill::pending::pending_key(&HASH))
+            .await
+            .unwrap()
+            .is_none(),
+        "and the stream's pending row"
+    );
     assert!(keys::rostered(&db, &HASH).await.is_none());
 }
 
@@ -483,6 +548,7 @@ async fn the_roster_driven_sweeper_moves_an_expired_lease_without_any_request() 
             max: 1,
             max_bytes: 1 << 20,
             lease_ms: 1_000,
+            prepared: Vec::new(),
         },
     )
     .await
@@ -527,20 +593,49 @@ async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_
     .await
     .unwrap();
     assert!(
-        wake(op(&e, NqOp::Sweep).await.unwrap()).is_none(),
+        wake(
+            op(
+                &e,
+                NqOp::Sweep {
+                    prepared: Vec::new()
+                }
+            )
+            .await
+            .unwrap()
+        )
+        .is_none(),
         "nothing due, nothing sent"
     );
     op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
     // The explicit sweep or the roster-driven sweeper, whichever runs
     // first, sends the first notification; then the backoff holds.
-    let explicit = wake(op(&e, NqOp::Sweep).await.unwrap());
+    let explicit = wake(
+        op(
+            &e,
+            NqOp::Sweep {
+                prepared: Vec::new(),
+            },
+        )
+        .await
+        .unwrap(),
+    );
     let s = state(&db).await;
     assert!(s.last_notified_at > 0, "due work wakes the receiver: {s:?}");
     if let Some(first) = explicit {
         assert_eq!((first.name.as_str(), first.due, first.version), ("q", 2, 1));
     }
     assert!(
-        wake(op(&e, NqOp::Sweep).await.unwrap()).is_none(),
+        wake(
+            op(
+                &e,
+                NqOp::Sweep {
+                    prepared: Vec::new()
+                }
+            )
+            .await
+            .unwrap()
+        )
+        .is_none(),
         "within the backoff, no second notification"
     );
     // A useful claim resets the backoff; the remaining due message wakes again after it.
@@ -548,7 +643,14 @@ async fn a_subscribed_queue_with_due_work_wakes_its_receiver_with_backoff_until_
     tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
     // The explicit sweep or the roster-driven sweeper sends it: either way
     // the durable notification time passes the useful claim.
-    op(&e, NqOp::Sweep).await.unwrap();
+    op(
+        &e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     let s = state(&db).await;
     assert!(
         s.last_notified_at > s.last_useful_claim_at,
@@ -681,7 +783,15 @@ async fn release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_d
         panic!()
     };
     assert_eq!(r[0].outcome, SettleOutcome::Ok);
-    let NqOut::Message(v) = op(&e, NqOp::Message { offset: 0 }).await.unwrap() else {
+    let NqOut::Message(v) = op(
+        &e,
+        NqOp::Message {
+            offset: 0,
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap() else {
         panic!()
     };
     assert!(
@@ -773,6 +883,7 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
             max: 10,
             max_bytes: 150,
             lease_ms: 30_000,
+            prepared: Vec::new(),
         },
     )
     .await
@@ -799,6 +910,7 @@ async fn a_claim_respects_bytes_in_flight_and_pause() {
             max: 10,
             max_bytes: 1 << 20,
             lease_ms: 30_000,
+            prepared: Vec::new(),
         },
     )
     .await
@@ -817,7 +929,14 @@ async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
     let (e, db) = engine("nq-roster").await;
     create(&e, QueueConfig::default()).await;
     op(&e, send_op(vec![msg("a")])).await.unwrap();
-    op(&e, NqOp::Sweep).await.unwrap();
+    op(
+        &e,
+        NqOp::Sweep {
+            prepared: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
     let at = keys::rostered(&db, &HASH)
         .await
         .expect("a queue with a message is on the roster");
@@ -827,90 +946,6 @@ async fn a_sweep_with_nothing_due_parks_the_roster_at_the_next_deadline() {
         at > now_ms() + 3 * crate::native_queue::DAY_MS,
         "roster deadline {at} is not the retention end"
     );
-}
-
-/// The invariant `stage_index_rows` relies on (S3a §4.1): every native-queue writer leaves the
-/// queue's tail sealed (absorbed == next), so a queue never enters the unsealed index. Through
-/// each writer in turn, the create, a send and a delete run to its end, the stored tail is sealed
-/// and no 'W' row names the queue.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn every_queue_writer_leaves_its_tail_sealed_and_out_of_the_unsealed_index() {
-    let (e, db) = engine("nq-sealed-tail").await;
-    create(&e, QueueConfig::default()).await;
-    assert_queue_tail_sealed(&db, "after the create").await;
-    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
-        .await
-        .unwrap();
-    assert_queue_tail_sealed(&db, "after a send").await;
-    op(&e, NqOp::BeginDelete).await.unwrap();
-    let mut done = false;
-    for _ in 0..100 {
-        if let NqOut::DeleteStepped { remaining: false } =
-            op(&e, NqOp::DeleteStep { max_rows: 2 }).await.unwrap()
-        {
-            done = true;
-            break;
-        }
-    }
-    assert!(done, "the delete never finished");
-    assert_queue_tail_sealed(&db, "after the delete's last step").await;
-}
-
-/// A queue created again on the stream an earlier incarnation used starts its frontier at the
-/// stream's next offset: the earlier incarnation's offsets are behind it, so a cancel naming one
-/// cancels nothing and the new queue's one message stays queued and is the one claimed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_queue_created_again_starts_its_frontier_past_the_earlier_incarnations_offsets() {
-    let (e, db) = engine("nq-recreate").await;
-    create(&e, QueueConfig::default()).await;
-    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
-        .await
-        .unwrap();
-    op(&e, NqOp::BeginDelete).await.unwrap();
-    let mut done = false;
-    for _ in 0..100 {
-        if let NqOut::DeleteStepped { remaining: false } =
-            op(&e, NqOp::DeleteStep { max_rows: 7 }).await.unwrap()
-        {
-            done = true;
-            break;
-        }
-    }
-    assert!(done, "the delete never finished");
-    create(&e, QueueConfig::default()).await;
-    assert_eq!(
-        state(&db).await.frontier,
-        3,
-        "the frontier starts at the stream's next offset"
-    );
-    op(&e, send_op(vec![msg("d")])).await.unwrap();
-    let cancelled = op(&e, NqOp::Cancel { offsets: vec![1] }).await.unwrap();
-    assert_eq!(
-        cancelled.count(),
-        0,
-        "an earlier incarnation's offset cancels nothing"
-    );
-    let s = state(&db).await;
-    assert_eq!(
-        (s.queued_messages, s.counters.cancelled, s.frontier),
-        (1, 0, 3)
-    );
-    let d = claim(&e, 5).await;
-    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), vec![3]);
-}
-
-/// The stored queue tail, if any, is sealed, and the unsealed index does not name the queue.
-async fn assert_queue_tail_sealed(db: &Db, when: &str) {
-    let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
-    if let Some(raw) = raw {
-        let tail = decode_tail_for_tests(&raw).unwrap();
-        assert_eq!(tail.absorbed, tail.next, "the queue tail is sealed {when}");
-    }
-    let row = db
-        .get(crate::shard::open_index::unsealed_key(&HASH))
-        .await
-        .unwrap();
-    assert_eq!(row, None, "no unsealed-index row names the queue {when}");
 }
 
 /// A queue whose state row is of an earlier format (part 1 changed the

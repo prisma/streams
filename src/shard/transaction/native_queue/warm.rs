@@ -8,7 +8,7 @@
 //! index blocks and its settled rows have left the memtable and the cache.
 use std::collections::BTreeSet;
 
-use super::stage::{NativeStage, family_range, index_range, key_time};
+use super::stage::{NativeStage, index_range, key_time};
 use crate::native_queue::{NqOp, keys};
 use crate::shard::transaction::CommitTransaction;
 use crate::shard::{ShardEngine, now_ms};
@@ -42,7 +42,7 @@ impl NativeReads {
                 self.settles
                     .extend(items.iter().map(|item| item.token.offset));
             }
-            NqOp::Sweep => self.sweep = true,
+            NqOp::Sweep { .. } => self.sweep = true,
             _ => {}
         }
     }
@@ -86,7 +86,7 @@ impl CommitTransaction<'_> {
                 Self::warm_index(engine, hash, st, fam, (want, Some(t))).await;
             }
         }
-        Self::warm_lane(engine, hash, st, want).await;
+        Self::warm_lane(engine, hash, st).await;
     }
 
     /// The stored rows a sweep walks: every family it sweeps, the retry
@@ -101,7 +101,7 @@ impl CommitTransaction<'_> {
         }
         let lane_due = st.state.lane_expire_at;
         if lane_due != 0 && lane_due <= t {
-            Self::warm_lane(engine, hash, st, step).await;
+            Self::warm_lane(engine, hash, st).await;
         }
     }
 
@@ -122,36 +122,18 @@ impl CommitTransaction<'_> {
         }
     }
 
-    /// The lane a claim or a sweep walks (`nq_lane_pages`): at most `want`
-    /// pages from the frontier, and the range row holding the first.
-    async fn warm_lane(engine: &ShardEngine, hash: &[u8; 16], st: &NativeStage, want: usize) {
-        let from = keys::page(hash, st.state.frontier);
-        let (prefix, to) = (
-            keys::family(hash, keys::PAGE).len(),
-            family_range(hash, keys::PAGE).1,
-        );
-        #[cfg(test)]
-        crate::shard::test_support::held_native_index_read(&engine.prefix).await;
-        let options = crate::native_queue::scan_options();
-        let Ok(mut rows) = engine.db.scan_with_options(from..to, &options).await else {
-            return;
-        };
-        let mut first = None;
-        for _ in 0..want {
-            let Ok(Some(row)) = rows.next().await else {
-                break;
-            };
-            #[cfg(test)]
-            crate::shard::test_support::counted_native_index_row(&engine.prefix);
-            first = first.or_else(|| keys::decode_offset_key(prefix, &row.key));
-        }
-        let Some(offset) = first else {
-            return;
-        };
+    /// The range row at the lane's frontier, which a claim or a sweep of
+    /// the lane reads (`nq_range`). The lane's pages are unsealed in the
+    /// handle the group loads beside this (S3b-DESIGN §6.1).
+    async fn warm_lane(engine: &ShardEngine, hash: &[u8; 16], st: &NativeStage) {
         #[cfg(test)]
         crate::shard::test_support::held_native_row_read(&engine.prefix).await;
         // A read that fails here is read again when the operation stages.
-        engine.db.get(keys::range(hash, offset)).await.ok();
+        engine
+            .db
+            .get(keys::range(hash, st.state.frontier))
+            .await
+            .ok();
     }
 
     /// The stored rows a walk of `fam` reads: from where it starts

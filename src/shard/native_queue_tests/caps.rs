@@ -155,7 +155,7 @@ async fn a_scheduled_page_rides_inline_only_under_the_inline_budget() {
     op(&e, send_op(vec![scheduled("under it", at)]))
         .await
         .unwrap();
-    let page = super::stored(&db, 1).await;
+    let page = super::stored(&e, 1);
     assert_eq!(state(&db).await.inline_bytes, page, "counted inline");
     set_clock(&db, at).await;
     let d = claim(&e, 2).await;
@@ -189,7 +189,7 @@ async fn a_cancelled_inline_scheduled_message_gives_its_inline_bytes_back() {
     op(&e, send_op(vec![scheduled("small", c + 60_000)]))
         .await
         .unwrap();
-    let page = super::stored(&db, 0).await;
+    let page = super::stored(&e, 0);
     assert_eq!(state(&db).await.inline_bytes, page);
     let cancel = op(&e, NqOp::Cancel { offsets: vec![0] }).await.unwrap();
     assert_eq!(cancel.count(), 1);
