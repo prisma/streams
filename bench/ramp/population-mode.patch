@@ -1,9 +1,9 @@
 diff --git a/bench/population_mode.rs b/bench/population_mode.rs
 new file mode 100644
-index 0000000..18aebf2
+index 0000000..971f3a5
 --- /dev/null
 +++ b/bench/population_mode.rs
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,594 @@
 +//! `--mode population`: many tiny streams or queues for Habanero's services
 +//! bench. Not part of Streams: the bench applies it to a clone.
 +//!
@@ -149,6 +149,14 @@ index 0000000..18aebf2
 +    retries: u64,
 +}
 +
++/// The ticks a worker skipped between `prev` and `tick` (MissedTickBehavior::Skip).
++fn skipped_ticks(prev: Option<tokio::time::Instant>, tick: tokio::time::Instant, period: Duration) -> u64 {
++    prev.map_or(0, |prev| {
++        let periods = (tick - prev).as_secs_f64() / period.as_secs_f64();
++        (periods.round() as u64).saturating_sub(1)
++    })
++}
++
 +/// The milliseconds since `started`.
 +fn ms_since(started: Instant) -> u64 {
 +    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -171,6 +179,58 @@ index 0000000..18aebf2
 +    ["streams-error-code", "prisma-error-code"]
 +        .iter()
 +        .any(|h| response.headers().get(*h).is_some_and(|v| v.as_bytes() == b"wrong_cell"))
++}
++
++/// One refused attempt of a request: what the rules read, and how the touch reports it.
++struct Refused {
++    status: u16,
++    code: Option<String>,
++    stated: Option<bool>,
++    retry_after: Option<String>,
++    /// `request status code`, for the first-attempt and per-second counts.
++    key: String,
++    /// The error string the touch fails with (`errors`, read by ramp.py's errors_by_code).
++    failure: String,
++}
++
++impl Refused {
++    fn transport(what: &str, error: &reqwest::Error) -> Self {
++        Self {
++            status: 0,
++            code: None,
++            stated: None,
++            retry_after: None,
++            key: format!("{what} transport"),
++            failure: format!("{what}: {error}"),
++        }
++    }
++
++    /// A non-2xx answer, its body read.
++    async fn from_response(what: &str, response: reqwest::Response) -> Self {
++        let status = response.status();
++        let retry_after = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_owned);
++        let wrong = wrong_cell(&response);
++        let body = response.bytes().await.unwrap_or_default();
++        let (code, stated) = error_fields(&body);
++        let code = if wrong { Some("wrong_cell".to_owned()) } else { code };
++        Self {
++            status: status.as_u16(),
++            key: format!("{what} {} {}", status.as_u16(), code.as_deref().unwrap_or("-")),
++            failure: format!("{what} {status}: {}", String::from_utf8_lossy(&body)),
++            code,
++            stated,
++            retry_after,
++        }
++    }
++
++    fn as_answer(&self) -> rules::Answer<'_> {
++        rules::Answer {
++            status: self.status,
++            code: self.code.as_deref(),
++            stated: self.stated,
++            retry_after: self.retry_after.as_deref(),
++        }
++    }
 +}
 +
 +struct State {
@@ -283,39 +343,18 @@ index 0000000..18aebf2
 +        let started = Instant::now();
 +        let mut attempt = 0u32;
 +        loop {
-+            let (key, failure, wait) = match build().send().await {
-+                Err(e) => {
-+                    let answer = rules::Answer { status: 0, code: None, stated: None, retry_after: None };
-+                    let wait = rules::again_after(kind, &answer, attempt, ms_since(started));
-+                    (format!("{what} transport"), format!("{what}: {e}"), wait)
-+                }
-+                Ok(r) => {
-+                    let status = r.status();
-+                    let retry_after = r.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_owned);
-+                    let wrong = wrong_cell(&r);
-+                    if status.is_success() {
-+                        return r.bytes().await.map_err(|e| format!("{what} body: {e}"));
-+                    }
-+                    let body = r.bytes().await.unwrap_or_default();
-+                    let (code, stated) = error_fields(&body);
-+                    let code = if wrong { Some("wrong_cell".to_owned()) } else { code };
-+                    let answer = rules::Answer {
-+                        status: status.as_u16(),
-+                        code: code.as_deref(),
-+                        stated,
-+                        retry_after: retry_after.as_deref(),
-+                    };
-+                    let wait = rules::again_after(kind, &answer, attempt, ms_since(started));
-+                    let key = format!("{what} {} {}", status.as_u16(), code.as_deref().unwrap_or("-"));
-+                    (key, format!("{what} {status}: {}", String::from_utf8_lossy(&body)), wait)
-+                }
++            let refused = match build().send().await {
++                Ok(r) if r.status().is_success() => return r.bytes().await.map_err(|e| format!("{what} body: {e}")),
++                Ok(r) => Refused::from_response(what, r).await,
++                Err(e) => Refused::transport(what, &e),
 +            };
++            let wait = rules::again_after(kind, &refused.as_answer(), attempt, ms_since(started));
 +            if attempt == 0 {
-+                tally.first_refusals.push(key.clone());
++                tally.first_refusals.push(refused.key.clone());
 +            }
-+            tally.refused.push(key);
++            tally.refused.push(refused.key);
 +            let Some(wait) = wait else {
-+                return Err(failure);
++                return Err(refused.failure);
 +            };
 +            tally.retries += 1;
 +            attempt += 1;
@@ -512,12 +551,8 @@ index 0000000..18aebf2
 +                    state.counts.late.fetch_add(1, Ordering::Relaxed);
 +                }
 +                // MissedTickBehavior::Skip: a touch that outlasted the period dropped these ticks.
-+                if let Some(prev) = prev_tick
-+                    && measuring
-+                {
-+                    let periods = (tick - prev).as_secs_f64() / period.as_secs_f64();
-+                    state.counts.skipped.fetch_add((periods.round() as u64).saturating_sub(1), Ordering::Relaxed);
-+                }
++                let skipped = u64::from(measuring) * skipped_ticks(prev_tick, tick, period);
++                state.counts.skipped.fetch_add(skipped, Ordering::Relaxed);
 +                prev_tick = Some(tick);
 +                let started = Instant::now();
 +                let mut tally = Tally::default();
