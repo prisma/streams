@@ -4071,6 +4071,17 @@
     "scenarios": []
   },
   {
+    "name": "a_splits_children_are_served_by_the_actor_at_publish",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "83ca72b9dabe36aa0baaf349cbe318122955c8d32f3554612a7feb6e8402747e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stale_applied_cursor_is_refused_after_crash_restart",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

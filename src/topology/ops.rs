@@ -73,11 +73,14 @@ impl Handle {
 }
 
 /// What the loop starts splits with: the directory (whose resolve applies the ring and its
-/// overrides), the fleet's documents and its move cooldown, the clock, this instance's name (the
-/// actor's lease owner) and the shards it may hold (`SHARDS_PER_INSTANCE_MAX`).
+/// overrides), the fleet's documents, this instance's ownership view (its splits' children are born
+/// into it) and the fleet's move cooldown, the clock, this instance's name (the actor's lease owner)
+/// and the shards it may hold (`SHARDS_PER_INSTANCE_MAX`).
 pub(crate) struct Parts {
     pub dir: ShardDirectory,
     pub fleet: crate::fleet::FleetRepository,
+    /// This instance's ownership view, which a split's children are born into (`split::Birth`).
+    pub ownership: crate::ownership::OwnershipService,
     pub move_cooldown_ms: i64,
     pub clock: Arc<dyn Clock>,
     pub owner: String,
@@ -187,7 +190,13 @@ impl Parts {
             snapshot.shards.version,
             self.clock.now().ms()
         );
-        split::start(&self.dir, &parent, &op_id, &self.owner).await
+        let birth = split::Birth::new(
+            self.fleet.clone(),
+            self.ownership.clone(),
+            self.owner.clone(),
+        );
+        let started = split::start(&self.dir, &parent, &op_id, &self.owner).await?;
+        Ok(started.born_by(birth))
     }
 }
 

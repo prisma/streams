@@ -218,6 +218,8 @@ struct Op<'a> {
     op_id: &'a str,
     /// The topology version the split started from.
     version: u64,
+    /// How its children are born on this instance, if they are (`birth`).
+    birth: Option<&'a Birth>,
 }
 
 /// One child: its prefix, home and range.
@@ -236,6 +238,7 @@ pub(crate) struct Started {
     version: u64,
     children: Vec<Child>,
     held: intent::Held,
+    birth: Option<Birth>,
 }
 
 /// Start the split of `parent`'s shard into its two halves as operation `op_id` of `owner`: the
@@ -256,6 +259,7 @@ pub(crate) async fn start(
         version,
         children,
         held,
+        birth: None,
     })
 }
 
@@ -282,6 +286,14 @@ impl Started {
         self.version
     }
 
+    /// The split, its children born on this instance at publish ([`Birth`]).
+    pub(crate) fn born_by(self, birth: Birth) -> Self {
+        Self {
+            birth: Some(birth),
+            ..self
+        }
+    }
+
     /// The rest of the split (S4-DESIGN §6.2 from step 0.3). Before `'T'` any failure, and a lost
     /// lease, rolls back; from an attempted `'T'` the split only rolls forward. The actor renews
     /// its intent while the steps run, and ends it once they are done.
@@ -298,6 +310,7 @@ impl Started {
             children: &self.children,
             op_id: &self.op_id,
             version: self.version,
+            birth: self.birth.as_ref(),
         };
         let steps = std::pin::pin!(run(&op, &actor));
         let renewals = std::pin::pin!(actor.renew());
@@ -786,9 +799,10 @@ async fn clone_child(
     .await
 }
 
-/// Published (S4-DESIGN §6.2 step 4): the topology CAS and its install, then at once the barrier
-/// retired to the children (each held append waits for its child's open), the children opened here,
-/// and once the parent's held operations drained, the parent retired.
+/// Published (S4-DESIGN §6.2 step 4): the children born on this instance (`birth`, when the split
+/// carries one), the topology CAS and its install, then at once the barrier retired to the children
+/// (each held append waits for its child's open), the children opened here, and once the parent's
+/// held operations drained, the parent retired.
 async fn publish(
     op: &Op<'_>,
     now: crate::runtime::MonotonicNow,
@@ -800,8 +814,13 @@ async fn publish(
         parent,
         children,
         op_id,
+        birth,
         ..
     } = *op;
+    if let Some(birth) = birth {
+        let prefixes: Vec<&str> = children.iter().map(|c| c.prefix.as_str()).collect();
+        birth.born(dir, &prefixes, op_id).await;
+    }
     let failed = |e: store::WriteError| format!("{e:?}");
     let (topology, etag) = store::read(store).await.map_err(failed)?;
     let homes = [children[0].home, children[1].home];
@@ -873,6 +892,9 @@ async fn roll_back(
     recover::clear(parent, &roots, &held.intent).await;
     Refused::RolledBack(why)
 }
+
+mod birth;
+pub(crate) use birth::Birth;
 
 #[cfg(test)]
 mod tests;
