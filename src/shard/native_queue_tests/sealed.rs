@@ -4,9 +4,17 @@
 //! pages its caller read outside the committer, never from a store read in
 //! it.
 #![cfg(test)]
+use std::sync::atomic::Ordering;
+
+use tokio::sync::{Notify, oneshot};
+
 use super::{HASH, clocked, msg, op, send_op, set_clock, state};
-use crate::native_queue::{NqOp, NqOut, NqRefusal, PrepareFrom, PreparedPage, QueueConfig};
-use crate::shard::ShardEngine;
+use crate::native_queue::{
+    NqOp, NqOut, NqRefusal, PrepareFrom, PreparedPage, QueueConfig, SWEEP_STEP,
+};
+use crate::shard::seal::Trigger;
+use crate::shard::seal::test_hooks::Hold;
+use crate::shard::{CommitOp, ShardEngine};
 
 /// Seal the queue stream's pages: none stays in the committer's memory.
 async fn seal(e: &std::sync::Arc<ShardEngine>) {
@@ -192,4 +200,138 @@ async fn a_thousand_untaken_immediate_messages_cost_no_queue_row() {
         (offsets(&pages), through),
         ((0..1_000).collect::<Vec<_>>(), 1_000)
     );
+}
+
+/// Waits, two seconds at most, until `ready` holds.
+async fn until(what: &str, ready: impl Fn() -> bool) {
+    for _ in 0..200 {
+        if ready() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{what}: not within two seconds");
+}
+
+/// `n` immediate messages, sent a hundred at a time.
+async fn send_many(e: &ShardEngine, n: usize) {
+    let mut left = n;
+    while left > 0 {
+        let batch = left.min(100);
+        op(
+            e,
+            send_op((0..batch).map(|i| msg(&format!("m{i}"))).collect()),
+        )
+        .await
+        .unwrap();
+        left -= batch;
+    }
+}
+
+/// The lane's sealed pages from the frontier, as a sweeper reads them.
+async fn prepared(e: &ShardEngine) -> Vec<PreparedPage> {
+    let (pages, _) = e
+        .prepare_queue_pages(HASH, PrepareFrom::Frontier, usize::MAX)
+        .await
+        .unwrap();
+    pages
+}
+
+/// A peek in the commit group that sent the pages it walks shows them: the
+/// group's own pages are part of the lane before the group publishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_peek_in_the_senders_own_group_shows_the_groups_pages() {
+    let (e, _db, _c) = clocked("nq-sealed-own-group", QueueConfig::default()).await;
+    let (sent, sent_reply) = oneshot::channel();
+    let (peeked, peek_reply) = oneshot::channel();
+    let peek = NqOp::Peek {
+        after: None,
+        limit: 10,
+        prepared: Vec::new(),
+    };
+    e.commit_group(vec![
+        CommitOp::NativeQueue {
+            hash: HASH,
+            op: send_op(vec![msg("a"), msg("b")]),
+            resp: sent,
+        },
+        CommitOp::NativeQueue {
+            hash: HASH,
+            op: peek,
+            resp: peeked,
+        },
+    ])
+    .await;
+    sent_reply.await.unwrap().unwrap();
+    assert_eq!(
+        shown(peek_reply.await.unwrap().unwrap()),
+        (vec![0, 1], None)
+    );
+}
+
+/// A claim in the commit group that seals the lane's pages leases none of
+/// them: the committer still holds those pages until the group publishes,
+/// but below the group's new sealed boundary a lane is served only from
+/// the pages its caller prepared, and this claim prepared none. With the
+/// commit gate held, the committer takes the seal's commit as a group's
+/// first op and parks; the claim queues behind it and joins its group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claim_in_its_seals_own_group_leases_no_page_the_seal_took() {
+    let (e, _db, _c) = clocked("nq-sealed-seal-group", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a"), msg("b")])).await.unwrap();
+    let hooks = &e.layout.seal.hooks;
+    let parked = Hold::new();
+    *hooks.before_commit.lock().unwrap() = Some(parked.clone());
+    let go_claim = Notify::new();
+    let claimer = async {
+        go_claim.notified().await;
+        let claim = NqOp::Claim {
+            max: 2,
+            max_bytes: 1 << 20,
+            lease_ms: 30_000,
+            prepared: Vec::new(),
+        };
+        op(&e, claim).await
+    };
+    let control = async {
+        until("the seal waits at its commit", || {
+            parked.entered.load(Ordering::Acquire) > 0
+        })
+        .await;
+        let gate = e.test_hold_commit().await;
+        let sent = hooks.commits_sent.load(Ordering::Acquire);
+        parked.release();
+        until("the committer took the seal's commit to its gate", || {
+            hooks.commits_sent.load(Ordering::Acquire) > sent && e.queued_ops() == 0
+        })
+        .await;
+        go_claim.notify_one();
+        until("the claim waits behind it", || e.queued_ops() == 1).await;
+        drop(gate);
+    };
+    let (sealed, claimed, ()) =
+        futures_util::future::join3(e.seal_once(Trigger::Requested), claimer, control).await;
+    assert_eq!(sealed.unwrap().pages, 2, "the seal took both pages");
+    let NqOut::Claimed { deliveries, .. } = claimed.unwrap() else {
+        panic!("a claim answers deliveries");
+    };
+    assert_eq!(deliveries.len(), 0, "{deliveries:?}");
+}
+
+/// A sweep's lane step counts the sealed pages its sweeper prepared toward
+/// its step: two sealed and a step of unsealed expired messages, one sweep
+/// passes exactly a step of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sweep_step_counts_its_prepared_pages_toward_the_step() {
+    let (e, db, c) = clocked("nq-sealed-step", QueueConfig::default()).await;
+    send_many(&e, 2).await;
+    seal(&e).await;
+    send_many(&e, SWEEP_STEP).await;
+    let retention = state(&db).await.cfg.retention_ms;
+    set_clock(&db, c + retention + 1).await;
+    let pages = prepared(&e).await;
+    assert_eq!(offsets(&pages), [0, 1]);
+    op(&e, NqOp::Sweep { prepared: pages }).await.unwrap();
+    let step = u64::try_from(SWEEP_STEP).unwrap();
+    assert_eq!(state(&db).await.frontier, step);
 }
