@@ -556,3 +556,26 @@ async fn a_deleted_queues_purge_reclaims_every_chunk_up_to_its_next_offset() {
     let tail = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
     assert!(tail.is_none(), "the queue's tail is gone");
 }
+
+/// A purge request on a trimmed queue sets its instant once: the Trimming
+/// row becomes Requested at the request's close instant plus the purge
+/// delay, and a later request keeps the row as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_purge_request_sets_a_trimmed_queues_instant_once() {
+    let (e, _db, _c) = clocked("nq-trim-purge-instant", QueueConfig::default()).await;
+    for body in ["a", "b"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    ack(&e, &claim(&e, 1).await).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(head(&e).await.unwrap().state, HeadState::Trimming);
+    let delay = u64::try_from(e.gc_state().settings().purge_delay.as_millis()).unwrap();
+    e.request_purge(HASH, 5_000).await.unwrap();
+    let first = head(&e).await.unwrap();
+    assert_eq!(
+        (first.state, first.not_before_ms),
+        (HeadState::Requested, 5_000 + delay)
+    );
+    e.request_purge(HASH, 9_000).await.unwrap();
+    assert_eq!(head(&e).await, Some(first), "a Requested row is kept");
+}
