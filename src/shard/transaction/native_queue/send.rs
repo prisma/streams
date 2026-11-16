@@ -54,7 +54,9 @@ impl CommitTransaction<'_> {
             .iter()
             .filter(|m| m.deliver_at.is_some_and(|at| at > t))
             .count() as u64;
-        if scheduled > 0 && st.state.scheduled + scheduled > cfg.max_scheduled_messages {
+        // The stored count never passes the cap, fixed at creation: a
+        // batch with nothing scheduled is never refused here.
+        if st.state.scheduled + scheduled > cfg.max_scheduled_messages {
             return Err(NqRefusal::ScheduledFull);
         }
         // Over its container's share at the shard's delayed or dedup line
