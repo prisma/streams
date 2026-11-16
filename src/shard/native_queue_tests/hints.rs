@@ -127,6 +127,22 @@ async fn a_cancelled_sealed_scheduled_message_names_its_offset() {
     assert_eq!(named, [vec![(1, 2)]]);
 }
 
+/// A key of a hint key's length parses only with both the sentinel and
+/// the hint's tag (a cursor or another sentinel family never reads as a
+/// hint).
+#[test]
+fn a_hint_key_needs_both_its_sentinel_and_its_tag() {
+    let k = hints::key(7, &HASH);
+    assert_eq!(hints::parse_key(&k), Some((7, HASH)));
+    let mut other_tag = k.clone();
+    other_tag[16] = hints::TAG + 1;
+    let mut other_prefix = k;
+    other_prefix[0] = 0;
+    for other in [other_tag, other_prefix] {
+        assert_eq!(hints::parse_key(&other), None, "{other:02x?}");
+    }
+}
+
 /// The sequence is seeded once per engine, above the last hint key and
 /// the trim's cursor: a restarted engine's first hint follows the last
 /// one; with every hint consumed, it follows the cursor's.
