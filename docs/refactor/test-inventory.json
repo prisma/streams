@@ -1774,6 +1774,17 @@
     "scenarios": []
   },
   {
+    "name": "a_member_installing_a_split_before_its_tick_opens_no_child",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2af448b784fa212dac4aa61f63a8872de0db73ea36533c52c68fe75b8f26ea04",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_member_near_its_rss_shed_line_scales_the_fleet_out_and_idle_ones_do_not",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4031,7 +4042,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "88f661c0397463b902a718a60da29a2f631c76078e7238d0bf084aa0ee37767c",
+    "function_sha256": "aa443435b5f676f4323a86980681f871f17c0aeb4be400fadff79dae1bbce6ae",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_t_outcome.rs",

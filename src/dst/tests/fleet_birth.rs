@@ -27,13 +27,13 @@ fn two_members(cli: &mut crate::config::CliArgs) {
     cli.scale_in_secs = 3_600;
 }
 
-/// A member `name` of the cell over `data` and `fleet`, its fleet started, once its view names
-/// both members.
+/// A member `name` of the cell over `data` and `fleet`; its fleet started when `ticks`.
 async fn member(
     fleet: &Arc<dyn ObjectStore>,
     data: &Arc<dyn ObjectStore>,
     name: &str,
     runtime: RigRuntime,
+    ticks: bool,
 ) -> HttpRig {
     let rig = http_rig_build(
         data.clone(),
@@ -47,11 +47,26 @@ async fn member(
         },
     )
     .await;
-    assert!(crate::fleet::start_configured(
-        rig.state.clone(),
-        &rig.tasks
-    ));
+    if ticks {
+        assert!(crate::fleet::start_configured(
+            rig.state.clone(),
+            &rig.tasks
+        ));
+    }
     rig
+}
+
+/// A heartbeat of `streams-2` at `addr` that stays fresh for the scenario, so the actor's ring holds
+/// a member whose own fleet tick never runs.
+async fn beat_of_held(fleet: &Arc<dyn ObjectStore>, addr: std::net::SocketAddr) {
+    let beat = format!(
+        r#"{{"instance":"streams-2","ts_ms":{},"rps":0.0,"cpu_pct":0.0,"inflight":0,"owned_shards":[],"draining":false,"url":"http://{addr}"}}"#,
+        crate::shard::now_ms() + 600_000
+    );
+    fleet
+        .put(&Path::from("fleet/streams-2.json"), PutPayload::from(beat))
+        .await
+        .unwrap();
 }
 
 /// The cell: `streams-1` (the split's actor, the ring's owner of `""`) and `streams-2` (the ring's
@@ -62,7 +77,19 @@ pub(super) struct Pair {
 }
 
 impl Pair {
+    /// Both members with their fleet ticks running.
     pub(super) async fn new() -> Self {
+        Self::of(true).await
+    }
+
+    /// `streams-2` with its fleet tick held from before the split: it never runs, its view is the
+    /// pre-split ring of both members with no override, its beat is kept fresh in the fleet store,
+    /// and it revalidates its topology only when the scenario asks it to.
+    pub(super) async fn held() -> Self {
+        Self::of(false).await
+    }
+
+    async fn of(b_ticks: bool) -> Self {
         let fleet = mem();
         let desired = r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
         fleet
@@ -70,9 +97,21 @@ impl Pair {
             .await
             .unwrap();
         let data = mem();
-        let a = member(&fleet, &data, "streams-1", RigRuntime::first()).await;
+        let b = member(
+            &fleet,
+            &data,
+            "streams-2",
+            RigRuntime::incarnation(1),
+            b_ticks,
+        )
+        .await;
+        if !b_ticks {
+            beat_of_held(&fleet, b.addr).await;
+            let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
+            b.state.ownership.set_view(both, Default::default());
+        }
+        let a = member(&fleet, &data, "streams-1", RigRuntime::first(), true).await;
         store_topology(&a).await;
-        let b = member(&fleet, &data, "streams-2", RigRuntime::incarnation(1)).await;
         for rig in [&a, &b] {
             let peer = &rig.state.peer;
             peer.set_peer("streams-1", &format!("http://{}", a.addr));
@@ -86,7 +125,7 @@ impl Pair {
             assert!(t0.elapsed() < BOUND, "both views name both members");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let owner = |p: &str| a.state.ownership.effective_owner(p);
+        let owner = |p: &str| b.state.ownership.effective_owner(p);
         assert_eq!(
             [owner(""), owner("0"), owner("1")].map(Option::unwrap_or_default),
             ["streams-1", "streams-2", "streams-2"].map(str::to_string),
@@ -203,4 +242,114 @@ async fn a_splits_children_are_served_by_the_actor_at_publish() {
         "both records, at the actor"
     );
     pair.shutdown().await;
+}
+
+/// How the member whose tick is held learns the split.
+#[derive(Clone, Copy, Debug)]
+enum Install {
+    /// Its periodic revalidation (`revalidate::once`).
+    Revalidation,
+    /// The forward path's catch-up: a request forwarded at the split's version.
+    Forwarded,
+}
+
+/// The children's engines on the actor, by incarnation.
+fn children_of(rig: &HttpRig) -> [Option<crate::sharddir::EngineIncarnation>; 2] {
+    ["0", "1"].map(|child| rig.state.shards.resident_incarnation(child))
+}
+
+/// T2's scenario, by `how` the member `streams-2`, its tick held from before the split, installs
+/// the split's version: the answer to record 3 appended there, and whether it opened anything.
+async fn a_member_installs(how: Install) {
+    let pair = Pair::held().await;
+    let (status, _) = split_with_a_held_append(&pair).await;
+    assert_eq!(status, 204, "{how:?}: the held append");
+    let (a, b) = (&pair.a, &pair.b);
+    let actor = children_of(a);
+    assert!(
+        actor.iter().all(Option::is_some),
+        "{how:?}: the actor serves both children"
+    );
+    let json = [("content-type", "application/json")];
+    let body = br#"[{"n":3}]"#;
+    let (status, headers, _) = match how {
+        Install::Revalidation => {
+            let refresh =
+                crate::topology::revalidate::Refresh::of(&b.state.fleet, &b.state.ownership);
+            let now = b.state.runtime.clock.monotonic();
+            let installed = crate::topology::revalidate::once(
+                &b.state.registry,
+                &b.state.shards,
+                refresh.as_ref(),
+                now,
+            );
+            assert!(
+                installed.await.unwrap(),
+                "{how:?}: the member installs the split"
+            );
+            hreq(b.addr, "POST", STREAM, &json, body).await
+        }
+        Install::Forwarded => {
+            let forwarded = [json[0], ("streams-forwarded", "v=2")];
+            hreq(b.addr, "POST", STREAM, &forwarded, body).await
+        }
+    };
+    assert_eq!(
+        b.state.shards.prefixes().shards.version,
+        2,
+        "{how:?}: installed"
+    );
+    let served_by = match how {
+        Install::Revalidation => headers.get("streams-forwarded-to"),
+        Install::Forwarded => headers.get("streams-replay-to"),
+    };
+    assert_eq!(
+        (
+            status,
+            served_by.map(String::as_str),
+            b.state.shards.open_count()
+        ),
+        (
+            match how {
+                Install::Revalidation => 204,
+                Install::Forwarded => 409,
+            },
+            Some("streams-1"),
+            0
+        ),
+        "{how:?}: record 3's answer names the actor, and the member opened nothing; headers {headers:?}"
+    );
+    if matches!(how, Install::Forwarded) {
+        assert_eq!(
+            append(a.addr, 3).await.0,
+            204,
+            "the client's replay to the actor"
+        );
+    }
+    assert_eq!(
+        children_of(a),
+        actor,
+        "{how:?}: the actor's children are never fenced"
+    );
+    assert_eq!(
+        records(a.addr).await,
+        serde_json::json!([{"n": 1}, {"n": 2}, {"n": 3}]),
+        "{how:?}: every record, at the actor"
+    );
+    pair.shutdown().await;
+}
+
+/// **A member installing a split before its tick opens no child** (F2, T2; A1). `streams-2`'s fleet
+/// tick is held from before the actor's publish, so its view is the pre-split ring, which gives it
+/// both halves. It installs the split's version (a) by its revalidation and (b) by the forward
+/// path's catch-up on a request forwarded at that version. Either install first refreshes the
+/// overrides, which name the actor for both children: the member opens nothing, record 3 is
+/// forwarded to the actor (a) or answered `409` naming it (b, a forwarded request is not forwarded
+/// again at the same version), the actor's two engines keep their incarnations, and the stream
+/// reads back records 1-3 at the actor. Red with A2 alone: the member installs the ring's owners,
+/// opens a child and fences the actor's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_member_installing_a_split_before_its_tick_opens_no_child() {
+    a_member_installs(Install::Revalidation).await;
+    a_member_installs(Install::Forwarded).await;
 }

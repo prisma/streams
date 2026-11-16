@@ -3,26 +3,75 @@
 //! is installed unless it is older than the snapshot, which retires the engines of prefixes
 //! that are no longer leaves. A cell without the fleet has no peer to publish a topology; its
 //! split installs the one it wrote.
+//!
+//! On a fleet instance an install of a newer version first refreshes the ownership view's
+//! overrides (GATE-DECISION-f2-children-on-actor-2026-11-16 A1): a split's actor names itself the
+//! owner of its children in `fleet/overrides.json` before its topology CAS, so a member that
+//! installs the new leaves serves them by that entry, never by the ring. The read, the refresh and
+//! the install run under the directory's revalidation lock, which the split's overrides write and
+//! the fleet tick's view publication also take. A refresh that cannot read the overrides refuses
+//! the install: the member keeps its version and tries again at its next read.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::fleet::FleetRepository;
+use crate::ownership::OwnershipService;
 use crate::registry::Registry;
 use crate::runtime::{Clock, MonotonicNow};
 use crate::shard_directory::ShardDirectory;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
-/// Start the revalidation loop: one read each `period` (the fleet tick's).
+/// What a fleet instance's install refreshes first: the fleet's overrides document, into this
+/// instance's ownership view.
+#[derive(Clone)]
+pub(crate) struct Refresh {
+    fleet: FleetRepository,
+    ownership: OwnershipService,
+}
+
+impl Refresh {
+    /// The refresh of an instance whose fleet is `fleet`: none when it runs without one.
+    pub(crate) fn of(fleet: &FleetRepository, ownership: &OwnershipService) -> Option<Self> {
+        fleet.enabled().then(|| Self {
+            fleet: fleet.clone(),
+            ownership: ownership.clone(),
+        })
+    }
+
+    /// Read the overrides and publish them with the view's current active members, which it keeps
+    /// exactly (so it never creates a view an instance awaiting its first one lacks).
+    async fn refreshed(&self) -> anyhow::Result<()> {
+        let (overrides, _) = self.fleet.read_overrides().await?;
+        let map = overrides
+            .entries
+            .into_iter()
+            .map(|(prefix, entry)| (prefix, entry.to))
+            .collect();
+        self.ownership.set_view(self.ownership.ring_active(), map);
+        Ok(())
+    }
+}
+
+/// What the loop revalidates: the cell's registry, this instance's directory and its refresh.
+pub(crate) struct Revalidation {
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) shards: ShardDirectory,
+    pub(crate) refresh: Option<Refresh>,
+}
+
+/// Start the revalidation loop: one read each `period` (the fleet tick's), each install refreshed
+/// by the revalidation's refresh.
 pub(crate) fn start(
-    registry: Arc<Registry>,
-    shards: ShardDirectory,
+    revalidation: Revalidation,
     clock: Arc<dyn Clock>,
     period: Duration,
     tasks: &TaskSupervisor,
 ) {
-    if let Err(rejected) = tasks.spawn("topology-revalidate", Policy::Noncritical, move |cancel| {
-        run(registry, shards, clock, period, cancel)
-    }) {
+    let spawned = tasks.spawn("topology-revalidate", Policy::Noncritical, move |cancel| {
+        run(revalidation, clock, period, cancel)
+    });
+    if let Err(rejected) = spawned {
         tracing::debug!(
             ?rejected,
             "runtime stopping: topology revalidation was not started"
@@ -31,34 +80,58 @@ pub(crate) fn start(
 }
 
 async fn run(
-    registry: Arc<Registry>,
-    shards: ShardDirectory,
+    revalidation: Revalidation,
     clock: Arc<dyn Clock>,
     period: Duration,
     cancel: Cancellation,
 ) -> TaskResult {
+    let Revalidation {
+        registry,
+        shards,
+        refresh,
+    } = revalidation;
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return TaskResult::Done,
             _ = tokio::time::sleep(period) => {}
         }
-        if let Err(e) = once(&registry, &shards, clock.monotonic()).await {
+        let read = once(&registry, &shards, refresh.as_ref(), clock.monotonic());
+        if let Err(e) = read.await {
             tracing::debug!("topology revalidation: {e}");
         }
     }
 }
 
-/// One revalidation at `now`: whether it installed the stored topology.
+/// One revalidation at `now`, under the directory's revalidation lock: whether it installed the
+/// stored topology.
 pub(crate) async fn once(
     registry: &Registry,
     shards: &ShardDirectory,
+    refresh: Option<&Refresh>,
     now: MonotonicNow,
-) -> Result<bool, object_store::Error> {
+) -> anyhow::Result<bool> {
+    let _one = shards.revalidation().lock().await;
+    installed(registry, shards, refresh, now).await
+}
+
+/// [`once`], for a caller that holds the revalidation lock: a newer stored version is installed
+/// after `refresh` read the overrides, and not at all if it could not.
+pub(crate) async fn installed(
+    registry: &Registry,
+    shards: &ShardDirectory,
+    refresh: Option<&Refresh>,
+    now: MonotonicNow,
+) -> anyhow::Result<bool> {
     let held = shards.prefixes();
-    match registry.topology(held.etag.as_deref()).await? {
-        None => Ok(false),
-        Some((topology, etag)) => Ok(shards.install(topology.shards, etag, now)),
+    let Some((topology, etag)) = registry.topology(held.etag.as_deref()).await? else {
+        return Ok(false);
+    };
+    if let Some(refresh) = refresh
+        && topology.shards.version > held.shards.version
+    {
+        refresh.refreshed().await?;
     }
+    Ok(shards.install(topology.shards, etag, now))
 }
 
 #[cfg(test)]
@@ -137,13 +210,12 @@ mod tests {
         let dir = directory(v1.shards.clone());
         let clock: Arc<dyn crate::runtime::Clock> = Arc::new(crate::runtime::ManualClock::at(0));
         let tasks = crate::tasks::TaskSupervisor::new();
-        super::start(
+        let revalidation = super::Revalidation {
             registry,
-            dir.clone(),
-            clock,
-            Duration::from_millis(10),
-            &tasks,
-        );
+            shards: dir.clone(),
+            refresh: None,
+        };
+        super::start(revalidation, clock, Duration::from_millis(10), &tasks);
         let started = std::time::Instant::now();
         while dir.prefixes().etag.is_none() {
             assert!(
@@ -174,13 +246,13 @@ mod tests {
         let now = || crate::runtime::Clock::monotonic(&clock);
         assert!(dir.prefixes().etag.is_none(), "boot read no ETag");
         assert!(
-            super::once(&registry, &dir, now()).await.unwrap(),
+            super::once(&registry, &dir, None, now()).await.unwrap(),
             "the first read installs"
         );
         let first = dir.prefixes();
         assert!(first.etag.is_some());
         assert!(
-            !super::once(&registry, &dir, now()).await.unwrap(),
+            !super::once(&registry, &dir, None, now()).await.unwrap(),
             "unchanged"
         );
         assert!(Arc::ptr_eq(&first, &dir.prefixes()), "the snapshot is kept");
@@ -188,7 +260,7 @@ mod tests {
         let v2 = split_of_one(&v1);
         put(&store, &v2).await;
         assert!(
-            super::once(&registry, &dir, now()).await.unwrap(),
+            super::once(&registry, &dir, None, now()).await.unwrap(),
             "a newer version installs"
         );
         let held = dir.prefixes();
@@ -204,10 +276,66 @@ mod tests {
 
         put(&store, &v1).await;
         assert!(
-            !super::once(&registry, &dir, now()).await.unwrap(),
+            !super::once(&registry, &dir, None, now()).await.unwrap(),
             "an older version does not"
         );
         assert_eq!(dir.prefixes().shards.version, 2);
+    }
+
+    /// **An install whose overrides read fails is refused** (GATE-DECISION-f2-children-on-actor
+    /// A1). A fleet instance holding version 1, its view of member `a`: with version 2 stored and
+    /// `fleet/overrides.json` unreadable, the revalidation fails and the directory keeps version 1.
+    /// Once the document reads, naming `a` for `10`, the next revalidation installs version 2, and
+    /// the view holds that override with its active members unchanged.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn an_install_whose_overrides_read_fails_is_refused() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards = crate::config::validation::InitialShards::new(2).unwrap();
+        let v1 = crate::registry::load_or_init_topology(&store, shards, 1 << 20)
+            .await
+            .unwrap();
+        let cell = crate::tenant::CellId::new("test-cell").unwrap();
+        let registry = crate::registry::Registry::new(store.clone(), &cell);
+        let dir = directory(v1.shards.clone());
+        let fleet_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let fleet = crate::fleet::FleetRepository::new(Some(fleet_store.clone()));
+        let ownership = fleet.ownership("a".to_string());
+        ownership.set_view(vec!["a".to_string()], Default::default());
+        let refresh = super::Refresh::of(&fleet, &ownership);
+        assert!(refresh.is_some(), "a fleet instance refreshes");
+        let clock = crate::runtime::ManualClock::at(0);
+        let now = || crate::runtime::Clock::monotonic(&clock);
+        assert!(
+            super::once(&registry, &dir, refresh.as_ref(), now())
+                .await
+                .unwrap()
+        );
+        put(&store, &split_of_one(&v1)).await;
+        let overrides = object_store::path::Path::from("fleet/overrides.json");
+        fleet_store
+            .put(&overrides, b"not json".to_vec().into())
+            .await
+            .unwrap();
+        let refused = super::once(&registry, &dir, refresh.as_ref(), now()).await;
+        assert!(refused.is_err(), "the install is refused");
+        assert_eq!(dir.prefixes().shards.version, 1, "the version stays");
+        let named = br#"{"entries":{"10":{"to":"a","ms":1}}}"#.to_vec();
+        fleet_store.put(&overrides, named.into()).await.unwrap();
+        assert!(
+            super::once(&registry, &dir, refresh.as_ref(), now())
+                .await
+                .unwrap()
+        );
+        assert_eq!(dir.prefixes().shards.version, 2, "the next read installs");
+        let view = ownership.view();
+        assert_eq!(
+            (view.active, view.overrides.into_iter().collect::<Vec<_>>()),
+            (
+                vec!["a".to_string()],
+                vec![("10".to_string(), "a".to_string())]
+            ),
+            "the refreshed overrides, the active members kept"
+        );
     }
 
     /// **A version's install instant is this process's first install of that version.** The
@@ -228,11 +356,11 @@ mod tests {
         let now = || crate::runtime::Clock::monotonic(&clock);
         assert_eq!(dir.prefixes().installed_at, None, "the boot set has none");
         let first = now();
-        super::once(&registry, &dir, first).await.unwrap();
+        super::once(&registry, &dir, None, first).await.unwrap();
         clock.advance_monotonic(Duration::from_secs(60));
         put(&store, &v1).await;
         assert!(
-            super::once(&registry, &dir, now()).await.unwrap(),
+            super::once(&registry, &dir, None, now()).await.unwrap(),
             "a new ETag re-reads"
         );
         assert_eq!(
@@ -243,7 +371,7 @@ mod tests {
         clock.advance_monotonic(Duration::from_secs(60));
         put(&store, &split_of_one(&v1)).await;
         let newer = now();
-        super::once(&registry, &dir, newer).await.unwrap();
+        super::once(&registry, &dir, None, newer).await.unwrap();
         assert_eq!(
             dir.prefixes().installed_at,
             Some(newer),

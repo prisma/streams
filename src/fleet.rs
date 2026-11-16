@@ -417,9 +417,13 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     state.fleet.standing().mark_progress();
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
     count_balance::start(state.clone(), cfg.instance.clone(), tasks);
-    let (registry, shards) = (state.registry.clone(), state.shards.clone());
+    let revalidation = crate::topology::revalidate::Revalidation {
+        registry: state.registry.clone(),
+        shards: state.shards.clone(),
+        refresh: crate::topology::revalidate::Refresh::of(&state.fleet, &state.ownership),
+    };
     let clock = state.runtime.clock.clone();
-    crate::topology::revalidate::start(registry, shards, clock, planning::TICK_PERIOD, tasks);
+    crate::topology::revalidate::start(revalidation, clock, planning::TICK_PERIOD, tasks);
     let cell = crate::topology::policy_loop::Cell {
         me: cfg.instance.clone(),
         fleet: state.fleet.clone(),

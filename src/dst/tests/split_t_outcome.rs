@@ -219,7 +219,7 @@ async fn a_split_whose_t_landed_before_its_flush_failed_only_rolls_forward() {
     );
     let now = cell.state.runtime.clock.monotonic();
     let installed =
-        crate::topology::revalidate::once(&cell.state.registry, &cell.state.shards, now);
+        crate::topology::revalidate::once(&cell.state.registry, &cell.state.shards, None, now);
     assert!(installed.await.unwrap(), "the published split installs");
     assert_eq!(records(cell.addr, &cell.low).await, want_low);
     assert_eq!(records(cell.addr, &cell.high).await, want_high);
