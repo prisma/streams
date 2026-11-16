@@ -3950,6 +3950,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_whose_counts_do_not_sum_rolls_back_without_parking",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d8f99a86431812c5a61ea90bac441eae7da28a5437f24f0911eb0b745cdb233c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_whose_lease_a_claimant_took_rolls_back_before_t",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

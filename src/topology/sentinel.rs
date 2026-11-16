@@ -42,9 +42,18 @@ pub(crate) enum PlanError {
     /// one span in one object).
     Index(String),
     /// The children's counts of an object do not sum to the source's (S4-DESIGN §6.2 step 2.2):
-    /// the split rolls back.
-    Mismatch(ObjectId),
+    /// the split rolls back. With the source's stored [`Sums`] and the children's summed ones
+    /// (`None` where it counts no such row).
+    Mismatch {
+        id: ObjectId,
+        stored: Option<Sums>,
+        summed: Option<Sums>,
+    },
 }
+
+/// An object's counts as the sum check compares them: its `'R'` row's chunks and bytes, then its
+/// `'O'` row's chunks and bytes.
+pub(crate) type Sums = (u64, u64, u64, u64);
 
 impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,9 +64,10 @@ impl std::fmt::Display for PlanError {
             Self::Unrouted(key) => write!(f, "no child holds {}", crate::crypto::hex(key)),
             Self::Corrupt(key) => write!(f, "undecodable row {}", crate::crypto::hex(key)),
             Self::Index(why) => write!(f, "a stream's index entries: {why}"),
-            Self::Mismatch(id) => write!(
+            Self::Mismatch { id, stored, summed } => write!(
                 f,
-                "the children's counts of {id:?} do not sum to the source's"
+                "the children's counts of {id:?} do not sum to the source's: (chunks, bytes, \
+                 orphan chunks, orphan bytes) stored {stored:?}, summed {summed:?}"
             ),
         }
     }
@@ -237,7 +247,7 @@ pub(crate) fn child_counts(
 pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanError> {
     // Only the source's `'O'` rows are read from it: no entry, so no release, is counted.
     let source = child_counts(rows, &[], Range::ALL, &Released::default())?;
-    let mut stored: BTreeMap<ObjectId, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut stored: BTreeMap<ObjectId, Sums> = BTreeMap::new();
     for (key, value) in rows {
         let corrupt = || PlanError::Corrupt(key.clone());
         if key.get(SENTINEL.len()) == Some(&tag::REFCOUNT) {
@@ -251,7 +261,7 @@ pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanEr
         let at = stored.entry(id).or_default();
         (at.2, at.3) = (o.chunks, o.bytes);
     }
-    let mut summed: BTreeMap<ObjectId, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut summed: BTreeMap<ObjectId, Sums> = BTreeMap::new();
     for child in children {
         for (id, r) in &child.refcounts {
             let at = summed.entry(*id).or_default();
@@ -264,7 +274,11 @@ pub(crate) fn check_sums(rows: &[Row], children: &[Counts]) -> Result<(), PlanEr
     }
     let ids = stored.keys().chain(summed.keys());
     match ids.copied().find(|id| stored.get(id) != summed.get(id)) {
-        Some(id) => Err(PlanError::Mismatch(id)),
+        Some(id) => Err(PlanError::Mismatch {
+            id,
+            stored: stored.get(&id).copied(),
+            summed: summed.get(&id).copied(),
+        }),
         None => Ok(()),
     }
 }
