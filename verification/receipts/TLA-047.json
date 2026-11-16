@@ -1,0 +1,456 @@
+{
+  "checks": [
+    {
+      "check": "TLA-047/baseline-small",
+      "depth": 48,
+      "distinct_states": 21003562,
+      "expected": "pass",
+      "log_sha256": "8567987ce2bfcd8492a2942e30d915b972442151316231773f1d4aee32231890",
+      "property": null,
+      "role": "baseline",
+      "seconds": 308.2,
+      "states_generated": 73364631,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-047/baseline-expanded",
+      "depth": 44,
+      "distinct_states": 62028522,
+      "expected": "pass",
+      "log_sha256": "b8e6196984a065c214a94a0008dd834ef979f68bc63cdbd97e11485423cbb014",
+      "property": null,
+      "role": "baseline",
+      "seconds": 987.0,
+      "states_generated": 173922705,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-047/baseline-debt",
+      "depth": 49,
+      "distinct_states": 10829184,
+      "expected": "pass",
+      "log_sha256": "989ff4c6607873e21987dbf7a57d5208a245797403bb7df52d0bb4cf6532e2f1",
+      "property": null,
+      "role": "baseline",
+      "seconds": 141.0,
+      "states_generated": 32048306,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-047/baseline-clean",
+      "depth": 47,
+      "distinct_states": 11134089,
+      "expected": "pass",
+      "log_sha256": "d3178b019dd5a0c19f0e2343f1b13a6a1294dbb07e64de51ae0236a550e74dc9",
+      "property": null,
+      "role": "baseline",
+      "seconds": 163.2,
+      "states_generated": 33869363,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-047/nc-unreferenced",
+      "depth": 7,
+      "distinct_states": 2964,
+      "expected": "violation:NoChunkTrimmedWhileReferencedOrAhead",
+      "log_sha256": "4007b93ab17cc8e9edd8bdc9b1fca71b04f6930b04b7abc77e9d2cd4e5fd5681",
+      "property": "NoChunkTrimmedWhileReferencedOrAhead",
+      "role": "negative-control",
+      "seconds": 1.1,
+      "states_generated": 5062,
+      "states_left": 2168,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-coarse-counts",
+      "depth": 7,
+      "distinct_states": 3065,
+      "expected": "violation:NoChunkTrimmedWhileReferencedOrAhead",
+      "log_sha256": "ae9e76ef0e8568ed5f3cfde9209d82a05468e28287f833c1346c9abea85d7636",
+      "property": "NoChunkTrimmedWhileReferencedOrAhead",
+      "role": "negative-control",
+      "seconds": 1.0,
+      "states_generated": 5323,
+      "states_left": 2207,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-purge-on-trimming",
+      "depth": 11,
+      "distinct_states": 156976,
+      "expected": "violation:NoChunkTrimmedWhileReferencedOrAhead",
+      "log_sha256": "3e61175fe96de75b109b9c94e4cd11e8a78b015407b051c50627ac11d335e788",
+      "property": "NoChunkTrimmedWhileReferencedOrAhead",
+      "role": "negative-control",
+      "seconds": 2.4,
+      "states_generated": 319493,
+      "states_left": 98341,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-queue-chunks-move",
+      "depth": 8,
+      "distinct_states": 15757,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "74d1be68bd86663a1d3828130559a12850376389595940231197fe0828cf8a06",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 1.4,
+      "states_generated": 28724,
+      "states_left": 12058,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-frontier-after-refs",
+      "depth": 8,
+      "distinct_states": 3141,
+      "expected": "violation:NoChunkTrimmedWhileReferencedOrAhead",
+      "log_sha256": "866fd2c117709189412ec46526398ad2a177c82ad5ad5e97e80312d3c11b4f99",
+      "property": "NoChunkTrimmedWhileReferencedOrAhead",
+      "role": "negative-control",
+      "seconds": 1.1,
+      "states_generated": 5430,
+      "states_left": 2264,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-fold-without-k",
+      "depth": 11,
+      "distinct_states": 160541,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "478a3d4b939e825a3fcbbd2007fc5b847d6f1b1932b85dc7339857b9f410f131",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 3.0,
+      "states_generated": 330453,
+      "states_left": 99544,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-k-view-by-state",
+      "depth": 13,
+      "distinct_states": 686810,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "4232ba83d40cb82c7168c7c550ebbbe794c9520a7fcd08914424e89440bb758e",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 8.0,
+      "states_generated": 1583466,
+      "states_left": 359646,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-clear-debt-without-generation",
+      "depth": 10,
+      "distinct_states": 13403,
+      "expected": "violation:DebtClearedOnlyAfterACoveringPass",
+      "log_sha256": "0e9b4bcb6c5511442d298dabdda8d5844740b9c2cd2bf621e19f06a21bee9b3b",
+      "property": "DebtClearedOnlyAfterACoveringPass",
+      "role": "negative-control",
+      "seconds": 1.3,
+      "states_generated": 21541,
+      "states_left": 8431,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-k-after-rows",
+      "depth": 15,
+      "distinct_states": 2316110,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "4dc247fdf02aa96b75b3b1b7acba9d37f3a592fad59bba9a95a3343d5688e8d2",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 25.9,
+      "states_generated": 6259398,
+      "states_left": 893503,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-still-live-cached",
+      "depth": 12,
+      "distinct_states": 589217,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "a3c3803bb115e3930974f001f189dcd95bdb3aef3152c8182d136d0847c17f88",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 6.6,
+      "states_generated": 1433906,
+      "states_left": 358269,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-still-live-prefix",
+      "depth": 9,
+      "distinct_states": 51970,
+      "expected": "violation:RefcountExact",
+      "log_sha256": "4b26c4eb48bb1bd5be5f58889d03bec675e3440ff008b38bdae380bf54fe5c0a",
+      "property": "RefcountExact",
+      "role": "negative-control",
+      "seconds": 1.8,
+      "states_generated": 114749,
+      "states_left": 36309,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-cursor-past-hint",
+      "depth": 7,
+      "distinct_states": 1984,
+      "expected": "violation:CursorBehindEveryHint",
+      "log_sha256": "51ceb7bc9f0ffa5697302e5ee94bce5e716e493b6e6e5bebc6e7cb35707ec6a3",
+      "property": "CursorBehindEveryHint",
+      "role": "negative-control",
+      "seconds": 0.9,
+      "states_generated": 3188,
+      "states_left": 1467,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/nc-reclaim-stuck",
+      "depth": 6,
+      "distinct_states": 588,
+      "expected": "violation:NoStuck",
+      "log_sha256": "2ebcf15490a9c54a70eeeca04ae7b919110d1ad8a23a67a27c2ce1629a09e4cc",
+      "property": "NoStuck",
+      "role": "negative-control",
+      "seconds": 0.8,
+      "states_generated": 858,
+      "states_left": 448,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-ChunkRetired",
+      "depth": 7,
+      "distinct_states": 2661,
+      "expected": "violation:Witness_ChunkRetired",
+      "log_sha256": "50dc7fb32342cd64f5bd52c94060e6d6b38e72ff4eaaab759464459c4dc88b26",
+      "property": "Witness_ChunkRetired",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 4399,
+      "states_left": 1960,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-IntervalAboveHeld",
+      "depth": 10,
+      "distinct_states": 55831,
+      "expected": "violation:Witness_IntervalAboveHeld",
+      "log_sha256": "aade86a59f59f43677af9d3c1e02b9095e1965af42f212cc9c6e36262257ce04",
+      "property": "Witness_IntervalAboveHeld",
+      "role": "witness",
+      "seconds": 1.8,
+      "states_generated": 107151,
+      "states_left": 37085,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-SharedObjectKept",
+      "depth": 7,
+      "distinct_states": 3040,
+      "expected": "violation:Witness_SharedObjectKept",
+      "log_sha256": "59593e42b2caa5c9239dce5d34e87de6c89cd29e1352018b4eb480ab000e2e46",
+      "property": "Witness_SharedObjectKept",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 5252,
+      "states_left": 2205,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-ObjectCollected",
+      "depth": 11,
+      "distinct_states": 123819,
+      "expected": "violation:Witness_ObjectCollected",
+      "log_sha256": "d8f4aaa4ca49da6a10010c30878a2ac7d4d56bfb0695d6e829b792c29b273b26",
+      "property": "Witness_ObjectCollected",
+      "role": "witness",
+      "seconds": 2.3,
+      "states_generated": 250500,
+      "states_left": 77776,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-PurgeReclaimed",
+      "depth": 15,
+      "distinct_states": 2316457,
+      "expected": "violation:Witness_PurgeReclaimed",
+      "log_sha256": "9ea134ef18d88bee67947636391e8d2e99b6df8fba5b43e07ac9ac333d4d5204",
+      "property": "Witness_PurgeReclaimed",
+      "role": "witness",
+      "seconds": 24.5,
+      "states_generated": 6260833,
+      "states_left": 893442,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-047/witness-ChunkCleaned",
+      "depth": 6,
+      "distinct_states": 291,
+      "expected": "violation:Witness_ChunkCleaned",
+      "log_sha256": "7acd6fc3fc3292dab2f2697e5208c889e7ae3e0190043c186da00ac9cca4a6c8",
+      "property": "Witness_ChunkCleaned",
+      "role": "witness",
+      "seconds": 0.8,
+      "states_generated": 384,
+      "states_left": 231,
+      "verdict": "violation"
+    }
+  ],
+  "complete": true,
+  "id": "TLA-047",
+  "inputs": {
+    "assumptions": {
+      "ASM-QUEUE-REPLY-DURABLE": "fc853c395bd3c02c914fe2438b2b5db26e42eb5b9780e563a6f7c2ca686228d4",
+      "ASM-SEAL-OBJECT-IMMUTABLE": "619e34fef3fc27987ce008627c857f5c6bca78bd20f6bfb8506506d8b4f63d16"
+    },
+    "files": {
+      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/native_queue/hints.rs": "e6474c3cb6463b42e67937b690f08b02d4e2c92879e43d65676bb7cbe1e16fbc",
+      "src/native_queue/intervals.rs": "4f5ecb3efe4ac8f42c4307d21a0e4d9dd77e8bccdd9e270e52b5bb6d13ae3fc1",
+      "src/shard/queue_maintenance.rs": "173e39eeaf50f1b9281d7c719f6b9b1369435af393136a7eb02799c23743f9bf",
+      "src/shard/seal/consolidate.rs": "9882e78a546e1ccf5537b1ca49bbba0835878c20cf25626ddf30c8c1656619a2",
+      "src/shard/seal/fold.rs": "eca37167f27bc684c8743578be94b46efb4ac8b3fda20098145043cb3a89b7ab",
+      "src/shard/seal/gc.rs": "5f4d3ab50b20b00151dbdac5e3204a5d80abcc0130f99bc16619f45f4a8f152c",
+      "src/shard/seal/gc/clean.rs": "1df6829904f1c08766f3d4c1651fee600880cd112f65b3260b5f3429dda30b0c",
+      "src/shard/seal/gc/purge.rs": "5a356713fdee8530ce04a517ea785908e8f61618e1f751fa4f75f88e748c02d1",
+      "src/shard/seal/gc/trim.rs": "02289de952525a7c42ede33b039b8f285efff72dbd44e7315dc03f2a7a431fe3",
+      "src/shard/transaction/native_queue/hints.rs": "91337957b4bf91213348609dc2db44f3401473b90e065c0d9d289fcd5c3292e6",
+      "src/shard/transaction/native_queue/mod.rs": "ba42aa8e6b205938ae377fa2928c20eace6d067e95dcba1870b92ad44a45f3c9",
+      "src/shard/transaction/seal.rs": "b9f58a9ed80b35596c09123937c5de41efaffa884b4249a43ecbc5c1a8bd64a4",
+      "src/spill/gc.rs": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
+      "src/topology/sentinel.rs": "d1c28b1e526786e1ec06c6335fb517d6d704f7a0252a497f5bfddeddc0e20d91",
+      "src/topology/split.rs": "06131a4baa1b82ba4cb80cfaddcbff86df67e66d866e376e5638b9774241b421",
+      "verification/tla/queue/MC_QueueReclamation.tla": "972563e65c52b87f234dff3872f64218815146930b9226dc9ddcb08fd00cfb19",
+      "verification/tla/queue/MC_QueueReclamation_clean.cfg": "205176ce7a441f3ffc1ce4e8ddc4690603e436221894c34d2afac339b17574ca",
+      "verification/tla/queue/MC_QueueReclamation_debt.cfg": "b6eac9ea1b17f2c75781d0485a7b8df9031e445ed8ef163b05580908f05ee9f3",
+      "verification/tla/queue/MC_QueueReclamation_expanded.cfg": "be10925ae1d1d2e3b9c48dc18da9391a56c0313239e01bda42d9362249d753d7",
+      "verification/tla/queue/MC_QueueReclamation_nc_clear_debt_without_generation.cfg": "f3a751e9e8c46a338c6888a8289801106f581ffb99eefc85fb9c64bbd19cc769",
+      "verification/tla/queue/MC_QueueReclamation_nc_coarse_counts.cfg": "4694cf4ce0ea92a45dffbcb43e9f46682274cbeeb9f6107101ddd991b483722d",
+      "verification/tla/queue/MC_QueueReclamation_nc_cursor_past_hint.cfg": "f706ee8e90a7a3aec13c91189e8c025f038df83af138f98a84bb222bd1124900",
+      "verification/tla/queue/MC_QueueReclamation_nc_fold_without_k.cfg": "5ff9a53bf1ef31acf68a790d11a52531e1cc6a9b553822d6515e6646c5299048",
+      "verification/tla/queue/MC_QueueReclamation_nc_frontier_after_refs.cfg": "baaf9a32d09d9501a6a81e14ad0f99976af68fcb2a0031458e87f77f2c76ccc5",
+      "verification/tla/queue/MC_QueueReclamation_nc_k_after_rows.cfg": "a6cfb770525481cdff8438b16d7e871e4f4da7b2daceca4adbda95b041f66c0d",
+      "verification/tla/queue/MC_QueueReclamation_nc_k_view_by_state.cfg": "3b1476065e69d37c97d8db879cd20dbb63e185868e9e9664ef9814e117a685fe",
+      "verification/tla/queue/MC_QueueReclamation_nc_purge_on_trimming.cfg": "a59522727aa27e90563551db179cb7ac7a1598608a0f44427b8adf9cdaabdc36",
+      "verification/tla/queue/MC_QueueReclamation_nc_queue_chunks_move.cfg": "895fa6157e0837d5c0ff243caa7a9af8cf19fec94eaec4047cf7d073cf9b1935",
+      "verification/tla/queue/MC_QueueReclamation_nc_reclaim_stuck.cfg": "41f90024e98dd2cdfa043c4f73a95fb46e67fcb4c3c7d374a8a307dfdf51a21d",
+      "verification/tla/queue/MC_QueueReclamation_nc_still_live_cached.cfg": "16138ad84e774e0dcc6a512c9503a9b59281288c416a3e84de2e7e4f3f6c56aa",
+      "verification/tla/queue/MC_QueueReclamation_nc_still_live_prefix.cfg": "f80e497d41627ef19afd89656b37f581219432196123d14b4e4cf4194945120d",
+      "verification/tla/queue/MC_QueueReclamation_nc_unreferenced.cfg": "d36a49b437cef0006f1e4bb3e2fbe3aa1ab9bb768d84fb60e92f427d866d3094",
+      "verification/tla/queue/MC_QueueReclamation_small.cfg": "35b9088dd4b2c85f3c850d8ce07b9850205f0447914dde866456cf95a02efb5c",
+      "verification/tla/queue/MC_QueueReclamation_w_ChunkCleaned.cfg": "7cbfb40d3dc887e9c5228bfee7d05e0c359c0adebdc97019ed19e5aa91c9a0ba",
+      "verification/tla/queue/MC_QueueReclamation_w_ChunkRetired.cfg": "38e24baa583cdc68e05c37bfb7d5f3e71ce8cd9a28e44a5644b05c336eae7def",
+      "verification/tla/queue/MC_QueueReclamation_w_IntervalAboveHeld.cfg": "cb9e96cd43891169a13ce3349bd51a8ad1f98055d737a7a29a567aba3c0dbd99",
+      "verification/tla/queue/MC_QueueReclamation_w_ObjectCollected.cfg": "0de0da49220916cd4dc5a38a1615f684da8cbca0bf4eb642ef50d549ef981fd3",
+      "verification/tla/queue/MC_QueueReclamation_w_PurgeReclaimed.cfg": "e731d24fa594be1e82dbe755c456ec7f64c94e4d3b49b03f977ea0db61152cb2",
+      "verification/tla/queue/MC_QueueReclamation_w_SharedObjectKept.cfg": "ffed15d4c6127dbe40cd9b024888d20be837dce04606568f515ab2227d80b9ea",
+      "verification/tla/queue/QueueReclamation.tla": "8cbb436e20dc54456da31f2dce4fbfe78f8820d33fac8157a08298cd10f3adf1"
+    },
+    "manifest_entry": "25cd901c27b2abef0b3e5f4e166f91d3f0d7636a29c87105d5de8ddfc8c4f0f6",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "9f3841a3a2950fbfb05276ff8ef8987b2c83e7f4600eac9e18083261b71d5892",
+  "run_on": {
+    "dirty_tree": true,
+    "revision": "4ef4bb4438d37c5cfaba700c5453e266bf66a5f1"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

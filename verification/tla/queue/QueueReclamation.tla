@@ -35,16 +35,18 @@
 (* The index (`idx`): a seal gives each chunk an entry; folds and merges    *)
 (* drop the released ones, and a split's seed recounts each object from    *)
 (* the entries, both in kept_entries' view.  No consolidation moves a      *)
-(* queue's chunk.  A scheduled message's bit references it from its send   *)
+(* queue's chunk; the cleaner moves one into a new object only if it still *)
+(* counts when it commits, read again under `refs`.  A scheduled message's *)
+(* bit references it from its send                                        *)
 (* (`Rich` explores these).  An ack's deleted rows are debt until a        *)
 (* collector pass that captured them has rewritten the log and cleared     *)
 (* them by generation (`Debt` explores these).                             *)
 (*                                                                         *)
 (* Mutation points (MC_QueueReclamation.tla): Unreferenced (controls 1     *)
 (* and 2), PurgeActsOn (3), QueueChunksMove (4), FrontierAtCommit (5),     *)
-(* EntryDropped (6), ClearByGeneration (7), KAtReclaim (8), CursorAfter    *)
-(* (10).  Control 9 (the cleaner's still_live reading a cached intervals)  *)
-(* comes with part 2 step 4, where the cleaner lands.                      *)
+(* EntryDropped (6), ClearByGeneration (7), KAtReclaim (8), StillLive (9,  *)
+(* and its prefix twin), CursorAfter (10), ReclaimLast (11: the purge's    *)
+(* last step never taken, a stuck state Terminated must not mask).        *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
@@ -58,17 +60,19 @@ CONSTANTS
     MaxCrashes,
     MaxHintId,    \* hint ids drawn at most (a state constraint)
     Rich,         \* scheduled sends, folds and the split's recount are explored
-    Debt          \* acks' debt and the collector's passes are explored
+    Debt,         \* acks' debt and the collector's passes are explored
+    Cleaner       \* the cleaner's copies are explored
 
 ASSUME /\ N \in Nat \ {0} /\ MaxObjs \in Nat \ {0} /\ Shared \subseteq 1..MaxObjs
        /\ PassHints \in Nat \ {0} /\ PassChunks \in Nat \ {0}
        /\ MaxReads \in Nat /\ MaxCrashes \in Nat /\ MaxHintId \in Nat
-       /\ Rich \in BOOLEAN /\ Debt \in BOOLEAN
+       /\ Rich \in BOOLEAN /\ Debt \in BOOLEAN /\ Cleaner \in BOOLEAN
 
 Offs == 0..(N-1)
 Objs == 1..MaxObjs
 NoPass == [phase |-> "none"]
 NoCap == [phase |-> "none"]
+NoClean == [phase |-> "none"]
 
 VARIABLES
     next, frontier, refs, alive,   \* the committer's queue
@@ -82,11 +86,12 @@ VARIABLES
     sched,                         \* the references that are scheduled messages' bits
     idx,                           \* the offsets with an index entry ('K' or a run)
     debt, dgen, dirty,             \* debt, its generation, rows deleted and not collected
-    cap                            \* the collector's pass in progress
+    cap,                           \* the collector's pass in progress
+    cl, cleaned                    \* the cleaner's copy in progress; a ghost: one committed
 
 vars == <<next, frontier, refs, alive, sealed, objOf, nobj, R, deleted, pins,
           reads, hstate, reclaimed, rel, hints, nextHint, cursor, tr, ph,
-          phead, krel, crashes, sched, idx, debt, dgen, dirty, cap>>
+          phead, krel, crashes, sched, idx, debt, dgen, dirty, cap, cl, cleaned>>
 
 Needed(o) == alive /\ o < next /\ (o >= frontier \/ o \in refs)
 Released(o) == o < reclaimed \/ o \in rel
@@ -107,9 +112,16 @@ FrontierAtCommit == FALSE
 KAtReclaim == FALSE
 \* The cursor stands at the last hint the pass read.
 CursorAfter(taken) == Max({h[1] : h \in taken})
-\* No queue chunk is moved into another object (consolidate.rs
-\* is_queue_stream; the cleaner never joins queue chunks).
+\* No consolidation moves a queue chunk into another object (consolidate.rs
+\* is_queue_stream); the cleaner's move is CleanCommit, re-checked.
 QueueChunksMove == FALSE
+\* The cleaner's commit counts a chunk as still live in the view it reads
+\* now, under `refs`: a live queue (not deleting), no other 'H' state than
+\* Trimming, nothing released below the prefix or in 'k' (clean.rs
+\* still_live -> counted).
+StillLive(o) == alive /\ hstate \in {"none", "Trimming"} /\ ~Released(o)
+\* The purge's last step is taken (only the deadlock control removes it).
+ReclaimLast == TRUE
 \* The index's view of a queue's entries (fold.rs kept_entries, which the
 \* folds, the merges and the split's recount share): every released entry is
 \* dropped, below the prefix ('H') and inside the intervals ('k'), whatever
@@ -128,6 +140,7 @@ TypeOK ==
     /\ sched \subseteq refs /\ idx \subseteq Offs
     /\ debt \in Nat /\ dgen \in Nat /\ dirty \subseteq Offs
     /\ cap.phase \in {"none", "captured", "rewritten"}
+    /\ cl.phase \in {"none", "copied"} /\ cleaned \in BOOLEAN
 
 Init ==
     /\ next = 0 /\ frontier = 0 /\ refs = {} /\ alive = TRUE
@@ -140,6 +153,7 @@ Init ==
     /\ crashes = 0
     /\ sched = {} /\ idx = {}
     /\ debt = 0 /\ dgen = 0 /\ dirty = {} /\ cap = NoCap
+    /\ cl = NoClean /\ cleaned = FALSE
 
 \* A hint naming [lo, hi) (nothing when empty).
 Hint(lo, hi) ==
@@ -335,7 +349,7 @@ ReclaimRows ==
 \* Reclaim, last batch: every chunk in [reclaimed, head) outside the 'k' it
 \* read decremented; 'k' deleted with it; the prefix at head.
 ReclaimDecrement ==
-    /\ ph = "rows" /\ tr = NoPass
+    /\ ph = "rows" /\ tr = NoPass /\ ReclaimLast
     /\ LET due == {o \in reclaimed..(phead-1) : o \notin krel}
        IN R' = [b \in Objs |-> R[b] - Cardinality({o \in due : objOf[o] = b})]
     /\ reclaimed' = Max({reclaimed, phead}) /\ rel' = {}
@@ -449,7 +463,44 @@ ClearDebt ==
     /\ UNCHANGED <<dgen, dirty>>
     /\ UNCHANGED Committer /\ UNCHANGED Gc
 
-Next ==
+\* ---------------------------------------------------------------------------
+\* The cleaner (gc/clean.rs; S3b part 2 step 4): it copies a live queue's
+\* chunk into a new object, its PUT outside `refs` (CleanGather, the chunk in
+\* the live set it read), and commits under `refs` only if the chunk still
+\* counts, read again (StillLive, point 9): the old object counted down, the
+\* new one up, the chunk never joined with another.  A crash or a chunk that
+\* changed abandons the copy.  Explored with Cleaner.
+
+Unmoved == <<next, frontier, refs, alive, sealed, hints, nextHint, deleted, pins,
+             reads, hstate, reclaimed, rel, cursor, tr, ph, phead, krel, crashes,
+             sched, idx, debt, dgen, dirty, cap>>
+
+CleanGather(o) ==
+    /\ Cleaner /\ cl = NoClean /\ nobj < MaxObjs
+    /\ o < sealed /\ objOf[o] \notin deleted /\ StillLive(o)
+    /\ cl' = [phase |-> "copied", o |-> o]
+    /\ UNCHANGED <<objOf, nobj, R, cleaned>>
+    /\ UNCHANGED Unmoved
+
+\* Under `refs`: beside no trim pass and inside no reclaim.
+CleanCommit ==
+    /\ cl.phase = "copied" /\ tr = NoPass /\ ph # "rows"
+    /\ LET o == cl.o
+           b == nobj + 1
+       IN IF StillLive(o) /\ nobj < MaxObjs
+          THEN /\ objOf' = [objOf EXCEPT ![o] = b]
+               /\ R' = [R EXCEPT ![b] = 1, ![objOf[o]] = @ - 1]
+               /\ nobj' = b /\ cleaned' = TRUE
+          ELSE UNCHANGED <<objOf, R, nobj, cleaned>>
+    /\ cl' = NoClean
+    /\ UNCHANGED Unmoved
+
+CleanAbandon ==
+    /\ cl # NoClean /\ cl' = NoClean
+    /\ UNCHANGED <<objOf, nobj, R, cleaned>>
+    /\ UNCHANGED Unmoved
+
+Base ==
     \/ Send \/ SendScheduled \/ Seal \/ Step \/ Delete \/ \E o \in Offs : Resolve(o)
     \/ Fold \/ Recount \/ \E o \in Offs : Consolidate(o)
     \/ TrimStart \/ TrimCheck \/ TrimCommit
@@ -460,7 +511,24 @@ Next ==
     \/ Crash
     \/ PassCapture \/ PassRewrite \/ ClearDebt
 
-Spec == Init /\ [][Next]_vars
+Next ==
+    \/ Base /\ UNCHANGED <<cl, cleaned>>
+    \/ \E o \in Offs : CleanGather(o)
+    \/ CleanCommit \/ CleanAbandon
+
+\* Settled, the only legitimate end: the queue deleted and purged, no trim,
+\* collector or cleaner pass in progress, no read running, no debt and no
+\* object left to collect.  A finished run stops there; TLC's deadlock check
+\* reports any other state with no step (the history models' pattern:
+\* nothing here moves on its own, unlike TLA-046's clock).
+Settled ==
+    /\ ph = "done" /\ tr = NoPass /\ cap = NoCap /\ cl = NoClean /\ reads = {}
+    /\ debt = 0
+    /\ \A b \in 1..nobj : b \in deleted \/ R[b] > 0 \/ pins[b] > 0
+Terminated == Settled /\ UNCHANGED vars
+
+\* Deadlock checking stays on; Terminated is the only stuttering step.
+Spec == Init /\ [][Next \/ Terminated]_vars
 
 \* Bounds the hint ids a behaviour draws (each step, resolution, seal and
 \* re-hint takes one).
@@ -519,4 +587,9 @@ Witness_IntervalAboveHeld == ~(rel # {})
 Witness_SharedObjectKept == ~(\E b \in Shared : b <= nobj /\ R[b] = 1 /\ LiveOf(b) = {})
 Witness_ObjectCollected == ~(deleted # {})
 Witness_PurgeReclaimed == ~(ph = "done" /\ krel # {})
+Witness_ChunkCleaned == ~cleaned
+
+\* The deadlock check as an invariant, for its negative control: every
+\* state has a step or is Settled.
+NoStuck == (ENABLED Next) \/ Settled
 =============================================================================

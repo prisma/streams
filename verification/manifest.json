@@ -3154,7 +3154,7 @@
         "ASM-HISTORY-ACTORS",
         "ASM-OBJSTORE-CAS"
       ],
-      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, the segment cleaner's copy C = {ca1} of a1 alone (the same span, which the newer object wins in reads, folds and merges, and reclaims; its commit re-checks under the refcount lock that a1 is still a pick and A has no 'H' row), a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints. LineageGC (S6 two-holder arm): a retired home's objects o1 and o2 held by two leaves C0 = {o1, o2} and C1 = {o2} after a split, each with its own 'R' counts, 'E' rows stamped with its pin clock, release logs, released-all marker and reference list; one reader per leaf; the merge of C0 and C1 into M (counts summed, 'E' rows dropped, M's list before its CAS, the sources retired with their reads, the version's grace restarted); the lineage sweeper over the leaves' lists and logs at an aged version; the pin clock to 3 per holder.",
+      "input_scope": "RefGC: two seal objects S1 = {a1, b1} and S2 = {a2, b2} of streams A and B, a consolidation object K = {ka} superseding a1 and a2, the segment cleaner's copy C = {ca1} of a1 alone (the same span, which the newer object wins in reads, folds and merges, and reclaims; its commit re-checks under the refcount lock that a1 is still a pick and A has no 'H' row, or a native queue's Trimming row, modelled in TLA-047), a third seal object O = {b3} that a fenced writer may orphan; one fence (two openings); two readers, one per stream, each reading again after a served read; purges of either stream in two steps (the committer's purge, the reclaim under the refcount lock); fold and merge drops of decremented entries; the collector's delete of a 'G' object behind reader pins; the orphan sweep; the pin clock to 4. Time is abstracted: the purge delay outlasts a read admitted before the stream's death (ASM-PURGE-DELAY) and the grace covers reads outside the process and of a fenced opening (ASM-HSEG-GRACE). No liveness. ForkPin: one source name with 2 incarnations; safety and witnesses with 3 fork-child incarnations (F3 recreates F1's name after F1's tombstone), liveness with 2 (distinct names, or one recreated name); creator installs racing child deletion, source deletion and recreation, 1 request crash (creator or DELETE); the write-ahead fork-debt marker, the background reconciler (weakly fair per marker in the reconciler liveness checks) and client DELETE retries (weakly fair only in the client-retry liveness check); legacy shapes where deletes before the rollout write no marker, the one-time backfill indexes them, and a child name may be recreated over such a tombstone before or after the rollout (the recreate CAS indexes the debt it overwrites; debt the old binary overwrote before the rollout is excluded from the properties). No symmetry, no state or action constraints. LineageGC (S6 two-holder arm): a retired home's objects o1 and o2 held by two leaves C0 = {o1, o2} and C1 = {o2} after a split, each with its own 'R' counts, 'E' rows stamped with its pin clock, release logs, released-all marker and reference list; one reader per leaf; the merge of C0 and C1 into M (counts summed, 'E' rows dropped, M's list before its CAS, the sources retired with their reads, the version's grace restarted); the lineage sweeper over the leaves' lists and logs at an aged version; the pin clock to 3 per holder.",
       "checks": [
         {
           "id": "TLA-019/baseline",
@@ -4002,7 +4002,7 @@
       "kind": "tla",
       "title": "Native queue reclamation: a sealed chunk is given back only once nothing needs it, each object's count stays exact, no needed or shared object is deleted, and no hint is lost",
       "status": "pass-with-recorded-scope",
-      "owner": "the native queue's trim pass (gc/trim.rs) over its hints, Trimming row and released intervals, with the committer shrinking the queue's needed set and writing hints, the purge's request, step and F4-ordered reclaim, the index's view of a trimming queue (the folds' kept_entries and the split's recount), consolidation's queue guard, sealed reads' pins, the collector, and its passes over the queues' debt",
+      "owner": "the native queue's trim pass (gc/trim.rs) over its hints, Trimming row and released intervals, with the committer shrinking the queue's needed set and writing hints, the purge's request, step and F4-ordered reclaim, the index's view of a trimming queue (the folds' kept_entries and the split's recount), consolidation's queue guard, sealed reads' pins, the collector, and its passes over the queues' debt, and the cleaner's copy of a trimmed queue's chunks (gc/clean.rs: its live set and its re-check under refs)",
       "source_paths": [
         "src/shard/seal/gc/trim.rs",
         "src/native_queue/intervals.rs",
@@ -4015,7 +4015,10 @@
         "src/shard/seal/consolidate.rs",
         "src/topology/sentinel.rs",
         "src/shard/transaction/native_queue/mod.rs",
-        "src/shard/queue_maintenance.rs"
+        "src/shard/queue_maintenance.rs",
+        "src/shard/seal/gc/clean.rs",
+        "src/shard/transaction/seal.rs",
+        "src/topology/split.rs"
       ],
       "verification_paths": [
         "verification/tla/queue/QueueReclamation.tla",
@@ -4035,14 +4038,19 @@
         "ASM-QUEUE-REPLY-DURABLE",
         "ASM-SEAL-OBJECT-IMMUTABLE"
       ],
-      "input_scope": "one queue in one shard log, one chunk per offset (a queue's chunks tile its offsets and never join); 3 offsets and two seals with object 1 shared with another stream's live chunk, one hint and two chunks a pass, one read, one crash losing a pass in progress, with scheduled sends, folds, the split's recount and a consolidation that a broken guard lets move a queue chunk (small); the same without reads or scheduled sends, with acks' debt and the collector's capture, rewrite and ClearDebt, a crash losing a pass (debt); 4 offsets and two seals with object 2 shared, two hints and two chunks a pass, one read, no crash, immediate sends only (expanded); hint ids bounded by a state constraint; the committer's batches durable as applied (ASM-QUEUE-REPLY-DURABLE); the trim and the purge mutually excluded by refs; the folds and the split's recount are modelled in one view, kept_entries' (the 'H' prefix and the 'k' intervals in every 'H' state, since 'k' outlives Trimming until the purge's last decrement), with the recount running between the purge's passes; this obligation is recorded once both apply it (today the fold reads 'k' only while Trimming, and child_counts counts every entry: package 5's chain fix adds the prefix, S3b's 'k' half follows with its red DST); the cleaner (control 9) is outside this model until part 2 step 4; safety only, EveryHintHandled checked as a safety property",
+      "input_scope": "one queue in one shard log, one chunk per offset (a queue's chunks tile its offsets and never join); 3 offsets and two seals with object 1 shared with another stream's live chunk, one hint and two chunks a pass, one read, one crash losing a pass in progress, with scheduled sends, folds, the split's recount a consolidation that a broken guard lets move a queue chunk, with small's bounds but no reads or crashes, the cleaner copying a live queue's chunk into a new object, its gather outside refs and its commit under refs re-reading the 'H' row and 'k', with room for one copy (clean); the same without reads or scheduled sends, with acks' debt and the collector's capture, rewrite and ClearDebt, a crash losing a pass (debt); 4 offsets and two seals with object 2 shared, two hints and two chunks a pass, one read, no crash, immediate sends only (expanded); hint ids bounded by a state constraint; the committer's batches durable as applied (ASM-QUEUE-REPLY-DURABLE); the trim and the purge mutually excluded by refs; the folds and the split's recount are modelled in one view, kept_entries' (the 'H' prefix and the 'k' intervals in every 'H' state, since 'k' outlives Trimming until the purge's last decrement), with the recount running between the purge's passes; this obligation is recorded once both apply it (today the fold reads 'k' only while Trimming, and child_counts counts every entry: package 5's chain fix adds the prefix, S3b's 'k' half follows with its red DST); the cleaner (control 9) is outside this model until part 2 step 4; safety only, EveryHintHandled checked as a safety property; deadlock checking on, with Settled (the queue deleted and purged, no pass or read in flight, no debt, nothing left to collect) the only legitimate end, taken by Terminated; NoStuck states the deadlock check as an invariant for its negative control",
       "regressions": [
         "shard::native_queue_tests::trim::a_pass_retires_exactly_the_unreferenced_chunks_behind_the_frontier",
         "shard::native_queue_tests::trim::released_chunks_above_a_held_one_form_an_interval_the_prefix_absorbs",
         "shard::native_queue_tests::trim::the_purge_leaves_a_trimming_queue_alone_until_a_request_which_keeps_its_prefix",
         "shard::native_queue_tests::hints::a_group_names_exactly_the_sealed_offsets_it_touched_in_one_hint_row",
         "shard::native_queue_tests::trim::a_queue_read_offers_no_chunk_to_consolidation",
-        "shard::native_queue_tests::budgets::debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured"
+        "shard::native_queue_tests::budgets::debt_ages_from_its_first_deletion_and_a_pass_clears_what_it_captured",
+        "shard::native_queue_tests::trim::a_purge_decrements_no_chunk_the_trim_released",
+        "shard::native_queue_tests::trim::a_deleted_queues_purge_reclaims_every_chunk_up_to_its_next_offset",
+        "shard::seal::gc::clean::queue_tests::the_cleaner_rewrites_the_objects_a_trimmed_queues_held_chunks_pin",
+        "shard::seal::gc::clean::queue_tests::a_trim_while_the_copy_waits_abandons_it",
+        "topology::sentinel::tests::a_queues_trimmed_intervals_release_the_entries_inside_them"
       ],
       "checks": [
         {
@@ -4070,6 +4078,16 @@
           "role": "baseline",
           "spec": "verification/tla/queue/MC_QueueReclamation.tla",
           "config": "verification/tla/queue/MC_QueueReclamation_debt.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "timeout_seconds": 1800
+        },
+        {
+          "id": "TLA-047/baseline-clean",
+          "role": "baseline",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_clean.cfg",
           "expect": {
             "result": "pass"
           },
@@ -4166,6 +4184,26 @@
           }
         },
         {
+          "id": "TLA-047/nc-still-live-cached",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_still_live_cached.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
+          "id": "TLA-047/nc-still-live-prefix",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_still_live_prefix.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "RefcountExact"
+          }
+        },
+        {
           "id": "TLA-047/nc-cursor-past-hint",
           "role": "negative-control",
           "spec": "verification/tla/queue/MC_QueueReclamation.tla",
@@ -4173,6 +4211,16 @@
           "expect": {
             "result": "violation",
             "property": "CursorBehindEveryHint"
+          }
+        },
+        {
+          "id": "TLA-047/nc-reclaim-stuck",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_nc_reclaim_stuck.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "NoStuck"
           }
         },
         {
@@ -4223,6 +4271,16 @@
           "expect": {
             "result": "violation",
             "property": "Witness_PurgeReclaimed"
+          }
+        },
+        {
+          "id": "TLA-047/witness-ChunkCleaned",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueReclamation.tla",
+          "config": "verification/tla/queue/MC_QueueReclamation_w_ChunkCleaned.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ChunkCleaned"
           }
         }
       ]

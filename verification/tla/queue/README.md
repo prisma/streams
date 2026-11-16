@@ -72,6 +72,7 @@ S3b-DESIGN §4.3, §5.9, §7.3, §7.4, §11.2).
 | `Fold`, `Recount` (`EntryDropped` point 6) | `seal/fold.rs` `kept_entries` (the folds and merges); `topology/sentinel.rs` `child_counts` (the split's seed) |
 | `Consolidate` (`QueueChunksMove` point 4) | `seal/consolidate.rs` (`is_queue_stream`: a queue read offers no chunk) |
 | `PassCapture`, `PassRewrite`, `ClearDebt` (`ClearByGeneration` point 7) | `shard/queue_maintenance.rs` (`capture_debt`, the rewrite, `NqOp::ClearDebt`); `transaction/native_queue/mod.rs` (`nq_debt`, the clear by generation) |
+| `CleanGather`, `CleanCommit` (`StillLive` point 9), `CleanAbandon` | `gc/clean.rs`: the copy's PUT outside `refs` from the live set `counted_entries` gives; under `refs`, `still_live` reads it again before `commit_copy`; a queue's chunks never joined (`copy_inputs`) |
 | `ReadStart`/`ReadEnd`, `Collect`, `Crash` | sealed reads' pins (`gc::pin`); the collector; a lost pass |
 
 One chunk per offset: a queue's chunks tile its offsets and never join, so
@@ -89,19 +90,33 @@ purge's passes. Two controls break the view:
 - its by-state variant reads `'k'` only while Trimming, so a split between
   the purge's request and its reclaim counts the chunk again.
 
-The code does not apply this view yet. The fold reads `'k'` only while
-Trimming, and `child_counts` counts every entry, so a split after a trim
-rolls back (its children's counts do not sum to the source's). Package 5's
-chain fix adds the prefix, and S3b's `'k'` half follows with its red DST.
-This obligation is recorded only once both are in.
+The code applies this view: the fold reads `'k'` in every `'H'` state
+(`fold.rs` `released_of`), and the split's recount adds each queue's
+intervals to package 5's prefix (`sentinel::Released::add_intervals`, read
+in `split::plan`).
 
 Point 4 lets a consolidation move a queue's chunk into a new object and
 count the old one down without reading `'k'`. An ack's deleted rows are
 debt until a collector pass that captured them has rewritten the log; the
 clear keeps what was recorded after the capture. Point 7 clears the whole
-debt (DebtClearedOnlyAfterACoveringPass). Control 9 (the cleaner's
-`still_live` reading a cached `intervals`) comes with part 2 step 4, where
-the cleaner lands.
+debt (DebtClearedOnlyAfterACoveringPass). The cleaner copies a live queue
+chunk into a new object only if it still counts when it commits, read again
+under `refs` (a live queue, its `'H'` row and `'k'`); point 9 reads the
+prefix and the `'H'` state again but the intervals its gather read, so a
+chunk the trim released into `'k'` meanwhile is moved and its old object
+counted down twice (RefcountExact); its twin reads `'k'` again but not the
+prefix, with the same result for a release at `reclaimed`.
+
+TLA-047 checks deadlock with `Settled` as its only legitimate end: the queue
+deleted and purged, no trim, collector or cleaner pass and no read in
+flight, no debt, nothing left to collect. A finished run stops there by
+`Terminated`; nothing in this model moves on its own, unlike TLA-046's
+clock, so TLC's deadlock check stays on and reports any other state with
+no step. Control 11 disables the purge's last step: the run stops in the
+reclaim, which is not `Settled`, and `NoStuck` (the deadlock check as an
+invariant, `ENABLED Next \/ Settled`, since a negative control is recorded
+by the property it violates) reports it, so `Terminated` masks no stuck
+state.
 
 EveryHintHandled is checked as a safety property, not as liveness: a chunk
 that is no longer needed and not released is named by a hint after the
@@ -109,10 +124,12 @@ cursor, or by the pass in progress.
 
 Configurations:
 - `small`: 3 offsets, object 1 shared, one hint and two chunks a pass, one
-  read, one crash; scheduled sends, folds, the recount and the consolidation
-  point (`Rich`).
+  read, one crash; scheduled sends, folds, the recount, the consolidation
+  point and the cleaner, with room for one copy (`Rich`).
 - `debt`: small's bounds without reads or scheduled sends; the debt and the
   collector's passes (`Debt`).
+- `clean`: small's bounds without reads or crashes; the cleaner's copies
+  (`Cleaner`) beside scheduled sends, folds and the recount.
 - `expanded`: 4 offsets, object 2 shared, two hints a pass, no crash;
   immediate sends only.
 

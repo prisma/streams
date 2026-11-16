@@ -44,6 +44,19 @@ MutClearByGeneration == FALSE
 \* released is decremented a second time.
 MutKAtReclaim == TRUE
 
+\* NC 9: the cleaner's commit reading the prefix and the 'H' state again but
+\* the released intervals as its gather read them: a chunk the trim released
+\* into 'k' meanwhile is moved, its old object counted down a second time.
+MutStillLive(o) == alive /\ hstate \in {"none", "Trimming"} /\ ~(o < reclaimed)
+
+\* NC 9, its prefix twin: the cleaner's commit reading 'k' again but not the
+\* prefix: a chunk the trim released past `reclaimed` meanwhile is moved.
+MutStillLivePrefix(o) == alive /\ hstate \in {"none", "Trimming"} /\ o \notin rel
+
+\* NC 11: the purge's last step never taken: the purge stops in "rows", a
+\* stuck state that is not Settled, so Terminated must not mask it.
+MutReclaimLast == FALSE
+
 \* NC 10: the cursor advancing past an unconsumed hint.
 MutCursorAfter(taken) == nextHint
 =============================================================================
