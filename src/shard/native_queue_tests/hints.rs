@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use super::{HASH, clocked, msg, op, send_op, settle};
-use crate::native_queue::{NqOp, NqOut, PrepareFrom, QueueConfig, SettleKind, hints};
+use crate::native_queue::{NqOp, NqOut, PrepareFrom, QueueConfig, SendMessage, SettleKind, hints};
 use crate::shard::{ShardConfig, ShardEngine};
 
 /// Every hint row: its sequence, its queue and its ranges.
@@ -107,6 +107,24 @@ async fn a_group_names_exactly_the_sealed_offsets_it_touched_in_one_hint_row() {
     );
     op(&e, ack(3, across[1].1)).await.unwrap();
     assert_eq!(new_rows(&db, 4).await, [], "an unsealed offset: none");
+}
+
+/// A scheduled message that ends unresolved names its own offset: a
+/// cancel of a sealed scheduled message behind an untaken one puts one
+/// hint of exactly `[1, 2)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_cancelled_sealed_scheduled_message_names_its_offset() {
+    let (e, db, c) = clocked("nq-hints-scheduled", QueueConfig::default()).await;
+    let later = SendMessage {
+        deliver_at: Some(c + 60_000),
+        ..msg("later")
+    };
+    op(&e, send_op(vec![msg("a"), later])).await.unwrap();
+    seal(&e).await;
+    let seen = hint_rows(&db).await.len();
+    op(&e, NqOp::Cancel { offsets: vec![1] }).await.unwrap();
+    let named: Vec<Vec<(u64, u64)>> = new_rows(&db, seen).await.into_iter().map(|r| r.2).collect();
+    assert_eq!(named, [vec![(1, 2)]]);
 }
 
 /// The sequence is seeded once per engine, above the last hint key and
