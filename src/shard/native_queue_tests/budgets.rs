@@ -478,3 +478,27 @@ async fn a_send_landing_exactly_on_the_byte_budget_is_taken() {
     let over = op(&e, send_op(vec![msg("x")])).await;
     assert_eq!(over.unwrap_err(), NqRefusal::QueueFull);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_extend_moves_the_lease_deadline_to_the_settle_time_plus_its_lease() {
+    let (e, db, c) = clocked("nq-extend-deadline", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a")])).await.unwrap();
+    let d = claim(&e, 1).await;
+    assert_eq!(delivery(&db, 0).await.lease_deadline, c + 30_000);
+    let extend = SettleKind::Extend { lease_ms: 60_000 };
+    op(&e, settle(vec![(0, d[0].lease_gen, extend)]))
+        .await
+        .unwrap();
+    let row = delivery(&db, 0).await;
+    let held = (row.state, row.lease_gen, row.lease_deadline);
+    assert_eq!(held, (DState::Leased, d[0].lease_gen, c + 60_000));
+    let index = |at| db.get(keys::by_time(&HASH, keys::LEASES, at, 0));
+    assert!(
+        index(c + 60_000).await.unwrap().is_some(),
+        "indexed at the new deadline"
+    );
+    assert!(
+        index(c + 30_000).await.unwrap().is_none(),
+        "and no longer at the old one"
+    );
+}
