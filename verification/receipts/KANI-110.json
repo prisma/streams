@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0a2f53bd592d769712c6dffeb2304be4b6424a42788f511a9ae3b11f6a08937f",
+      "log_sha256": "4080a49d9db65b32c00cd57917d15413c696b5dcfcfcb86433060a2f37567fe1",
       "role": "baseline",
-      "seconds": 172.1,
+      "seconds": 50.3,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a message is leased only before its retention end\""
       ],
-      "log_sha256": "42ea0b66453d31d1bc883ea1b835cba1706726f2edde65d3263f82b84ecbad0b",
+      "log_sha256": "25883a0eeaf1c8855f031a609117c9c39bf1a1057af4975a204ebca5b38ae11b",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 45.2,
+      "seconds": 47.0,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"only a cancel bit, and no skip bit, passes it as cancelled\""
       ],
-      "log_sha256": "ddc6e101a85b7ad49765def1b13a2a7958c5dbdcae8c5177bfa6dc6ccd8c5cf0",
+      "log_sha256": "0c163e9668f5f352e97b1b4d42d77f14bb7483a6318a18abedaffb3514c66887",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 44.2,
+      "seconds": 46.9,
       "verdict": "fail"
     },
     {
@@ -58,7 +58,7 @@
         "\"a message is leased only before its retention end\"",
         "\"a message enters the gap only from its retention end\""
       ],
-      "log_sha256": "280b2ea752e8946905fe6b0167d9bf84e29b7b41e6ec114eef442546cbde84b2",
+      "log_sha256": "e25206c3f02fccb2d2b5543f0d8c6484fff254a25150d7ed5654fec198c991a9",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -66,7 +66,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 81.8,
+      "seconds": 42.8,
       "verdict": "fail"
     }
   ],
@@ -85,7 +85,7 @@
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
       "src/native_queue/frontier.rs": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
       "src/native_queue/frontier/proofs.rs": "37e802f29edcffa39e47c59b735e0a98499c0887a62fc46ebd0fdcf05fb36ad5",
-      "src/native_queue/range.rs": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+      "src/native_queue/range.rs": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
       "verification/kani/controls/KANI-110-cancel-before-skip.patch": "8515ade6c7ba8447d8a198eaa08767963e0213c073774dd192a3cafef315af89",
       "verification/kani/controls/KANI-110-lease-past-retention.patch": "613eca16d755788b2018f6e73916dfae85e227d1a4101749d0447410d44b5229",
       "verification/kani/controls/KANI-110-wrapping-retention-end.patch": "87664c88948d88bd6ac19431748352620826f1bfcf03f62acafc74a9bde07a27"
@@ -178,10 +178,10 @@
       }
     }
   },
-  "inputs_sha256": "6c086cae903ee22841bac5f1c24caea8558c4a9354f3c4b71099d9d05bd3ff41",
+  "inputs_sha256": "0588e122d55616bad7c9ea969fa98c05bee65a50a5a02cb0db718a7ad762b66d",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b0be0a557d877c76bb61141924b90de3aafaf7db"
+    "revision": "c04ff650d0b00e05b503be3040e653a2d8d4dbb2"
   },
   "schema": 2,
   "tools": {

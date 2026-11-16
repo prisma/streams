@@ -6,27 +6,27 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "dfe21ee2068ac5260429aaefc84bdfd4e5ad296ed1b8e038b6d279f5d8f0a590",
+      "log_sha256": "7c00d744785ce0623715f105ac361fa9377934af08febeed9a9b047b0f012f77",
       "role": "baseline",
-      "seconds": 142.9,
+      "seconds": 147.4,
       "verdict": "pass"
     },
     {
       "check": "KANI-109/empty",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f50476fdfe29f18afccb051e7e0eda8ef7fb8e1ee59b6d86a20dd7b2ce7a193f",
+      "log_sha256": "bdd513ae4ecac3eb6b2217e99e8a32be781645aaacd821efe75101b1165125f6",
       "role": "baseline",
-      "seconds": 170.0,
+      "seconds": 58.6,
       "verdict": "pass"
     },
     {
       "check": "KANI-109/count",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "eddfad34f85273a3f3ba229fc2908a7dd5d3df020576392a87320c71d477aa89",
+      "log_sha256": "065632fca939d08e47962c82f2b6b77f229cdb91591cfda7ab6853ab06fc94a1",
       "role": "baseline",
-      "seconds": 73.7,
+      "seconds": 44.9,
       "verdict": "pass"
     },
     {
@@ -39,15 +39,15 @@
         "\"an untouched offset of the row is clear\"",
         "\"is_empty holds exactly when no offset is held\""
       ],
-      "log_sha256": "9b9b6c585c7b5ce15acf6c6fc743582c73f50cee70b08f1838e9f5549c4673c8",
+      "log_sha256": "7e444573eaff03adcdaa8cfa12395b00f1cc281582eadb9955d3fd01ea13aa14",
       "mutated": {
         "src/native_queue/range.rs": {
-          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
-          "control": "f83f53b63179a690f7e8a80dce40270bda2f5b7047773cdb62eff46eab7b0086"
+          "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
+          "control": "68d799743b752189de4857d41b2581d372fd97ec2bce261eb68dfea98a1fac31"
         }
       },
       "role": "negative-control",
-      "seconds": 56.2,
+      "seconds": 61.7,
       "verdict": "fail"
     },
     {
@@ -59,15 +59,15 @@
         "\"the bitmap holds exactly the offsets its last operations set\"",
         "\"is_empty holds exactly when no offset is held\""
       ],
-      "log_sha256": "212fd60b491a70f0255cd36ef3805492f32d322e3f64785bf0fcdd88fbd047dd",
+      "log_sha256": "5c028681599e8b32d1895b259b09af37c1e14f3191d055b454028735df2a131a",
       "mutated": {
         "src/native_queue/range.rs": {
-          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
-          "control": "edbd6f506e968fee3e5f98ebd4c58d15781e97e1264eb94f2d723e58b03a3fab"
+          "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
+          "control": "ecd4a11aba1e3686e249dc4d24f53d30c0a28c01aba10a99ea6613d6a010393c"
         }
       },
       "role": "negative-control",
-      "seconds": 84.0,
+      "seconds": 61.3,
       "verdict": "fail"
     },
     {
@@ -76,15 +76,15 @@
       "failed_checks": [
         "\"count is zero exactly when the bitmap is empty\""
       ],
-      "log_sha256": "2e889d5f2d1da4778a33dd18c849ae00b8fadbd51419abc26ebe768d3b94c963",
+      "log_sha256": "e4a3227996330acc2f67c8043c5d4cea44c66216387e9c508f69a540f608aad4",
       "mutated": {
         "src/native_queue/range.rs": {
-          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
-          "control": "1ed72a6e3d884b788c21b8a6ed9dedcda39e5186d85d6ffb1c692832f9bc78d8"
+          "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
+          "control": "29cf33f2bb33b798411e95a7d8a87a6d3758a8b29c33de90e38e52b9d6395f0f"
         }
       },
       "role": "negative-control",
-      "seconds": 66.5,
+      "seconds": 48.1,
       "verdict": "fail"
     },
     {
@@ -93,15 +93,15 @@
       "failed_checks": [
         "\"a row is empty exactly when it holds nothing\""
       ],
-      "log_sha256": "27145464664b54d28d9ec44cfe9fddadecd06d67ed3e23749ccb9777bf95545d",
+      "log_sha256": "f97d28cc2913e20a07a90bbdc1367f100a1e075f4b1f1269d665125772fe366b",
       "mutated": {
         "src/native_queue/range.rs": {
-          "baseline": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
-          "control": "1141b1b813c2f72281665952634b049559daa67f09885fe071c148cfee992cd8"
+          "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
+          "control": "bdb2cc6342eabaa5525f7b2215e440d182eec3fa0efe892bff323e0b674a118e"
         }
       },
       "role": "negative-control",
-      "seconds": 83.5,
+      "seconds": 55.7,
       "verdict": "fail"
     }
   ],
@@ -118,7 +118,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/native_queue/range.rs": "5821ad11a4283104bd74846d1364596d4dc8181d997a7e8ffcba2f316410e183",
+      "src/native_queue/range.rs": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
       "src/native_queue/range/proofs.rs": "43c1ba49aa19d67124d9c426946205b3dbfaefc0cccdb98559fcbac0c51e32b1",
       "verification/kani/controls/KANI-109-bits-alias-across-words.patch": "460ac140d8c96f4dc718818a9d11fdc42c7bbb2482b26917480380e7bfc3c7a4",
       "verification/kani/controls/KANI-109-clear-keeps-the-bit.patch": "e47c5476163743fdb9c1d827084f5d21811a6d864467d75f923d0f3127ba71cc",
@@ -213,10 +213,10 @@
       }
     }
   },
-  "inputs_sha256": "d3da38830d2072325c2b19d3d58748040762f1c83a6cbb642eac4d1a5950cf11",
+  "inputs_sha256": "23cfc4b89750b26cc15f42eb34ab535bb2714c6589e5525ee15dac0b49698026",
   "run_on": {
     "dirty_tree": false,
-    "revision": "b0be0a557d877c76bb61141924b90de3aafaf7db"
+    "revision": "c04ff650d0b00e05b503be3040e653a2d8d4dbb2"
   },
   "schema": 2,
   "tools": {
