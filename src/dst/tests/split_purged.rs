@@ -17,7 +17,7 @@ use crate::spill::object::ObjectId;
 use std::collections::BTreeMap;
 
 /// Each object's `'R'` row of `engine`: its live chunks and bytes.
-async fn counted(engine: &crate::shard::ShardEngine) -> BTreeMap<ObjectId, (u64, u64)> {
+pub(super) async fn counted(engine: &crate::shard::ShardEngine) -> BTreeMap<ObjectId, (u64, u64)> {
     let rows = engine.refcount_rows().await.unwrap();
     rows.into_iter()
         .filter_map(|(id, r)| Some((id, r.map(|r| (r.live_chunks, r.live_bytes))?)))
