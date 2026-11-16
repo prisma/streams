@@ -446,6 +446,12 @@ async fn parked_pulls_never_reach_the_heartbeat() {
         },
     )
     .await;
+    // A fleet instance opens nothing before a view (edge change #263): this instance alone, as a
+    // tick that has read only its own beat would publish, opens it; the fleet's tick replaces it.
+    rig.state.ownership.set_view(
+        vec!["streams-1".to_string()],
+        std::collections::HashMap::new(),
+    );
     assert!(matches!(
         rig.state
             .shards

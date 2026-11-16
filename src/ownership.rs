@@ -27,6 +27,10 @@ pub(crate) fn ring_pick(shard: &str, instances: &[String]) -> usize {
     best
 }
 
+/// The retryable refusal's code while a fleet instance awaits its first view
+/// (`OwnershipService::awaits_view`): the product answers it `503 temporarily_unavailable`.
+pub(crate) const NO_VIEW: &str = "no_ring_view";
+
 /// The ownership view a parked session compares against (Round-11.4:
 /// when it changes, every parked SSE session re-checks its source).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -48,18 +52,44 @@ struct Inner {
     /// This instance's name. Empty = the ownership check is disabled
     /// (fleet mode off or bootstrapping): everyone may serve everything.
     instance: String,
+    /// Whether this instance runs with a fleet. Then an empty view means
+    /// "not known yet", never "mine" (`awaits_view`).
+    fleet: bool,
     // Ring and overrides are one authority snapshot, replaced under one lock.
     view: RwLock<OwnershipView>,
 }
 
 impl OwnershipService {
+    /// A fleet-off service: production mints every service through `FleetRepository::ownership`.
+    #[cfg(test)]
     pub(crate) fn new(instance: impl Into<String>) -> Self {
+        Self::of_fleet(instance, false)
+    }
+
+    /// The ownership of an instance that runs with a fleet when `fleet` holds: it opens nothing
+    /// until the fleet tick publishes its first view (`awaits_view`).
+    pub(crate) fn of_fleet(instance: impl Into<String>, fleet: bool) -> Self {
         Self {
             inner: Arc::new(Inner {
                 instance: instance.into(),
+                fleet,
                 view: RwLock::new(OwnershipView::default()),
             }),
         }
+    }
+
+    /// Whether this instance may not open a shard yet: it runs with a fleet and its view names no
+    /// member. In fleet mode an empty view means "not known", never "mine"
+    /// (DESIGN-DECISION-c3-incomplete-rig Addendum 9, decided by GATE-DECISION-meas149-reshaping
+    /// F3): an open then would fence the owner the fleet has not yet named. A view that cannot be
+    /// read is not known either. Fleet off, the ring is never published and this never holds.
+    pub(crate) fn awaits_view(&self) -> bool {
+        self.inner.fleet
+            && !self
+                .inner
+                .view
+                .read()
+                .is_ok_and(|view| !view.active.is_empty())
     }
 
     pub(crate) fn instance(&self) -> &str {
@@ -223,6 +253,33 @@ mod tests {
         let unnamed = OwnershipService::new("");
         unnamed.set_ring_active(names(&["a", "b"]));
         assert_eq!(unnamed.effective_owner("00"), None);
+    }
+
+    /// A fleet instance awaits its view until one names a member, and again while a view it
+    /// cannot read stands; fleet off never does, whatever its view.
+    #[test]
+    fn only_a_fleet_instance_with_no_view_awaits_one() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let fleet = OwnershipService::of_fleet("a", true);
+        assert!(fleet.awaits_view(), "no view yet");
+        fleet.set_view(names(&["a"]), HashMap::new());
+        assert!(!fleet.awaits_view(), "a view of this instance alone");
+        fleet.set_view(names(&["b"]), HashMap::new());
+        assert!(!fleet.awaits_view(), "a view of another member");
+        fleet.set_view(Vec::new(), HashMap::new());
+        assert!(fleet.awaits_view(), "a view that names no member");
+        let single = OwnershipService::new("a");
+        assert!(!single.awaits_view(), "fleet off, no view");
+        let poisoned = OwnershipService::of_fleet("a", true);
+        poisoned.set_view(names(&["a"]), HashMap::new());
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let _view = poisoned.inner.view.write().unwrap();
+                panic!("interrupt a publication");
+            }))
+            .is_err()
+        );
+        assert!(poisoned.awaits_view(), "an unreadable view is not known");
     }
 
     /// The rendezvous pick is a pure function of (prefix, active set):

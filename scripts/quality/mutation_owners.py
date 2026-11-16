@@ -142,7 +142,8 @@ OWNERS = (
           ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'
           ' dst_tests::live_wait::'),
     owner('shard_directory', 'src/shard_directory.rs',
-          'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede::'),
+          'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede:: '
+          'dst_tests::shard_ownership::a_fleet_instance_opens_only_once_a_view_is_known'),
     owner('storage_close', 'src/shard/storage_close.rs', 'shard::storage_close::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
@@ -454,7 +455,8 @@ OWNERS = (
     # /health and /readyz: each unready reason through the real route.
     owner('http_readiness', 'src/http/readiness.rs',
           'dst_tests::billing_readiness:: dst_tests::fence_yield:: '
-          'dst_tests::runtime_engine_lifecycle::r17a_each_required_engine_exit_changes_real_health_and_readyz'),
+          'dst_tests::runtime_engine_lifecycle::r17a_each_required_engine_exit_changes_real_health_and_readyz '
+          'dst_tests::shard_ownership::a_fleet_instance_is_unready_until_its_first_view'),
     owner('http_close_identity', 'src/http/close_identity.rs', 'http::close_identity:: dst_tests::seal_fencing:: dst_tests::seal_coordination:: dst_tests::security_seal::'),
     owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver::'),
     # F1-a's relaying sender (82a14a8f); the owner approved the row on 2026-10-02.

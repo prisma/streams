@@ -79,6 +79,14 @@ impl FleetRepository {
         self.store.is_some()
     }
 
+    /// The ownership service of `instance` in this runtime: a fleet's when this repository has a
+    /// coordination store, so in fleet mode it opens no shard before its first ring view (edge
+    /// change #263). The object that holds the store states whether there is one, as for every
+    /// other reader of the fleet (PR 6.1.1-C).
+    pub(crate) fn ownership(&self, instance: String) -> crate::ownership::OwnershipService {
+        crate::ownership::OwnershipService::of_fleet(instance, self.enabled())
+    }
+
     // -- this instance's own heartbeat ---------------------------------
 
     pub(crate) async fn publish_heartbeat(
@@ -604,6 +612,26 @@ mod population_tests {
 #[cfg(test)]
 #[path = "repository/document_tests.rs"]
 mod document_tests;
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::FleetRepository;
+
+    /// A repository with a coordination store mints a fleet's ownership service, which awaits
+    /// its first view; one without mints a fleet-off service, which never does.
+    #[test]
+    fn a_repository_with_a_store_mints_a_fleets_ownership() {
+        let store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let fleet = FleetRepository::new(Some(store)).ownership("streams-1".to_string());
+        let single = FleetRepository::new(None).ownership("streams".to_string());
+        assert_eq!((fleet.instance(), fleet.awaits_view()), ("streams-1", true));
+        assert_eq!(
+            (single.instance(), single.awaits_view()),
+            ("streams", false)
+        );
+    }
+}
 
 #[cfg(test)]
 mod viewed_tests {

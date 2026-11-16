@@ -110,6 +110,17 @@
     "scenarios": []
   },
   {
+    "name": "a_booting_member_opens_nothing_before_its_first_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "61ac904fef8c6832aaf65f5f5cc17e3f0ecf57a4780f504ca88e0677cd63ea29",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shard_ownership.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_born_home_whose_log_is_missing_is_refused_not_served_empty",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1103,6 +1114,28 @@
     "scenarios": []
   },
   {
+    "name": "a_fleet_instance_is_unready_until_its_first_view",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "23415c2ec78514405093cecf13289961a75e8c594b6b22567cfdd382f501c037",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shard_ownership.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_fleet_instance_opens_only_once_a_view_is_known",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "cd3cde9a5c537282d1193bfc4b1aa9ae6bc19d07e05de8f007dc6460ef86d379",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/shard_ownership.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fleet_of_one_has_no_peer_to_hand_off_to",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1434,7 +1467,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a72784e0e5d5935a11659285924e91da574d5b3d0511b334d66e9ce5b1b867ff",
+    "function_sha256": "3553f400dbb464b5a936b62f260bcc276e341b0c8f3b21d85741f1b43f9e1918",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -1887,7 +1920,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6ae0896c6ea6945acc30d06ada0e6d7cf79b2395261e9f6d2fee58b0b40eb3ca",
+    "function_sha256": "f7a8458d5c5e89061bc38dbad647118b82c1d368457f70e637054203926ee5d0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
@@ -5340,7 +5373,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "54e9ba7d18b7561061d8f316249f7d802fa419f180e9077a9b13762bfb18e21f",
+    "function_sha256": "0e3dfb1d6f1d19870585442706414cdc26111915cddda01cf1e248977a7c38c4",
     "mechanisms": [],
     "configuration": [
       "r#\"{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#.to_string(),"
@@ -8378,7 +8411,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "b61827b3cf9c36184128c7f16f338e1dd72d9e07e97e497d8e7c1d2883c78056",
+    "function_sha256": "021900f18b1f367ed8002d8d2952a42b4b7bdb99dde7ac0bfd3b179225a867a3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/parked_waits.rs",

@@ -7,7 +7,9 @@
 (* overrides, reduced to "which node does this node believe owns the        *)
 (* prefix"; "none" = no ring: single-instance or bootstrapping mode, where  *)
 (* effective_owner() is None and the node serves everything). The fleet's  *)
-(* authority (`desired`) moves by override; views observe it late.          *)
+(* authority (`desired`) moves by override; views observe it late. In      *)
+(* fleet mode "none" means "not known": a node opens nothing until a view  *)
+(* names it (OwnershipService::awaits_view, edge change #263).             *)
 (*                                                                          *)
 (* A node serves the prefix through at most one shard engine at a time      *)
 (* (sharddir.rs::OpenGate single-flight + `closing` gate), opened by        *)
@@ -114,6 +116,10 @@ vars == <<desired, view, moves, eng, nEng, resident, epochCtr, wal, crashes,
 IsMine(n) == view[n] \in {"none", n}
 (* The managed ring explicitly names this node (not bootstrapping).        *)
 RingSaysMine(n) == view[n] = n
+(* Who may open the prefix (ShardDirectory::resolve and open_or_wait): in  *)
+(* fleet mode only a node whose view names it; a fleet node with no view   *)
+(* (a restart before its first tick) opens nothing. Single mode: anyone.  *)
+MayOpen(n) == IF Mode = "fleet" THEN RingSaysMine(n) ELSE IsMine(n)
 Min(a, b) == IF a < b THEN a ELSE b
 MaxBuf == Cardinality(Reqs) + MaxTries  \* no buffer is ever longer
 Other(n) == CHOOSE m \in Nodes : m # n
@@ -330,7 +336,7 @@ Terminate(e) ==
 
 (* ---------------- opening (Db::builder().build()) ---------------- *)
 OpenStart(n) ==
-    /\ IsMine(n) /\ resident[n] = 0 /\ nEng < MaxEngines
+    /\ MayOpen(n) /\ resident[n] = 0 /\ nEng < MaxEngines
     /\ ~\E f \in EngIds : eng[f].node = n /\ eng[f].st \in {"epoch", "fenced", "closed"}
     /\ nEng' = nEng + 1
     /\ epochCtr' = epochCtr + 1
