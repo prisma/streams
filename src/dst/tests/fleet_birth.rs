@@ -414,13 +414,18 @@ async fn overrides_of(rig: &HttpRig) -> crate::fleet::Overrides {
 /// The children's entries, which name the actor, stamped back past the return window, by CAS.
 async fn age_the_children(a: &crate::http::AppState) {
     let window_ms = i64::try_from(a.config.fleet.rebalance_return_secs).unwrap() * 1000;
+    age_entries(a, &["0", "1"], "streams-1", window_ms + 60_000).await;
+}
+
+/// `children`'s entries, each naming `actor`, stamped `back_ms` earlier, by CAS.
+async fn age_entries(a: &crate::http::AppState, children: &[&str], actor: &str, back_ms: i64) {
     let t0 = tokio::time::Instant::now();
     loop {
         let (mut aged, version) = a.fleet.read_overrides().await.unwrap();
-        for child in ["0", "1"] {
-            let entry = aged.entries.get_mut(child).expect("a born entry");
-            assert_eq!(entry.to, "streams-1", "{child} born on the actor");
-            entry.ms -= window_ms + 60_000;
+        for child in children {
+            let entry = aged.entries.get_mut(*child).expect("a born entry");
+            assert_eq!(entry.to, actor, "{child} born on the actor");
+            entry.ms -= back_ms;
         }
         let raw = serde_json::to_vec(&aged).unwrap();
         let doc = crate::fleet::FleetDocument::Overrides;
@@ -486,4 +491,144 @@ async fn exactly_one_child_returns_home_after_the_window() {
         "the actor keeps {kept} and handed {gone} off"
     );
     pair.shutdown().await;
+}
+
+/// Wait until the cell's intent at `state` is absent or terminal.
+async fn intent_ended(state: &crate::http::AppState) {
+    let t0 = tokio::time::Instant::now();
+    while crate::topology::intent::read(&*state.data_store)
+        .await
+        .unwrap()
+        .is_some_and(|held| !held.intent.is_terminal())
+    {
+        assert!(t0.elapsed() < BOUND, "the operation's intent ends");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Split `prefix` on `rig`, once it is settled, and wait until its installed leaves are `leaves`.
+async fn split_on(rig: &HttpRig, prefix: &str, leaves: &[&str]) {
+    let ops = rig.state.shards.topology_ops();
+    let started = crate::topology::ops::Handle::split(ops, String::from(prefix)).await;
+    assert!(
+        started.is_ok(),
+        "the split of {prefix:?} starts: {started:?}"
+    );
+    let t0 = tokio::time::Instant::now();
+    while rig.state.shards.prefixes().shards.shards != leaves {
+        assert!(t0.elapsed() < BOUND, "the split of {prefix:?} publishes");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    intent_ended(&rig.state).await;
+}
+
+/// **A born override does not pin a child past the return window** (F2, T6; A5). Three members,
+/// `streams-4` (the ring's owner of `""`), `streams-5` and `streams-6`: the actor `streams-4` splits
+/// `""`, then its child `1`, so the leaves `0`, `10` and `11`, all three ringed to `streams-6`, are
+/// born on it. Past the return window (the entries' stamps moved back) return-home gives
+/// `streams-6` one of them, its fair share of three leaves over three members; the actor still holds
+/// two by their overrides. Count balance, once its own move cooldown passed on the rig's clock,
+/// moves one of those to `streams-5`: every member holds one. Red with the addendum as written (a
+/// born override never movable): the actor holds two for ever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
+    let fleet = mem();
+    // The ring is the first `count` ordinal names that beat: a count of six over members 4-6.
+    let desired = r#"{"count":6,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
+    fleet
+        .put(&Path::from("fleet/desired.json"), PutPayload::from(desired))
+        .await
+        .unwrap();
+    let data = mem();
+    let names = ["streams-4", "streams-5", "streams-6"];
+    let mut rigs = Vec::new();
+    for (n, name) in names.iter().enumerate() {
+        let runtime = RigRuntime::incarnation(u64::try_from(n).unwrap());
+        rigs.push(member(&fleet, &data, name, runtime, true).await);
+    }
+    store_topology(&rigs[0]).await;
+    for rig in &rigs {
+        for (name, peer) in names.iter().zip(&rigs) {
+            rig.state
+                .peer
+                .set_peer(name, &format!("http://{}", peer.addr));
+        }
+    }
+    let t0 = tokio::time::Instant::now();
+    while rigs
+        .iter()
+        .any(|rig| rig.state.ownership.ring_active().len() < 3)
+    {
+        assert!(t0.elapsed() < BOUND, "every view names the three members");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let actor = &rigs[0];
+    let move_ms =
+        i64::try_from(actor.state.config.fleet.rebalance_move_cooldown_secs).unwrap() * 1000;
+    let window_ms = i64::try_from(actor.state.config.fleet.rebalance_return_secs).unwrap() * 1000;
+    split_on(actor, "", &["0", "1"]).await;
+    // Past the move cooldown (the cell's next split may start), within the return window.
+    age_entries(&actor.state, &["0", "1"], "streams-4", move_ms + 10_000).await;
+    split_on(actor, "1", &["0", "10", "11"]).await;
+    let owner = |p: &str| actor.state.ownership.effective_owner(p).unwrap_or_default();
+    let ringed = ["0", "10", "11"].map(|p| {
+        let active = actor.state.ownership.ring_active();
+        active[crate::ownership::ring_pick(p, &active)].clone()
+    });
+    assert_eq!(
+        ringed,
+        ["streams-6"; 3].map(str::to_string),
+        "all three ring to streams-6"
+    );
+    assert_eq!(
+        ["0", "10", "11"].map(owner),
+        ["streams-4"; 3].map(str::to_string),
+        "born"
+    );
+    age_entries(
+        &actor.state,
+        &["0", "10", "11"],
+        "streams-4",
+        window_ms + 60_000,
+    )
+    .await;
+    // Count balance paces itself on the rig's manual clock: its boot hold, one move cooldown.
+    let past_cooldown = u64::try_from(move_ms).unwrap() + 1_000;
+    actor
+        .clock
+        .advance_monotonic(Duration::from_millis(past_cooldown));
+    let spread = || {
+        let mut held = ["0", "10", "11"].map(owner);
+        held.sort();
+        held == names.map(str::to_string)
+    };
+    let bound = BOUND * 2;
+    let t0 = tokio::time::Instant::now();
+    while !spread() {
+        if t0.elapsed() >= bound {
+            let doc = actor.state.fleet.read_overrides().await.unwrap().0;
+            let entries: Vec<(&String, &str, i64)> = doc
+                .entries
+                .iter()
+                .map(|(p, e)| (p, e.to.as_str(), e.ms))
+                .collect();
+            let events: Vec<String> = doc
+                .pending_events
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect();
+            panic!(
+                "every member holds one of the three leaves: {:?}; entries {entries:?}; events {events:?}",
+                ["0", "10", "11"].map(owner)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    for rig in &rigs {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+    }
+    for rig in &rigs {
+        engine_shutdown(&rig.state).await;
+    }
 }

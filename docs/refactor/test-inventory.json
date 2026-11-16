@@ -132,6 +132,19 @@
     "scenarios": []
   },
   {
+    "name": "a_born_override_does_not_pin_a_child_past_the_return_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "654a6d67733feef021750174e6e1750ec7f2cd89def60d3309451d88a07eb77b",
+    "mechanisms": [],
+    "configuration": [
+      "let desired = r#\"{\"count\":6,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#;"
+    ],
+    "file": "src/dst/tests/fleet_birth.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
