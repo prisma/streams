@@ -32,6 +32,9 @@ pub(crate) const FAIL_EXPIRY: u8 = b'e';
 pub(crate) const DEDUP: u8 = b'u';
 /// Dedup expiry index: (expiresAt, tag).
 pub(crate) const DEDUP_EXPIRY: u8 = b'v';
+/// A released interval, by its `last` offset (part 2, gc-owned;
+/// `native_queue::intervals`).
+pub(crate) const RELEASED: u8 = b'k';
 
 /// Where a queue row's family byte sits: after the queue's hash and the
 /// `'Q'` family byte.

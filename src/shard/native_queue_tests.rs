@@ -23,6 +23,7 @@ mod sealed;
 mod slices;
 mod sweeps;
 mod touched;
+mod trim;
 mod unlease;
 
 const HASH: [u8; 16] = [9; 16];

@@ -9,6 +9,7 @@
 pub(crate) mod compaction_guard;
 pub(crate) mod frontier;
 pub(crate) mod hints;
+pub(crate) mod intervals;
 pub(crate) mod keys;
 pub(crate) mod range;
 pub(crate) mod rows;

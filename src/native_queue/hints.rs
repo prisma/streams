@@ -87,9 +87,7 @@ pub(crate) fn encode(ranges: &[(u64, u64)]) -> Vec<u8> {
 }
 
 /// A hint row's ranges; refused unless it holds 1 to 8 sorted, disjoint,
-/// non-empty ranges and nothing else. Only tests read hint rows until the
-/// trim pass does (part 2 step 3).
-#[cfg(test)]
+/// non-empty ranges and nothing else.
 pub(crate) fn decode(raw: &[u8]) -> Result<Vec<(u64, u64)>, String> {
     let (&n, body) = raw.split_first().ok_or("an empty trim hint")?;
     let n = usize::from(n);

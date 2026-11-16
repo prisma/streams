@@ -371,7 +371,7 @@ const QUEUE_FAMILIES: [u8; 13] = [
     keys::DEDUP_EXPIRY,
     b't', // the queue stream's tail (`shard::queue_tail_key`)
     keys::RANGE,
-    b'k', // released interval (S3b)
+    keys::RELEASED,
 ];
 
 #[test]

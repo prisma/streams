@@ -254,7 +254,7 @@ pub(super) fn merged(
                 .ok_or_else(|| FoldError::Verify("footer".into()))?;
             entries.extend(input_run(input, f)?);
         }
-        let (kept, d) = kept_entries(entries, reclaimed.get(&hash).copied().unwrap_or(0));
+        let (kept, d) = kept_entries(entries, reclaimed.get(&hash));
         dropped += d;
         if !kept.is_empty() {
             writer.push(hash, &kept).map_err(FoldError::Format)?;

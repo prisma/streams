@@ -134,8 +134,18 @@ impl ShardEngine {
     /// A sealed read's whole chunks of `hash`, in offset order: queue each
     /// run worth consolidating, within the process's consolidation budget;
     /// none when the queue or the budget is full.
+    /// Whether `hash` is a native queue's stream, whose chunks never join:
+    /// its released intervals rely on its chunks tiling its offsets
+    /// (S3b-DESIGN §7.4). A poisoned map counts as one: nothing is offered.
+    fn is_queue_stream(&self, hash: &[u8; 16]) -> bool {
+        self.streams.lock().map_or(true, |map| {
+            map.get(hash)
+                .is_some_and(|h| h.native_queue.load(Ordering::Relaxed))
+        })
+    }
+
     pub(crate) fn offer_consolidation(&self, hash: [u8; 16], chunks: Vec<(DirEntry, Bytes)>) {
-        if chunks.len() < MIN_CHUNKS {
+        if chunks.len() < MIN_CHUNKS || self.is_queue_stream(&hash) {
             return;
         }
         for run in runs_to_consolidate(chunks) {

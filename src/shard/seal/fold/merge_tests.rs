@@ -172,7 +172,7 @@ fn a_merge_drops_the_entries_a_later_chunk_contains_and_sums_its_inputs() {
     let p = &built.pointer;
     assert_eq!((p.level, p.runs, p.entries, p.seals), (1, 2, 2, 5));
     assert_eq!(p.orphans, o(3, 30));
-    let reclaimed = Reclaimed::from([(a, 8)]);
+    let reclaimed = Reclaimed::from([(a, crate::native_queue::intervals::Released::new(8, &[]))]);
     let built = merged(
         ObjectId {
             home: 0,
@@ -242,7 +242,7 @@ fn run_of(built: &super::Built, hash: [u8; 16]) -> Vec<DirEntry> {
 #[test]
 fn a_fold_and_a_merge_keep_the_newer_of_two_chunks_of_one_span() {
     for (x, y) in [(5, 9), (9, 5)] {
-        let (kept, dropped) = super::kept_entries(vec![entry(x, 0, 7), entry(y, 0, 7)], 0);
+        let (kept, dropped) = super::kept_entries(vec![entry(x, 0, 7), entry(y, 0, 7)], None);
         let objects: Vec<u64> = kept.iter().map(|e| e.object.seq).collect();
         assert_eq!((objects, dropped), (vec![9], 1), "fold of {x}, {y}");
         let a = [0xC3; 16];

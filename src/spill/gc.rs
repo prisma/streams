@@ -243,6 +243,11 @@ pub(crate) enum HeadState {
     /// The stream's tail and pending rows are gone; `head` was its next
     /// offset then.
     Purged,
+    /// A live queue's trim (S3b-DESIGN §7.3): `head` is the frontier the
+    /// last trim pass read, and the chunks below `reclaimed` and inside the
+    /// queue's released intervals are decremented. No purge acts on it
+    /// until a purge is requested, which keeps `reclaimed`.
+    Trimming,
 }
 
 /// A dead stream's reclamation state.
@@ -263,6 +268,16 @@ impl Head {
             not_before_ms,
             head: 0,
             reclaimed: 0,
+        }
+    }
+
+    /// A queue's trim state: what its last pass read and released.
+    pub(crate) fn trimming(head: u64, reclaimed: u64) -> Self {
+        Self {
+            state: HeadState::Trimming,
+            not_before_ms: 0,
+            head,
+            reclaimed,
         }
     }
 
@@ -292,6 +307,7 @@ pub(crate) fn encode_head(h: &Head) -> Vec<u8> {
     let state = match h.state {
         HeadState::Requested => 0,
         HeadState::Purged => 1,
+        HeadState::Trimming => 2,
     };
     let mut v = vec![VERSION, state];
     for n in [h.not_before_ms, h.head, h.reclaimed] {
@@ -305,6 +321,7 @@ pub(crate) fn decode_head(raw: &[u8]) -> Option<Head> {
     let state = match state {
         0 => HeadState::Requested,
         1 => HeadState::Purged,
+        2 => HeadState::Trimming,
         _ => return None,
     };
     let mut next = || get_varint(&mut input);

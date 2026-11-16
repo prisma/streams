@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use object_store::{PutMode, PutOptions, PutPayload};
 use slatedb::WriteBatch;
 
+use crate::native_queue::intervals::Released;
 use crate::shard::ShardEngine;
 use crate::spill::budget::{DIRECTORY_FOLD_BYTES, MERGE_BUFFER_BYTES, PROCESS_DIRECTORY_BYTES};
 use crate::spill::directory::{self, DirEntry};
@@ -448,11 +449,13 @@ impl ShardEngine {
         Ok(report)
     }
 
-    /// The `reclaimed` offset of each of `hashes` that is a dead stream
-    /// (`spill::gc`): a fold or merge drops the entries ending below it,
-    /// every one of them already decremented. One point read per stream
-    /// (an absent `'H'` row costs a bloom probe; the gc's `head_reads`),
-    /// none on a shard with no `'H'` row.
+    /// What each of `hashes` that is a dead stream or a trimming queue
+    /// released (`spill::gc`, `native_queue::intervals`): a fold or merge
+    /// drops the entries ending below its `reclaimed` offset and, for a
+    /// queue, those inside its released intervals, every one of them
+    /// already decremented. One point read per stream (an absent `'H'` row
+    /// costs a bloom probe; the gc's `head_reads`) and one prefix read of a
+    /// trimming queue's intervals, none on a shard with no `'H'` row.
     pub(crate) async fn reclaimed_heads(
         &self,
         hashes: impl IntoIterator<Item = [u8; 16]>,
@@ -471,10 +474,24 @@ impl ShardEngine {
                 .await
                 .map_err(|e| FoldError::Store(e.to_string()))?;
             if let Some(h) = head {
-                out.insert(hash, h.reclaimed);
+                out.insert(hash, self.released_of(&hash, &h).await?);
             }
         }
         Ok(out)
+    }
+
+    /// What a stream with the `'H'` row `h` released: its prefix, and a
+    /// trimming queue's intervals above it.
+    async fn released_of(
+        &self,
+        hash: &[u8; 16],
+        h: &crate::spill::gc::Head,
+    ) -> Result<Released, FoldError> {
+        if h.state != crate::spill::gc::HeadState::Trimming {
+            return Ok(Released::new(h.reclaimed, &[]));
+        }
+        let intervals = self.intervals(hash).await.map_err(FoldError::Store)?;
+        Ok(Released::new(h.reclaimed, &intervals))
     }
 
     /// F1: the oldest `max` directory rows and every orphan row; rows that
@@ -667,14 +684,20 @@ pub(super) fn fold_rule(period_due: bool, bytes: u64, process: u64, directory_by
         || (process >= PROCESS_DIRECTORY_BYTES && bytes >= DIRECTORY_FOLD_BYTES / 8)
 }
 
-/// Each dead stream's `reclaimed` offset.
-pub(crate) type Reclaimed = BTreeMap<[u8; 16], u64>;
+/// What each dead stream and trimming queue released.
+pub(crate) type Reclaimed = BTreeMap<[u8; 16], Released>;
 
-/// F2: one stream's entries, sorted for and stripped of contained ones and
-/// of those ending below its `reclaimed` offset.
-pub(super) fn kept_entries(mut entries: Vec<DirEntry>, reclaimed: u64) -> (Vec<DirEntry>, u64) {
+/// F2: one stream's entries, sorted for and stripped of contained ones, of
+/// those ending below its `reclaimed` offset and of those inside a queue's
+/// released intervals.
+pub(super) fn kept_entries(
+    mut entries: Vec<DirEntry>,
+    released: Option<&Released>,
+) -> (Vec<DirEntry>, u64) {
     let before = entries.len();
-    entries.retain(|e| e.last >= reclaimed);
+    if let Some(r) = released {
+        entries.retain(|e| e.last >= r.reclaimed && !r.inside(e.first, e.last));
+    }
     let dead = (before - entries.len()) as u64;
     sort_for_drop(&mut entries, span_of);
     let spans: Vec<Span> = entries.iter().map(span_of).collect();
@@ -718,7 +741,7 @@ fn build_fold(
     let mut writer = ObjectWriter::new();
     let mut dropped = 0;
     for (hash, entries) in streams {
-        let (kept, d) = kept_entries(entries, reclaimed.get(&hash).copied().unwrap_or(0));
+        let (kept, d) = kept_entries(entries, reclaimed.get(&hash));
         dropped += d;
         if !kept.is_empty() {
             writer.push(hash, &kept).map_err(FoldError::Format)?;

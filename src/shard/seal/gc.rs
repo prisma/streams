@@ -53,6 +53,7 @@ mod root_tests;
 mod sweep;
 #[cfg(test)]
 mod sweep_tests;
+pub(crate) mod trim;
 
 /// When the garbage collector runs and how long it waits.
 #[derive(Clone, Copy, Debug)]
@@ -626,6 +627,7 @@ impl ShardEngine {
         if let Ok(heads) = self.head_rows().await {
             let owing: Vec<u64> = heads
                 .iter()
+                .filter(|(_, h)| h.state != gc::HeadState::Trimming)
                 .filter(|(_, h)| h.state == gc::HeadState::Requested || h.owes())
                 .map(|(_, h)| h.not_before_ms)
                 .collect();
@@ -688,6 +690,10 @@ impl ShardEngine {
             if let Err(e) = released {
                 tracing::warn!(shard = %self.prefix, "release pass stopped: {e}");
             }
+        }
+        // A trim rewrites no object: it runs while collection is off too.
+        if let Err(e) = self.trim_pass().await {
+            tracing::warn!(shard = %self.prefix, "trim pass stopped: {e}");
         }
         if let Err(e) = self.clean_pass().await {
             tracing::warn!(shard = %self.prefix, "clean pass stopped: {e}");

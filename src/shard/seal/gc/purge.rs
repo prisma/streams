@@ -51,7 +51,9 @@ impl ShardEngine {
     /// Ask for the purge of a dead incarnation's segment `hash`, closed at
     /// `close_ms`: it runs once `purge_delay` passed that instant.
     /// Idempotent: a row already there is kept (an earlier instant stays; a
-    /// purged stream stays purged). `Busy` at once while a split holds the
+    /// purged stream stays purged), except a queue's Trimming row, which
+    /// becomes Requested with its `head` and `reclaimed` kept: what the trim
+    /// decremented stays decremented (S3b-DESIGN §5.9). `Busy` at once while a split holds the
     /// gate (`topology::gate`): before `refs`, whose holder may be waiting
     /// at the gate, and again for the batch.
     pub(crate) async fn request_purge(&self, hash: [u8; 16], close_ms: u64) -> Result<(), GcError> {
@@ -61,18 +63,21 @@ impl ShardEngine {
         }
         let not_before_ms = close_ms.saturating_add(super::duration_ms(gc.settings().purge_delay));
         let _refs = gc.refs.lock().await;
-        if self.head_row(&hash).await?.is_some() {
-            return Ok(());
-        }
+        let row = match self.head_row(&hash).await? {
+            Some(h) if h.state == HeadState::Trimming => Head {
+                state: HeadState::Requested,
+                not_before_ms,
+                ..h
+            },
+            Some(_) => return Ok(()),
+            None => Head::requested(not_before_ms),
+        };
         // A final source (its `'T'` written) takes no batch: `Busy`, as while a split holds it.
         let Some(shared) = gc.gate.try_shared().filter(|_| !gc.gate.is_final()) else {
             return Err(GcError::Busy);
         };
         let mut batch = WriteBatch::new();
-        batch.put(
-            gc::head_key(&hash),
-            gc::encode_head(&Head::requested(not_before_ms)),
-        );
+        batch.put(gc::head_key(&hash), gc::encode_head(&row));
         self.write_index_batch_held(batch, &shared)
             .await
             .map_err(|e| GcError::Store(e.to_string()))?;
@@ -140,7 +145,9 @@ impl ShardEngine {
     pub(crate) async fn purge_due(&self) -> Result<u64, GcError> {
         let mut waiting = 0;
         for (hash, head) in self.head_rows().await? {
-            if head.state != HeadState::Requested && !head.owes() {
+            // A live queue's trim owes nothing a purge settles (§7.4).
+            let trimming = head.state == HeadState::Trimming;
+            if trimming || (head.state != HeadState::Requested && !head.owes()) {
                 continue;
             }
             match self.purge_stream(hash).await {
@@ -174,6 +181,9 @@ impl ShardEngine {
         let Some(mut head) = self.head_row(&hash).await? else {
             return Ok(PurgeOutcome::NotDue);
         };
+        if head.state == HeadState::Trimming {
+            return Ok(PurgeOutcome::NotDue);
+        }
         if head.state == HeadState::Requested {
             if head.not_before_ms > now_ms {
                 return Ok(PurgeOutcome::NotDue);
