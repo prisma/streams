@@ -11275,6 +11275,17 @@
     "scenarios": []
   },
   {
+    "name": "the_pause_reads_no_run_index_object_preparing_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4fc308593a4d80fdb17f7f92bef4b82bd90e54752a50623cc8b19b27214112b0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_pause_sequence_quiesces_writers_and_its_rollback_resumes_them",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

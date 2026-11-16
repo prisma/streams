@@ -68,7 +68,11 @@ pub(super) async fn cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell
 
 /// `cell` whose sealers never seal on their own: only a requested seal runs (the park probes).
 pub(super) async fn cold_cell() -> Cell {
-    let store = mem();
+    cold_cell_over(mem()).await
+}
+
+/// `cold_cell`, over `store`.
+pub(super) async fn cold_cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
     let runtime = super::fixture_runtime::RigRuntime::first();
     let rigged = http_rig_two_bit_cold(store.clone(), None, runtime).await;
     cell_of(store, rigged).await
