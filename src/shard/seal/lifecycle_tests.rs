@@ -785,3 +785,46 @@ async fn an_open_with_nothing_unsealed_seals_nothing() {
     read_all(&rig, &oracle).await;
     rig.engine.begin_close();
 }
+
+/// **A seal its stream moved away from is refused whole**
+/// (`transaction::seal`): the stream's sealed boundary stands at 0, so a
+/// seal of `[1, 2)` (a snapshot it no longer matches) is answered "moved
+/// since its snapshot" and changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_seal_its_stream_moved_away_from_is_refused() {
+    let rig = rig_with("moved", manual(), 1 << 20, Duration::from_millis(2)).await;
+    let hash = [0x5E; 16];
+    let records = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    append(&rig.engine, hash, records).await;
+    let id = crate::spill::object::ObjectId {
+        home: 0,
+        epoch: rig.engine.writer_epoch,
+        seq: u64::MAX,
+    };
+    let (resp, refusal) = tokio::sync::oneshot::channel();
+    let commit = super::SealCommit::Seal(super::SealBatch {
+        dir_key: crate::spill::directory::directory_key(id),
+        dir_value: Vec::new(),
+        ref_key: crate::spill::gc::refcount_key(id),
+        ref_value: Vec::new(),
+        streams: vec![super::SealAdvance {
+            hash,
+            from: 1,
+            upto: 2,
+            bytes: 1,
+            snapshot_remainder: Vec::new(),
+        }],
+        resp,
+    });
+    let seal = crate::shard::CommitOp::Seal(Box::new(commit));
+    rig.engine.commit_group(vec![seal]).await;
+    let why = refusal.await.expect("a refused seal is answered");
+    assert!(why.contains("moved since its snapshot"), "{why}");
+    let key = crate::spill::gc::refcount_key(id);
+    assert_eq!(
+        rig.engine.db.get(key).await.unwrap(),
+        None,
+        "no row of its own"
+    );
+    rig.engine.begin_close();
+}
