@@ -38,6 +38,9 @@ pub(crate) enum PlanError {
     Unrouted(Vec<u8>),
     /// A `'K'`, `'R'`, `'O'` or `'H'` row that does not decode.
     Corrupt(Vec<u8>),
+    /// A stream's index entries the reclaim's live set refuses (`gc::live_entries`: two chunks of
+    /// one span in one object).
+    Index(String),
     /// The children's counts of an object do not sum to the source's (S4-DESIGN §6.2 step 2.2):
     /// the split rolls back.
     Mismatch(ObjectId),
@@ -51,6 +54,7 @@ impl std::fmt::Display for PlanError {
             Self::Retired => f.write_str("the source holds 'T': a retired parent"),
             Self::Unrouted(key) => write!(f, "no child holds {}", crate::crypto::hex(key)),
             Self::Corrupt(key) => write!(f, "undecodable row {}", crate::crypto::hex(key)),
+            Self::Index(why) => write!(f, "a stream's index entries: {why}"),
             Self::Mismatch(id) => write!(
                 f,
                 "the children's counts of {id:?} do not sum to the source's"
@@ -163,21 +167,21 @@ impl Released {
 
 /// The counts of the child of `range`, from a source's sentinel `rows` (its `'K'`, `'R'` and `'O'`)
 /// and the `(hash, entry)` pairs of the source's run-index objects (the footers its `'I'` rows
-/// name): the entries whose entity hash the range holds and whose stream has not `released` them,
-/// each `'K'` row decoded whole so every kept chunk keeps the offset the row gives it
-/// (K-SPLIT-DECISION-2026-11-09).
+/// name): per stream whose entity hash the range holds, its live chunks as the reclaim counts them
+/// (`gc::live_entries`: a chunk a consolidation or a cleaner's copy superseded is dropped, though
+/// its entry stays in a `'K'` row or a run until a fold or merge drops it), less those the stream
+/// has `released`; each `'K'` row decoded whole so every kept chunk keeps the offset the row gives
+/// it (K-SPLIT-DECISION-2026-11-09).
 pub(crate) fn child_counts(
     rows: &[Row],
     run_entries: &[([u8; 16], DirEntry)],
     range: Range,
     released: &Released,
 ) -> Result<Counts, PlanError> {
-    let live = |hash: &[u8; 16], entry: &DirEntry| {
-        range.contains(EntityHash::from_stored(*hash)) && !released.holds(hash, entry)
-    };
+    let in_range = |hash: &[u8; 16]| range.contains(EntityHash::from_stored(*hash));
     let mut parent: BTreeMap<ObjectId, Refcount> = BTreeMap::new();
     let mut orphans: BTreeMap<ObjectId, Orphans> = BTreeMap::new();
-    let mut entries: Vec<DirEntry> = Vec::new();
+    let mut streams: BTreeMap<[u8; 16], Vec<DirEntry>> = BTreeMap::new();
     let mut first: BTreeMap<ObjectId, [u8; 16]> = BTreeMap::new();
     for (key, value) in rows {
         let corrupt = || PlanError::Corrupt(key.clone());
@@ -188,8 +192,9 @@ pub(crate) fn child_counts(
                 if let Some((hash, _)) = whole.first() {
                     first.entry(id).or_insert(*hash);
                 }
-                let kept = whole.into_iter().filter(|(hash, entry)| live(hash, entry));
-                entries.extend(kept.map(|(_, entry)| entry));
+                for (hash, entry) in whole.into_iter().filter(|(hash, _)| in_range(hash)) {
+                    streams.entry(hash).or_default().push(entry);
+                }
             }
             Some(tag::REFCOUNT) => {
                 let id = directory::parse_object_key(tag::REFCOUNT, key).ok_or_else(corrupt)?;
@@ -204,12 +209,18 @@ pub(crate) fn child_counts(
     }
     for (hash, entry) in run_entries {
         first.entry(entry.object).or_insert(*hash);
+        if in_range(hash) {
+            streams.entry(*hash).or_default().push(entry.clone());
+        }
     }
-    let in_range = run_entries
-        .iter()
-        .filter(|(hash, entry)| live(hash, entry))
-        .map(|(_, entry)| entry);
-    entries.extend(in_range.cloned());
+    let mut entries: Vec<DirEntry> = Vec::new();
+    for (hash, of_stream) in streams {
+        let live = gc::live_entries(of_stream).map_err(PlanError::Index)?;
+        entries.extend(
+            live.into_iter()
+                .filter(|entry| !released.holds(&hash, entry)),
+        );
+    }
     let refcounts = gc::recompute::recompute(&entries, &parent);
     let takes = |id: &ObjectId| {
         first

@@ -3717,6 +3717,28 @@
     "scenarios": []
   },
   {
+    "name": "a_split_after_a_cleaners_copy_counts_the_copy_not_its_original",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "900211cdc7814c2ca973550ee2028509ed902374b74612c60a0a99182e973563",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_superseded.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_after_a_consolidation_of_folded_chunks_publishes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d1a604237f74d8d60a893aaf792d1f60bbb85e8ec019ca7f546c1ae0e706c3e6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_superseded.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_after_a_purge_of_folded_chunks_counts_only_live_entries",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

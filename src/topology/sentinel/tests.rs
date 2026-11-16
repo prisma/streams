@@ -148,7 +148,9 @@ fn each_child_counts_its_own_entries_and_the_two_sum_to_the_parent() {
         ),
     ];
     let mut run = decode_row_in_range(OBJECT, &rows[0].1, Range::ALL).unwrap()[1].clone();
+    // The upper stream's next chunk, in `OTHER`.
     run.1.object = OTHER;
+    (run.1.first, run.1.last) = (run.1.last + 1, run.1.last + 1);
     let (lower, upper) = (Range::of("0"), Range::of("1"));
     let none = Released::default();
     let lo = child_counts(&rows, std::slice::from_ref(&run), lower, &none).unwrap();
@@ -284,8 +286,8 @@ fn released(hash: [u8; 16], reclaimed: u64) -> Row {
 }
 
 /// **A child counts no entry its stream already released.** The two-stream `'K'` row of `OBJECT`,
-/// and a run-index object `OTHER` naming one chunk of each stream, after the lower stream's purge:
-/// its `'H'` row puts `reclaimed` past its entries, and the parent's `'R'` rows count only the
+/// and a run-index object naming each stream's next chunk, in `OTHER`, after the lower stream's
+/// purge: its `'H'` row puts `reclaimed` past its entries, and the parent's `'R'` rows count only the
 /// upper stream's chunks. The lower child counts nothing, the upper counts the upper stream's
 /// chunk of each object, and the two sum to the parent's. An entry ending at `reclaimed` is not
 /// released (the fold keeps it too), and an `'H'` row that does not decode is refused.
@@ -304,7 +306,9 @@ fn a_child_counts_no_entry_its_stream_already_released() {
         .iter()
         .cloned()
         .map(|(hash, mut entry)| {
+            // Each stream's next chunk, in `OTHER`.
             entry.object = OTHER;
+            (entry.first, entry.last) = (entry.last + 1, entry.last + 1);
             (hash, entry)
         })
         .collect();
@@ -326,7 +330,7 @@ fn a_child_counts_no_entry_its_stream_already_released() {
             gc::refcount_key(OTHER),
             gc::encode_refcount(&only_high(800)),
         ),
-        released(low, last + 1),
+        released(low, last + 2),
     ];
     let (lower, upper) = (Range::of("0"), Range::of("1"));
     let heads = Released::of(&rows).unwrap();
@@ -392,6 +396,78 @@ fn a_queues_trimmed_intervals_release_the_entries_inside_them() {
     );
 }
 
+/// **A child counts no chunk a newer object superseded.** The two-stream object `OBJECT` was folded
+/// into a run-index object, so the run names both its chunks; a cleaner then copied the upper
+/// stream's chunk into `OTHER`: `OBJECT`'s `'R'` counts only the lower stream's chunk, `OTHER`'s
+/// `'K'`, `'R'` and `'O'` rows count the copy, and the run still names the original. The reclaim's
+/// live set keeps the newer object's chunk of an equal span (`gc::live_entries`), so the upper
+/// child counts the copy and not its original, and the two children sum to the parent.
+#[test]
+fn a_child_counts_no_chunk_a_newer_object_superseded() {
+    let (low, high) = ([0x10; 16], [0x90; 16]);
+    let inputs = [chunk(low), chunk(high)];
+    let object = encode(&inputs).unwrap();
+    let summaries: Vec<_> = inputs.iter().map(|c| KeySummary::of(c).unwrap()).collect();
+    let original = encode_row(&[
+        (&object.chunks[0], &summaries[0]),
+        (&object.chunks[1], &summaries[1]),
+    ]);
+    let run = decode_row_in_range(OBJECT, &original, Range::ALL).unwrap();
+    let copy = encode(&[chunk(high)]).unwrap();
+    let lens = [object.chunks[0].entry.len, copy.chunks[0].entry.len].map(u64::from);
+    let count = |live_bytes, object_len| Refcount {
+        live_bytes,
+        live_chunks: 1,
+        created_ms: 7,
+        object_len,
+    };
+    let superseded = Orphans {
+        chunks: 1,
+        bytes: u64::from(object.chunks[1].entry.len),
+    };
+    let rows = [
+        (
+            gc::refcount_key(OBJECT),
+            gc::encode_refcount(&count(lens[0], 900)),
+        ),
+        (
+            directory_key(OTHER),
+            encode_row(&[(&copy.chunks[0], &summaries[1])]),
+        ),
+        (
+            gc::refcount_key(OTHER),
+            gc::encode_refcount(&count(lens[1], 800)),
+        ),
+        (
+            runindex::orphan_key(OTHER),
+            runindex::encode_orphans(superseded),
+        ),
+    ];
+    let none = Released::default();
+    let lo = child_counts(&rows, &run, Range::of("0"), &none).unwrap();
+    let hi = child_counts(&rows, &run, Range::of("1"), &none).unwrap();
+    assert_eq!(lo.refcounts, [(OBJECT, count(lens[0], 900))]);
+    assert_eq!(
+        hi.refcounts,
+        [(OTHER, count(lens[1], 800))],
+        "the copy, not its original"
+    );
+    assert_eq!(
+        (lo.orphans.len(), hi.orphans.clone()),
+        (0, vec![(OTHER, superseded)])
+    );
+    assert_eq!(check_sums(&rows, &[lo, hi]), Ok(()));
+    let mut twice = run;
+    let mut again = twice[0].clone();
+    again.1.chunk_off += 1;
+    twice.push(again);
+    let refused = child_counts(&rows, &twice, Range::of("0"), &none);
+    assert!(
+        matches!(&refused, Err(PlanError::Index(why)) if why.starts_with("two chunks hold")),
+        "two chunks of one span in one object: {refused:?}"
+    );
+}
+
 /// Each refusal of a plan reads as its cause, naming the row or object it is about.
 #[test]
 fn a_plan_refusal_reads_as_its_cause() {
@@ -406,5 +482,9 @@ fn a_plan_refusal_reads_as_its_cause() {
     assert_eq!(
         PlanError::NotSentinel(vec![0xab, 0x01]).to_string(),
         "not a sentinel row: ab01"
+    );
+    assert_eq!(
+        PlanError::Index("two chunks hold [0, 9]".to_string()).to_string(),
+        "a stream's index entries: two chunks hold [0, 9]"
     );
 }

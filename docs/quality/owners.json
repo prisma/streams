@@ -1259,6 +1259,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_superseded",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split of a shard whose folded chunks a cleaner's copy or a consolidation superseded (S4 6.2 step 2.2, GATE-DECISION-meas149-reshaping F1a): the children's recount keeps each stream's live set as the reclaim does, so their 'R' rows sum to the parent's and the split publishes instead of rolling back; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_superseded.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_start",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split's start (S4 6.2 steps 0.1-0.2): a split of a published child starts from the version the first split published at the child's own born home, each published child is its own prefix's engine, and a split under a live intent is refused before it reserves homes; compiler and the full DST suite exercise the module.",
