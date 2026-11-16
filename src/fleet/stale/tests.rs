@@ -54,6 +54,71 @@ async fn only_entries_that_name_no_stored_leaf_are_dropped() {
     assert_eq!(named(&kept), ["00", "1"]);
 }
 
+/// A store holding the boot topology of leaves `0` and `1`.
+async fn two_leaves() -> Arc<dyn ObjectStore> {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let initial = crate::config::validation::InitialShards::new(2)
+        .unwrap()
+        .topology(1 << 20);
+    let raw = serde_json::to_vec(&initial).unwrap();
+    store
+        .put(&"topology.json".into(), raw.into())
+        .await
+        .unwrap();
+    store
+}
+
+/// The split of `1` as `state`.
+fn split_of_1(state: crate::topology::intent::State) -> crate::topology::intent::Intent {
+    crate::topology::intent::Intent {
+        kind: "split".to_string(),
+        op_id: "op-born".to_string(),
+        sources: vec![("1".to_string(), 1)],
+        children: vec![2, 3],
+        version_seen: 1,
+        state,
+        lease_owner: "streams-1".to_string(),
+        lease_epoch: 1,
+        lease_until_ms: 0,
+        started_ms: 0,
+        outcome: None,
+    }
+}
+
+/// **A live split's children are kept** (GATE-DECISION-f2-children-on-actor A4). Over the leaves `0`
+/// and `1`, while the split of `1` is live, the entries its actor wrote for its children `10` and
+/// `11` before its topology CAS are kept beside the leaf `0`'s, and `000` (no leaf, no child) is
+/// dropped. Once the intent is rolled back the children's entries are dropped too.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_live_splits_children_are_kept() {
+    use crate::topology::intent::{self, State};
+    let store = two_leaves().await;
+    let doc = overrides(&["0", "000", "10", "11"]);
+    let held = intent::create(&*store, &split_of_1(State::Preparing))
+        .await
+        .unwrap();
+    let kept = pruned(doc.clone(), &*store).await;
+    assert_eq!(named(&kept), ["0", "10", "11"], "while the split is live");
+    intent::replace(&*store, &held, split_of_1(State::RolledBack))
+        .await
+        .unwrap();
+    let kept = pruned(doc, &*store).await;
+    assert_eq!(named(&kept), ["0"], "once it ended");
+}
+
+/// **An unreadable intent prunes nothing** (A4): over the leaves `0` and `1` with an intent that
+/// does not decode, the entries for `000` and `10`, which name no leaf, are both kept.
+#[tokio::test(crate = "crate::test_rt")]
+async fn an_unreadable_intent_prunes_nothing() {
+    let store = two_leaves().await;
+    store
+        .put(&"topology/intent.json".into(), b"not json".to_vec().into())
+        .await
+        .unwrap();
+    let kept = pruned(overrides(&["0", "000", "10"]), &*store).await;
+    assert_eq!(named(&kept), ["0", "000", "10"]);
+}
+
 const OVERRIDES: &str = "fleet/overrides.json";
 
 /// A store holding the topology split at `0` (leaves `00`, `01`, `1`) and `doc` as the overrides.

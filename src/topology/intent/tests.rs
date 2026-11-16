@@ -183,3 +183,30 @@ fn an_intent_refusal_reads_as_its_cause() {
         "the intent changed under the write"
     );
 }
+
+/// **A live split keeps exactly its two children** (GATE-DECISION-f2-children-on-actor A4): the
+/// split of `0` keeps `00` and `01`, never `0`, `1`, `000`, `010` or `0x`; the split of the root
+/// keeps `0` and `1`; a merge keeps none, its sources included (they keep their entries as
+/// sources, not as children).
+#[test]
+fn a_live_split_keeps_exactly_its_two_children() {
+    let live = |kind: &str, sources: &[&str]| super::Live {
+        op_id: "op".to_owned(),
+        kind: kind.to_owned(),
+        owner: "streams-1".to_owned(),
+        sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    let split = live("split", &["0"]);
+    let kept = ["00", "01", "0", "1", "000", "010", "0x"].map(|p| split.keeps(p));
+    assert_eq!(kept, [true, true, false, false, false, false, false]);
+    let root = live("split", &[""]);
+    assert_eq!(
+        ["0", "1", "", "00"].map(|p| root.keeps(p)),
+        [true, true, false, false]
+    );
+    let merge = live("merge", &["00", "01"]);
+    assert_eq!(
+        ["000", "001", "00", "0"].map(|p| merge.keeps(p)),
+        [false; 4]
+    );
+}

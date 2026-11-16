@@ -232,7 +232,8 @@ pub(crate) struct Live {
 pub(crate) const UNREADABLE: &str = "unreadable";
 
 impl Live {
-    fn of(intent: Intent) -> Self {
+    /// The live view of `intent`.
+    pub(crate) fn of(intent: Intent) -> Self {
         Self {
             op_id: intent.op_id,
             kind: intent.kind,
@@ -243,6 +244,21 @@ impl Live {
                 .map(|(prefix, _)| prefix)
                 .collect(),
         }
+    }
+}
+
+impl Live {
+    /// Whether this live intent keeps the fleet's override on `prefix` although it is no leaf yet
+    /// (GATE-DECISION-f2-children-on-actor-2026-11-16 A4): a split's two children, whose entries its
+    /// actor writes before its topology CAS. The stale prune and return-home both spare them while
+    /// the intent is live.
+    pub(crate) fn keeps(&self, prefix: &str) -> bool {
+        self.kind == "split"
+            && self.sources.iter().any(|source| {
+                prefix
+                    .strip_prefix(source.as_str())
+                    .is_some_and(|bit| bit == "0" || bit == "1")
+            })
     }
 }
 

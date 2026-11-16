@@ -47,9 +47,10 @@ pub(crate) struct Standing {
     /// How far the tick's last desired count ran past the topology's
     /// shards (`planning::Demand`): the split demand its beat publishes.
     split_demand: AtomicU64,
-    /// The prefixes the cell's live topology intent names as its sources, as this runtime's last
-    /// beat read them: a rebalancer never moves one (S4-DESIGN §4.4).
-    topology_sources: Mutex<Vec<String>>,
+    /// The cell's live topology intent, as this runtime's last beat read it: a rebalancer never
+    /// moves one of its sources (S4-DESIGN §4.4), and return-home leaves its sources and a live
+    /// split's children where they are (GATE-DECISION-f2-children-on-actor A4).
+    topology_intent: Mutex<Option<crate::topology::intent::Live>>,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -97,7 +98,7 @@ impl Default for Standing {
             viewed: Mutex::new(Viewed::new()),
             drained: Mutex::new(None),
             split_demand: AtomicU64::new(0),
-            topology_sources: Mutex::new(Vec::new()),
+            topology_intent: Mutex::new(None),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
@@ -149,31 +150,47 @@ impl Standing {
         self.split_demand.store(demand, Ordering::Relaxed);
     }
 
-    /// The beat read the live topology intent's sources.
-    pub(crate) fn set_topology_sources(&self, sources: Vec<String>) {
-        if let Ok(mut kept) = self.topology_sources.lock() {
-            *kept = sources;
+    /// The beat read the cell's live topology intent (`None`: no live one).
+    pub(crate) fn set_topology_intent(&self, live: Option<crate::topology::intent::Live>) {
+        if let Ok(mut kept) = self.topology_intent.lock() {
+            *kept = live;
         }
+    }
+
+    /// Tests: a live split intent naming `sources`, as a beat would have read it.
+    #[cfg(test)]
+    pub(crate) fn set_topology_sources(&self, sources: Vec<String>) {
+        self.set_topology_intent(Some(crate::topology::intent::Live {
+            op_id: "op-test".to_owned(),
+            kind: "split".to_owned(),
+            owner: String::new(),
+            sources,
+        }));
     }
 
     /// The prefixes the live topology intent names as its sources, as the last beat read them.
     pub(crate) fn topology_sources(&self) -> Vec<String> {
-        self.topology_sources
+        self.topology_intent
             .lock()
-            .map(|sources| sources.clone())
+            .ok()
+            .and_then(|live| live.as_ref().map(|l| l.sources.clone()))
             .unwrap_or_default()
     }
 
     /// Whether return-home leaves the override on `prefix` in place this tick: the entry is
-    /// younger (`age_ms`) than the return window of `return_secs`, or the live topology intent
-    /// names `prefix` as a source, as the last beat read it (S4-DESIGN §4.4). A poisoned lock
-    /// reads as no source, as `topology_sources` does.
+    /// younger (`age_ms`) than the return window of `return_secs`, or the live topology intent, as
+    /// the last beat read it, names `prefix` as a source (S4-DESIGN §4.4) or keeps it as a split's
+    /// child (`intent::Live::keeps`, A4). A poisoned lock reads as no intent, as
+    /// `topology_sources` does.
     pub(crate) fn return_home_skips(&self, prefix: &str, age_ms: i64, return_secs: i64) -> bool {
+        let named = |live: &crate::topology::intent::Live| {
+            live.sources.iter().any(|source| source == prefix) || live.keeps(prefix)
+        };
         age_ms < return_secs.saturating_mul(1000)
             || self
-                .topology_sources
+                .topology_intent
                 .lock()
-                .is_ok_and(|sources| sources.iter().any(|source| source == prefix))
+                .is_ok_and(|live| live.as_ref().is_some_and(named))
     }
 
     /// The split demand the next beat publishes.
@@ -333,12 +350,42 @@ mod tests {
         assert!(standing.return_home_skips("00", window - 1, 300));
         assert!(!standing.return_home_skips("00", window, 300));
         assert!(!standing.return_home_skips("00", 2_000, 0));
-        standing.set_topology_sources(vec!["00".to_owned(), "01".to_owned()]);
+        standing.set_topology_intent(Some(crate::topology::intent::Live {
+            op_id: "op".to_owned(),
+            kind: "merge".to_owned(),
+            owner: "streams-1".to_owned(),
+            sources: vec!["00".to_owned(), "01".to_owned()],
+        }));
         assert!(standing.return_home_skips("00", window, 300));
         assert!(standing.return_home_skips("01", i64::MAX, 300));
         assert!(!standing.return_home_skips("1", window, 300));
-        standing.set_topology_sources(Vec::new());
+        standing.set_topology_intent(None);
         assert!(!standing.return_home_skips("00", window, 300));
+    }
+
+    /// **Return-home skips a live split's children** (GATE-DECISION-f2-children-on-actor A4), by
+    /// the predicate the stale prune uses: while the split of `0` is live, `00` and `01` are
+    /// skipped at any age, `1` and `000` are not; a merge's sources keep their own entries but name
+    /// no children; with no live intent none is skipped.
+    #[test]
+    fn return_home_skips_a_live_splits_children() {
+        let standing = Standing::default();
+        let live = |kind: &str, sources: &[&str]| crate::topology::intent::Live {
+            op_id: "op".to_owned(),
+            kind: kind.to_owned(),
+            owner: "streams-1".to_owned(),
+            sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        let old = i64::MAX;
+        standing.set_topology_intent(Some(live("split", &["0"])));
+        let skipped =
+            ["0", "00", "01", "1", "000"].map(|p| standing.return_home_skips(p, old, 300));
+        assert_eq!(skipped, [true, true, true, false, false]);
+        standing.set_topology_intent(Some(live("merge", &["00", "01"])));
+        let skipped = ["00", "01", "000", "0"].map(|p| standing.return_home_skips(p, old, 300));
+        assert_eq!(skipped, [true, true, false, false]);
+        standing.set_topology_intent(None);
+        assert!(!standing.return_home_skips("00", old, 300));
     }
 
     fn beat(instance: &str) -> crate::fleet::Heartbeat {
