@@ -286,18 +286,31 @@ async fn an_append_the_split_held_is_acked_by_its_child_at_its_exact_offset() {
 /// more than its entries hold. The sum check of Preparing's own plan refuses it, before the gate and
 /// the barrier: the park is never reached, an append sent while the split runs is acked by the
 /// parent at the offset the stream then reports, the refusal names the object with its stored and
-/// summed counts, and the intent ends `RolledBack`.
+/// summed counts, and the intent ends `RolledBack`. Again on a leaf whose queue has trimmed
+/// intervals (GATE-DECISION-f1b-trim-race's control): the check still runs, and still refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_whose_counts_do_not_sum_rolls_back_without_parking() {
+    counts_do_not_sum("op-sum", false).await;
+    counts_do_not_sum("op-sum-queue", true).await;
+}
+
+/// `a_split_whose_counts_do_not_sum_rolls_back_without_parking` as `op_id`; with a `trimming_queue`
+/// on the leaf (GATE-DECISION-f1b-trim-race, its control: the check runs on a shard whose queue has
+/// trimmed intervals too).
+async fn counts_do_not_sum(op_id: &str, trimming_queue: bool) {
     use crate::spill::gc;
+    let cell = cell().await;
+    super::purge_lifecycle::drive(&cell.parent);
+    if trimming_queue {
+        super::queue_split::trimmed_once_then_acked(&cell).await;
+    }
     let Cell {
         state,
         addr,
         low,
         parent,
         ..
-    } = cell().await;
-    super::purge_lifecycle::drive(&parent);
+    } = cell;
     parent.seal_requested().await.expect("seal");
     let (id, row) = parent
         .refcount_rows()
@@ -322,7 +335,7 @@ async fn a_split_whose_counts_do_not_sum_rolls_back_without_parking() {
         .gate
         .pause_at_park(crate::topology::gate::PausePoint { reached, go });
     let clock = state.runtime.clock.clone();
-    let split = crate::topology::split::split(&state.shards, &parent, "op-sum", "inst-a", &*clock);
+    let split = crate::topology::split::split(&state.shards, &parent, op_id, "inst-a", &*clock);
     let mut split = std::pin::pin!(split);
     let control = async {
         tokio::select! {

@@ -25,6 +25,9 @@ pub(crate) struct FoldHooks {
     pub(crate) fail_nth_batch: std::sync::atomic::AtomicU64,
     /// Park every index batch before it reaches the log.
     pub(crate) batch_hold: Mutex<Option<Arc<crate::shard::seal::test_hooks::Hold>>>,
+    /// Park the next index batch once it is applied to the log, before its WAL flush: written,
+    /// not yet durable.
+    pub(crate) written_hold: Mutex<Option<Arc<crate::shard::seal::test_hooks::Hold>>>,
 }
 
 impl FoldState {
@@ -55,6 +58,24 @@ impl FoldState {
             return Err(FoldError::Store("injected batch failure".into()));
         }
         Ok(())
+    }
+
+    /// The next index batch, applied and not yet flushed, parks at the hold a test set, once.
+    pub(super) async fn after_write(&self) {
+        let hold = self.hooks.written_hold.lock().unwrap().take();
+        if let Some(hold) = hold {
+            hold.park().await;
+        }
+    }
+}
+
+impl crate::shard::ShardEngine {
+    /// Tests: the next index batch of this engine parks once it is applied to the log and before
+    /// its WAL flush (written, not yet durable), until the returned hold is released.
+    pub(crate) fn hold_next_written_batch(&self) -> Arc<crate::shard::seal::test_hooks::Hold> {
+        let hold = crate::shard::seal::test_hooks::Hold::new();
+        *self.layout.seal.fold.hooks.written_hold.lock().unwrap() = Some(hold.clone());
+        hold
     }
 }
 

@@ -488,8 +488,15 @@ async fn prepare(
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
     gate.start_marking();
-    let rows = sentinel_rows(parent).await?;
-    let plan = plan(store, parent, children, &rows).await?;
+    let (rows, released) = log_reads(parent).await?;
+    // Tests only: a point after Preparing read the parent's log.
+    #[cfg(test)]
+    if let Some(point) = gate.take_after_reads()
+        && point.reached.send(()).is_ok()
+    {
+        drop(point.go.await);
+    }
+    let plan = plan(store, parent, children, &rows, &released).await?;
     check_sums(&rows, &plan)?;
     let mut put = Vec::with_capacity(children.len());
     for (child, (_, counts)) in children.iter().zip(&plan) {
@@ -548,8 +555,8 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
         .create_checkpoint(CheckpointScope::All, &options)
         .await
         .map_err(|e| format!("checkpoint: {e}"))?;
-    let rows = sentinel_rows(parent).await?;
-    let plan = plan(store, parent, children, &rows).await?;
+    let (rows, released) = log_reads(parent).await?;
+    let plan = plan(store, parent, children, &rows, &released).await?;
     check_sums(&rows, &plan)?;
     for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(prepared) {
         let now = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
@@ -583,35 +590,37 @@ fn check_sums(rows: &[Row], plan: &[(Vec<Row>, Counts)]) -> Result<(), String> {
     sentinel::check_sums(rows, &counts).map_err(|e| e.to_string())
 }
 
-/// Each child's routed rows and counts from the parent's sentinel `rows`.
+/// Each child's routed rows and counts from the parent's sentinel `rows` and the `released`
+/// entries, both read at one sequence (`log_reads`); the plan reads nothing more from the log.
 async fn plan(
     store: &dyn ObjectStore,
     parent: &ShardEngine,
     children: &[Child],
     rows: &[Row],
+    released: &sentinel::Released,
 ) -> Result<Vec<(Vec<Row>, Counts)>, String> {
     let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
     let routed = sentinel::route(rows, &ranges).map_err(|e| e.to_string())?;
     let run = run_entries(store, |home| parent.object_root(home), rows).await?;
-    let mut released = sentinel::Released::of(rows).map_err(|e| e.to_string())?;
-    // A queue's trimmed intervals, as its 'k' rows durably hold them: stable here, since a trim's
-    // batch takes the gate this split holds exclusively.
-    for hash in released.streams() {
-        released.add_intervals(hash, &parent.intervals(&hash).await?);
-    }
     let mut out = Vec::with_capacity(children.len());
     for (routed, range) in routed.into_iter().zip(ranges) {
         let counts =
-            sentinel::child_counts(rows, &run, range, &released).map_err(|e| e.to_string())?;
+            sentinel::child_counts(rows, &run, range, released).map_err(|e| e.to_string())?;
         out.push((routed, counts));
     }
     Ok(out)
 }
 
-/// The parent's sentinel rows, read now.
-async fn sentinel_rows(parent: &ShardEngine) -> Result<Vec<Row>, String> {
-    let mut scan = parent
-        .db
+/// What a plan reads from the parent's log: its sentinel rows, and the entries they and its queues'
+/// `'k'` rows release. Both from one `db.snapshot()` at the default (Memory) durability, so at one
+/// sequence: every writer of these rows (a seal, a fold, a trim, a purge, the cleaner's commit)
+/// writes one batch, which commits at one sequence, so sums that do not hold at it are a stable
+/// fact (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote` here: its cap is recomputed per
+/// read, so two reads could see different batches. The snapshot is dropped on return, before the
+/// run-index GETs: it holds the log's compaction back while it lives.
+async fn log_reads(parent: &ShardEngine) -> Result<(Vec<Row>, sentinel::Released), String> {
+    let snapshot = parent.db.snapshot().map_err(|e| format!("snapshot: {e}"))?;
+    let mut scan = snapshot
         .scan_prefix(&SENTINEL[..], ..)
         .await
         .map_err(|e| format!("sentinel scan: {e}"))?;
@@ -623,7 +632,12 @@ async fn sentinel_rows(parent: &ShardEngine) -> Result<Vec<Row>, String> {
     {
         rows.push((kv.key.to_vec(), kv.value.to_vec()));
     }
-    Ok(rows)
+    let mut released = sentinel::Released::of(&rows).map_err(|e| e.to_string())?;
+    for hash in released.streams() {
+        let intervals = crate::shard::seal::gc::trim::intervals_at(&snapshot, &hash).await?;
+        released.add_intervals(hash, &intervals);
+    }
+    Ok((rows, released))
 }
 
 /// A child's lists: per ancestor home, the objects of that home it holds (`sentinel::child_lists`).

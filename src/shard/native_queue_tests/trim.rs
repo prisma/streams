@@ -158,6 +158,49 @@ async fn released_chunks_above_a_held_one_form_an_interval_the_prefix_absorbs() 
     assert!(released[&HASH].holds(2, 2) && !released[&HASH].holds(3, 3));
 }
 
+/// A split's plan reads a queue's intervals from the snapshot it read the sentinel rows from
+/// (`gc::trim::intervals_at`, GATE-DECISION-f1b-trim-race): at the snapshot's sequence and Memory
+/// durability, so it sees a trim's batch once it is written, before its WAL flush, where the
+/// durable read (`intervals`) does not yet; once the batch is durable, both agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_snapshots_intervals_include_a_trim_batch_written_and_not_yet_durable() {
+    use crate::shard::seal::gc::trim::intervals_at;
+    let (e, _db, _) = clocked("nq-trim-snapshot", QueueConfig::default()).await;
+    for body in ["a", "b", "c", "d"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 4).await;
+    ack(&e, &leased[1..2]).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(e.intervals(&HASH).await.unwrap(), [iv(1, 1)]);
+    ack(&e, &leased[2..3]).await;
+    let hold = e.hold_next_written_batch();
+    let trim = async { e.trim_pass().await.unwrap() };
+    let read = async {
+        hold.wait_entered().await;
+        let snapshot = e.db.snapshot().unwrap();
+        let seen = (
+            intervals_at(&snapshot, &HASH).await.unwrap(),
+            e.intervals(&HASH).await.unwrap(),
+        );
+        hold.release();
+        seen
+    };
+    let (report, seen) = futures_util::future::join(trim, read).await;
+    assert_eq!(report.released, 1, "the third chunk");
+    assert_eq!(
+        seen,
+        (vec![iv(1, 2)], vec![iv(1, 1)]),
+        "(snapshot, durable)"
+    );
+    let snapshot = e.db.snapshot().unwrap();
+    let now = intervals_at(&snapshot, &HASH).await.unwrap();
+    assert_eq!(
+        (now, e.intervals(&HASH).await.unwrap()),
+        (vec![iv(1, 2)], vec![iv(1, 2)])
+    );
+}
+
 /// No purge acts on a Trimming row, though it owes chunks below its head
 /// (an open delivery holds one there): purging it would delete the queue's
 /// rows and decrement a chunk a lease still reads (control 3). A purge

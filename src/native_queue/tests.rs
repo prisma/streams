@@ -354,6 +354,13 @@ fn queue_scans_cache_their_blocks() {
         ),
         (16, 1)
     );
+    // The split's plan reads a queue's `'k'` rows with these options from the snapshot it read
+    // the sentinel rows from: Memory durability, or the two reads may see different batches
+    // (GATE-DECISION-f1b-trim-race-2026-11-16).
+    assert_eq!(
+        scan_options().durability_filter,
+        slatedb::config::DurabilityLevel::Memory
+    );
 }
 
 /// Every queue family's byte (S3a-DESIGN rev 3 §2.3), the reserved one included: `'k'` the
