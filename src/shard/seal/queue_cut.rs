@@ -27,7 +27,7 @@ pub(super) fn runs(pages: &[PendingPage], queue: bool, max_pages: usize) -> Vec<
     let (mut start, mut bytes) = (0, 0u64);
     for (i, (first, _, raw)) in pages.iter().enumerate() {
         let len = raw.len() as u64;
-        let crosses = i > start && index_of(*first) != index_of(pages[start].0);
+        let crosses = index_of(*first) != index_of(pages[start].0);
         if i > start && (crosses || i - start >= max_pages || bytes + len > QUEUE_CHUNK_BYTES) {
             out.push(&pages[start..i]);
             (start, bytes) = (i, 0);
@@ -81,6 +81,11 @@ mod tests {
             lens(&runs(&pages[..2], true, 1)),
             [(SPAN - 2, 1), (SPAN - 1, 1)]
         );
+    }
+
+    #[test]
+    fn an_empty_queue_window_is_cut_into_no_run() {
+        assert!(runs(&[], true, 100).is_empty(), "no empty chunk");
     }
 
     #[test]
