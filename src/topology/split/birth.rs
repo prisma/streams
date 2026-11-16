@@ -100,8 +100,76 @@ fn with_children(mut overrides: Overrides, children: &[&str], me: &str, now_ms: 
 
 #[cfg(test)]
 mod tests {
-    use super::{Overrides, with_children};
-    use crate::fleet::OverrideEntry;
+    use std::sync::Arc;
+
+    use object_store::{ObjectStore, ObjectStoreExt};
+
+    use super::{Birth, Overrides, with_children};
+    use crate::fleet::{FleetRepository, OverrideEntry};
+
+    fn directory() -> crate::shard_directory::ShardDirectory {
+        let opener: crate::sharddir::OpenFn =
+            Box::new(|_prefix, _inc| Box::pin(async { anyhow::bail!("this test opens no shard") }));
+        let shards = crate::config::validation::InitialShards::new(2)
+            .unwrap()
+            .topology(1 << 20)
+            .shards;
+        crate::shard_directory::ShardDirectory::new(
+            shards,
+            crate::ownership::OwnershipService::new(String::new()),
+            crate::shard_directory::OpenTiming {
+                open_deadline: std::time::Duration::from_secs(1),
+                open_wait: std::time::Duration::from_millis(10),
+            },
+            |_notifier| opener,
+        )
+    }
+
+    /// **A birth whose overrides cannot be written gives up after three tries and changes
+    /// nothing; one that can names the actor in the document and its view; a fleet-off cell writes
+    /// nothing.** The step never fails the split: it answers only whether it wrote.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_birth_writes_its_children_or_gives_up_and_never_fails_the_split() {
+        let dir = directory();
+        let off = FleetRepository::new(None);
+        let birth = Birth::new(
+            off.clone(),
+            off.ownership("streams-1".into()),
+            "streams-1".into(),
+        );
+        assert!(
+            !birth.born(&dir, &["10", "11"], "op-off").await,
+            "fleet off"
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let fleet = FleetRepository::new(Some(store.clone()));
+        let ownership = fleet.ownership("streams-1".into());
+        ownership.set_view(
+            vec!["streams-1".into(), "streams-2".into()],
+            Default::default(),
+        );
+        let birth = Birth::new(fleet.clone(), ownership.clone(), "streams-1".into());
+        let path = object_store::path::Path::from("fleet/overrides.json");
+        store.put(&path, b"not json".to_vec().into()).await.unwrap();
+        assert!(
+            !birth.born(&dir, &["10", "11"], "op-lost").await,
+            "three lost tries"
+        );
+        assert!(ownership.overrides().is_empty(), "the view is unchanged");
+        store.delete(&path).await.unwrap();
+        assert!(birth.born(&dir, &["10", "11"], "op-won").await, "written");
+        let (doc, _) = fleet.read_overrides().await.unwrap();
+        let mut named: Vec<(String, String)> =
+            doc.entries.into_iter().map(|(p, e)| (p, e.to)).collect();
+        named.sort();
+        let view: Vec<(String, String)> = ownership.view().overrides.into_iter().collect();
+        assert_eq!(named, view, "the view mirrors the document");
+        assert_eq!(
+            view,
+            [("10", "streams-1"), ("11", "streams-1")].map(|(p, o)| (p.to_owned(), o.to_owned()))
+        );
+        assert!(doc.pending_events.is_empty(), "no rebalance_move event");
+    }
 
     /// **A birth names the actor for both children, over another instance's entry, and adds no
     /// event.** An override of `0` to `streams-2` (a lag move's, with its event) and one of `9`
