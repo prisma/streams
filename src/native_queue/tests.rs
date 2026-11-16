@@ -488,3 +488,75 @@ fn a_queues_jitter_seed_is_drawn_from_its_identity_bits() {
     assert_eq!(jitter_seed(&first), u64::from_le_bytes([0x5a; 8]) | 1);
     assert_ne!(jitter_seed(&first), jitter_seed(&second));
 }
+
+/// A range row whose skip bitmap holds `offsets`, and its encoding.
+fn skip_row(offsets: impl IntoIterator<Item = u64>) -> (range::RangeRow, Vec<u8>) {
+    let mut skip = range::Bits::default();
+    for off in offsets {
+        skip.set(off);
+    }
+    let row = range::RangeRow {
+        skip,
+        ..range::RangeRow::default()
+    };
+    let raw = row.encode();
+    (row, raw)
+}
+
+/// A bitmap of 127 runs is listed (2 + 4 * 127 bytes) and one of 128 is raw (512 bytes), the
+/// shorter form each time: the row is 9 header bytes, the skip bitmap's form byte and body, and
+/// two empty lists of 3 bytes.
+#[test]
+fn a_bitmap_is_listed_up_to_127_runs_and_raw_from_128() {
+    for (runs, len) in [(127, 9 + 1 + 2 + 4 * 127 + 6), (128, 9 + 1 + 512 + 6)] {
+        let (row, raw) = skip_row((0..runs).map(|i| 2 * i));
+        assert_eq!(raw.len(), len, "{runs} runs");
+        assert_eq!(raw[9], u8::from(runs == 128), "{runs} runs: the form byte");
+        assert_eq!(
+            range::RangeRow::decode(&raw).unwrap(),
+            row,
+            "{runs} runs round trip"
+        );
+    }
+}
+
+/// Runs reaching the row's last bit, and a long run after short ones, round trip in 30 bytes.
+#[test]
+fn long_runs_and_a_run_to_the_rows_end_round_trip() {
+    let (row, raw) = skip_row([3, 4, 5, 7].into_iter().chain(2_048..4_096));
+    assert_eq!(raw.len(), 9 + 3 + 3 * 4 + 6);
+    assert_eq!(range::RangeRow::decode(&raw).unwrap(), row);
+}
+
+/// A run list that is not ascending with a gap bit between runs, holds an empty run or runs past
+/// the row is refused; a valid one with one gap bit decodes to its offsets.
+#[test]
+fn a_range_row_with_an_empty_overlapping_adjacent_or_overlong_run_is_refused() {
+    let listed = |runs: &[(u16, u16)]| {
+        let mut raw = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        raw.extend_from_slice(&u16::try_from(runs.len()).unwrap().to_le_bytes());
+        for (s, n) in runs {
+            raw.extend_from_slice(&s.to_le_bytes());
+            raw.extend_from_slice(&n.to_le_bytes());
+        }
+        raw.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        range::RangeRow::decode(&raw)
+    };
+    let (want, _) = skip_row([1, 2, 3, 5]);
+    assert_eq!(listed(&[(1, 3), (5, 1)]).unwrap(), want);
+    for bad in [
+        &[(1, 3), (4, 1)][..],
+        &[(1, 3), (3, 1)][..],
+        &[(5, 0)][..],
+        &[(4_095, 2)][..],
+    ] {
+        assert!(listed(bad).is_err(), "{bad:?} is refused");
+    }
+}
+
+#[test]
+fn a_bitmap_debugs_as_its_runs() {
+    let (row, _) = skip_row([1, 2, 3, 4_095]);
+    assert_eq!(format!("{:?}", row.skip), "[(1, 3), (4095, 1)]");
+    assert_eq!(format!("{:?}", range::Bits::default()), "[]");
+}
