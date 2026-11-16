@@ -5733,6 +5733,26 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with amendments A1-A5 (GATE-DECISION-f4-edge-264-2026-11-16.md, Fable 5.2 under the owner's delegation, 2026-11-16); number #264 assigned by the lead.
 - **Check against commit:** written with the change.
 
+### #265 (this record's commit) — A split's children are born on its actor: the fleet's overrides name the actor for both children from just before the publish, and the cell's next split or merge waits one move cooldown
+
+- **Program item:** #149, gate decisions meas149-reshaping F2 and f2-children-on-actor (GATE-DECISION-meas149-reshaping-2026-11-16.md, GATE-DECISION-f2-children-on-actor-2026-11-16.md, Fable 5.2 under the owner's delegation; the S5 addendum F2, rev 2). In meas-149's run both halves of a split hashed to the other member: the actor's child opens were refused, its held appends became `409`s or forwards, and the other member opened the children cold.
+- **Surface:** operator (the admin topology routes and the stats view) and the pilot LB's mirror of the overrides. No wire shape changes: no field, no status, no event kind.
+- **Endpoint:** `POST /operator/topology/split` and `POST /operator/topology/merge` (their `topology_busy {reason: "fleet"}`); the stats view's `ring.overrides` (`src/http.rs`); the pilot LB's overrides mirror.
+- **Condition:** a fleet cell (a fleet-off cell writes nothing) during and after any split's publish.
+- **Before:** a split's children had no override entry: their owner was the ring's pick, and the next split or merge waited only for the topology's own rules.
+- **After:**
+  - Between `'T'` and the topology CAS the actor CASes one entry per child naming itself into `fleet/overrides.json` (no `rebalance_move` event; three tries, then the split publishes ring-born and logs at WARN), and every member's install of the new version refreshes the overrides first. Observable 2: `ring.overrides` and the pilot LB's mirror list the two children under the actor, briefly before they are leaves.
+  - Observable 1: the entries are younger than the move cooldown, so `fleet_settled` answers the admin split and merge routes `409 topology_busy {reason: "fleet"}` for one move cooldown (`REBALANCE_MOVE_COOLDOWN_SECS`, 60 s by default) after any split's publish. The topology policy holds such an operation first for its topology cooldown (`SHARD_TOPOLOGY_COOLDOWN_SECS`, 60 s by default, from the publish): at default timings nothing changes for the policy. A configuration whose move cooldown is longer than its topology cooldown sees the policy hold `OverrideRecent` for the difference, and the admin routes refuse for the whole move cooldown.
+  - The entries pin the children for one return window (`REBALANCE_RETURN_SECS`): then return-home gives a child back to its ring home within the fair share, and count balance may move an override at least that old (A5).
+- **Retry semantics:** `topology_busy` is the existing retryable refusal: retry after the move cooldown.
+- **Who is affected:** operators of a fleet cell asking for a split or merge within a move cooldown of a split's publish; tooling reading `ring.overrides`.
+- **Pinning tests:** `dst::dst_tests::fleet_birth::a_splits_children_are_served_by_the_actor_at_publish` (T1), `a_member_installing_a_split_before_its_tick_opens_no_child` (T2), `a_member_with_no_view_installs_a_split_and_still_opens_nothing` (T4), `exactly_one_child_returns_home_after_the_window` (T5); `topology::split::birth::tests::*`; `topology::revalidate::tests::an_install_whose_overrides_read_fails_is_refused`; `fleet::stale::tests::a_live_splits_children_are_kept`, `an_unreadable_intent_prunes_nothing`; `fleet::standing::tests::return_home_skips_a_live_splits_children`; `fleet::count_balance::tests::an_override_older_than_the_return_window_may_move`.
+- **Risk:** low.
+- **Risk reason:** no wire shape changes; the refusal is the existing `topology_busy {reason: "fleet"}`, for one move cooldown; the entries are the overrides document's existing shape and age out by the existing return-home and (A5) count balance.
+- **Follow-ups (NEXT-WORK):** a merge's child `M` is still born on the ring; a claimant's roll-forward is ring-born by design (A3).
+- **Status:** awaiting ratification (Fable 5.2 under the owner's delegation, through the lead).
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low
