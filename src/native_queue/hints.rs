@@ -20,17 +20,11 @@ use crate::keyspace::SENTINEL;
 pub(crate) const TAG: u8 = crate::keyspace::tag::TRIM_HINT;
 /// The ranges one hint row holds at most.
 pub(crate) const MAX_RANGES: usize = 8;
-/// A hint key's length: the sentinel, the tag, `gseq`, the queue's hash.
-const KEY_LEN: usize = 16 + 1 + 8 + 16;
 
-/// The hint key of `gseq` for the queue `hash`.
+/// The hint key of `gseq` for the queue `hash`: the sentinel, the tag,
+/// `gseq`, the queue's hash.
 pub(crate) fn key(gseq: u64, hash: &[u8; 16]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(KEY_LEN);
-    k.extend_from_slice(&SENTINEL);
-    k.push(TAG);
-    k.extend_from_slice(&gseq.to_be_bytes());
-    k.extend_from_slice(hash);
-    k
+    [&SENTINEL[..], &[TAG], &gseq.to_be_bytes(), hash].concat()
 }
 
 /// A hint key's `gseq` and queue, or `None` for any other key.
@@ -128,7 +122,9 @@ impl HintRanges {
             }
             !joins
         });
-        let at = self.0.partition_point(|&(x, _)| x < a);
+        // No range left starts at `a` (it would have joined): the search
+        // answers where `[a, b)` goes.
+        let (Ok(at) | Err(at)) = self.0.binary_search_by_key(&a, |&(x, _)| x);
         self.0.insert(at, (a, b));
     }
 
@@ -235,5 +231,24 @@ mod tests {
         h.add(7, 7);
         assert_eq!(h.below(4_097), [(10, 4_097)], "cut at the boundary");
         assert_eq!(HintRanges::default().below(u64::MAX), []);
+    }
+
+    /// A range ending at its span's last offset lies in that span: it
+    /// joins a range apart from it there, whichever was added first.
+    #[test]
+    fn a_range_ending_at_its_spans_end_joins_its_span() {
+        for (first, second) in [((0, 10), (100, 4_096)), ((100, 4_096), (0, 10))] {
+            let mut h = HintRanges::default();
+            h.add(first.0, first.1);
+            h.add(second.0, second.1);
+            assert_eq!(h.below(u64::MAX), [(0, 4_096)], "{first:?} first");
+        }
+    }
+
+    /// Ranges that touch are disjoint: a hint naming them decodes.
+    #[test]
+    fn a_hint_value_may_name_ranges_that_touch() {
+        let touching = vec![(0, 5), (5, 8)];
+        assert_eq!(decode(&encode(&touching)), Ok(touching));
     }
 }
