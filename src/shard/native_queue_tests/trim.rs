@@ -468,3 +468,60 @@ async fn a_purge_decrements_no_chunk_the_trim_released() {
         "'k' went with the last decrement"
     );
 }
+
+/// Delete the queue `hash` to its end, then purge it at once: the purge's outcome.
+async fn delete_and_purge(
+    e: &Arc<ShardEngine>,
+    hash: [u8; 16],
+) -> crate::shard::seal::gc::purge::PurgeOutcome {
+    let step = |op| e.submit_native_queue(hash, op);
+    step(NqOp::BeginDelete).await.unwrap();
+    while !matches!(
+        step(NqOp::DeleteStep { max_rows: 64 }).await.unwrap(),
+        NqOut::DeleteStepped { remaining: false }
+    ) {}
+    e.request_purge(hash, 0).await.unwrap();
+    e.purge_stream_at(hash, u64::MAX).await.unwrap()
+}
+
+/// **A deleted queue's purge reclaims every chunk up to its stream's next
+/// offset and deletes its tail** (S3b-DESIGN §5.9 step 4.2). A queue never
+/// trimmed (no `'H'` row) holds three sealed chunks: one acked, one leased,
+/// one untaken. Deleted and purged, its first step puts the head at the
+/// stream's next offset, 3, and deletes the queue's tail; the second
+/// decrements all three chunks, so each object reaches zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_deleted_queues_purge_reclaims_every_chunk_up_to_its_next_offset() {
+    let (e, db, _c) = clocked("nq-trim-purge-next", QueueConfig::default()).await;
+    for body in ["a", "b", "c"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let objects: Vec<_> = e
+        .live_chunks(HASH)
+        .await
+        .unwrap()
+        .iter()
+        .map(|c| c.object)
+        .collect();
+    assert_eq!(objects.len(), 3, "one chunk per seal");
+    let leased = claim(&e, 2).await;
+    ack(&e, &leased[..1]).await;
+    let outcome = delete_and_purge(&e, HASH).await;
+    assert!(
+        matches!(
+            outcome,
+            crate::shard::seal::gc::purge::PurgeOutcome::Reclaimed { chunks: 3 }
+        ),
+        "{outcome:?}"
+    );
+    let done = head(&e).await.unwrap();
+    assert_eq!(
+        (done.state, done.head, done.reclaimed),
+        (HeadState::Purged, 3, 3)
+    );
+    for id in &objects {
+        assert_eq!(counted(&e, *id).await, 0, "{id:?}");
+    }
+    let tail = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
+    assert!(tail.is_none(), "the queue's tail is gone");
+}

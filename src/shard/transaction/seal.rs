@@ -167,8 +167,9 @@ impl CommitTransaction<'_> {
     /// another op in this group (it would put the tail back), while its
     /// usage awaits the ledger (the counters live on the tail). Its
     /// unsealed bytes leave the maintenance ledger with its pending row. A
-    /// native queue seals nothing: it is marked purged and its
-    /// queue-segment rows stay.
+    /// native queue is purged the same way (S3b-DESIGN §5.9 step 4.2): its
+    /// tail is the queue segment's, and its delete left no other queue row
+    /// but its released intervals, which the purge's second step deletes.
     pub(super) async fn stage_purge(&mut self, step: PurgeStep) {
         let PurgeStep { hash, prior, resp } = step;
         match self.purge_refusal(hash).await {
@@ -178,15 +179,18 @@ impl CommitTransaction<'_> {
                     head: next.max(prior.head),
                     ..prior
                 };
-                if !queue {
-                    self.batch.delete(crate::shard::tail_key(&hash));
-                    self.batch.delete(crate::spill::pending::pending_key(&hash));
-                    self.batch
-                        .delete(crate::shard::open_index::unsealed_key(&hash));
-                    self.batch
-                        .delete(crate::shard::open_index::dirty_key(&hash));
-                    self.maintenance_retired = self.maintenance_retired.saturating_add(unsealed);
-                }
+                let tail = if queue {
+                    crate::shard::queue_tail_key(&hash)
+                } else {
+                    crate::shard::tail_key(&hash)
+                };
+                self.batch.delete(tail);
+                self.batch.delete(crate::spill::pending::pending_key(&hash));
+                self.batch
+                    .delete(crate::shard::open_index::unsealed_key(&hash));
+                self.batch
+                    .delete(crate::shard::open_index::dirty_key(&hash));
+                self.maintenance_retired = self.maintenance_retired.saturating_add(unsealed);
                 self.batch.put(
                     crate::spill::gc::head_key(&hash),
                     crate::spill::gc::encode_head(&purged),
@@ -218,14 +222,12 @@ impl CommitTransaction<'_> {
             .stream_handle(hash)
             .await
             .map_err(|e| e.to_string())?;
-        if handle.native_queue.load(Ordering::Relaxed) {
-            return Ok((0, 0, true));
-        }
+        let queue = handle.native_queue.load(Ordering::Relaxed);
         let st = handle
             .state
             .lock()
             .map_err(|_| "a purged stream's state is poisoned".to_owned())?;
         let unsealed = st.applied.unabsorbed_bytes;
-        Ok((st.applied.next.max(st.durable.next), unsealed, false))
+        Ok((st.applied.next.max(st.durable.next), unsealed, queue))
     }
 }
