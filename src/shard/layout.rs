@@ -65,6 +65,9 @@ pub(crate) struct LayoutState {
     pub(crate) l0: l0_watermark::L0Watermark,
     /// The shard's queue-state gauges (`queue_gauges`).
     pub(crate) queue_gauges: queue_gauges::QueueGauges,
+    /// The next trim hint's sequence (`native_queue::hints`); 0 until the
+    /// committer seeds it from the shard log.
+    pub(crate) trim_seq: std::sync::atomic::AtomicU64,
     /// Where the log lives in the cell's topology, and the topology (S4 route A).
     place: Place,
 }

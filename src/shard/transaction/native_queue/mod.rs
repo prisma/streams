@@ -9,6 +9,7 @@ mod admin;
 mod claim;
 mod deliveries;
 mod gauges;
+mod hints;
 mod lane;
 mod send;
 mod settle;
@@ -43,6 +44,11 @@ impl CommitTransaction<'_> {
             self.effects.native_acks.push((resp, Err(refusal)));
             return;
         }
+        if let Err(e) = self.seed_trim_seq().await {
+            let refusal = crate::native_queue::NqRefusal::Internal(e);
+            self.effects.native_acks.push((resp, Err(refusal)));
+            return;
+        }
         let mut st = match local.queue.native.take() {
             Some(st) => st,
             None => match self.nq_load(&hash).await {
@@ -63,6 +69,7 @@ impl CommitTransaction<'_> {
             self.nq_roster(&hash, &mut st, by, t);
         }
         self.nq_flush_state(&hash, &mut st);
+        self.nq_flush_hints(&hash, &mut st, local.fields.absorbed);
         local.queue.native = Some(st);
         self.effects.native_acks.push((resp, out));
     }

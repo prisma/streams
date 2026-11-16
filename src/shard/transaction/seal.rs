@@ -63,6 +63,11 @@ impl CommitTransaction<'_> {
                 }
             };
             refusal = refusal.or_else(|| moved_since_snapshot(&local, adv));
+            if local.handle.native_queue.load(Ordering::Relaxed)
+                && let Err(why) = self.seed_trim_seq().await
+            {
+                refusal.get_or_insert(why);
+            }
             match applied_from(&local.handle, adv.upto) {
                 Ok(pages) => remainders.push(pages),
                 Err(why) => {
@@ -83,6 +88,9 @@ impl CommitTransaction<'_> {
         for ((mut local, adv), applied) in overlays.into_iter().zip(streams).zip(remainders) {
             apply_seal(&mut local.fields, adv.from, adv.upto, adv.bytes);
             local.frames.retired_bytes += adv.bytes;
+            if local.handle.native_queue.load(Ordering::Relaxed) {
+                self.stage_seal_hint(&adv.hash, (adv.from, adv.upto));
+            }
             #[cfg(test)]
             let prebuilt = self
                 .engine

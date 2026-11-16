@@ -1,0 +1,12 @@
+diff --git a/src/native_queue/hints.rs b/src/native_queue/hints.rs
+--- a/src/native_queue/hints.rs
++++ b/src/native_queue/hints.rs
+@@ -39,7 +39,7 @@ pub(crate) fn parse_key(key: &[u8]) -> Option<(u64, [u8; 16])> {
+     let (&tag, rest) = rest.split_first()?;
+     let (gseq, hash) = rest.split_first_chunk::<8>()?;
+     let hash: [u8; 16] = hash.try_into().ok()?;
+-    (*sentinel == SENTINEL && tag == TAG).then_some((u64::from_be_bytes(*gseq), hash))
++    (*sentinel == SENTINEL && tag == tag).then_some((u64::from_be_bytes(*gseq), hash))
+ }
+ 
+ /// The key range holding every hint key.

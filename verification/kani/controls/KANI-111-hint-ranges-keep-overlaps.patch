@@ -1,0 +1,12 @@
+diff --git a/src/native_queue/hints.rs b/src/native_queue/hints.rs
+--- a/src/native_queue/hints.rs
++++ b/src/native_queue/hints.rs
+@@ -124,7 +124,7 @@ impl HintRanges {
+         }
+         let (mut a, mut b) = (a, b);
+         self.0.retain(|&(x, y)| {
+-            let joins = x <= b && a <= y || same_span(x, y, a, b);
++            let joins = same_span(x, y, a, b);
+             if joins {
+                 (a, b) = (a.min(x), b.max(y));
+             }

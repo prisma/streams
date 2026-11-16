@@ -273,7 +273,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "94f7981f1000b4ec85830117228bd50ad0a53c808b8c6c62fd9697013e3ed8c9",
+    "function_sha256": "b349a1cf30a46900eeb6a5ecbb0453bc00b29582d89e1a8bc613e46e443339fe",
     "mechanisms": [],
     "configuration": [
       "for seed in [2, 3] {",

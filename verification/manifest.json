@@ -1750,16 +1750,18 @@
     {
       "id": "KANI-111",
       "kind": "kani",
-      "title": "Native queue ids and fixed-layout entries: message ids, lease tokens, dedup and scheduled entries round-trip and refuse what they did not write",
+      "title": "Native queue ids and fixed-layout entries: message ids, lease tokens, dedup and scheduled entries and trim hint keys round-trip and refuse what they did not write; hint ranges stay sorted, apart and within their spans",
       "status": "pass-with-recorded-scope",
-      "owner": "the native queue's public ids (native_queue::keys message_id, parse_message_id, lease_token, parse_lease_token and their fixed-size cores message_raw, message_offset, lease_raw, lease_of, base32, unbase32) and fixed-layout entries (native_queue::rows encode_dedup, decode_dedup and its checked core dedup_fields, encode_scheduled, decode_scheduled)",
+      "owner": "the native queue's public ids (native_queue::keys message_id, parse_message_id, lease_token, parse_lease_token and their fixed-size cores message_raw, message_offset, lease_raw, lease_of, base32, unbase32) and fixed-layout entries (native_queue::rows encode_dedup, decode_dedup and its checked core dedup_fields, encode_scheduled, decode_scheduled) and the trim hints (native_queue::hints key, parse_key, HintRanges::add)",
       "source_paths": [
         "src/native_queue/keys.rs",
-        "src/native_queue/rows.rs"
+        "src/native_queue/rows.rs",
+        "src/native_queue/hints.rs"
       ],
       "verification_paths": [
         "src/native_queue/keys/proofs.rs",
-        "src/native_queue/rows/proofs.rs"
+        "src/native_queue/rows/proofs.rs",
+        "src/native_queue/hints/proofs.rs"
       ],
       "requirements": [
         "Q2",
@@ -1772,10 +1774,12 @@
         "ASM-KANI-SCOPE",
         "ASM-KANI-COMPILER"
       ],
-      "input_scope": "message ids and lease tokens on their fixed-size cores over any entity hash, offset and lease generation: their base32 characters decode to exactly their bytes, which name what they were made for, and nothing under any hash that differs in its incarnation tag (bytes 12-15) or (ids) at any lane but lane 0 (the String layer, the msg_/lt_ prefix and ASCII characters, is outside the proof: native_queue::tests pins ids and tokens character for character); the dedup entry over any offset, expiry and trailing byte, cut to any shorter length, one byte long or of any other lane, its refusals on the typed core dedup_fields (native_queue::tests pins decode_dedup's messages for them); the scheduled entry over any send time, stored length and availableAt at inline lengths 0 and 4, cut to any length below its 12 fixed bytes. The state row (StateRow, with its webhook strings) and the delivery row (DeliveryRow, with its code string) are outside the proof (UTF-8 validation and String error paths are beyond Kani here, verification/README.md); native_queue::tests pin their encodings and refusals byte for byte, the range row's codec likewise",
+      "input_scope": "message ids and lease tokens on their fixed-size cores over any entity hash, offset and lease generation: their base32 characters decode to exactly their bytes, which name what they were made for, and nothing under any hash that differs in its incarnation tag (bytes 12-15) or (ids) at any lane but lane 0 (the String layer, the msg_/lt_ prefix and ASCII characters, is outside the proof: native_queue::tests pins ids and tokens character for character); the dedup entry over any offset, expiry and trailing byte, cut to any shorter length, one byte long or of any other lane, its refusals on the typed core dedup_fields (native_queue::tests pins decode_dedup's messages for them); the scheduled entry over any send time, stored length and availableAt at inline lengths 0 and 4, cut to any length below its 12 fixed bytes. The trim hint key over any sequence and queue hash, against any other tag byte; three hint-range additions of any non-empty ranges below three range rows' spans (12,288 offsets). The hint value codec returns format! errors and is outside the proof; native_queue::hints::tests pin it byte for byte with its refusals. The state row (StateRow, with its webhook strings) and the delivery row (DeliveryRow, with its code string) are outside the proof (UTF-8 validation and String error paths are beyond Kani here, verification/README.md); native_queue::tests pin their encodings and refusals byte for byte, the range row's codec likewise",
       "regressions": [
         "native_queue::tests::every_queue_key_is_pinned",
-        "native_queue::tests::the_queue_families_are_distinct"
+        "native_queue::tests::the_queue_families_are_distinct",
+        "native_queue::hints::tests::a_hint_key_sorts_by_gseq_and_names_its_queue",
+        "native_queue::hints::tests::ranges_coalesce_within_a_range_row_and_when_they_touch_never_across_spans"
       ],
       "checks": [
         {
@@ -1827,6 +1831,22 @@
           }
         },
         {
+          "id": "KANI-111/hint-key",
+          "role": "baseline",
+          "harness": "native_queue::hints::proofs::kani_111_a_hint_key_names_its_sequence_and_queue_and_no_other_tag_does",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
+          "id": "KANI-111/hint-ranges",
+          "role": "baseline",
+          "harness": "native_queue::hints::proofs::kani_111_hint_ranges_stay_sorted_apart_and_cover_only_what_was_added",
+          "expect": {
+            "result": "pass"
+          }
+        },
+        {
           "id": "KANI-111/nc-id-without-incarnation",
           "role": "negative-control",
           "harness": "native_queue::keys::proofs::kani_111_a_message_id_names_its_offset_under_its_own_incarnation_only",
@@ -1864,6 +1884,26 @@
           "expect": {
             "result": "fail",
             "property": "a long dedup entry is refused"
+          }
+        },
+        {
+          "id": "KANI-111/nc-hint-key-ignores-its-tag",
+          "role": "negative-control",
+          "harness": "native_queue::hints::proofs::kani_111_a_hint_key_names_its_sequence_and_queue_and_no_other_tag_does",
+          "patch": "verification/kani/controls/KANI-111-hint-key-ignores-its-tag.patch",
+          "expect": {
+            "result": "fail",
+            "property": "another tag names nothing"
+          }
+        },
+        {
+          "id": "KANI-111/nc-hint-ranges-keep-overlaps",
+          "role": "negative-control",
+          "harness": "native_queue::hints::proofs::kani_111_hint_ranges_stay_sorted_apart_and_cover_only_what_was_added",
+          "patch": "verification/kani/controls/KANI-111-hint-ranges-keep-overlaps.patch",
+          "expect": {
+            "result": "fail",
+            "property": "sorted and apart"
           }
         }
       ]

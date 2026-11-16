@@ -39,7 +39,7 @@ pub(crate) fn split_rule(t: u8) -> Option<SplitRule> {
         tag::REFCOUNT | tag::ORPHAN => Recompute,
         tag::GARBAGE | tag::CURSOR | tag::REPAIR | b'E' | b'C' => Drop,
         tag::HEAD | tag::USAGE_DEBT | tag::UNSEALED | tag::USAGE_DIRTY | b'D' => ByHash,
-        tag::ROSTER | b'Z' => ByTrailingHash,
+        tag::ROSTER | tag::TRIM_HINT => ByTrailingHash,
         tag::IDENTITY => WrittenFresh,
         b'N' => RecomputedInPreparation,
         b'T' => Absent,

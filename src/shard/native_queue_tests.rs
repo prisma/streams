@@ -15,6 +15,7 @@ mod budgets;
 mod caps;
 mod cold;
 mod floors;
+mod hints;
 mod interleave;
 mod reads;
 mod roster;

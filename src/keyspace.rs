@@ -113,6 +113,8 @@ pub(crate) mod tag {
     pub(crate) const REPAIR: u8 = b'X';
     /// An ancestor object whose last reference here is gone, until its release is logged (S6).
     pub(crate) const RELEASE: u8 = b'E';
+    /// A trim hint: offsets of a queue the trim pass looks at again (S3b, `native_queue::hints`).
+    pub(crate) const TRIM_HINT: u8 = b'Z';
     /// The queue-state gauges: the shard's and each container's bytes per category, and their
     /// generation (`shard::layout::queue_gauges`).
     pub(crate) const QUEUE_GAUGE: u8 = b'N';
@@ -210,7 +212,7 @@ mod tests {
         super::tag::USAGE_DIRTY,
         super::tag::REPAIR,
         b'D', // queue debt index (reserved for #150)
-        b'Z', // queue trim hints (S3b)
+        super::tag::TRIM_HINT,
         super::tag::QUEUE_GAUGE,
         super::tag::RELEASE,
         b'C', // lineage-sweep cursor (S6)

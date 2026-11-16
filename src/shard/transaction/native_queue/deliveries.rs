@@ -220,6 +220,7 @@ impl CommitTransaction<'_> {
     ) -> Result<(), NqRefusal> {
         let (offset, row) = message;
         let (undone, t) = undone;
+        st.hints.add(offset, offset + 1);
         self.nq_delete(st, keys::by_offset(hash, keys::DELIVERY, offset));
         let mut range = self.nq_range(hash, st, offset).await?;
         range.open = range.open.saturating_sub(1);
@@ -246,6 +247,7 @@ impl CommitTransaction<'_> {
         t: i64,
     ) -> Result<(), NqRefusal> {
         let (offset, facts, inline) = message;
+        st.hints.add(offset, offset + 1);
         let mut range = self.nq_range(hash, st, offset).await?;
         self.nq_unschedule(hash, st, (offset, facts, inline), &mut range);
         Self::nq_set_range(st, offset, range);

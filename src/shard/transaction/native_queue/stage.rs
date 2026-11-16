@@ -29,6 +29,13 @@ pub(in crate::shard::transaction) struct NativeStage {
     pub gauged: [u64; queue_gauges::CATEGORIES],
     /// Whether this queue's operations staged gauge moves in this group.
     pub gauges_staged: bool,
+    /// The frontier as the shard log held it when the group loaded the
+    /// queue: what the group's frontier moves start from (trim hints).
+    pub loaded_frontier: u64,
+    /// The references this group resolved, by offset (trim hints).
+    pub hints: crate::native_queue::hints::HintRanges,
+    /// The sequences of this group's hint rows for the queue.
+    pub hint_seqs: Vec<u64>,
 }
 
 impl NativeStage {
@@ -71,6 +78,9 @@ impl NativeStage {
             range_stored: BTreeMap::new(),
             gauged: [0; queue_gauges::CATEGORIES],
             gauges_staged: false,
+            loaded_frontier: 0,
+            hints: crate::native_queue::hints::HintRanges::default(),
+            hint_seqs: Vec::new(),
         }
     }
 
@@ -105,6 +115,7 @@ impl NativeStage {
         let state = StateRow::decode(&raw).map_err(NqRefusal::Internal)?;
         Ok(Self {
             gauged: queue_gauges::categories(&state),
+            loaded_frontier: state.frontier,
             state,
             exists: true,
             ..Self::absent()

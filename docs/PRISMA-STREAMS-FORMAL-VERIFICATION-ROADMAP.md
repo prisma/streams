@@ -2977,11 +2977,11 @@ For **full-width scalar** proofs, the stated Rust types remain symbolic across t
 **Why valuable.** The step is the one place an untaken message is leased, passed or expired: a wrong arm leases a cancelled message, passes a live one into the gap, or leases one past its retention.
 
 <a id="kani-111"></a>
-### KANI-111 — Native queue ids and fixed-layout entries round-trip and refuse what they did not write
+### KANI-111 — Native queue ids, fixed-layout entries and trim hint keys round-trip and refuse what they did not write
 
-**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry KANI-111, 6 baselines and 4 negative controls: an id parsed without its incarnation check, an id parsed without its lane check, a token that reads its offset's bytes as its generation, and a dedup entry that takes trailing bytes). The ids' `String` layer (their prefix and ASCII characters; the proof covers their bytes and base32 characters) and the state and delivery rows, which carry strings, are outside the proof and pinned byte for byte by `native_queue::tests`.
+**Status:** pass-with-recorded-scope (S3b part 1 and part 2 step 2, 2026-11-10; manifest entry KANI-111, 8 baselines and 6 negative controls: an id parsed without its incarnation check, an id parsed without its lane check, a token that reads its offset's bytes as its generation, a dedup entry that takes trailing bytes, a hint key parsed without its tag, and hint ranges that keep overlaps apart). The ids' `String` layer (their prefix and ASCII characters; the proof covers their bytes and base32 characters) and the state and delivery rows, which carry strings, and the hint value codec, whose refusals are `format!` errors, are outside the proof and pinned byte for byte by `native_queue::tests` and `native_queue::hints::tests`.
 
-**Validate.** A message id and a lease token parse back to exactly the offset and lease they name under their own queue's incarnation, and to nothing under another incarnation or another lane; a dedup entry and a scheduled entry round-trip and refuse an entry of another length or lane.
+**Validate.** A message id and a lease token parse back to exactly the offset and lease they name under their own queue's incarnation, and to nothing under another incarnation or another lane; a dedup entry and a scheduled entry round-trip and refuse an entry of another length or lane; a trim hint key parses back to its sequence and queue and no key of another tag does; after any three additions a queue's hint ranges are sorted, apart, cover every added offset and reach only the range-row spans the added offsets lie in.
 
 **Why valuable.** An id that resolved under a later incarnation of the same name, or a token that named another lease, would settle the wrong message; a dedup entry that took trailing bytes would accept a row this binary never wrote.
 
