@@ -2691,7 +2691,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "bf26a4e751122ac02ab43d2f11c787fcd5461502438c806bfe9bb9a7c745d71c",
+    "function_sha256": "00f950d7a277c90187a3f391b4039f58ca1f8a03f3851908e93673a0eb0a1df0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_split.rs",

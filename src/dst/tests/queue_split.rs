@@ -200,6 +200,21 @@ async fn claim(cell: &Cell, name: &str, max: u32) -> Vec<(Value, Value, Value)> 
         .collect()
 }
 
+/// Claims until `n` messages are leased, four claims at most. A claim that
+/// meets a seal landing after it prepared its pages (a merged leaf's open
+/// seals what its sources left unsealed) stops at the new sealed boundary,
+/// and the next claim, preparing again, takes the rest.
+async fn claim_n(cell: &Cell, name: &str, n: usize) -> Vec<(Value, Value, Value)> {
+    let mut taken = Vec::new();
+    for _ in 0..4 {
+        if taken.len() >= n {
+            break;
+        }
+        taken.extend(claim(cell, name, 10).await);
+    }
+    taken
+}
+
 /// Ack `tokens`: each settle's outcome.
 async fn ack(cell: &Cell, name: &str, tokens: &[Value]) -> Vec<Value> {
     let ops: Vec<Value> = tokens
@@ -247,7 +262,8 @@ async fn mixed_queue(cell: &Cell, name: &str) -> Value {
 /// and gives back every chunk once.** Its leaf `00` holds sealed chunks,
 /// an open delivery and unsealed pages when it splits into `000` and
 /// `001`, which then merge back into a fresh `00`. The merged leaf claims
-/// exactly the four untaken messages, in order, each a first attempt; the
+/// exactly the four untaken messages, in order, each a first attempt (in
+/// two claims when its open's seal lands inside the first); the
 /// delivery leased before the split settles with its own token; and once
 /// everything is acked and sealed, the merged leaf's trim gives back each of
 /// the queue's chunks: each object's count falls by exactly its queue
@@ -278,7 +294,7 @@ async fn a_queue_split_then_merged_delivers_every_message_as_before_and_gives_ba
     .expect("the merge publishes");
     let m = merged.merged.2.clone().expect("the merged leaf opened");
     quiet(&m);
-    let taken = claim(&cell, &name, 10).await;
+    let taken = claim_n(&cell, &name, 4).await;
     let got: Vec<(Value, Value)> = taken.iter().map(|t| (t.0.clone(), t.1.clone())).collect();
     let want: Vec<(Value, Value)> = (2..6).map(|n| (json!(n), json!(1))).collect();
     assert_eq!(
