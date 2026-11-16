@@ -1,14 +1,16 @@
 ---------------------------- MODULE QueueDelivery ----------------------------
 (***************************************************************************)
-(* TLA-QD -- a native queue's delivery on its stream's page rows (S3b      *)
-(* part 1, S3b-DESIGN rev 3 §4-§6, §11.1).                                 *)
+(* TLA-QD -- a native queue's delivery on its stream's pages (S3b part 1   *)
+(* and part 2 step 1, S3b-DESIGN rev 3 §4-§6, §11.1).                      *)
 (*                                                                         *)
 (* One queue in one shard log.  The committer applies each operation as    *)
 (* one commit group, and answers only once the group is durable, so a      *)
 (* crash loses no answered state: it loses the handlers' replies in flight *)
 (* (a claim's leases the handler had not yet handed out or given back).    *)
 (*                                                                         *)
-(* A message is one offset.  Its page row 'p' holds its body; `kind` says  *)
+(* A message is one offset of the queue's stream, whose page holds its     *)
+(* body (`page`: stored; part 2 step 1 deletes no page, step 3's trim     *)
+(* will); `kind` says                                                      *)
 (* whether it was sent immediate or scheduled (a future deliverAt), which  *)
 (* the committer knows only at the send and later only from the range     *)
 (* rows' bitmaps.  The state the committer keeps (native_queue/rows.rs,    *)
@@ -41,15 +43,19 @@
 (* its attempt back, its releases untouched, failed instead at the         *)
 (* UnleaseLimit-th time (INTERNAL_UNLEASES, 8 in code).                    *)
 (*                                                                         *)
-(* Part 1 reads the lane's pages in the committer itself, through the      *)
-(* stage: there is no handler-prepared window yet, so §11.1's `Prepare`    *)
-(* and its control 7 come with part 2, which prepares sealed pages.        *)
+(* Part 2 seals the queue's stream (§6): `sealed` is its sealed boundary;  *)
+(* the committer holds the pages at or above it and none below.  A         *)
+(* handler's `Prepare` reads the pages from the frontier up to the         *)
+(* boundary, perhaps fewer, into `prep`; the committer serves the lane only *)
+(* at its own frontier, from a page it holds or one prepared, and steps    *)
+(* the frontier only there (lane.rs nq_lane_run), so a stale window, read  *)
+(* at an older frontier, is harmless (§6.3).                               *)
 (* A body's size is one byte: queued_bytes and queued_messages differ by   *)
 (* the cancelled untaken messages the frontier has not yet passed.         *)
 (*                                                                         *)
 (* Mutation points (MC_QueueDelivery.tla): LaneOpen (control 1),           *)
 (* HeadLive (2), CancelMarks (3), ScheduledClaimKeepsSbits (4), GenOK (5), *)
-(* UnleaseReleases (6), UnleaseCounts (8).                                 *)
+(* UnleaseReleases (6), LaneServes (7), UnleaseCounts (8).                 *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
@@ -107,11 +113,15 @@ VARIABLES
                 \* check compares it with the current one alone)
     replayed,   \* ghost: a settle with a stale receipt changed a delivery
     unleaseBroke, \* ghost: an internal unlease touched releases or kept the attempt
-    unreadSent, crashes
+    unreadSent, crashes,
+    sealed,     \* the queue stream's sealed boundary (absorbed)
+    prep,       \* the pages a claim's handler read below it (S3b §6.2)
+    sealedLeased \* ghost: a lane lease was served from a sealed page
 
-vars == <<clock, next, frontier, kind, avail, unread, page, skip, cancel, sbits,
-          opn, sch, aIdx, cursor, d, qm, qb, fm, outcome, leases, firsts,
-          inflight, tokens, replayed, unleaseBroke, unreadSent, crashes>>
+delivery == <<clock, next, frontier, kind, avail, unread, page, skip, cancel, sbits,
+              opn, sch, aIdx, cursor, d, qm, qb, fm, outcome, leases, firsts,
+              inflight, tokens, replayed, unleaseBroke, unreadSent, crashes>>
+vars == <<delivery, sealed, prep, sealedLeased>>
 
 RetentionEnd(o) == avail[o] + Retention
 HardExpiry(o) == RetentionEnd(o) + FailRetention
@@ -132,6 +142,11 @@ GenOK(o, g) == d[o].st = "L" /\ d[o].gen = g
 UnleaseReleases(row) == row.rel
 \* An internal unlease counts on the row.
 UnleaseCounts(row) == row.iu + 1
+\* The lane is served only at the frontier (lane.rs nq_lane_run).
+LaneServes(o) == o = frontier
+
+\* The committer holds the page at `o`, or a handler prepared it.
+Available(o) == o >= sealed \/ o \in prep
 
 TypeOK ==
     /\ clock \in 0..MaxClock /\ next \in 0..N /\ frontier \in 0..N
@@ -140,6 +155,7 @@ TypeOK ==
     /\ skip \subseteq Offs /\ cancel \subseteq Offs /\ sbits \subseteq Offs
     /\ aIdx \subseteq Offs
     /\ outcome \in [Offs -> {"none", "ended", "cancelled", "expired"}]
+    /\ sealed \in 0..next /\ prep \subseteq Offs
 
 Init ==
     /\ clock = 0 /\ next = 0 /\ frontier = 0
@@ -155,6 +171,7 @@ Init ==
     /\ inflight = {} /\ tokens = [o \in Offs |-> 0]
     /\ replayed = FALSE /\ unleaseBroke = FALSE
     /\ unreadSent = 0 /\ crashes = 0
+    /\ sealed = 0 /\ prep = {} /\ sealedLeased = FALSE
 
 \* ---------------------------------------------------------------------------
 \* Sends (send.rs).
@@ -195,36 +212,32 @@ SendScheduled(at) ==
 
 LanePass ==
     /\ frontier < next
+    /\ Available(frontier)
     /\ ~HeadLive(frontier)
     /\ LET f == frontier IN
        \/ /\ f \in skip
           /\ skip' = skip \ {f}
-          \* A resolved scheduled message's page goes when the frontier passes it.
-          /\ page' = IF f \in sbits THEN page ELSE [page EXCEPT ![f] = FALSE]
           /\ UNCHANGED <<cancel, qm, qb, outcome>>
        \/ /\ f \notin skip /\ f \in cancel
           /\ cancel' = cancel \ {f}
-          /\ page' = [page EXCEPT ![f] = FALSE]
           /\ qb' = qb - 1
           /\ UNCHANGED <<skip, qm, outcome>>
        \/ /\ f \notin skip /\ f \notin cancel
           \* Untaken past its retention end: into the gap.
-          /\ page' = [page EXCEPT ![f] = FALSE]
           /\ qm' = qm - 1 /\ qb' = qb - 1
           /\ outcome' = [outcome EXCEPT ![f] = "expired"]
           /\ UNCHANGED <<skip, cancel>>
     /\ frontier' = frontier + 1
-    /\ UNCHANGED <<clock, next, kind, avail, unread, sbits, opn, sch, aIdx,
+    /\ UNCHANGED <<clock, next, kind, avail, unread, page, sbits, opn, sch, aIdx,
                    cursor, d, fm, leases, firsts, inflight, tokens, replayed,
                    unleaseBroke, unreadSent, crashes>>
 
 \* ---------------------------------------------------------------------------
 \* Ending and failing a delivery (deliveries.rs).
 
-\* The page of a message that ended: it goes now when the frontier is past
-\* it; otherwise the frontier's pass deletes it (a scheduled one, its bit
-\* cleared).
-PageAfterEnd(o) == IF o < frontier THEN [page EXCEPT ![o] = FALSE] ELSE page
+\* The page of a message that ended stays in the queue's stream (part 2
+\* step 1: no resolution deletes a page; step 3's trim reclaims them).
+PageAfterEnd(o) == page
 
 \* End a message with a delivery row: the row goes, the range's reference
 \* closes, a scheduled message's entry and bits go (nq_end_message).
@@ -264,7 +277,7 @@ RetryOrFail(o, row) ==
 DueRetries == {o \in Offs : d[o].st = "R" /\ d[o].due <= clock}
 DueScheduled == {o \in aIdx : avail[o] <= clock /\ KeyLess(cursor, <<avail[o], o>>)
                               /\ d[o].st = "none"}
-LaneHead == IF frontier < next /\ HeadLive(frontier) THEN {frontier} ELSE {}
+LaneHead == {o \in Offs : LaneServes(o) /\ o < next /\ Available(o) /\ HeadLive(o)}
 KeyOf(o) == IF o \in DueRetries THEN <<d[o].due, o>> ELSE <<avail[o], o>>
 Candidates == DueRetries \cup DueScheduled \cup LaneHead
 Least(S) == CHOOSE o \in S : \A p \in S : p = o \/ KeyLess(KeyOf(o), KeyOf(p))
@@ -313,7 +326,7 @@ Claim ==
           /\ LeaseOut(o, FirstRow(o))
           /\ opn' = [opn EXCEPT ![RangeOf(o)] = LaneOpen(RangeOf(o))]
           /\ firsts' = [firsts EXCEPT ![o] = @ + 1]
-          /\ frontier' = frontier + 1
+          /\ frontier' = IF o + 1 > frontier THEN o + 1 ELSE frontier
           /\ UNCHANGED <<page, skip, cancel, sbits, sch, aIdx, cursor, qm, qb, fm,
                          outcome>>
     /\ UNCHANGED <<clock, next, kind, avail, unread, tokens, replayed,
@@ -503,14 +516,31 @@ ExpireFailure(o) ==
                    leases, firsts, inflight, tokens, replayed, unleaseBroke,
                    unreadSent, crashes>>
 
+\* ---------------------------------------------------------------------------
+\* Part 2: the sealer and the handler's preparation (S3b-DESIGN §6.2).
+
+\* A seal takes the pages from the boundary up to some later offset.
+Seal ==
+    /\ sealed < next
+    /\ \E s \in (sealed + 1)..next : sealed' = s
+    /\ UNCHANGED <<delivery, prep, sealedLeased>>
+
+\* A claim's (or a sweep's) handler reads the sealed pages from the stored
+\* frontier on, up to the boundary or fewer (its byte budget).
+Prepare ==
+    /\ \E c \in frontier..(IF sealed > frontier THEN sealed ELSE frontier) :
+          prep' = {o \in Offs : frontier <= o /\ o < c}
+    /\ UNCHANGED <<delivery, sealed, sealedLeased>>
+
 Tick ==
     /\ clock < MaxClock
     /\ clock' = clock + 1
     /\ UNCHANGED <<next, frontier, kind, avail, unread, page, skip, cancel, sbits,
                    opn, sch, aIdx, cursor, d, qm, qb, fm, outcome, leases, firsts,
-                   inflight, tokens, replayed, unleaseBroke, unreadSent, crashes>>
+                   inflight, tokens, replayed, unleaseBroke, unreadSent, crashes,
+                   sealed, prep, sealedLeased>>
 
-Next ==
+DeliveryStep ==
     \/ \E u \in BOOLEAN : SendImmediate(u)
     \/ \E at \in 1..MaxClock : SendScheduled(at)
     \/ LanePass
@@ -522,6 +552,16 @@ Next ==
     \/ \E o \in Offs : Discard(o) \/ Cancel(o) \/ SweepLease(o) \/ SweepRetry(o)
                        \/ ExpireFailure(o)
     \/ ExpireScheduled
+
+\* A lane lease served below the boundary came from a prepared page.
+SealedLease == \E o \in 0..(sealed - 1) : firsts'[o] > firsts[o] /\ kind[o] = "imm"
+
+Next ==
+    \/ /\ DeliveryStep
+       /\ UNCHANGED <<sealed, prep>>
+       /\ sealedLeased' = (sealedLeased \/ SealedLease)
+    \/ Seal
+    \/ Prepare
     \/ Tick
 
 Spec == Init /\ [][Next]_vars
@@ -606,4 +646,10 @@ Witness_ExpiredIntoGap == ~\E o \in Offs : outcome[o] = "expired" /\ kind[o] = "
 Witness_ScheduledLeasedAndPassed ==
     ~\E o \in Offs : kind[o] = "sched" /\ d[o].st = "L" /\ o < frontier
 Witness_StaleReceiptHeld == ~\E o \in Offs : tokens[o] > 0 /\ d[o].st = "L" /\ d[o].gen # tokens[o]
+Witness_SealedPageLeased == ~sealedLeased
+
+\* The premise of the checks' deadlock_check: false (README): below
+\* MaxClock time can always move, through `Tick`, a bare disjunct of `Next`.
+\* A guard added to `Tick` breaks it.
+TickEnabled == clock < MaxClock => ENABLED Tick
 =============================================================================

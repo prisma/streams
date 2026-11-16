@@ -3747,9 +3747,9 @@
     {
       "id": "TLA-046",
       "kind": "tla",
-      "title": "Native queue delivery on page rows: the frontier, range rows, leases, settles, sweeps and poison bodies",
+      "title": "Native queue delivery on its stream's pages: the frontier, range rows, leases, settles, sweeps, poison bodies and the sealed lane served from prepared pages",
       "status": "pass-with-recorded-scope",
-      "owner": "the native queue's committer operations (send, claim with its lane frontier, settle, internal unlease, cancel, the sweeps) over the queue's page rows, range rows, delivery rows and scheduled index, and the claim handler's hand-out, unreadable fail and internal unlease",
+      "owner": "the native queue's committer operations (send, claim with its lane frontier, settle, internal unlease, cancel, the sweeps) over the queue stream's pages (unsealed, or sealed and prepared by the handler), range rows, delivery rows and scheduled index, and the claim handler's hand-out, unreadable fail and internal unlease",
       "source_paths": [
         "src/shard/transaction/native_queue/send.rs",
         "src/shard/transaction/native_queue/claim.rs",
@@ -3762,6 +3762,7 @@
         "src/native_queue/range.rs",
         "src/native_queue/rows.rs",
         "src/application/queues/delivery.rs",
+        "src/shard/native_queue_submit/prepare.rs",
         "src/shard/commit_plan.rs"
       ],
       "verification_paths": [
@@ -3790,9 +3791,11 @@
         "shard::native_queue_tests::unlease::an_unreadable_settle_fails_the_delivery_alone_and_spends_no_budget",
         "shard::native_queue_tests::cancel_deletes_untaken_and_held_messages_and_discard_deletes_only_failed_ones",
         "shard::native_queue_tests::release_gives_the_attempt_back_twice_then_counts_and_extend_moves_the_deadline",
-        "shard::native_queue_tests::sweeps::an_untaken_message_enters_the_gap_at_its_retention_end_exactly"
+        "shard::native_queue_tests::sweeps::an_untaken_message_enters_the_gap_at_its_retention_end_exactly",
+        "shard::native_queue_tests::avail::a_sealed_lane_is_leased_from_the_pages_its_handler_prepared",
+        "shard::native_queue_tests::sealed::a_sealed_lane_expires_through_the_pages_its_sweeper_read"
       ],
-      "input_scope": "one queue in one shard log; 2 offsets in one range row of 2 (small) or two range rows of 1 (ranges), each with clock 0..3, retention 2, failure retention 1, lease 1, one body that never opens and one crash losing the handlers' replies; 3 offsets over two range rows of 2 with clock 0..2 and retention 1, no unreadable body and no crash (expanded); 2 attempts, 1 free release, an unlease limit of 2 (8 in code), claims of one message, bodies of one byte; every committer operation one durable group (ASM-QUEUE-REPLY-DURABLE); the client settles with the newest receipt it holds per offset; no dedup, no pause, no redrive, no budgets or slices, no handler-prepared window (part 2); I9 checked as its bound (leases of a poison body <= MaxAttempts + UnleaseLimit), not as liveness; safety only, no symmetry",
+      "input_scope": "one queue in one shard log; 2 offsets in one range row of 2 (small) or two range rows of 1 (ranges), each with clock 0..3, retention 2, failure retention 1, lease 1, one body that never opens and one crash losing the handlers' replies; 3 offsets over two range rows of 2 with clock 0..2 and retention 1, no unreadable body and no crash (expanded); 2 attempts, 1 free release, an unlease limit of 2 (8 in code), claims of one message, bodies of one byte; every committer operation one durable group (ASM-QUEUE-REPLY-DURABLE); the client settles with the newest receipt it holds per offset; no dedup, no pause, no redrive, no budgets or slices, the queue stream sealed at any boundary up to the next send and a handler's prepared window read from the frontier of its time up to the boundary or fewer, reused later at any frontier; no page reclaimed (part 2 step 3's trim); I9 checked as its bound (leases of a poison body <= MaxAttempts + UnleaseLimit), not as liveness; safety only, no symmetry",
       "checks": [
         {
           "id": "TLA-046/baseline-small",
@@ -3867,7 +3870,7 @@
           "config": "verification/tla/queue/MC_QueueDelivery_nc_scheduled_claim_sbits.cfg",
           "expect": {
             "result": "violation",
-            "property": "NoMessageLost"
+            "property": "RangeRowsMatch"
           },
           "deadlock_check": false
         },
@@ -3890,6 +3893,17 @@
           "expect": {
             "result": "violation",
             "property": "UnleaseKeepsBudgets"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/nc-lane-serves",
+          "role": "negative-control",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_nc_lane_serves.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "CancelledNeverLeased"
           },
           "deadlock_check": false
         },
@@ -3967,6 +3981,17 @@
           "expect": {
             "result": "violation",
             "property": "Witness_StaleReceiptHeld"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-046/witness-SealedPageLeased",
+          "role": "witness",
+          "spec": "verification/tla/queue/MC_QueueDelivery.tla",
+          "config": "verification/tla/queue/MC_QueueDelivery_w_SealedPageLeased.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SealedPageLeased"
           },
           "deadlock_check": false
         }

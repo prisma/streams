@@ -1273,20 +1273,20 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Related work:** TLA-011, 019, 045; KANI-108.
 
 <a id="tla-046"></a>
-### TLA-046 — Native queue delivery on page rows: the frontier, range rows, leases and poison bodies
+### TLA-046 — Native queue delivery on its stream's pages: the frontier, range rows, leases, poison bodies and the sealed lane
 
-**Status:** pass-with-recorded-scope (S3b part 1, 2026-11-10; manifest entry TLA-046, `verification/tla/queue/QueueDelivery.tla`, 3 baselines, 7 negative controls and 6 witnesses; S3b-DESIGN rev 3 §11.1).
+**Status:** pass-with-recorded-scope (S3b part 1 and part 2 step 1, 2026-11-10; manifest entry TLA-046, `verification/tla/queue/QueueDelivery.tla`, 3 baselines, 8 negative controls and 7 witnesses; S3b-DESIGN rev 3 §6, §11.1).
 
 **Priority:** P0 · **Requirement anchors:** Q1–Q6  
-**Source owners:** [`src/shard/transaction/native_queue/claim.rs`](src/shard/transaction/native_queue/claim.rs); [`lane.rs`](src/shard/transaction/native_queue/lane.rs); [`settle.rs`](src/shard/transaction/native_queue/settle.rs); [`send.rs`](src/shard/transaction/native_queue/send.rs); [`sweep.rs`](src/shard/transaction/native_queue/sweep.rs); [`src/native_queue/range.rs`](src/native_queue/range.rs); [`src/application/queues/delivery.rs`](src/application/queues/delivery.rs)
+**Source owners:** [`src/shard/transaction/native_queue/claim.rs`](src/shard/transaction/native_queue/claim.rs); [`lane.rs`](src/shard/transaction/native_queue/lane.rs); [`settle.rs`](src/shard/transaction/native_queue/settle.rs); [`send.rs`](src/shard/transaction/native_queue/send.rs); [`sweep.rs`](src/shard/transaction/native_queue/sweep.rs); [`src/native_queue/range.rs`](src/native_queue/range.rs); [`src/application/queues/delivery.rs`](src/application/queues/delivery.rs); [`src/shard/native_queue_submit/prepare.rs`](src/shard/native_queue_submit/prepare.rs)
 
-**Validate.** An untaken immediate message has no row but its page: the frontier walks the pages, passing scheduled, cancelled and expired offsets and leasing a live one, and the range rows hold the sparse unresolved state. No message is lost, none at or below the frontier is sent, the frontier never passes a live immediate message, a cancelled one is never leased, a replayed settle changes nothing, no lease or failure outlives the hard expiry, the gauges and range rows are exact, an internal unlease keeps the attempts and releases, and a body that never opens is failed within MaxAttempts + UnleaseLimit leases.
+**Validate.** An untaken immediate message has no row but its page, a page of the queue's stream, sealed at any boundary; below the boundary the committer serves the lane only from pages a handler prepared, and only at its own frontier, however stale the window: the frontier walks the pages, passing scheduled, cancelled and expired offsets and leasing a live one, and the range rows hold the sparse unresolved state. No message is lost, none at or below the frontier is sent, the frontier never passes a live immediate message, a cancelled one is never leased, a replayed settle changes nothing, no lease or failure outlives the hard expiry, the gauges and range rows are exact, an internal unlease keeps the attempts and releases, and a body that never opens is failed within MaxAttempts + UnleaseLimit leases.
 
 **Why valuable.** The lane removes every per-message row an untaken message used to cost, so the frontier and the range rows are all that stands between a backlog and a lost or doubly leased message.
 
-**Negative controls.** A lane lease without the range row's reference; the frontier passing a live offset; a cancel that marks nothing; the scheduled claim clearing its sbits bit; a settle without the generation check; an internal unlease spending a release; an internal unlease with no row counter. §11.1's control 7 (a prepared candidate below the frontier) waits for part 2's handler-prepared window.
+**Negative controls.** A lane lease without the range row's reference; the frontier passing a live offset; a cancel that marks nothing; the scheduled claim clearing its sbits bit; a settle without the generation check; an internal unlease spending a release; an internal unlease with no row counter; the lane served from a prepared page behind the frontier (§11.1's control 7).
 
-**Scope.** 2 offsets (one range row, or two of one) with an unreadable body and a crash, and 3 offsets over two range rows with a shorter clock; claims of one message; no dedup, budgets, pause or redrive. I9 is checked as its bound, not as liveness. The design's 6 offsets do not converge in TLC.
+**Scope.** 2 offsets (one range row, or two of one) with an unreadable body and a crash, and 3 offsets over two range rows with a shorter clock; claims of one message; the stream sealed at any boundary and a prepared window reused at any later frontier; no page reclaimed (part 2 step 3); no dedup, budgets, pause or redrive. I9 is checked as its bound, not as liveness. The design's 6 offsets do not converge in TLC.
 
 **Related work:** TLA-022–023; KANI-110 (the frontier step), KANI-109 (the range rows), KANI-111 (the ids and fixed-layout entries).
 

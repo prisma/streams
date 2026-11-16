@@ -17,8 +17,9 @@ MutHeadLive(f) == FALSE
 \* NC 3: a cancel that marks nothing, so the frontier leases it later.
 MutCancelMarks(o) == cancel
 
-\* NC 4: the scheduled claim clears the message's sbits bit: the frontier
-\* then takes its page for a resolved one's while it is leased.
+\* NC 4: the scheduled claim clears the message's sbits bit while the
+\* message is leased: the range row's scheduled bits and count no longer
+\* match the scheduled index.
 MutScheduledClaimKeepsSbits(o) == sbits \ {o}
 
 \* NC 5: a settle without the generation check: a replayed receipt acts on
@@ -27,6 +28,10 @@ MutGenOK(o, g) == d[o].st = "L"
 
 \* NC 6: an internal unlease that spends a release.
 MutUnleaseReleases(row) == row.rel + 1
+
+\* NC 7: the lane served from a prepared page behind the frontier: a window
+\* read at an older frontier leases a message the frontier already took.
+MutLaneServes(o) == o = frontier \/ (o \in prep /\ o < frontier)
 
 \* NC 8: an internal unlease with no row counter: a poison body is leased
 \* without bound.
