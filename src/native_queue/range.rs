@@ -24,6 +24,10 @@ const SPAN_BITS: usize = 4_096;
 /// Bits of a range row's offset index (`off >> SHIFT` keys the row).
 pub(crate) const SHIFT: u32 = 12;
 const WORDS: usize = SPAN_BITS / 64;
+const _: () = assert!(WORDS * 64 == SPAN_BITS, "a row's bitmap is whole words");
+/// Runs from which the raw form is shorter: a run list is `2 + 4n` bytes
+/// against the raw form's 512, so `n` runs are listed while `n < 128`.
+const RAW_RUNS: usize = (WORDS * 8 - 2).div_ceil(4);
 const RANGE_ROW_VERSION: u8 = 1;
 const RUNS: u8 = 0;
 const RAW: u8 = 1;
@@ -94,7 +98,7 @@ impl Bits {
 
     fn put(&self, v: &mut Vec<u8>) {
         let runs = self.runs();
-        if 2 + runs.len() * 4 < WORDS * 8 {
+        if runs.len() < RAW_RUNS {
             v.push(RUNS);
             v.extend_from_slice(&as_u16(runs.len()).to_le_bytes());
             for (s, n) in runs {
