@@ -120,7 +120,14 @@ async fn catch_up(state: &AppState, seen: u64) {
         return;
     }
     let now = state.runtime.clock.monotonic();
-    if let Err(e) = crate::topology::revalidate::once(&state.registry, &state.shards, now).await {
+    let refresh = crate::topology::revalidate::Refresh::of(&state.fleet, &state.ownership);
+    let read = crate::topology::revalidate::installed(
+        &state.registry,
+        &state.shards,
+        refresh.as_ref(),
+        now,
+    );
+    if let Err(e) = read.await {
         tracing::debug!("topology revalidation on a newer version {seen}: {e}");
     }
 }
