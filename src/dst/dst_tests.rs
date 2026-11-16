@@ -165,6 +165,9 @@ mod fixture_requests;
 #[path = "tests/fixture_runtime.rs"]
 mod fixture_runtime;
 
+#[path = "tests/fixture_split.rs"]
+mod fixture_split;
+
 #[path = "tests/fixture_storage.rs"]
 mod fixture_storage;
 

@@ -8,8 +8,9 @@
 //! then sat in the directory's escalating holdoff (503 `shard_moving`) for good.
 
 use super::fixture_http::engine_shutdown;
+use super::fixture_split::{Cell, cell_over, records};
 use super::fixture_storage::mem;
-use super::split_k::{Cell, cell_over, records, tagged};
+use super::split_k::tagged;
 use crate::dst::{FaultPlan, FaultStore, ObjClass, StoreOp};
 use crate::spill::lineage;
 use std::sync::Arc;

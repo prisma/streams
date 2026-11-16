@@ -4,7 +4,7 @@
 //! what it flushed since the first split) as well as those it inherited from the first parent.
 
 use super::fixture_http::engine_shutdown;
-use super::split_k::{append, cell, records};
+use super::fixture_split::{append, cell, records};
 
 /// **A child of a split splits again and serves its stream from its own child.** Leaf `00` splits
 /// into `000` and `001`; the lower stream is appended to on `000` and its log flushed, so `000`
@@ -168,13 +168,13 @@ async fn split_with_t_held(
 ) -> (
     Result<crate::topology::split::Published, crate::topology::split::Refused>,
     crate::topology::intent::Intent,
-    super::split_k::Cell,
+    super::fixture_split::Cell,
     u64,
 ) {
     use crate::dst::fault_store::{FaultPlan, FaultStore};
     let faults = FaultStore::uniform(super::fixture_storage::mem(), 0x7a17, FaultPlan::CLEAN);
     let store: std::sync::Arc<dyn object_store::ObjectStore> = faults.clone();
-    let cell = super::split_k::cell_over(store.clone()).await;
+    let cell = super::fixture_split::cell_over(store.clone()).await;
     let wal = format!("{}/wal/", cell.parent.log_path());
     let (reached, reached_rx) = tokio::sync::oneshot::channel();
     let (go_tx, go) = tokio::sync::oneshot::channel();
@@ -235,7 +235,7 @@ async fn a_t_whose_flush_slatedb_retries_publishes_the_split() {
 /// there on the parent (and, when `corrupt`, `topology.json` is then made unreadable): its result,
 /// the park's account and the unfinished index batch.
 async fn split_probed(
-    cell: &super::split_k::Cell,
+    cell: &super::fixture_split::Cell,
     corrupt: bool,
 ) -> (
     Result<crate::topology::split::Published, crate::topology::split::Refused>,
@@ -267,9 +267,9 @@ async fn split_probed(
 
 /// A cold-seal split cell (no seal runs unrequested) whose parent holds an unsealed record of each
 /// half, so the probe's seal at the park has a group to refuse (`merge_finish_k::assert_quiet`).
-async fn cell_with_records() -> super::split_k::Cell {
+async fn cell_with_records() -> super::fixture_split::Cell {
     use super::merge_finish_k::append_answer;
-    let cell = super::split_k::cold_cell().await;
+    let cell = super::fixture_split::cold_cell().await;
     for (name, n) in [(&cell.low, 20), (&cell.high, 21)] {
         assert_eq!(append_answer(cell.addr, name, n).await.0, 204, "{name}");
     }

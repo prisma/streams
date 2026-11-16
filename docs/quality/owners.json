@@ -323,6 +323,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fixture_split",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split DSTs' cell (split_k and its siblings): a rig whose stored topology is its own, with a stream in each half of the leaf 00 and the leaf's engine, moved out of split_k so it keeps headroom under the file ceiling; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fixture_split.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::shared_cell_hostile",
       "path": "src/dst/dst_tests.rs",
       "reason": "The shared-cell hostile legs (shared-cells PLAN section 4.1, A2b and A7-A12): what one tenant can do to its neighbours through the cell's shared bounds and trust roots; each leg is red on the tree it was written against and is ignored with the plan step that turns it green; compiler and the ignored-test run exercise the module.",
