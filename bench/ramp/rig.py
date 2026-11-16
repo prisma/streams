@@ -135,6 +135,15 @@ class HostStore:
     ENV = {"S3_ENDPOINT": "http://host.docker.internal:8299"}
 
     def __init__(self, latency_ms=20):
+        # A store kept for a failed step's analysis (ramp.py) still answers on 8299: a new one
+        # could not bind, and the cell would write into the kept one.
+        try:
+            self.live_gb()
+        except OSError:
+            pass
+        else:
+            raise SystemExit("a host store already answers on 8299 (a failed ramp step's, kept for its analysis: "
+                             "see its run's host-store.pid); stop it first")
         self.proc = subprocess.Popen(
             [os.path.join(HERE, "bin", "s3lite-host"), "--listen", "127.0.0.1:8299", "--latency-ms", str(latency_ms)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -257,7 +266,13 @@ def bench(*args, env=(), mounts=(), url="http://router:8080", timeout=None):
 
 def population_workers(count, rate):
     """The driver's workers for COUNT entities at RATE a second (see population)."""
-    return max(4, min(count, int(rate * 8) + 4))
+    return max(4, min(count, int(rate * WORKER_SECS) + 4))
+
+
+# Seconds of touches a driver worker owns. A touch's append and read each follow the official
+# client's rules (population-mode.patch, population_rules.rs), which ride a 503 with Retry-After
+# out for up to 15 s each, so a worker's period covers both.
+WORKER_SECS = 32
 
 
 def population(count, rate, secs, label, tokens=None, warmup=0, url="http://router:8080", creators=None,
@@ -266,10 +281,11 @@ def population(count, rate, secs, label, tokens=None, warmup=0, url="http://rout
     a second for SECS after WARMUP: habanero's population mode. TOKENS: a
     tokens.txt (stream i takes line i, modulo its length) or None."""
     # Each worker owns every WORKERS-th entity and paces its own share; a touch longer than
-    # its period skips the next tick (the bench's MissedTickBehavior::Skip). Eight seconds a
-    # worker keeps a slow touch (an append past the 100 ms WAL gap, its read, a refusal's
-    # retry-after) from costing ticks: about rate x 8 workers, never more than there are
-    # entities. At 1,000,000 streams and a 60 s period that is 133,000 workers.
+    # its period skips the next tick (the bench's MissedTickBehavior::Skip, counted as
+    # `skipped`). WORKER_SECS a worker keeps a slow touch (an append past the 100 ms WAL gap,
+    # its read, the client's waits on a refusal's Retry-After) from costing ticks: about
+    # rate x 32 workers, never more than there are entities. At 100,000 streams and a 60 s
+    # period that is 53,000 workers (async tasks, not threads).
     workers = population_workers(count, rate)
     env, mounts = [f"BENCH_POP_RATE={rate}", "BENCH_POP_START=0"], []
     if creators:

@@ -148,16 +148,43 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   was OOM-killed (#149's bars). The bar holds over the whole step, the time
   the cell spends reshaping for it included, not only once it has settled
   (owner, 2026-11-10, RULES.md). The settled and the reshaping figures are
-  still reported apart, so a failure shows where it happened. A touch the cell refused is a failed
-  touch: it counts against the 98% and is reported, but the bar does not
-  also ask for zero. That includes a `409 not_stream_owner` while a shard
-  moves, and a `503 shard_splitting`. The latter is an append held past a
-  split's pause, answered with `Retry-After: 1`, known unwritten and never
-  committed (`src/application/append/contract.rs`, `AppendErr::Splitting`).
-  Neither is an admission shed (the shed check reads admission's
-  counters). A client that honours `Retry-After` retries the append once
-  the split has published. The bench does not retry, so the step's served
-  share is a floor.
+  still reported apart, so a failure shows where it happened.
+- **The client the bar measures** is the official one (gate decision
+  meas149-reshaping, 2026-11-16, "The bar"). The driver sends a refusal
+  again exactly as `@prisma/streams` does (`sdk/src/index.ts` `req`,
+  `refusalWait`, `plainAppendReplays`):
+  - again: an append's `503` whose body says `"retryable": true` and whose
+    code is not `outcome_unknown` (a `503 shard_splitting`, an append held
+    past a split's pause, known unwritten: `AppendErr::Splitting`); a
+    read's retryable `503`; a retryable `429`; a read's transport failure.
+    The wait is `Retry-After` clamped to [0, 5] s (1 s without one), within
+    four attempts; after them only a `503` that carries `Retry-After`,
+    until 15 s after the first attempt;
+  - not again, a failed touch: a `409 not_stream_owner` (the SDK does not
+    follow it today), `outcome_unknown`, an append's transport failure
+    (a plain append is never replayed), anything else. A failed touch
+    counts against the 98% and is reported; the bar does not also ask for
+    zero.
+  - A touch's latency runs from its first attempt to its last answer,
+    waits included, for every served touch, and the p99 bar (2 s) applies
+    to the worst window. So a touch that waited out one `Retry-After: 1`
+    lands near 1.2 s and holds; a touch held 5 s breaks the p99 once more
+    than 1% of a window shares it.
+  - Unchanged: no shed (a retried `429` is still admission's shed and
+    fails the step), no OOM, every stream created, the low steps, the
+    drain and its read-back.
+  - Reported beside the verdict, per window and for the step, never
+    gating (`first_attempt`): the share of the touches due served with no
+    request sent again, the first-attempt refusals by request, status and
+    code, and the requests sent again. Every refusal class in a passing
+    run is named in the #149 record with its designed cause; a class
+    without one is a finding. Where the first-attempt share of a step is
+    under 0.98, that is reported as a finding even when the step holds.
+  - The driver's copy of the rules is pinned by the SDK's own table
+    (`sdk/scripts/refusal-schedule.json`): the SDK's test and
+    `bench/ramp/test_ramp.py` both check it. The Compute run (Habanero's
+    bench) uses the same rule, or reports first-attempt figures only and
+    says so.
 - **Low steps.** At 10, 100 and 1,000 streams the cell must run on one
   instance with at most 2 shards.
 - **Drain.** After the last step, stop the load and keep the service up.
@@ -249,10 +276,21 @@ windows'. The step reports `settled_window` and `reshaping` apart.
 
 Two rig limits matter at the top step:
 - **The driver.** It paces touches over workers sized from the rate,
-  about 8 s per worker (an earlier 2,000-worker cap left each worker 120 ms
-  at 1,000,000 streams, below the append p99, and skipped healthy touches).
-  Compressed 60x, a step's touch rate is its count over 60 s: 1,667 a
-  second at 100,000 streams, 16,667 at 1,000,000.
+  32 s per worker, so a touch whose append and read each wait out the
+  client's 15 s ride-through does not cost its worker the next tick (an
+  earlier 2,000-worker cap left each worker 120 ms at 1,000,000 streams,
+  below the append p99, and skipped healthy touches). A tick a worker
+  still drops is counted (`skipped`). Compressed 60x, a step's touch rate
+  is its count over 60 s: 1,667 a second at 100,000 streams (53,337
+  workers, async tasks), 16,667 at 1,000,000.
+- **What a failed step leaves.** The servers log `streams_slate::topology`
+  and `streams_slate::fleet` at INFO (a split's `pause_ms`, every move).
+  A window that fails keeps the bench's per-second counts, served and
+  every refusal and failure by code, in `seconds-<count>-<window>.json`.
+  Every sample records admission's sheds by kind (`shed_by`: in-flight,
+  RSS, survival), and each window sums them (`sheds_by`). A failed step
+  keeps the host store running for its analysis (`host-store.pid`); the
+  next run refuses to start beside it.
 - **The store.** s3lite runs on the host, so a top step's GBs stay out of
   the container VM. Its live size is recorded per step.
 
@@ -341,7 +379,7 @@ Add to `docs/SCALE-VALIDATION.md` §7's report:
 ```markdown
 ### #149 run (SCALE-VALIDATION-149)
 Commit: <sha>   Compute scaling mode: external   container names (#253): yes|no
-| Tenancy | Streams | held % | p99 ms | instances at start/end/max | shards at start/end/max | splits | merges | sheds | OOM | VALID / VOID |
+| Tenancy | Streams | held % | p99 ms | first-attempt held % | first-attempt refusals by code | retries | instances at start/end/max | shards at start/end/max | splits | merges | sheds (in-flight/RSS/survival) | OOM | VALID / VOID |
 | Drain | tenancy | time to 1 instance | time to <= 2 shards | merges | scale-ins |
 Desired-count timeline: <t, desired, reason, live> for every change
 ```

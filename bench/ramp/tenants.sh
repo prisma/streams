@@ -83,7 +83,7 @@ if len(tokens) == 1:
     # applies the feed as given: src/auth/ceiling.rs `ceiling`).
     pp = os.path.join(d, "feeds", "policies.json")
     feed = json.load(open(pp))
-    feed["projects"][0]["quotas"].update({
+    feed["containers"][0]["quotas"].update({
         "requests_per_sec": 10_000_000, "max_inflight_requests": 1_000_000,
         "max_streams": 100_000_000, "append_bytes_per_sec": 10_000_000_000,
         "read_bytes_per_sec": 10_000_000_000, "queued_append_bytes": 4_294_967_296})

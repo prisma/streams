@@ -18,9 +18,12 @@ and stopping servers as the fleet's desired count says, and reloading the
 router (the scaling design's interim posture: 8 shards, a fleet of 1 to 8).
 
 A step holds, as #149's ramp, when every stream was created, at least 98%
-of the touches due were served at a p99 of at most 2 s (a refused touch
-counts against the 98%), and no server shed anything (admission's shed counters, read every
-5 s) or was OOM-killed. The ramp stops at the first step that does not
+of the touches due were served at a p99 of at most 2 s, and no server shed anything
+(admission's shed counters, read every 5 s) or was OOM-killed. The driver follows the
+official client on a refusal (population_rules.rs, pinned to the SDK's table): a refusal
+the server states as "nothing written, retry" is sent again on its Retry-After, anything
+else fails the touch, and a touch's latency runs from its first attempt (gate decision
+meas149-reshaping, 2026-11-16). The first-attempt figures are reported beside the verdict. The ramp stops at the first step that does not
 hold. Fixed INSTANCES and SHARDS today (the fleet does not resize on this
 workload); the same rig measures the tuning packages as they land and,
 later, dynamic split and merge (P5) with FLEET_MIN=1.
@@ -59,6 +62,9 @@ import rig
 from rig import HERE, sh
 
 WARMUP_SECS = 30
+# The servers log topology and fleet at INFO (a split's pause_ms, every move) over the posture's warn.
+SERVER_LOG = "warn,streams_slate::topology=info,streams_slate::fleet=info"
+FAILED = []  # the counts of failed steps: a failed step keeps the host store for its analysis
 POLICY_PASS_SECS = 10  # topology::policy_loop::PERIOD: one pass co-locates a pair, the next merges it
 STORE = []  # the run's rig.HostStore, once started (s3lite on the host: a ramp's store outgrows the VM)
 
@@ -143,6 +149,7 @@ class Watch(threading.Thread):
         self.live = live  # a Scaler: poll the servers it runs, else 1..INSTANCES
         self.stop = threading.Event()
         self.first, self.last, self.rss_max = {}, {}, {}
+        self.first_by, self.last_by = {}, {}  # per server, admission's sheds by kind (SHED_KINDS)
         self.topo = []  # topology_view rows, one a sample
         self.live_gb_max = 0.0  # the host store's live bytes, GB
         self.driver = {"cpu_pct_max": 0.0, "mem_mb_max": 0.0, "fds_max": 0, "samples": 0}  # the bench container
@@ -158,6 +165,7 @@ class Watch(threading.Thread):
         try:
             load = self.posture.debug(k, "/v1/debug/load")
             row["shed"] = load.get("admit_shed")
+            row["shed_by"] = {kind: load.get(f"admit_shed_{kind}") for kind in SHED_KINDS}
             row["engines"] = len((load.get("maintenance_shards") or {}).get("shards") or [])
         except OSError as e:
             row["load_error"] = str(e)[:160]
@@ -172,6 +180,8 @@ class Watch(threading.Thread):
                 if "shed" in row:
                     self.first.setdefault(name, row["shed"])
                     self.last[name] = row["shed"]
+                    self.first_by.setdefault(name, row["shed_by"])
+                    self.last_by[name] = row["shed_by"]
                 if "rss_mb" in row:
                     self.rss_max[name] = max(self.rss_max.get(name, 0), row["rss_mb"])
             self.sample_driver()
@@ -224,10 +234,23 @@ class Watch(threading.Thread):
     def sheds(self):
         return sum(self.last[n] - self.first.get(n, 0) for n in self.last)
 
+    def sheds_by(self):
+        """The window's sheds by kind (in-flight cap, RSS line, survival), summed over the servers."""
+        return sheds_by(self.first_by, self.last_by)
+
+
+SHED_KINDS = ("inflight", "rss", "survival")  # /v1/debug/load's admit_shed_<kind>, which admit_shed sums
+
+
+def sheds_by(first, last):
+    """Each kind's growth from FIRST to LAST (per server, as Watch samples them), summed."""
+    return {kind: sum((last[n].get(kind) or 0) - ((first.get(n) or {}).get(kind) or 0) for n in last)
+            for kind in SHED_KINDS}
+
 
 def fresh_cell(instances, shards, conf_path, posture):
     env = posture.compose_env(INITIAL_SHARDS=shards, FLEET_MIN=instances, FLEET_MAX=instances,
-                              ROUTER_CONF=conf_path, **rig.HostStore.ENV)
+                              ROUTER_CONF=conf_path, RUST_LOG=SERVER_LOG, **rig.HostStore.ENV)
     rig.compose("down", "-v", "--remove-orphans", env=env)
     host_store()
     rig.compose("up", "-d", "--no-deps", *[f"streams-{k}" for k in range(1, instances + 1)], env=env)
@@ -331,7 +354,7 @@ def run_continuous(a, out_dir, results):
                               overrides=a.set)
     extra = fleet_compose(a.fleet_max, out_dir)
     env = posture.compose_env(INITIAL_SHARDS=a.shards, FLEET_MIN=a.fleet_min, FLEET_MAX=a.fleet_max,
-                              ROUTER_CONF=conf, **rig.HostStore.ENV, **({"RIG_COMPOSE_EXTRA": extra} if extra else {}))
+                              ROUTER_CONF=conf, RUST_LOG=SERVER_LOG, **rig.HostStore.ENV, **({"RIG_COMPOSE_EXTRA": extra} if extra else {}))
     rig.compose("down", "-v", "--remove-orphans", env=env)
     host_store()
     rig.compose("up", "-d", "--no-deps", *[f"streams-{k}" for k in range(1, a.fleet_min + 1)], env=env)
@@ -359,14 +382,21 @@ def run_continuous(a, out_dir, results):
             ooms = [f"streams-{k}" for k in range(1, a.fleet_max + 1)
                     if sh("docker", "inspect", "-f", "{{.State.OOMKilled}}", rig.server(k), check=False).strip() == "true"]
             ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
+            keep_seconds(out_dir, f"{count}-window", pop, ok)
             settled_window, reshaping = None, None
+            first = first_attempt([(pop, a.step_secs)], count / a.period)
             if settled:
                 # The bar holds over the WHOLE step, its reshaping chunks included (owner,
                 # 2026-11-10); both windows are reported apart so a failure shows where it happened.
                 settled_window = {"held": round(held, 4) if held is not None else None,
-                                  "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "sheds": watch.sheds()}
-                reshaping = {k: settled[k] for k in ("chunks", "secs", "min_held", "max_p99_ms", "sheds")}
+                                  "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "sheds": watch.sheds(),
+                                  "sheds_by": watch.sheds_by(), "first_attempt": first}
+                reshaping = {k: settled[k] for k in ("chunks", "secs", "min_held", "max_p99_ms", "sheds", "sheds_by",
+                                                     "first_attempt")}
                 held, checks = whole_step(a, count, pop, settled, watch.sheds(), checks)
+                first = first_attempt([(pop, a.step_secs)] + [(r["pop"], 60) for r in settled["chunk_pops"]],
+                                      count / a.period)
+                settled.pop("chunk_pops")
                 ok = all(checks.values())
             q = queue_arm(a, count, out_dir, posture, scaler) if a.queues else None
             if q is not None and a.queue_gate:
@@ -377,8 +407,11 @@ def run_continuous(a, out_dir, results):
                 checks["few"] = (max(live_start, scaler.live, scaler.peak_since(started)) <= a.fleet_min
                                  and shards is not None and shards[2] <= a.low_max_shards)
                 ok = ok and checks["few"]
+            if not ok:
+                FAILED.append(count)
             step = {"count": count, "shards": a.shards, "shard_range": shards, "settle": settled,
                     "settled_window": settled_window, "reshaping": reshaping, "queue": q,
+                    "first_attempt": first, "sheds_by": watch.sheds_by(),
                     "store_live_gb_max": watch.live_gb_max,
                     "driver": dict(watch.driver, late=pop.get("late"), workers=rig.population_workers(count, count / a.period)), "fleet": [a.fleet_min, a.fleet_max],
                     "live": [live_start, scaler.live], "tenancy": a.tenancy, "auth": a.auth,
@@ -454,9 +487,11 @@ def drain(a, out_dir, results, posture, scaler, streams):
 
 def verdict(count, period, step_secs, pop, sheds, ooms):
     """#149's bar: every stream created, at least 98% of the touches due served at a p99 of at
-    most 2 s, no shed, no OOM. A touch the cell refused (a 409 during a move, a 503 during a
-    split's hold) is a failed touch: it counts against the 98% (the bench does not retry), and
-    touch_errors reports how many; the bar does not also ask for zero."""
+    most 2 s, no shed, no OOM. The driver sends a refusal again as the official client does (a
+    retryable 503 that is not outcome_unknown, a retryable 429, on their Retry-After) and times
+    a touch from its first attempt; any other refusal (a 409 during a move, outcome_unknown) is
+    a failed touch: it counts against the 98%, and touch_errors reports how many; the bar does
+    not also ask for zero. The first-attempt figures are reported, not gated (first_attempt)."""
     target = count / period
     held = (pop.get("touches_per_sec") or 0) / target if target else None
     p99 = (pop.get("latency_ms") or {}).get("p99")
@@ -477,7 +512,7 @@ def settle(a, count, prev, posture, scaler, out_dir):
     watch = Watch(a.fleet_max, os.path.join(out_dir, f"settle-{count}.jsonl"), posture, live=scaler)
     watch.start()
     budget = settle_budget(a, count, posture)
-    started, chunks, create_errors, settled, rows = time.time(), 0, 0, False, []
+    started, chunks, create_errors, settled, rows, pops = time.time(), 0, 0, False, [], []
     try:
         while time.time() - started < budget:
             shed_before = watch.sheds()
@@ -487,11 +522,18 @@ def settle(a, count, prev, posture, scaler, out_dir):
             create_errors += pop.get("create_errors") or 0
             # Every chunk's outcome while the cell reshapes (the owner rules whether the bar applies).
             target = count / a.period
-            rows.append({"chunk": chunks, "t": round(time.time()),
-                         "held": round((pop.get("touches_per_sec") or 0) / target, 4) if target else None,
-                         "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "touch_errors": pop.get("touch_errors"),
-                         "late": pop.get("late"), "errors": errors_by_code(pop.get("errors")), "sheds": watch.sheds() - shed_before,
-                         "shards": watch.topo[-1]["shards"] if watch.topo else None, "live": scaler.live})
+            row = {"chunk": chunks, "t": round(time.time()),
+                   "held": round((pop.get("touches_per_sec") or 0) / target, 4) if target else None,
+                   "p99_ms": (pop.get("latency_ms") or {}).get("p99"), "touch_errors": pop.get("touch_errors"),
+                   "late": pop.get("late"), "skipped": pop.get("skipped"), "errors": errors_by_code(pop.get("errors")),
+                   "sheds": watch.sheds() - shed_before,
+                   "first_attempt": first_attempt([(pop, 60)], target),
+                   "shards": watch.topo[-1]["shards"] if watch.topo else None, "live": scaler.live}
+            chunk_ok = (row["held"] or 0) >= 0.98 and row["p99_ms"] is not None and row["p99_ms"] <= 2000 \
+                and row["sheds"] == 0
+            keep_seconds(out_dir, f"{count}-settle-{chunks}", pop, chunk_ok)
+            rows.append(row)
+            pops.append({"pop": pop})
             if chunks == 1 and pop.get("created") != count:
                 break
             last_change = max([at for at, _ in scaler.history] + [
@@ -505,9 +547,35 @@ def settle(a, count, prev, posture, scaler, out_dir):
         watch.join()
     return {"secs": round(time.time() - started), "budget_secs": budget, "chunks": chunks, "settled": settled,
             "create_errors": create_errors, "shard_range": watch.shard_range(), "sheds": watch.sheds(),
+            "sheds_by": watch.sheds_by(), "first_attempt": first_attempt([(p["pop"], 60) for p in pops], count / a.period),
+            "chunk_pops": pops,
             "min_held": min((r["held"] for r in rows if r["held"] is not None), default=None),
             "max_p99_ms": max((r["p99_ms"] for r in rows if r["p99_ms"] is not None), default=None),
             "chunk_rows": rows}
+
+
+def first_attempt(windows, target):
+    """The first-attempt figures over WINDOWS ((population summary, seconds) pairs) at TARGET touches
+    a second, reported beside the verdict and never gating (gate decision meas149-reshaping,
+    2026-11-16, "The bar" 5): the share of the touches due served with no request sent again, the
+    first-attempt refusals by request, status and code, and the requests sent again."""
+    due = sum(target * secs for _, secs in windows)
+    first = sum((pop.get("first_served_per_sec") or 0) * secs for pop, secs in windows)
+    refusals = {}
+    for pop, _ in windows:
+        for code, n in (pop.get("first_refusals") or {}).items():
+            refusals[code] = refusals.get(code, 0) + n
+    return {"held": round(first / due, 4) if due else None, "refusals": refusals,
+            "retries": sum(pop.get("retries") or 0 for pop, _ in windows)}
+
+
+def keep_seconds(out_dir, label, pop, held):
+    """A window's per-second counts (served, refusals and failures by code, by Unix second, the
+    bench's `per_second`) go to seconds-LABEL.json when the window failed; a held window's are
+    dropped. Either way they leave POP, which steps.jsonl records."""
+    seconds = pop.pop("per_second", None)
+    if seconds and not held:
+        json.dump(seconds, open(os.path.join(out_dir, f"seconds-{label}.json"), "w"), indent=0, sort_keys=True)
 
 
 def errors_by_code(errors):
@@ -665,7 +733,11 @@ def run_step(a, count, out_dir):
     for k in range(1, a.instances + 1):  # the next step's fresh cell drops these
         open(os.path.join(out_dir, f"server-{count}-{k}.log"), "w").write(sh("docker", "logs", rig.server(k), check=False))
     ok, checks, held = verdict(count, a.period, a.step_secs, pop, watch.sheds(), ooms)
+    keep_seconds(out_dir, f"{count}-window", pop, ok)
+    if not ok:
+        FAILED.append(count)
     return {"store_live_gb_max": watch.live_gb_max,
+            "first_attempt": first_attempt([(pop, a.step_secs)], count / a.period), "sheds_by": watch.sheds_by(),
             "driver": dict(watch.driver, late=pop.get("late"), workers=rig.population_workers(count, count / a.period)),
         "count": count, "instances": a.instances, "shards": a.shards, "tenancy": a.tenancy, "auth": a.auth,
         "period_secs": a.period, "step_secs": a.step_secs, "wall_secs": round(time.time() - started),
@@ -758,9 +830,23 @@ def main():
                 open(os.path.join(a.out, f"server-{k}.log"), "w").write(log)
         rig.compose("down", "-v", "--remove-orphans",
                     env=dict(os.environ, ROUTER_CONF=os.path.abspath(os.path.join(a.out, "router.conf"))))
-        while STORE:
-            STORE.pop().stop()
+        keep_store(a.out)
         print("RAMP_DONE", a.out, flush=True)
+
+
+def keep_store(out_dir):
+    """At the run's end the host store stops, unless a step failed: then it keeps running for the
+    failed step's analysis (gate decision meas149-reshaping, 2026-11-16), its pid in
+    OUT_DIR/host-store.pid, until someone stops it (the next run refuses to start beside it)."""
+    if FAILED and STORE:
+        pid = STORE[0].proc.pid
+        open(os.path.join(out_dir, "host-store.pid"), "w").write(f"{pid}\n")
+        print(f"HOST_STORE_KEPT pid {pid} on 127.0.0.1:8299 for the failed step(s) {FAILED}: "
+              f"kill {pid} once the analysis is done", flush=True)
+        STORE.clear()
+        return
+    while STORE:
+        STORE.pop().stop()
 
 
 if __name__ == "__main__":

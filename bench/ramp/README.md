@@ -121,9 +121,27 @@ the start per stream per `--period` (60 s, against #149's hour), for
 
 A step holds, as #149's did, when every stream was created, at least 98% of
 the touches due were served at a p99 of at most 2 s, and no server shed or
-was OOM-killed (refused touches count against the 98%; `touch_errors`
-reports them). The ramp stops at the first step that
+was OOM-killed. The ramp stops at the first step that
 does not hold (`steps.jsonl`, `watch-COUNT.jsonl` per server).
+
+The driver is the official client (gate decision meas149-reshaping,
+2026-11-16): a touch's append and read each follow `@prisma/streams`' rules
+for a refusal (`population_rules.rs` in the patch). A refusal the server
+states as "nothing written, retry" (a retryable `503` that is not
+`outcome_unknown`, a retryable `429`, and a read's transport failure) is
+sent again on its `Retry-After`; anything else (a `409 not_stream_owner`,
+`outcome_unknown`, an append's transport failure) fails the touch, counts
+against the 98% and is reported (`touch_errors`). A touch is timed from its
+first attempt to its last answer. Beside the verdict, never gating, each
+window and step report `first_attempt`: the share of the touches due
+served with no retry, the first-attempt refusals by request, status and
+code, and the retries. `sdk/scripts/refusal-schedule.json` is the SDK's
+own table of these rules; the SDK's test and `test_ramp.py` both check
+against it:
+
+```bash
+python3 -m unittest discover -s bench/ramp -p 'test_*.py'   # needs rustc
+```
 
 Because the touch period is 60× shorter, each shard sees 60× the cloud's
 touch rate at the same stream count: limits on rates arrive at a sixtieth of
@@ -185,16 +203,17 @@ A step holds by #149's bar over the whole step, its settle chunks included
 (owner, 2026-11-10): every stream created, at least 98% of the touches due
 served at a p99 of at most 2 s, no shed, no OOM; `settled_window` and
 `reshaping` report the two windows apart. `--queue-gate` makes the queue
-arm's verdict part of the step's. Refused
-touches count against the 98% and are reported (`touch_errors`).
+arm's verdict part of the step's (the queue arm sends nothing again).
 `docs/SCALE-VALIDATION-149.md` §6 has the command. Its top step is 100,000
 streams. At 1,000,000 the 60x compression asks 16,667 touches a second,
 which the driver, the router and the Mac's cores do not carry
 (`meas-149-rig`, 2026-11-10). The local run therefore reaches about 4 leaves,
 and §6.1 says what it cannot show.
 
-The driver sizes its workers from the rate (about 8 s a worker, never more
-than the entities), s3lite runs on the host (`rig.HostStore`, its live size
+The driver sizes its workers from the rate (32 s a worker, so a touch whose
+append and read each wait out the client's 15 s ride-through keeps its next
+tick; a tick still dropped is counted, `skipped`; never more than the
+entities), s3lite runs on the host (`rig.HostStore`, its live size
 in `watch-*.jsonl` and the step), each settle chunk's served share, p99,
 errors by code and sheds are kept in the step's `settle.chunk_rows`
 (`--settle-max-secs auto` sizes the settle from the leaves the step adds),
@@ -205,4 +224,14 @@ Each step also records the driver itself (`driver`): the bench container's
 peak CPU, memory and open descriptors, its workers (async tasks on one
 runtime sharing one connection pool, not threads), and the bench's own late
 ticks (`late`, ticks over 100 ms late), so a driver bottleneck shows as one.
+
+For a failed step's analysis the servers log `streams_slate::topology` and
+`streams_slate::fleet` at INFO (`ramp.SERVER_LOG`: a split's `pause_ms`,
+every move); a window that fails keeps the bench's per-second counts
+(served, and every refusal and failure by code, by Unix second) in
+`seconds-COUNT-WINDOW.json`; `watch-*.jsonl` records admission's sheds by
+kind (`shed_by`: in-flight, RSS, survival) and each window sums them
+(`sheds_by`); and a failed step keeps the host store running
+(`HOST_STORE_KEPT`, `host-store.pid`) until its analysis is done. Stop it
+then: the next run refuses to start beside it.
 
