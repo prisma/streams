@@ -1,8 +1,11 @@
 # Native queues in Prisma Streams — design for review
 
-Status: **revision 8, 2026-10-23. The architecture and the Q0-first sequence
-are approved; Q0 ([QUEUES-PLAN.md](QUEUES-PLAN.md) §2) is the first
-implementation package.** Revision 8 folds in Fable 5.1's review of revision 7
+Status: **revision 9, 2026-11-16. S3b (parts 1 and 2) replaced the storage
+model and reclamation: §5.1-§5.3, §5.5-§5.7, §6.1, §6.8, §7.1 and §8.2-§8.3
+now describe the code as built (edges #246, #247, #262); the rest stands as
+revision 8 approved it.** Revision 8 (2026-10-23) approved the architecture
+and the Q0-first sequence (Q0, [QUEUES-PLAN.md](QUEUES-PLAN.md) §2, the first
+implementation package) and folds in Fable 5.1's review of revision 7
 (the SlateDB primitives of a collection pass, a quiet-shard GC completion rule,
 timer service through the billing sweep's rotation, a trigger floor, the
 pass-duration bound and the queues-per-shard arithmetic) and the pricing goal
@@ -122,12 +125,14 @@ The public documentation keeps these three boundaries prominent.
 
 ## 5. Storage model
 
-All queue state lives in the owning **shard database**, in new key families
-under the stream's storage hash, written by the shard committer and durable on
-the same watermark as appends. Index keys are big-endian, so key order is
-numeric order.
+All queue state lives in the owning **shard database**, written by the shard
+committer and durable on the same watermark as appends. A queue's messages
+are the pages of its own stream (`h16 ‖ 'S' ‖ …`), sealed into segment
+objects like any stream's (S3b part 2); its other rows are keyed
+`h16 ‖ 'Q' ‖ family ‖ suffix`, its tail among them (layout 8, SPEC.md §3.3).
+Index keys are big-endian, so key order is numeric order.
 
-### 5.1 Message record and metadata row
+### 5.1 Message record
 
 The **envelope** is the encrypted record value:
 
@@ -153,31 +158,42 @@ The **envelope** is the encrypted record value:
 - The envelope must fit the 131,072 B record limit (413 otherwise). Failure
   adds nothing to it (§7.1).
 
-The **metadata row**, in the same WriteBatch, holds `{availableAt,
-retentionEnd, hardExpiresAt, bytes, open, state: live | retired, cancelled,
-keyTag?, dedupTag?}`: `availableAt = max(enqueuedAt, deliverAt)`;
-`retentionEnd = availableAt + maxAge`; `hardExpiresAt = retentionEnd +
-failureRetention`; `open` the count of open deliveries; `state` the monotone
-retirement bit (§8.2); the tags HMACs under the stream key (metadata G8
-already admits).
+There is **no metadata row** (S3b part 1). A message's facts come from its
+page and its offset: `availableAt = max(enqueuedAt, deliverAt)` is its page
+header's time, `retentionEnd = availableAt + maxAge` and `hardExpiresAt =
+retentionEnd + failureRetention` are derived as the send computes them, and
+its bytes are the stored page's length. What changes per message lives in
+three places:
 
-### 5.2 The availability index
+- a **range row** `'x'` per 4,096 offsets, present only while it holds
+  something: the count of its open deliveries and of its unresolved scheduled
+  messages, and three bitmaps: `skip` (scheduled offsets at or past the
+  frontier, which the frontier passes without leasing), `cancel` (immediate
+  offsets at or past the frontier cancelled untaken) and `sbits` (the
+  unresolved scheduled offsets, wherever they are), each stored as runs or
+  raw (512 B), whichever is shorter;
+- a scheduled message's `availableAt` by offset (`'m'`);
+- the delivery row of an open delivery (§5.3), which carries the message's
+  facts.
 
-Each send inserts one entry per message into the queue-wide **availability
-index** `A`, keyed `(availableAt, msgId)`, in the same WriteBatch. Segment
-rollover is a storage matter, never a scheduling barrier. Ids order as
-`(incarnation, segment, offset)`, so they order as sends commit (a Kani proof
-in Q5). With `maxAge` and `failureRetention` fixed per queue, `A`'s order is
-also the order of `retentionEnd` and `hardExpiresAt`.
+The dedup tag rides in the dedup entry (§8.4), keyed by its HMAC.
 
-An entry's value carries what a claim of the untaken message needs: its
-metadata as sent (an untaken message's metadata row never changes, and a
-cancel deletes the entry) and, when the sealed page is at most 2 KiB, the
-page itself (`INLINE_PAGE_MAX`). Entries due together are adjacent in `A`,
-so a claim of new messages reads them in the blocks its scan of `A` already
-reads, with no point get of a metadata row or a page; a scheduled message
-claimed an hour after its send would otherwise cost two cold reads. The
-inline copy is deleted with the entry when the message retires.
+### 5.2 The frontier and the scheduled index
+
+**An untaken immediate message costs no row** (S3b part 2): its page is
+all there is. The queue's **frontier** is the lowest offset not yet
+processed for its first delivery; one frontier serves the default group
+(F9). A claim walks the lane from the frontier over the stream's pages:
+each page is leased, or passed when the range row marks it `skip` or
+`cancel`, or expired into the retention gap when its `retentionEnd` passed.
+No page lies at or past the stream's next offset.
+
+A **scheduled** message (a future `deliverAt`) is the exception: its send
+writes an entry in the scheduled index `'a'`, keyed `(availableAt, offset)`,
+and sets its `sbits` and `skip` bits, so the frontier passes it and a claim
+takes it from `'a'` once due. An entry carries the page itself when the
+sealed page is at most 2 KiB (`INLINE_PAGE_MAX`) and the queue's inline bytes
+stay under its 64 MiB budget (`SCHEDULED_INLINE_BUDGET_BYTES`), so a claim of a due scheduled message reads no page. A cancel deletes the entry.
 
 **One scheduling owner per queue.** A queue writes one physical lane, so one
 shard owns it. The scaler cannot split a single-key workload
@@ -191,8 +207,9 @@ whole send → claim → ack → reclaim cycle in Q0 and published (first target
 | State | Meaning |
 |---|---|
 | group row | `{generation, config, paused, lastUsefulClaimAt, lastNotifiedAt, notifyBackoffMs}` |
-| group cursor `C` = `(time, msgId)` | every `A` entry at or below `C` has been taken or skipped |
-| delivery row per **open** delivery | `{state: leased \| retrying \| failed, cycle, cycleDeadline, attempts, releases, leaseGen, leaseDeadline, firstDeliveredAt, failureExpiresAt?, errorCode}` |
+| frontier | every offset below it has been taken, passed or expired (§5.2) |
+| scheduled cursor `(cursor_at, cursor_off)` | the scheduled index's entries below it have been taken |
+| delivery row per **open** delivery | `{state: leased \| retrying \| failed, enqueuedAt, availableAt, bytes, scheduled, inline, cycle, cycleDeadline, attempts, releases, internalUnleases, leaseGen, leaseDeadline, dueAt, firstDeliveredAt, failedAt, failureExpiresAt, cause?, code?}`: the message's facts ride in it |
 | lease index `L` `(leaseDeadline, msgId)` | leased deliveries |
 | retry index `R` `(availableAt, msgId)` | retrying deliveries |
 | failure index `F` `(failedAt, msgId)` | failed deliveries, for listing |
@@ -200,17 +217,17 @@ whole send → claim → ack → reclaim cycle in Q0 and published (first target
 | failure detail (encrypted) | the worker's error text, ≤ 1 KiB, when a settle carried text and the key |
 | counters | delivered, acked, retried, failed, expired, hard-expired, cancelled, discarded, redriven, stale settles |
 
-A delivery with no row is ahead of `C` or done. Group state is proportional
+A message with no delivery row is at or past the frontier, scheduled, or done. Group state is proportional
 to work in flight, in retry and in failure, not to the backlog. There is no
 `maxPending`.
 
 ### 5.4 Bounded memory
 
-The committer keeps, per active group, a **ready cache** of at most
-`maxInFlight + 1,024` due entries, refilled from `A` past `C` and from `R`.
-It is never the truth: it is refilled from the indexes when dry and rebuilt
-after a restart, an ownership change or a refused commit. It is charged to the
-project's memory line (about 100 B an entry).
+Not built as a ready cache (revision 9). The committer keeps no per-group
+cache of due entries: a claim reads the indexes through the group's stage,
+bounded by the index floors (§6.8) and helped by the commit group's warm-up
+of cold queues (§6.1), and the lane's pages are the handle's unsealed ones
+or those a handler prepared (§5.6).
 
 ### 5.5 The queue clock
 
@@ -227,89 +244,79 @@ reads, id allocation and cursor advances happen in the committer's serialized
 state. So:
 
 - `q.clock` is durable and monotone across restarts, NTP steps and shard
-  moves, and `C.time ≤ q.clock` always.
-- A send commits at `enqueuedAt = t ≥ C.time`, with an id above every taken
-  id, so **a new message never sorts at or below a group's cursor** (checked
-  by TLA with clock steps and moves).
+  moves.
+- A send commits at the stream's next offset, above every taken one, so **a
+  new message is never at or below the frontier** (TLA-046
+  `NoSendAtOrBelowFrontier`).
 - Queue routes refuse the `stream-timestamp` hint (400).
 - Clocks are assumed within 5 s, as lease handoff already assumes; RUNBOOK
   states the bound.
 
-### 5.6 Queue storage mode
+### 5.6 Queue streams on segments
 
-A queue's tail carries a persisted **queue storage kind**: a tail flag bit.
-The tail decoder refuses unknown flag bits, so the first binary that writes
-it is a one-way upgrade for any cell that has created a queue (decision
-D19). Queue mode keeps queue pages in the shard database for their whole
-life (at most 58 days, §7.1), in the `Q` tree (SPEC.md §3.3), never sealed
-into segment objects: a seal copies pages into an immutable object and
-moves the stream's boundary, which would race reclamation.
+A queue's pages are its stream's pages (S3b part 2). A send stages them into
+the stream's pending row, as an append does; the tail (in the queue segment,
+`h16 ‖ 'Q' ‖ 't'`) keeps `absorbed`, and the unsealed index names the queue
+while it holds unsealed pages. The sealer takes a queue stream like any
+other, with two rules of its own (`shard/seal/queue_cut.rs`): a queue chunk
+holds at most 1 MiB of pages and never crosses a range row's 4,096-offset
+span, so a chunk's references are one range row's and a claim's handler
+reads one ranged GET per chunk; and every page must admit at its own offset,
+or the queue is not sealed (F5). A queue has no billing row and no usage
+final (F12).
 
-"Unsealed" is a ledger state several subsystems read, so queue mode is
-defined by **invariants with guarded consumers**, not by a single field:
+**Where a walk's pages come from.** The committer serves the lane from the
+pages it holds: the handle's unsealed pages and the group's own. Once a seal
+takes a queue's pages the committer holds none of them, and no store read
+for a queue body runs in the committer: a claim's handler, a peek, a read by
+id and the sweeper read the sealed pages they may need through the stream
+read path (G2) and pass them in their operation
+(`shard/native_queue_submit/prepare.rs`). The committer serves a prepared
+page only at its own frontier, which only moves on, and drops the rest; a
+walk stops at the first offset it holds no page for, so it never steps over
+a message. A sweep whose lane is due below the sealed boundary answers
+`lane_sealed`; only then does the sweeper prepare the pages and sweep again.
 
-1. **Queue pages create no unsealed debt.** Queue appends add nothing to the
-   tail's unsealed bytes (`unabsorbed_bytes`), and a queue tail keeps
-   `absorbed = next` ("sealed in place"), so a consumer that reads
-   `absorbed < next` sees nothing.
-2. **Queue writes and retirements report no seal progress.** The
-   maintenance ledger moves `last_progress_ms` when unsealed bytes retire
-   (`src/shard/maintenance_row.rs`); queue pages never enter that path, so
-   queue traffic cannot make a stalled sealer look healthy.
-3. **Queue storage has its own accounting**: live bytes and reclamation debt
-   (§8.3), not the unsealed gauge.
-4. **Ordinary stream reads never touch queue pages.** The stream read path
-   reads sealed chunks below `absorbed` and the handle's unsealed pages
-   above it; queue routes read pages only by point get (§6.1).
-5. **Queue retirement is the only authority that deletes queue pages.**
-
-Each consumer of the unsealed state is guarded by the kind and covered by a
-named test ([QUEUES-PLAN.md](QUEUES-PLAN.md) §4):
-
-| Consumer | Queue-mode behaviour |
+| Consumer | Queue behaviour |
 |---|---|
-| the sealer's snapshot (`src/shard/seal/steps.rs`) | skips every queue stream; a seal never takes a queue page |
-| maintenance ledger and stall latch (`src/shard/maintenance_row.rs`, `src/backpressure.rs`, cell-watch lag rule) | queue bytes are excluded from unsealed bytes and from progress |
-| billing sweep residency (`probe_debt`, `src/billing.rs`) | counts queue reclamation debt and the roster's earliest deadline (§6.8); the idle release seals and drops caches and is unaffected |
-| stream read paths | refuse queue streams |
+| the sealer (`shard/seal/steps.rs`, `seal/queue_cut.rs`) | seals queue pages into queue chunks (above) |
+| the unsealed index, the maintenance ledger and stall latch | count a queue's unsealed pages as any stream's |
+| the open's index read and repair (`shard/open_index.rs`) | read a member's tail by stream key, else queue key |
+| billing | none: no billing row, no usage final |
+| stream read paths | refuse queue streams; queue views read through `prepare.rs` |
 
-### 5.7 Per-shard queue bytes
+### 5.7 Per-shard queue state
 
-Queue pages stay in the shard database, so a shard holds the live and
-awaiting-reclamation bytes of its queues. A **per-shard queue-bytes bound**,
-set from Q0's compaction working set at the `compute-1g` posture, caps it.
+A shard's queue state is bounded by `BOUND_BYTES` (2 GiB, provisional) in
+five slices, one per category, so no category takes another's room (edge
+#246; `shard/layout/queue_gauges.rs`):
 
-**Capacity is reserved, not shared after the fact.** Refusing a heavy
-project's next send frees none of the data it already holds, so fairness at
-send time cannot protect a newcomer. Instead, creating a queue **reserves**
-its admission budget (§6.6: `maxQueuedBytes` plus the dedup budget, §8.4)
-against its shard's bound, in the committer, and creation is refused (`429
-queue_capacity`, not retryable; the caller may choose smaller budgets) when
-the reservations would exceed the bound. A queue never holds more than its
-reservation, so every admitted queue can always reach its budget whatever its
-neighbours do. There is no borrowing in the first release; overcommitting
-reservations (with a fairness rule for the borrowed part) is a later owner
-decision once Q0 and the pilot show real occupancy. Splitting a shard by key
-range (SPEC D3) is not implemented (`src/scaler3/controller.rs:114-135`); it
-is the prerequisite for more reserved capacity per shard (D21).
+| Category | Rows | Slice |
+|---|---|---|
+| active | open deliveries (leased, retrying) and their lease or retry entries | 30% |
+| failed | failed deliveries and their failure entries | 20% |
+| delayed | scheduled entries, their by-offset rows and inline pages | 20% |
+| dedup | dedup entries and their expiry entries | 20% |
+| cleanup | range rows | 10% |
 
-**The arithmetic is a cap on queues per shard.** With the defaults (256 MiB
-of messages plus about 100 MiB of dedup entries), queues per shard =
-`floor(B ÷ 356 MiB)`: 5 at a 2 GiB bound, 22 at 8 GiB. The bound `B` is
-physical (live plus awaiting reclamation, about 2-3× the reservation within
-the completion deadline) and is itself limited by how long a collection pass
-may run (§8.2), so Q0 sets it. Under layout 7 (§8.2) the bytes awaiting reclamation are at most the
-256 MiB trigger plus one pass's accrual, and a pass also rewrites the
-shard's stream rows, so its length (and the L0 line it must finish under)
-counts those too: at the step-2 seal cadence a flush comes every 7.6-12.8 s,
-which leaves 213-358 s, 5-8.6 GB at 24 MB/s, against 0.16-0.9 GB a pass
-rewrites on S and M cells. The control plane alone has 18 queues, and a
-caller cannot choose its shard (placement is by storage hash over a fixed
-prefix code, `src/registry.rs:1332-1340`). The recommendation (D21) is
-smaller default budgets with an opt-up at creation, decided with Q0's numbers;
-the reservation is a ledger row written in the creation batch the committer
-already runs (`src/application/creation/initialization.rs`), carried by
-whole-prefix moves, and re-reserved when a budget is updated (§11).
+At a category's line the refusal is per container first, then per queue: a
+container at or over its share of the slice, and within it a queue at or
+over its share of the container's bytes, has its claims lease nothing new
+(active, failed: the claim answers `limited: "shard_queue_state"`) or its
+scheduled sends (delayed) or sends with fresh dedup keys (dedup) refused
+with `429 shard_queue_state_full`, `Retry-After: 5`. Cleanup refuses nothing
+(what creates it is never refused); it alarms at 80% of its slice. A queue's
+bytes per category follow from its state row's exact counts at one fixed
+weight per message, and its range rows' stored bytes; the committer keeps
+the shard's and every container's sums as `'N'` rows in the batch that
+changes them. Message pages are not queue state: they are the stream's,
+sealed and collected like any stream's (§8.2).
+
+Per queue, the caps are set at creation (S3b-DESIGN §8.1; edge #247):
+`maxQueuedBytes` and `maxQueuedMessages` (no default), `maxOpenDeliveries`
+(leased plus retrying), `maxFailedMessages` and `maxScheduledMessages`
+(default 1,000,000 each, clamped to 1,000-10,000,000). Reservations at
+creation, `429 queue_capacity` and D21 are not built (SCALING-DECISIONS Q11).
 
 ## 6. Delivery
 
@@ -317,32 +324,42 @@ whole-prefix moves, and re-reserved when a budget is updated (§11).
 
 `claim(group, max, maxBytes, leaseMs, waitMs)` runs in two steps.
 
-**In the committer (keyless):** take due entries (`availableAt ≤ t`) in
-order from `A` past `C` and from `R`, within `maxInFlight` and `rate`,
-skipping cancelled and retired messages and entries past their **cycle
-deadline** (§6.3: an untaken `A` entry's is `retentionEnd`; an `R` entry's is
-its cycle's), until `max` or `maxBytes`
-(by metadata `bytes`; default 1 MiB, at most 8 MiB; one message always
-allowed); reserve read memory for exactly that total (429
-`container_memory_pressure` if refused); lease exactly that set (row `leased`,
-`attempts += 1`, `leaseGen += 1`, deadline, `L` entry, `open += 1` for newly
-taken messages, `C` advanced; `lastUsefulClaimAt = t` when at least one
-message was leased). The committer runs a shard's operations one at a
-time, so a claim must not wait for storage block by block: its walk of `A`
-keeps sixteen block fetches in flight ahead of it, and the claims that
-follow find their blocks read or in flight ([pricing benchmark
-§11](QUEUES-PRICING-BENCHMARK.md)). Nor may a cold queue wait for storage
-on that path: before a commit group stages, it reads what its operations
-on cold queues will read (each queue's state row, a claim's and a sweep's
-walks of the indexes, a settle's rows), 64 queues at once, so a cell of
-many tiny queues touched once an hour waits for the store once per group,
-not once per operation (`shard/transaction/native_queue/warm.rs`).
+**Before the committer (with the key):** when the lane's head is sealed, the
+claim's handler reads the sealed pages from the stored frontier on (up to
+its `maxBytes`) through the stream read path and passes them in its
+operation (§5.6). It holds read memory for exactly the bytes it read while
+the committer serves them, released when the committer answers, before the
+reply's own reservation and before a park; with no room by its wait deadline
+it answers `503 read_memory_busy`, `Retry-After: 1`, before it leases
+anything (edge #262). When a seal raced its read it reads again, at most
+three times.
+
+**In the committer (keyless):** lease the due work of three sources in
+`(due, offset)` order, within `maxInFlight`, `rate` and the byte limit (by
+stored page length; default 1 MiB, at most 8 MiB; one message always
+allowed): due retries (`R`), due scheduled messages (`'a'`, from the
+scheduled cursor) and the lane, the immediate messages from the frontier,
+each due at its send. The frontier passes the scheduled and cancelled
+offsets it meets, expires an untaken message past its retention end into the
+retention gap (§8.1), and never passes a live untaken message without
+leasing it; an entry past its **cycle deadline** (§6.3) is not leased. A
+lease writes the delivery row (`leased`, `attempts += 1`, `leaseGen += 1`,
+its deadline), its `L` entry and the range row's open count;
+`lastUsefulClaimAt = t` when at least one message was leased. An index
+whose floor is past the claim's clock is not read (§6.8), and an empty claim
+writes nothing. The committer runs a shard's operations one at a time, so a
+cold queue must not wait for storage on that path: before a commit group
+stages, it reads what its operations on cold queues will read (each queue's
+state row, a claim's and a sweep's walks of the indexes, a settle's rows),
+64 queues at once (`shard/transaction/native_queue/warm.rs`), and the
+committer's scans keep sixteen block fetches in flight.
 
 **After the commit is durable (with the key):** open each leased envelope
-from the page its `A` entry carried (§5.2), or else read it by a **point
-get** of its page key (`shard_page_key(hash, offset)`), never a window scan,
-which assumes dense offsets. A failed read releases those deliveries
-server-side with the attempt given back and answers 503, retryable.
+from the page the committer returned: the lane's page, the scheduled
+entry's inline page, or a page read by its offset through the stream read
+path. A page whose envelope does not open fails its delivery alone, cause
+`unreadable` (§7.1); a failed read releases those deliveries server-side
+with the attempt given back and answers 503, retryable.
 
 With nothing due and `waitMs > 0`, the claim parks until a send, settle, lease
 deadline or the next `availableAt`, up to 25 s. A paused group answers at once
@@ -444,10 +461,11 @@ groups stay untouched until then (D2).
 
 ### 6.6 Admission budget
 
-Each queue may hold at most `maxQueuedBytes` (default 256 MiB) and
-`maxQueuedMessages` (default 1 million) of live, undone messages; messages
-held only by failed deliveries do not count. The budget is reserved against
-the shard at creation (§5.7). A send beyond it is refused `429 queue_full`,
+A queue may cap its live, undone messages with `maxQueuedBytes` and
+`maxQueuedMessages`, set at creation with no default (edge #247); messages
+held only by failed deliveries do not count. The shard's queue state is
+bounded by category slices instead (§5.7). A send beyond the cap is refused
+`429 queue_full`,
 retryable, with the budget and its use. A queue nobody consumes is freed by
 the sweep as messages pass `retentionEnd`. Sends are also admitted against the
 project's stored-bytes cap (#158).
@@ -464,11 +482,16 @@ returns `{redriven, remaining, stoppedAt: "capacity"}`.
 - **Pause / resume**: a paused group's claims return `paused: true` at once;
   sends continue; leases may still be extended. The SDK backs off while
   paused (1 s doubling to 30 s).
-- **Cancel** `(msgIds)`: the metadata row's `cancelled` flag; every group
-  skips the message, open deliveries end (holders see `stale`); counted,
-  audited.
-- **Peek**: open deliveries and the next due entries, paginated, without
-  leasing; needs the key; `queues.inspect`.
+- **Cancel** `(msgIds)`: a held message ends (its holder sees `stale`); an
+  unresolved scheduled one ends; an untaken immediate one is marked in its
+  range row's `cancel` bitmap, and the frontier passes it and takes its bytes
+  off the queued gauge then (a cancel reads no page). A message is cancelled
+  once; counted, audited.
+- **Peek**: open deliveries, unresolved scheduled messages and the lane's
+  untaken messages from the frontier, by offset, paginated, without leasing;
+  needs the key; `queues.inspect`. On a sealed queue a page ends where its
+  handler's read of sealed pages reached, with a cursor; a view a seal races
+  three times answers `503 read_failed` (edge #262).
 
 ### 6.8 The maintenance sweep
 
@@ -477,15 +500,22 @@ tasks, each in bounded batches (at most 256 entries a step):
 
 1. **Lease expiry**: heads of `L` past their deadline count as a failed
    attempt (`lease_expired`), `leaseGen += 1`, to `R` on clamped backoff.
-2. **Retention expiry**: `A` entries past `C` with `retentionEnd ≤ t` are
-   skipped and added to `retentionGap {from, to, count}` (counted, alerting).
-3. **Failure expiry**: heads of `E` with `failureExpiresAt ≤ t` are discarded.
-4. **Hard expiry**: a cursor `H` walks `A`; a live entry with `hardExpiresAt
-   ≤ t` has every open delivery ended (leases fenced), counted, and retires.
+2. **Retry cycles**: retries past their cycle deadline fail.
+3. **Retention expiry**: untaken scheduled messages past their retention end
+   leave `'a'`, and the lane's untaken messages past theirs are passed by the
+   frontier, both into `retentionGap {from, to, count}` (counted, alerting).
+   The lane is walked only once its `lane_expire_at` (a lower bound of the
+   frontier message's retention end) is due; below the sealed boundary the
+   sweep answers `lane_sealed` and the sweeper passes the prepared pages
+   (§5.6).
+4. **Failure expiry**: heads of `E` with `failureExpiresAt ≤ t` are discarded.
 5. **Dedup expiry**: dedup entries past their window are deleted, and the
    deletion adds collection debt like any other (§8.2).
-6. **Deletion** of retired messages and **reclamation debt** upkeep (§8.2).
-7. **Wake-up notification** (§9.2).
+6. **Wake-up notification** (§9.2).
+
+Each step writes only when something moved; resolved messages' rows go in
+the batch that resolves them, and their pages stay in the stream until the
+trim gives their chunk back (§8.2).
 
 **Discovery after restart or move.** Each shard keeps a **queue roster**: one
 row per queue with pending work, `DIRTY_SENTINEL ‖ 'Q' ‖ hash → next
@@ -497,15 +527,15 @@ hash-first, which a future key-range split must handle. Roster rows are
 counted in §8.3.
 
 **Index floors.** Every lease, retry and failure is put and later deleted,
-so the time-ordered indexes (`A`, `L`, `R`, `E`, the dedup expiries) carry
+so the time-ordered indexes (`'a'`, `L`, `R`, `E`, the dedup expiries) carry
 one tombstone per delivery until a compaction reaches the last sorted run,
 and a scan from an index's start walks all of them. The state row therefore
 keeps, per index, a floor: a lower bound on the time of its first live
-entry (for `A`, of its first live entry past the cursor), plus the earliest
-cycle deadline among retries. Every put lowers a floor in the batch that
+entry (for the scheduled index `'a'`, of its first live entry past the
+scheduled cursor), plus the earliest cycle deadline among retries. Every put lowers a floor in the batch that
 holds the entry; a scan starts at the floor and may raise it to the first
 live entry it found, in the batch whose deletes justified it; deletes leave
-it low, which is only slower. A claim does not read `A` or `R` while that
+it low, which is only slower. A claim does not read `'a'` or `R` while that
 index's floor is past the claim's clock, reads it only up to its first live
 entry past the clock, and then raises its floor to the first entry it left:
 the first due entry it did not take, else that later entry (the index's end
@@ -591,39 +621,71 @@ nobody consumes within `maxAge` loses what it did not take, counted.
 
 ### 8.2 The reclamation lifecycle
 
-Reclamation is four stages, each durable, each with its own completion test.
+Reclamation is four stages for a queue's rows, each durable, each with its
+own completion test, and one for its pages (S3b; TLA-047).
 
-**1. Retirement (logical, exactly once).** A message retires when every group
-has taken or skipped it and `open = 0`, or when it is cancelled, or at
-`hardExpiresAt`. Retirement is the monotone transition `live → retired` of
-the metadata row's `state`, and every path (the reclamation cursor `G`, the
-hard-expiry cursor `H`, a final ack, discard, failure expiry or cancel) tests
-and sets it in its own batch, so no message retires twice, including across a
-restart or move. The retiring batch also:
+**1. Resolution (logical, exactly once).** A message is resolved when it is
+acked, discarded, failure-expired, cancelled, hard-expired, or expired
+untaken (passed by the frontier into the retention gap, or its scheduled
+entry ending); then nothing refers to it: no delivery row, no scheduled
+entry, no `sbits` bit, and it is behind the frontier. Each path resolves it
+in its own committer batch, which moves the gauges by the message's exact
+stored size (I7) and deletes its rows, so no message resolves twice,
+including across a restart or move. `GET …/messages/{id}` answers `404
+reclaimed` for an offset behind the frontier that no row holds.
 
-- removes the message-owned live bytes and row charges from the stored-bytes
-  gauge and the admission budget (billing for the message stops here; §8.3
-  lists what is not message-owned), and writes the usage-ledger entry;
-- adds the message to the retired index `X` with its retirement time, and
-  sets the shard's queue roster.
+**2. Row deletion and debt.** Every batch that deletes queue rows (a
+resolution, a dedup expiry, failure detail, the queue delete) adds their
+bytes to the queue's collection debt in its state row (`debt_bytes`,
+`debt_oldest_at`, `debt_generation`, the generation rising with each), so no
+tombstone is written without a collection obligation. The debt is rows only:
+a message's page is not a row (§5.6).
 
-`G` walks `A` up to the minimum group cursor, retiring `open = 0` messages and
-stepping over the rest; a message stepped over retires when its last open
-delivery ends, and `H` bounds how long that can take.
+**Pages: the trim, the cleaner and the purge.** A sealed queue chunk
+`[f, l]` is retired when `l` lies behind the frontier, no delivery row lies
+in it and no `sbits` bit: one unresolved message retains exactly its own
+chunk. Retirement is permanent. The queue's needed set only shrinks (the
+frontier only moves on, a reference is only created at or past it, and a
+resolved one never comes back), so the gc may retire anything outside any
+durable reading of it, reading the frontier first and the references after,
+with no lock against the committer.
 
-**2. Deletion (logical).** The sweep deletes, for each `X` entry, the page,
-the metadata row, the `A` entry, the key-index entry and the `X` entry, in
-bounded batches of the sweep's step (`SWEEP_STEP`, 256 entries; READINESS H5, R8). Deletes are
-idempotent. `GET …/messages/{id}` answers `404 reclaimed` from the retired
-state or the missing metadata row, never from page presence (the tail ring
-may still hold a deleted page). **The deleting batch creates the collection
-debt**, not the retirement: it adds the deleted bytes to the queue's
-**deletion debt** row `{pendingBytes, oldestDeletedAt, generation}`, where
-`generation` rises with every deleting batch. The debt row is a hot row by
-design: nearly every claim and settle deletes something and updates it. Every other substantive
-deletion (dedup expiry, failure detail, delivery rows, queue delete) adds to
-the same debt the same way, so no tombstone is ever written without a
-collection obligation.
+- **Hints.** A committer batch that moves the frontier over sealed offsets,
+  resolves a reference at a sealed offset, or seals a queue's pages puts a
+  hint row `FF×16 ‖ 'Z' ‖ gseq ‖ h16` naming them (coalesced per 4,096-offset
+  span, at most 8 ranges a row), under a shard-wide sequence seeded above
+  every hint and the trim's cursor.
+- **The trim pass** (`shard/seal/gc/trim.rs`, a step of every gc pass) takes
+  `refs`, scans the hints after its cursor `FF×16 ‖ 'L' ‖ 'Z'` (at most
+  4,096), reads each named queue's frontier, then its candidate chunks'
+  references, and writes one batch through `write_index_batch` under the
+  maintenance gate: the retired chunks' decrements; the queue's `'H'` row in
+  state **Trimming** with its prefix `reclaimed`; its released intervals above
+  the prefix (`'k'`, `h16 ‖ 'Q' ‖ 'k' ‖ last → first`); the hints it consumed
+  deleted and the chunks it left hinted again; the cursor. The objects then
+  follow the segment GC (stage 4).
+- **Every reader of `'H'` and `'k'`** applies the prefix and the intervals in
+  every `'H'` state (`'k'` outlives Trimming until the purge's last
+  decrement): the folds and merges drop released entries, a split's recount
+  counts none of them, `purge_due` skips a Trimming row, and a queue read
+  offers no chunk to consolidation.
+- **The cleaner** (`shard/seal/gc/clean.rs`) rewrites an object a live
+  queue's chunks keep stored. A queue is a hash with a queue state row. Live
+  (`'H'` absent or Trimming, not deleting), its live set is its live entries
+  less what its trim released, its `'H'` row and `'k'` read again under
+  `refs` before the copy commits, and its chunks are never joined in the
+  copy; Requested, Purged or deleting, it is the purge's. An object with a
+  free queue chunk waits for the trim. The saving counts a month when the
+  copy holds an ordinary chunk, else until its queue chunks' latest hold
+  (an open delivery's hard expiry, a scheduled bit's `now + 2 × retention +
+  failure retention`, a chunk at or past the frontier's `now + retention +
+  failure retention`), at most a month.
+- **A deleted queue's purge** puts its head at the stream's next offset and
+  deletes its tail, then reads `'k'` before it deletes a row or decrements
+  anything, decrements every chunk in `[reclaimed, head)` outside the
+  intervals, and deletes `'k'` in the batch that sets `reclaimed = head`
+  (F4): decremented twice, an object shared with another stream would reach
+  zero while that stream still needs it.
 
 **3. Compaction (physical rewrite).** Deleted keys still occupy SSTs until a
 compaction drops their tombstones together with the versions they suppress.
@@ -644,7 +706,7 @@ writing the last run, so a quiet shard never collects. The design adds a
   at one message a minute). Passes a day and bytes a pass are Q0 measurements
   that feed the unit cost.
 - **Launch age and completion deadline are different numbers.** The
-  completion deadline (target 60 minutes from retirement) bounds when the
+  completion deadline (target 60 minutes from deletion) bounds when the
   objects must be gone; the launch age must leave room for deletion, flush,
   compaction, checkpoint protection and GC inside it. Q0 measures a pass's
   duration and sets the launch age to `deadline − p99 pass duration − margin`
@@ -661,17 +723,14 @@ writing the last run, so a quiet shard never collects. The design adds a
   so the physical bound of §5.7 does not grow.
 - **Coverage rule.** A pass covers a defined set of work, and the deletions
   that implement it, before it clears anything:
-  1. choose a cutoff `T`: the pass covers every `X` entry retired at or
-     before `T` and every deletion already in the debt;
-  2. wait until the deletion sweep has removed every `X` entry at or before
-     `T` (their deleting batches raise the generation);
-  3. only then capture the debt generation `g` and its pending bytes, so `g`
-     includes every covered deletion;
-  4. flush the **memtable**, `flush_with_options(FlushType::MemTable)` as the
+  1. capture the debt generation `g` and its pending bytes: every deletion
+     already in the debt is covered (a resolving batch deletes its rows and
+     records their debt together, so nothing waits between the two);
+  2. flush the **memtable**, `flush_with_options(FlushType::MemTable)` as the
      ticker does (`src/shard.rs:1583-1590`; `Db::flush()` flushes only the WAL
      when the WAL is on, `slatedb/src/db.rs:1779-1789`), and read the boundary
      from `Db::manifest()` when it returns;
-  5. submit one spec through `Admin::submit_compaction` (`admin.rs:195-209`):
+  3. submit one spec through `Admin::submit_compaction` (`admin.rs:195-209`):
      `CompactionSpec::for_segment(root, every boundary L0 in tree order plus
      every sorted run, destination = the lowest run id)`
      (`compactor_state.rs:140-146`). Tombstones drop only when the destination
@@ -690,8 +749,9 @@ writing the last run, so a quiet shard never collects. The design adds a
      timeout returns and starts over at the next tick; a job the scheduler
      starts between that read and the submission can still collide until
      SlateDB rejects such a submission (an upstream fix is drafted);
-  6. clear debt up to `g` only when stage 4 completes for that compaction,
-     checked by a HEAD per superseded SST, never a LIST.
+  4. clear debt up to `g` only when stage 4 completes for that compaction,
+     checked by a HEAD per superseded SST, never a LIST; the clear keeps
+     what was recorded after the capture (`ClearDebt` by generation).
   Work captured later stays outstanding for the next pass, and a pass is not
   complete until stage 4, so residency (below) holds until then.
 - **A pass must finish before writers stall.** `compactor_max_concurrent` is
@@ -738,34 +798,29 @@ owner with the real intervals (`GC_QUIET_INTERVAL` 600 s,
 about 15 minutes after its compaction; checkpoint and recovery protections
 are unchanged.
 
-**The last rows.** Deleting a queue's last rows (state, group, roster, debt,
-reservation) itself creates debt. A shard-level debt row survives every
-queue: the batch that clears a queue's final debt deletes that queue's debt
-row and releases its reservation, and the shard row records the residual for
-the next pass.
+**The last rows.** Deleting a queue's last rows (state, group, roster)
+itself creates debt, which the shard's collector carries for the next pass.
 
 **Queue delete.** Deleting a queue is a queue-specific lifecycle, not only a
 registry tombstone (`src/application/creation/deletion.rs`):
 
-1. The first serialized transition persists **`deleting`** on the queue's
-   state row for that incarnation, with the delete intent and a cleanup
-   cursor. From then on sends and redrives are refused (409
-   `queue_deleting`), claims return 409 `queue_deleting`, every open lease is
-   fenced (`leaseGen += 1`, so settles answer `stale`), and the reservation
-   (§5.7) stays held until the queue's debt clears (step 4).
-2. The sweep cancels and retires every message, deletes delivery rows, dedup
-   entries and failure detail in bounded, resumable batches; each batch adds
-   to the deletion debt. A restart or move resumes from the cursor.
-3. When nothing live remains, the registry tombstone is written, conditional
-   on the same incarnation (a recreated queue under the same name is a new
-   incarnation and is untouched).
-4. The roster row and the debt are keyed by storage hash, not name, so
-   collection (stages 3 and 4) continues after the tombstone; the reservation
-   is released when the debt clears.
+1. `BeginDelete`, the fence, persists **`deleting`** on the queue's state row
+   for that incarnation. From then on sends and redrives are refused (409
+   `queue_deleting`), claims answer 409 `queue_deleting`, and every open lease
+   is fenced (settles answer `stale`).
+2. `DeleteStep`s, bounded and resumable, delete every queue row family but
+   the released intervals `'k'`; each adds to the debt. The last deletes the
+   state row and the roster row, and the queue stream's pending row with its
+   unsealed pages.
+3. The stream is tombstoned, conditional on the same incarnation (a queue
+   recreated under the same name is a new incarnation and is untouched).
+4. The purge, keyed by storage hash, then reclaims the queue's sealed chunks
+   in F4's order (above), and the collection of its rows (stages 3 and 4)
+   continues after the tombstone.
 
-This answers READINESS TLA-019-F3 for queues: no sealed chunks exist, forks are
-refused, billing closes at retirement, deletes are bounded and resumable, and
-quiet-shard collection is stage 4.
+This answers READINESS TLA-019-F3 for queues: sealed chunks are reclaimed by
+the purge in F4's order, forks are refused, a queue has no billing row,
+deletes are bounded and resumable, and quiet-shard collection is stage 4.
 
 **The queue tree (layout 6).** Queue rows live in their own LSM segment of
 the shard log, `'Q' ‖ generation` (`src/keyspace.rs`; generation 0 only), so
@@ -800,9 +855,9 @@ scheduling and GC requirements.
 Three quantities are kept apart:
 
 - **Live bytes**: what exists and is counted against capacity.
-- **Bytes awaiting reclamation**: retired-but-undeleted (`X`) plus deletion
-  debt, reported per queue and shard; the platform's cost, bounded by the
-  completion deadline.
+- **Bytes awaiting reclamation**: the rows' deletion debt, reported per
+  queue and shard, and sealed chunks no trim has retired yet; the platform's
+  cost, bounded by the completion deadline and the trim's passes.
 - **Physical storage**: the shard database's object-store size, reported on
   `/operator/data.json`.
 
@@ -811,10 +866,11 @@ retirement:
 
 | State | Accounting and cleanup |
 |---|---|
-| message payload and message-owned rows (metadata, `A`, key index, delivery rows and indexes, failure detail) | counted from write; removed from live at the message's retirement; deletion creates debt |
+| message pages (the queue stream's) | counted in the queued gauge at stored size from the send, taken off at resolution; physically collected by the trim and the purge (§8.2) |
+| message-owned rows (delivery rows and their indexes, scheduled entries and their by-offset rows, failure detail) | counted from write in their category (§5.7); deleted at resolution; deletion creates debt |
 | dedup entries | counted from write against the queue's dedup budget (§8.4) and the stored-bytes cap until their own deletion at the window's end, whether or not the message is done; deletion creates debt |
 | queue-wide rows (state, group, roster, debt rows) | a fixed charge per queue for the queue's life |
-| `X` and collection bookkeeping | platform overhead, bounded by the completion deadline, not billed |
+| range rows, hints, released intervals, the Trimming row and collection bookkeeping | platform overhead, bounded by the completion deadline and the trim, not billed |
 
 Billing for a completed message stops at its retirement; independently
 retained dedup state is still accounted while it exists (whether its price is
@@ -836,13 +892,13 @@ when that message is already done and reclaimed. Entries are swept at the end
 of their window (§6.8) and deleted with the queue. Republish bypasses dedup.
 
 Dedup entries outlive their messages, so they have their own budget:
-`maxDedupEntries` per queue (default 1 million, about 100 MiB), reserved
-against the shard with the admission budget (§5.7). A send with a new
+`maxDedupEntries` per queue (default 1 million, about 100 MiB), counted in
+the shard's dedup slice (§5.7). A send with a new
 `dedupKey` beyond it is refused `429 dedup_full`, retryable; entries are
 never evicted early, which would silently weaken dedup. The window and the
 send rate set the need: 1,000 unique keys a second with a 24-hour window is
 86.4 million entries, so such a queue needs a shorter window or a larger
-reserved budget.
+budget.
 
 ### 8.5 Named groups (later)
 
@@ -1053,11 +1109,11 @@ The verification plan (TLA+, Kani, DSTs, SDK, Layer B, pilot) is in
 | D14 | Billing | Cloudflare parity: $0.40 per million logical operations per message per 64 KB (send a write, each delivery a read, ack or discard a delete), one million a month included; empty claims free; bandwidth and standard retention included; live bytes count against capacity (a message's until retirement, dedup entries until their window ends) |
 | D15 | Sequencing | Q0 gates Q1; the first release gates the beta if queues are a beta requirement |
 | D16 | Wake-up egress | §9.2 egress policy with a versioned derived secret |
-| D17 | Queue storage | Queue pages in the shard database, never sealed into segment objects, under queue storage mode |
+| D17 | Queue storage | Superseded (revision 9, S3b part 2): a queue's pages are its stream's, sealed into segment objects and given back by the trim (§5.6, §8.2) |
 | D18 | Groups | Only `default` first; named groups under §8.5 |
-| D19 | Tail format | A queue storage flag bit in the tail; the first binary writing it is a one-way upgrade for cells with queues (or a `LAYOUT_VERSION` bump, if the owner prefers) |
-| D20 | Collection | The compaction trigger in the shared shard database; segments, then a separate queue database, only if Q0 shows shared compaction too costly |
-| D21 | Shard capacity | Reserve each queue's budgets at creation, no overcommit; smaller defaults with an opt-up, sized from Q0's per-shard bound; overcommit with a borrowing rule later |
+| D19 | Tail format | Superseded (revision 9): layout 8 keeps a queue's tail in the queue segment (`h16 ‖ 'Q' ‖ 't'`); no flag bit |
+| D20 | Collection | The compaction trigger in the shared shard database for queue rows; queue pages are sealed into segments and trimmed (revision 9); a separate queue database only if shared compaction proves too costly |
+| D21 | Shard capacity | Superseded (revision 9, edge #246): five category slices of the shard's queue-state bound, fair per container then per queue; no reservations at creation (SCALING-DECISIONS Q11) |
 | D22 | Quiet-shard GC completion | Accept one residual L0 file per shard; a SlateDB patch only if Q0 shows it matters |
 
 ## 15. Review responses

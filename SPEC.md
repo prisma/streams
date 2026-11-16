@@ -145,13 +145,16 @@ S FF×16 K <epoch> <seq>           seal directory row: one per seal, every chunk
                                   key summary (src/spill/directory.rs)
 S FF×16 R <epoch> <seq>           the seal object's refcount row
 S FF×16 ...                       billing rows
-Q <gen u32> <hash16> ...          every native-queue row (generation 0), the queue
-                                  stream's tail (`t`) and its message pages
+Q <gen u32> <hash16> ...          every native-queue row (generation 0) and the
+                                  queue stream's tail (`t`); a queue's message
+                                  pages are its stream's, in its pending row and
+                                  sealed into segment objects like any stream's
+                                  (S3b part 2, docs/QUEUES-DESIGN.md §5.6)
 ```
 A native queue's rows live in the `Q` tree, which only the queue collector
 compacts (its L0 merges and debt passes, docs/QUEUES-DESIGN.md §8.2), so a
-queue's churn never rewrites stream state and a queue-only shard writes no `S`
-L0.
+queue's row churn never rewrites stream state; its sealed pages are given back
+by the gc's trim, chunk by chunk (§8.2).
 
 Segment objects (one per seal, `src/spill/object.rs`): chunks of one
 stream's sealed pages, byte for byte, each with a header, a page directory,
