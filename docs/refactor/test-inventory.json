@@ -1821,6 +1821,17 @@
     "scenarios": []
   },
   {
+    "name": "a_member_with_no_view_installs_a_split_and_still_opens_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e33938bbcc69cc538303406fd947467fdd326790295f35cb6a5d5e78b4a7d436",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_member_within_the_share_reads_nothing_for_the_count_balance",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6645,6 +6656,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/header_alias.rs",
+    "scenarios": []
+  },
+  {
+    "name": "exactly_one_child_returns_home_after_the_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fa6e5882da0a99deb640635bef8708abf5b98c103ff3d7b0b4ecac42ba089fc0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
     "scenarios": []
   },
   {

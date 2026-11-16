@@ -69,6 +69,14 @@ async fn beat_of_held(fleet: &Arc<dyn ObjectStore>, addr: std::net::SocketAddr) 
         .unwrap();
 }
 
+/// How `streams-2`'s fleet tick runs in a scenario.
+#[derive(Clone, Copy)]
+enum Tick {
+    Runs,
+    Held,
+    Never,
+}
+
 /// The cell: `streams-1` (the split's actor, the ring's owner of `""`) and `streams-2` (the ring's
 /// owner of both halves), each a peer of the other, once both views name both members.
 pub(super) struct Pair {
@@ -79,17 +87,23 @@ pub(super) struct Pair {
 impl Pair {
     /// Both members with their fleet ticks running.
     pub(super) async fn new() -> Self {
-        Self::of(true).await
+        Self::of(Tick::Runs).await
     }
 
     /// `streams-2` with its fleet tick held from before the split: it never runs, its view is the
     /// pre-split ring of both members with no override, its beat is kept fresh in the fleet store,
     /// and it revalidates its topology only when the scenario asks it to.
     pub(super) async fn held() -> Self {
-        Self::of(false).await
+        Self::of(Tick::Held).await
     }
 
-    async fn of(b_ticks: bool) -> Self {
+    /// `streams-2` with its fleet tick held from boot: it has never had a view (edge change #263).
+    async fn viewless() -> Self {
+        Self::of(Tick::Never).await
+    }
+
+    async fn of(tick: Tick) -> Self {
+        let b_ticks = matches!(tick, Tick::Runs);
         let fleet = mem();
         let desired = r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
         fleet
@@ -107,6 +121,8 @@ impl Pair {
         .await;
         if !b_ticks {
             beat_of_held(&fleet, b.addr).await;
+        }
+        if matches!(tick, Tick::Held) {
             let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
             b.state.ownership.set_view(both, Default::default());
         }
@@ -117,15 +133,20 @@ impl Pair {
             peer.set_peer("streams-1", &format!("http://{}", a.addr));
             peer.set_peer("streams-2", &format!("http://{}", b.addr));
         }
+        let viewing: &[&HttpRig] = if matches!(tick, Tick::Never) {
+            &[&a]
+        } else {
+            &[&a, &b]
+        };
         let t0 = tokio::time::Instant::now();
-        while [&a, &b]
+        while viewing
             .iter()
             .any(|rig| rig.state.ownership.ring_active().len() < 2)
         {
             assert!(t0.elapsed() < BOUND, "both views name both members");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let owner = |p: &str| b.state.ownership.effective_owner(p);
+        let owner = |p: &str| a.state.ownership.effective_owner(p);
         assert_eq!(
             [owner(""), owner("0"), owner("1")].map(Option::unwrap_or_default),
             ["streams-1", "streams-2", "streams-2"].map(str::to_string),
@@ -352,4 +373,117 @@ async fn a_member_installs(how: Install) {
 async fn a_member_installing_a_split_before_its_tick_opens_no_child() {
     a_member_installs(Install::Revalidation).await;
     a_member_installs(Install::Forwarded).await;
+}
+
+/// **A member with no view installs a split and still opens nothing** (F2, T4; F3's edge change
+/// #263). `streams-2` boots in fleet mode and its tick never runs, so it has no view. It installs
+/// the split's version by its revalidation, whose refresh reads the overrides and keeps the view's
+/// active members exactly as they are, none: it still awaits its first view, answers an append `503
+/// temporarily_unavailable`, and opens nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_member_with_no_view_installs_a_split_and_still_opens_nothing() {
+    let pair = Pair::viewless().await;
+    let (status, _) = split_with_a_held_append(&pair).await;
+    assert_eq!(status, 204, "the held append");
+    let b = &pair.b.state;
+    let refresh = crate::topology::revalidate::Refresh::of(&b.fleet, &b.ownership);
+    let now = b.runtime.clock.monotonic();
+    let installed =
+        crate::topology::revalidate::once(&b.registry, &b.shards, refresh.as_ref(), now);
+    assert!(installed.await.unwrap(), "the member installs the split");
+    let (status, _) = append(pair.b.addr, 3).await;
+    let view = b.ownership.view();
+    assert_eq!(
+        (
+            status,
+            b.ownership.awaits_view(),
+            view.active.len(),
+            b.shards.open_count()
+        ),
+        (503, true, 0, 0),
+        "the member still awaits its view and opened nothing; view {view:?}"
+    );
+    pair.shutdown().await;
+}
+
+/// The overrides document of the cell at `rig`'s fleet store.
+async fn overrides_of(rig: &HttpRig) -> crate::fleet::Overrides {
+    rig.state.fleet.read_overrides().await.unwrap().0
+}
+
+/// The children's entries, which name the actor, stamped back past the return window, by CAS.
+async fn age_the_children(a: &crate::http::AppState) {
+    let window_ms = i64::try_from(a.config.fleet.rebalance_return_secs).unwrap() * 1000;
+    let t0 = tokio::time::Instant::now();
+    loop {
+        let (mut aged, version) = a.fleet.read_overrides().await.unwrap();
+        for child in ["0", "1"] {
+            let entry = aged.entries.get_mut(child).expect("a born entry");
+            assert_eq!(entry.to, "streams-1", "{child} born on the actor");
+            entry.ms -= window_ms + 60_000;
+        }
+        let raw = serde_json::to_vec(&aged).unwrap();
+        let doc = crate::fleet::FleetDocument::Overrides;
+        if a.fleet.replace_document(doc, raw, version).await {
+            return;
+        }
+        assert!(t0.elapsed() < BOUND, "the aged document is written");
+    }
+}
+
+/// **Exactly one child returns home after the window** (F2, T5). T1's cell, once the split ended:
+/// its children's entries name the actor; aged past `REBALANCE_RETURN_SECS` (their stamps moved
+/// back, as the window would), return-home gives back one child to its ring home `streams-2`, whose
+/// fair share of the two leaves is one: one `rebalance_return` event, one entry left naming the
+/// actor, one child owned by each member, and the actor holding only its own child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn exactly_one_child_returns_home_after_the_window() {
+    let pair = Pair::new().await;
+    let (status, _) = split_with_a_held_append(&pair).await;
+    assert_eq!(status, 204, "the held append");
+    let a = &pair.a.state;
+    let t0 = tokio::time::Instant::now();
+    while crate::topology::intent::read(&*a.data_store)
+        .await
+        .unwrap()
+        .is_some_and(|held| !held.intent.is_terminal())
+    {
+        assert!(t0.elapsed() < BOUND, "the split's intent ends");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    age_the_children(a).await;
+    let returned = |doc: &crate::fleet::Overrides| {
+        doc.pending_events
+            .iter()
+            .filter(|e| e.event_type == "rebalance_return")
+            .count()
+    };
+    let t0 = tokio::time::Instant::now();
+    while returned(&overrides_of(&pair.a).await) == 0 {
+        assert!(t0.elapsed() < BOUND, "a child returns home");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let doc = overrides_of(&pair.a).await;
+    let left: Vec<(&String, &str)> = doc
+        .entries
+        .iter()
+        .map(|(p, e)| (p, e.to.as_str()))
+        .collect();
+    let owners = ["0", "1"].map(|p| a.ownership.effective_owner(p).unwrap_or_default());
+    let mut sorted = owners.clone();
+    sorted.sort();
+    assert_eq!(
+        (returned(&doc), left.len(), sorted),
+        (1, 1, ["streams-1", "streams-2"].map(str::to_string)),
+        "one return, one entry left {left:?}, one child each {owners:?}"
+    );
+    let kept = if owners[0] == "streams-1" { "0" } else { "1" };
+    let gone = if kept == "0" { "1" } else { "0" };
+    assert_eq!(
+        (a.shards.is_open(kept), a.shards.is_open(gone)),
+        (true, false),
+        "the actor keeps {kept} and handed {gone} off"
+    );
+    pair.shutdown().await;
 }
