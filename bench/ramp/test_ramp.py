@@ -117,7 +117,7 @@ class DriverFollowsTheSdk(unittest.TestCase):
     def test_the_driver_includes_the_rules_and_times_a_touch_from_its_first_attempt(self):
         mode = patch_file("bench/population_mode.rs")
         self.assertIn('#[path = "population_rules.rs"]\nmod rules;', mode)
-        self.assertIn("rules::again_after(kind, &answer, attempt, ms_since(started))", mode)
+        self.assertIn("rules::again_after(kind, &refused.as_answer(), attempt, ms_since(started))", mode)
         # The histogram records from before the touch's first attempt, once its last answer is in.
         self.assertIn("let started = Instant::now();\n                let mut tally = Tally::default();\n"
                       "                let touched = state.touch(i, &mut tally).await;", mode)
