@@ -537,7 +537,7 @@ fn watch_refusals() -> Vec<(crate::application::watch::WatchFailure, &'static st
                 prefix: prefix(),
                 owner: "streams-2".into(),
             }),
-            "409 not_ring_owner - - streams-2 -",
+            "409 not_stream_owner true 1 streams-2 -",
         ),
         (
             W::Resolve(R::Opening {

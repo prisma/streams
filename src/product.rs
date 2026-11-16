@@ -3689,7 +3689,7 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
             None,
             true,
         ),
-        WatchFailure::Resolve(error) => crate::http::resolve_error_response(error),
+        WatchFailure::Resolve(e) => read_failure::resolve(e, crate::http::resolve_error_response),
     }
 }
 

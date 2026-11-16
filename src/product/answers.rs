@@ -225,6 +225,26 @@ mod tests {
         }
     }
 
+    /// Edge change #264, amendment A3: a product read (the record read, its
+    /// cursor read and `:scan` share the renderer) of a shard another
+    /// instance owns answers the product's `409 not_stream_owner`, retryable,
+    /// with its replay target and `Retry-After: 1`, as an append does.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_read_of_another_instances_shard_answers_not_stream_owner_with_retry_after() {
+        let not_owner = ResolveError::NotOwner {
+            prefix: "000".into(),
+            owner: "streams-2".into(),
+        };
+        let response = super::super::render_product_read_failure(ReadFailure::Resolve(not_owner));
+        let replay = response.headers().get("streams-replay-to").cloned();
+        assert_eq!(
+            replay.as_ref().map(|v| v.to_str().unwrap()),
+            Some("streams-2")
+        );
+        let want = (409, Some("1".to_string()), "not_stream_owner".into());
+        assert_eq!(wire(response).await, want);
+    }
+
     /// An append refused `temporarily_unavailable` with no delay of its own
     /// asks for one second; a stated delay is kept.
     #[tokio::test(crate = "crate::test_rt")]
