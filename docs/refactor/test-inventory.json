@@ -3387,6 +3387,17 @@
     "scenarios": []
   },
   {
+    "name": "a_rolled_back_split_is_not_started_again_at_the_next_tick",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "69a462069987603ad4811cc86c46b3a57316942397b53cebea22f5ec964d54d0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_policy.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_rolled_back_splits_child_paths_are_swept_and_the_live_leaf_is_not_touched",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -15,6 +15,11 @@ use crate::ownership::OwnershipService;
 use crate::shard_directory::ShardDirectory;
 use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 
+// A rolled-back split's backoff (meas149-reshaping F1d).
+mod backoff;
+
+use backoff::Backoff;
+
 /// The heartbeat's `split_refused` while a split waits for an instance (Q4).
 pub(crate) const INSTANCE_FULL: &str = "instance_full";
 
@@ -167,10 +172,15 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
 /// The beat publishes what the pass left: a split waiting (`split_refused`), and the shards the
 /// ring gives this one.
 pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> Decision {
-    let live = intent_live(&*cell.store).await;
+    let (live, rolled_back) = intent_now(&*cell.store).await;
     let view = view(cell, seen, live);
+    if let Some((op_id, prefix)) = rolled_back {
+        let cooldown = cell.limits.cooldown_ms;
+        seen.backoff
+            .intent_rolled_back(&op_id, &prefix, view.now_ms, cooldown);
+    }
     let decided = policy.decide(&view, &cell.limits);
-    let decision = act(cell, &view, decided).await;
+    let decision = act(cell, &view, decided, &mut seen.backoff).await;
     let waiting = split_refused(&decision, policy.decided_split());
     let standing = cell.fleet.standing();
     standing.set_topology(waiting, resident(&view, &cell.me));
@@ -192,8 +202,10 @@ fn split_refused(decision: &Decision, split: bool) -> Option<&'static str> {
 }
 
 /// `decision`, after the split or merge entry's answer to the operation it names. A refused
-/// merge holds, by its refusal's code, and the next pass decides again.
-async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
+/// merge holds, by its refusal's code, and the next pass decides again. A split of a prefix whose
+/// last split rolled back waits out its backoff (`backoff`), and a `rolled_back` refusal starts or
+/// doubles it.
+async fn act(cell: &Cell, view: &View, decision: Decision, backoff: &mut Backoff) -> Decision {
     if let Decision::Merge { parent } = &decision {
         return match (cell.merge)(parent.clone()).await {
             Ok(()) => decision,
@@ -207,10 +219,14 @@ async fn act(cell: &Cell, view: &View, decision: Decision) -> Decision {
     let Decision::Split { prefix, .. } = &decision else {
         return decision;
     };
+    if backoff.holds(prefix, view.now_ms) {
+        return Decision::Hold(super::policy::Hold::Cooldown);
+    }
     match (cell.split)(prefix.clone()).await {
         Ok(()) => decision,
         Err(refused) => {
             tracing::info!(?refused, prefix, "topology split refused");
+            backoff.refused(prefix, refused.0, view.now_ms, cell.limits.cooldown_ms);
             match refused.0 {
                 INSTANCE_FULL => Decision::AskInstance {
                     resident: resident(view, &cell.me),
@@ -306,13 +322,24 @@ fn resident(view: &View, me: &str) -> u32 {
 }
 
 /// Whether a topology operation is under way: the cell's intent is not terminal, or it cannot
-/// be read (fail closed, S4 §4.4).
-async fn intent_live(store: &dyn object_store::ObjectStore) -> bool {
+/// be read (fail closed, S4 §4.4). And a split the intent records as rolled back: its operation id
+/// and its parent's prefix (`backoff`).
+async fn intent_now(store: &dyn object_store::ObjectStore) -> (bool, Option<(String, String)>) {
     match super::intent::read(store).await {
-        Ok(held) => held.is_some_and(|held| !held.intent.is_terminal()),
+        Ok(None) => (false, None),
+        Ok(Some(held)) => {
+            let intent = held.intent;
+            let rolled_back =
+                intent.kind == "split" && intent.state == super::intent::State::RolledBack;
+            let source = intent.sources.first().map(|(prefix, _)| prefix.clone());
+            let split = source
+                .filter(|_| rolled_back)
+                .map(|prefix| (intent.op_id.clone(), prefix));
+            (!intent.is_terminal(), split)
+        }
         Err(error) => {
             tracing::warn!(%error, "topology intent unreadable; every operation holds");
-            true
+            (true, None)
         }
     }
 }
@@ -327,6 +354,8 @@ pub(crate) struct Seen {
     born: BTreeMap<String, i64>,
     version: Option<u64>,
     changed_ms: Option<i64>,
+    /// Rolled-back splits' waits, ended by a publish.
+    backoff: Backoff,
 }
 
 impl Seen {
@@ -336,6 +365,7 @@ impl Seen {
         let version = snapshot.shards.version;
         if self.version.is_some_and(|seen| seen != version) {
             self.changed_ms = Some(now_ms);
+            self.backoff.published();
         }
         self.version = Some(version);
     }
@@ -507,7 +537,7 @@ pub(crate) fn limits(config: &crate::config::ServerConfig) -> Limits {
 #[cfg(test)]
 mod tests {
     use super::{
-        FLEET_SETTLING, INSTANCE_FULL, NOT_RING_OWNER, hold_for, intent_live, merge_refusal_code,
+        FLEET_SETTLING, INSTANCE_FULL, NOT_RING_OWNER, hold_for, intent_now, merge_refusal_code,
         refusal_code, split_refused,
     };
     use crate::topology::policy::{Decision, Hold};
@@ -711,26 +741,38 @@ mod tests {
     }
 
     /// A Preparing intent holds every operation, a terminal one none, and an intent that does
-    /// not decode holds them all (fail closed); a cell that never wrote one holds none.
+    /// not decode holds them all (fail closed); a cell that never wrote one holds none. Only a
+    /// split's rolled-back intent names its operation and its parent (F1d's backoff), not a
+    /// merge's.
     #[tokio::test(crate = "crate::test_rt")]
     async fn only_a_preparing_or_unreadable_intent_is_live() {
         let store = InMemory::new();
-        assert!(!intent_live(&store).await, "no intent");
+        assert_eq!(intent_now(&store).await, (false, None), "no intent");
         let path = Path::from("topology/intent.json");
-        for (state, live) in [
-            (State::Preparing, true),
-            (State::Reclaimed, false),
-            (State::RolledBack, false),
+        let split = Some(("op-1".to_string(), String::new()));
+        for (state, kind, now) in [
+            (State::Preparing, "split", (true, None)),
+            (State::Reclaimed, "split", (false, None)),
+            (State::RolledBack, "split", (false, split)),
+            (State::RolledBack, "merge", (false, None)),
         ] {
-            let body = serde_json::to_vec(&intent(state)).unwrap();
+            let held = Intent {
+                kind: kind.into(),
+                ..intent(state)
+            };
+            let body = serde_json::to_vec(&held).unwrap();
             store.put(&path, PutPayload::from(body)).await.unwrap();
-            assert_eq!(intent_live(&store).await, live, "{state:?}");
+            assert_eq!(intent_now(&store).await, now, "{state:?} {kind}");
         }
         store
             .put(&path, PutPayload::from_static(b"{not json"))
             .await
             .unwrap();
-        assert!(intent_live(&store).await, "a corrupt intent fails closed");
+        assert_eq!(
+            intent_now(&store).await,
+            (true, None),
+            "a corrupt intent fails closed"
+        );
     }
 
     use super::{Seen, congested, instances, live, load, member};
