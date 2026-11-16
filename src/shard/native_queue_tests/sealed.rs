@@ -10,7 +10,7 @@ use tokio::sync::{Notify, oneshot};
 
 use super::{HASH, clocked, msg, op, send_op, set_clock, state};
 use crate::native_queue::{
-    NqOp, NqOut, NqRefusal, PrepareFrom, PreparedPage, QueueConfig, SWEEP_STEP,
+    DAY_MS, NqOp, NqOut, NqRefusal, PrepareFrom, PreparedPage, QueueConfig, SWEEP_STEP, SendMessage,
 };
 use crate::shard::seal::Trigger;
 use crate::shard::seal::test_hooks::Hold;
@@ -228,6 +228,15 @@ async fn send_many(e: &ShardEngine, n: usize) {
     }
 }
 
+/// Whether a sweep answered `lane_sealed`: its sweeper is to read the
+/// lane's sealed pages and sweep again.
+fn swept_sealed(out: &NqOut) -> bool {
+    match out {
+        NqOut::Swept { lane_sealed, .. } => *lane_sealed,
+        other => panic!("a sweep answers swept: {other:?}"),
+    }
+}
+
 /// The lane's sealed pages from the frontier, as a sweeper reads them.
 async fn prepared(e: &ShardEngine) -> Vec<PreparedPage> {
     let (pages, _) = e
@@ -334,4 +343,56 @@ async fn a_sweep_step_counts_its_prepared_pages_toward_the_step() {
     op(&e, NqOp::Sweep { prepared: pages }).await.unwrap();
     let step = u64::try_from(SWEEP_STEP).unwrap();
     assert_eq!(state(&db).await.frontier, step);
+}
+
+/// A sweep that carries the lane to the sealed boundary asks for no more
+/// pages: the expired pages left are unsealed, and the committer walks
+/// them itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sweep_that_reaches_the_sealed_boundary_asks_for_no_pages() {
+    let (e, db, c) = clocked("nq-sealed-boundary", QueueConfig::default()).await;
+    send_many(&e, SWEEP_STEP).await;
+    seal(&e).await;
+    send_many(&e, 1).await;
+    let retention = state(&db).await.cfg.retention_ms;
+    set_clock(&db, c + retention + 1).await;
+    let swept = op(
+        &e,
+        NqOp::Sweep {
+            prepared: prepared(&e).await,
+        },
+    )
+    .await
+    .unwrap();
+    let st = state(&db).await;
+    let step = u64::try_from(SWEEP_STEP).unwrap();
+    assert_eq!(
+        (st.frontier, st.lane_expire_at <= c + retention + 1),
+        (step, true)
+    );
+    assert!(!swept_sealed(&swept), "{swept:?}");
+}
+
+/// A sweep asks for a sealed lane's pages only once the lane's expiry is
+/// due: never for sealed scheduled messages alone (they set no expiry),
+/// nor before the first untaken message expires.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sweep_asks_for_sealed_pages_only_once_the_lanes_expiry_is_due() {
+    let (e, db, c) = clocked("nq-sealed-due", QueueConfig::default()).await;
+    let later = SendMessage {
+        deliver_at: Some(c + DAY_MS),
+        ..msg("later")
+    };
+    op(&e, send_op(vec![later])).await.unwrap();
+    seal(&e).await;
+    assert_eq!(state(&db).await.lane_expire_at, 0, "no expiry");
+    let sweep = || NqOp::Sweep {
+        prepared: Vec::new(),
+    };
+    let alone = op(&e, sweep()).await.unwrap();
+    assert!(!swept_sealed(&alone), "scheduled alone: {alone:?}");
+    op(&e, send_op(vec![msg("now")])).await.unwrap();
+    seal(&e).await;
+    let early = op(&e, sweep()).await.unwrap();
+    assert!(!swept_sealed(&early), "not yet due: {early:?}");
 }
