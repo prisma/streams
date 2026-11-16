@@ -11717,7 +11717,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "565810c3796a805b888d2e21df2f4c394c48147a07dc50ea305e61aa47549450",
+    "function_sha256": "84377f98e3bc93742c15431504545f00856877c5b15824b80f8694d9ab560c98",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/watch_observation.rs",
@@ -11728,7 +11728,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "97db281af5647f727a32a01aa5256873c4de8ba55fdc49352bffd1ac512058df",
+    "function_sha256": "ce786c2083d04296a3b00b92bcdfae56064181e7a2fcafe1a3604b7e4479c7e9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/watch_observation.rs",

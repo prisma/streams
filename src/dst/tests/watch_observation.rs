@@ -827,6 +827,17 @@ impl WatchPair {
     }
 }
 
+/// The body of a wait the instance refuses because another one owns the
+/// stream's route shard (edge change #264): the product's `not_stream_owner`,
+/// as an append, a read and a consumer answer it.
+fn not_stream_owner() -> serde_json::Value {
+    serde_json::from_str(
+        r#"{"error": {"code": "not_stream_owner",
+            "message": "stream is owned by another instance; retry", "retryable": true}}"#,
+    )
+    .unwrap()
+}
+
 /// A watch wait is answered only where the ring places the stream's
 /// route shard. Touches are published by the instance that commits the
 /// append, so a non-owner that parks the waiter on a journal of its own
@@ -848,7 +859,8 @@ async fn watch_wait_on_a_non_owner_replays_to_the_ring_owner() {
         st, 409,
         "a non-owner must replay the wait, never answer it from a private journal: {refused}"
     );
-    assert_eq!(refused["error"]["code"], "not_ring_owner", "{refused}");
+    assert_eq!(refused, not_stream_owner());
+    assert_eq!(headers.get("retry-after").map(String::as_str), Some("1"));
     assert_eq!(
         headers.get("streams-replay-to").map(String::as_str),
         Some("inst-a"),
@@ -900,7 +912,8 @@ async fn watch_wait_follows_the_ring_when_the_shard_moves() {
         st, 409,
         "the ex-owner must replay, not park the waiter on a journal nobody feeds: {refused}"
     );
-    assert_eq!(refused["error"]["code"], "not_ring_owner", "{refused}");
+    assert_eq!(refused, not_stream_owner());
+    assert_eq!(headers.get("retry-after").map(String::as_str), Some("1"));
     assert_eq!(
         headers.get("streams-replay-to").map(String::as_str),
         Some("inst-b")
