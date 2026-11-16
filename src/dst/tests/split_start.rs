@@ -4,7 +4,7 @@
 //! `begin` reserves homes, so a refused start leaves the stored topology as it was.
 
 use super::fixture_http::engine_shutdown;
-use super::split_k::{Cell, cell};
+use super::fixture_split::{Cell, cell};
 
 /// **A split of a split's child starts from the version the first published and names the child's
 /// own home, and each published child is the engine of its own prefix.** Leaf `00` splits into

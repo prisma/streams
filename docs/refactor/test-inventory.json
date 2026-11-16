@@ -344,7 +344,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "84dcdf0a4fd4821ef290709a81bf241df2265b235f368e42a447540d7933d033",
+    "function_sha256": "2a0c749c9d3f37c9eb94c2e352ccc6d97a7a7a032ac5c668515c50e29242cae8",
     "mechanisms": [],
     "configuration": [
       "for seed in 0..3 {",

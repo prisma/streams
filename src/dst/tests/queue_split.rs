@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::{PRISMA_KEY, preq};
-use super::split_k::{Cell, cell};
+use super::fixture_split::{Cell, cell};
 use crate::spill::object::ObjectId;
 
 type Addr = std::net::SocketAddr;
@@ -457,7 +457,7 @@ async fn orphans(e: &crate::shard::ShardEngine, ids: &[ObjectId]) -> BTreeMap<Ob
 /// merge back and the queue holds nothing: each message was delivered once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_cleaners_copy_of_a_queue_chunk_keeps_every_count_through_a_split_and_a_merge() {
-    let cell = super::split_k::cold_cell().await;
+    let cell = super::fixture_split::cold_cell().await;
     let p = cell.parent.clone();
     p.gc_state().configure(|s| {
         s.auto = false;

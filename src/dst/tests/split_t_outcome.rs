@@ -8,8 +8,8 @@
 
 use super::fixture_http::engine_shutdown;
 use super::fixture_requests::hreq;
+use super::fixture_split::{Cell, cell, records};
 use super::merge_finish_k::{AtPark, Batch, FINAL, append_answer, assert_quiet, probe_at_park};
-use super::split_k::{Cell, cell, records};
 use crate::shard::ShardEngine;
 use crate::topology::gate::{PausePoint, TFault};
 use crate::topology::intent::{self, Intent, State};
@@ -117,7 +117,7 @@ async fn closed_after(cell: &Cell, failed: Failed, landed: bool) {
 /// A cold-seal split cell (no seal runs unrequested) whose parent holds an unsealed record of each
 /// stream, so the probe's seal at the park has a group to refuse (`merge_finish_k::assert_quiet`).
 async fn cell_with_records() -> Cell {
-    let cell = super::split_k::cold_cell().await;
+    let cell = super::fixture_split::cold_cell().await;
     for (name, n) in [(&cell.low, 20), (&cell.high, 21)] {
         assert_eq!(append_answer(cell.addr, name, n).await.0, 204, "{name}");
     }
