@@ -4,12 +4,20 @@
 //! the queue's Trimming row and released intervals. Every row is asserted
 //! exactly: the refcounts, `'H'`, `'k'`, the hints and the cursor.
 #![cfg(test)]
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use super::{HASH, clocked, msg, op, send_op, settle};
-use crate::native_queue::intervals::{Interval, Released};
-use crate::native_queue::{NqOp, NqOut, PrepareFrom, QueueConfig, SendMessage, SettleKind, hints};
+use crate::dst::{FaultStore, ObjClass, StoreOp};
+use crate::native_queue::intervals::{self, Interval, Released};
+use crate::native_queue::range::RangeRow;
+use crate::native_queue::{
+    NqOp, NqOut, PrepareFrom, QueueConfig, SendMessage, SettleKind, hints, keys,
+};
 use crate::shard::ShardEngine;
+use crate::shard::seal::test_hooks::Hold;
 use crate::spill::gc::{self, Head, HeadState};
 
 /// Seal what the queue holds unsealed: one more chunk.
@@ -578,4 +586,234 @@ async fn a_purge_request_sets_a_trimmed_queues_instant_once() {
     );
     e.request_purge(HASH, 9_000).await.unwrap();
     assert_eq!(head(&e).await, Some(first), "a Requested row is kept");
+}
+
+/// A pass reads at most `trim_hints` hint rows: two seals' hints take two
+/// passes, one each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_pass_reads_at_most_its_hint_budget() {
+    let (e, _db, _c) = clocked("nq-trim-hint-budget", QueueConfig::default()).await;
+    e.gc_state().configure(|s| s.trim_hints = 1);
+    for body in ["a", "b"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    assert_eq!(hint_count(&e).await, 2);
+    for left in [1, 0] {
+        assert_eq!(e.trim_pass().await.unwrap().hints, 1);
+        assert_eq!(hint_count(&e).await, left);
+    }
+}
+
+/// A pass leaves a queue the purge owns alone: once a purge request turned
+/// its Trimming row Requested, an ack's hint releases nothing and the row
+/// stays Requested.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_pass_releases_nothing_of_a_queue_whose_purge_was_requested() {
+    let (e, _db, _c) = clocked("nq-trim-requested", QueueConfig::default()).await;
+    for body in ["a", "b", "c"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 3).await;
+    ack(&e, &leased[..1]).await;
+    e.trim_pass().await.unwrap();
+    e.request_purge(HASH, 0).await.unwrap();
+    ack(&e, &leased[1..2]).await;
+    let report = e.trim_pass().await.unwrap();
+    assert_eq!((report.hints, report.released), (1, 0));
+    assert_eq!(head(&e).await.unwrap().state, HeadState::Requested);
+    assert_eq!(chunks(&e).await[1], ((1, 1), 1), "chunk 1 keeps its count");
+}
+
+/// A pass examines the chunk at the queue's prefix and the chunks its
+/// hints name, no other: four chunks, the claim of two and the ack of the
+/// second name `[0, 2)`; the pass examines chunks 0 and 1 and releases 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_pass_examines_the_prefix_chunk_and_the_hinted_ones_only() {
+    let (e, _db, _c) = clocked("nq-trim-examined", QueueConfig::default()).await;
+    for body in ["a", "b", "c", "d"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let first = e.trim_pass().await.unwrap();
+    assert_eq!((first.examined, first.released), (4, 0), "the seals' hints");
+    let leased = claim(&e, 2).await;
+    ack(&e, &leased[1..]).await;
+    let report = e.trim_pass().await.unwrap();
+    assert_eq!((report.examined, report.released), (2, 1));
+}
+
+/// `clocked` over a fault store whose WAL writes a test can hold, the gc's
+/// own passes off: the engine, its database, the clock and the store.
+async fn clocked_on_faults(
+    name: &str,
+) -> (Arc<ShardEngine>, Arc<slatedb::Db>, i64, Arc<FaultStore>) {
+    let inner = Arc::new(object_store::memory::InMemory::new());
+    let store = FaultStore::new(inner, 0x7A1, crate::dst::FaultProfile::clean());
+    let db = crate::keyspace::db_builder(name, store.clone());
+    let db = Arc::new(db.build().await.unwrap());
+    let e = ShardEngine::start(
+        name.to_owned(),
+        db.clone(),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        None,
+        Default::default(),
+    );
+    e.gc_state().configure(|s| s.auto = false);
+    super::create(&e, QueueConfig::default()).await;
+    let c = crate::shard::now_ms() + crate::native_queue::DAY_MS;
+    super::set_clock(&db, c).await;
+    (e, db, c, store)
+}
+
+/// Park every WAL write until `release_hold`: what is written from now on
+/// is in memory, not durable.
+fn hold_the_wal(store: &FaultStore) {
+    store.hold_class(StoreOp::Put, ObjClass::Wal, 1_000);
+}
+
+/// Waits, two seconds at most, until `ready` answers true.
+async fn until<F: Future<Output = bool>>(what: &str, mut ready: impl FnMut() -> F) {
+    for _ in 0..200 {
+        if ready().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what}: not within two seconds");
+}
+
+/// Whether memory holds exactly `n` hint rows.
+async fn hints_now(e: &ShardEngine, n: usize) -> bool {
+    hint_count(e).await == n
+}
+
+/// **A pass reads only durable hints** (S3b-DESIGN §7.4): an ack whose
+/// WAL write has not landed puts a hint only memory holds; the pass reads
+/// none, so it writes nothing and waits for no WAL write. Once the WAL
+/// lands, the next pass releases the acked chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_pass_reads_no_hint_whose_wal_write_has_not_landed() {
+    let (e, _db, _c, store) = clocked_on_faults("nq-trim-durable-hints").await;
+    for body in ["a", "b"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 2).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(hint_count(&e).await, 0);
+    hold_the_wal(&store);
+    let check = async {
+        until("the ack's hint is in memory", || hints_now(&e, 1)).await;
+        let pass = tokio::time::timeout(Duration::from_secs(2), e.trim_pass()).await;
+        store.release_hold();
+        pass.expect("the pass waited for a WAL write").unwrap()
+    };
+    let ((), report) = futures_util::future::join(ack(&e, &leased[..1]), check).await;
+    assert_eq!(report, Default::default(), "nothing durable to read");
+    assert_eq!(e.trim_pass().await.unwrap().released, 1, "the WAL landed");
+}
+
+/// Whether the queue's range row 0 as memory holds it has lost `offset`'s
+/// scheduled bit (a row with no bit left is deleted).
+async fn sbit_cleared(e: &ShardEngine, offset: u64) -> bool {
+    let raw =
+        e.db.get(keys::by_offset(&HASH, keys::RANGE, 0))
+            .await
+            .unwrap();
+    !raw.is_some_and(|raw| RangeRow::decode(&raw).unwrap().sbits.contains(offset))
+}
+
+/// Park the next index batches (the gc's and the fold's) before they reach
+/// the shard log: once one parks, its writer has read all it reads.
+fn hold_index_batches(e: &ShardEngine) -> Arc<Hold> {
+    let hold = Hold::new();
+    *e.layout.seal.fold.hooks.batch_hold.lock().unwrap() = Some(hold.clone());
+    hold
+}
+
+/// Once `held`'s batch parked, let the WAL land and the batch go on.
+async fn land(store: &FaultStore, held: &Hold, what: &str) {
+    until(what, || async { held.entered.load(Ordering::Acquire) > 0 }).await;
+    store.release_hold();
+    held.release();
+}
+
+/// **A pass reads a chunk's references as they are durable**: a cancel
+/// of the scheduled message that holds a chunk, whose WAL write has not
+/// landed, clears its bit only in memory, and the pass keeps the chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_pass_keeps_a_chunk_whose_scheduled_bit_is_cleared_only_in_memory() {
+    let (e, db, c, store) = clocked_on_faults("nq-trim-durable-sbits").await;
+    let later = SendMessage {
+        deliver_at: Some(c + 3_600_000),
+        ..msg("later")
+    };
+    op(&e, send_op(vec![msg("a"), later])).await.unwrap();
+    seal(&e).await;
+    let leased = claim(&e, 2).await;
+    assert_eq!(leased.len(), 1, "0 leased, the scheduled 1 passed");
+    ack(&e, &leased).await;
+    assert_eq!(super::state(&db).await.frontier, 2);
+    hold_the_wal(&store);
+    let check = async {
+        until("the cancel cleared the bit in memory", || {
+            sbit_cleared(&e, 1)
+        })
+        .await;
+        let held = hold_index_batches(&e);
+        let release = land(&store, &held, "the pass parked its batch");
+        let (report, ()) = futures_util::future::join(e.trim_pass(), release).await;
+        report.unwrap()
+    };
+    let (cancelled, report) =
+        futures_util::future::join(op(&e, NqOp::Cancel { offsets: vec![1] }), check).await;
+    cancelled.unwrap();
+    assert_eq!(
+        (report.examined, report.released),
+        (1, 0),
+        "held by its bit"
+    );
+}
+
+/// Whether the queue's intervals as memory holds them are `want`.
+async fn intervals_now(e: &ShardEngine, want: &[Interval]) -> bool {
+    let (from, to) = intervals::key_range(&HASH);
+    let mut rows = e.db.scan(from..to).await.unwrap();
+    let mut out = Vec::new();
+    while let Some(kv) = rows.next().await.unwrap() {
+        out.push(intervals::decode(&kv.key, &kv.value).unwrap());
+    }
+    out == want
+}
+
+/// **A fold drops only what the shard log durably holds as released**:
+/// while a pass's grown interval waits for its WAL write, a fold drops the
+/// entry of the chunk released before and keeps the one that pass released
+/// (a later fold drops it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_fold_drops_no_entry_of_an_interval_whose_wal_write_has_not_landed() {
+    let (e, _db, _c, store) = clocked_on_faults("nq-trim-durable-k").await;
+    for body in ["a", "b", "c", "d"] {
+        send_sealed(&e, msg(body)).await;
+    }
+    let leased = claim(&e, 4).await;
+    ack(&e, &leased[1..2]).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(e.intervals(&HASH).await.unwrap(), [iv(1, 1)]);
+    ack(&e, &leased[2..3]).await;
+    hold_the_wal(&store);
+    let grown = [iv(1, 2)];
+    let fold = async {
+        until("the pass's interval is in memory", || {
+            intervals_now(&e, &grown)
+        })
+        .await;
+        let held = hold_index_batches(&e);
+        let release = land(&store, &held, "the fold parked its batch");
+        let (folded, ()) = futures_util::future::join(e.fold_once(), release).await;
+        folded.unwrap();
+    };
+    let (report, ()) = futures_util::future::join(e.trim_pass(), fold).await;
+    assert_eq!(report.unwrap().released, 1);
+    let spans: Vec<(u64, u64)> = chunks(&e).await.iter().map(|c| c.0).collect();
+    assert_eq!(spans, [(0, 0), (2, 2), (3, 3)], "[2, 2] kept");
 }

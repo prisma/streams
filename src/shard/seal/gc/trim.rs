@@ -24,7 +24,7 @@ use super::GcError;
 use crate::native_queue::hints::{self, HintRanges};
 use crate::native_queue::intervals::{self, Interval, Released};
 use crate::native_queue::keys;
-use crate::native_queue::range::{RangeRow, SHIFT, SPAN};
+use crate::native_queue::range::{RangeRow, index_of};
 use crate::native_queue::rows::StateRow;
 use crate::shard::ShardEngine;
 use crate::spill::directory::DirEntry;
@@ -315,9 +315,10 @@ impl ShardEngine {
         Ok(open.next().await.map_err(store)?.is_some())
     }
 
-    /// Whether an unresolved scheduled message's bit lies in `[first, last]`.
+    /// Whether an unresolved scheduled message's bit lies in `[first, last]`:
+    /// each range row is asked only for its own span's offsets.
     async fn sbits_in(&self, hash: &[u8; 16], first: u64, last: u64) -> Result<bool, GcError> {
-        for index in (first >> SHIFT)..=(last >> SHIFT) {
+        for index in index_of(first)..=index_of(last) {
             let raw = self
                 .db
                 .get_with_options(keys::by_offset(hash, keys::RANGE, index), &remote_read())
@@ -327,10 +328,7 @@ impl ShardEngine {
                 continue;
             };
             let row = RangeRow::decode(&raw).map_err(store)?;
-            let span = (index << SHIFT)..(index << SHIFT).saturating_add(SPAN);
-            let lo = first.max(span.start);
-            let hi = last.min(span.end - 1);
-            if (lo..=hi).any(|o| row.sbits.contains(o)) {
+            if (first..=last).any(|o| index_of(o) == index && row.sbits.contains(o)) {
                 return Ok(true);
             }
         }
