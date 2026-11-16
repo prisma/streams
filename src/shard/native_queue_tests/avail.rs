@@ -215,3 +215,44 @@ async fn a_claim_of_a_large_scheduled_message_leaves_its_page_to_the_page_key() 
     assert!(d[0].page.is_none());
     assert!(!delivery(&db, 0).await.inline);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_claim_sets_the_lanes_expiry_from_its_next_untaken_message() {
+    let (e, db, c) = clocked("nq-avail-lane-expiry", QueueConfig::default()).await;
+    let retention = QueueConfig::default().retention_ms;
+    op(&e, send_op(vec![msg("a")])).await.unwrap();
+    set_clock(&db, c + 1_000).await;
+    op(&e, send_op(vec![msg("b")])).await.unwrap();
+    assert_eq!(state(&db).await.lane_expire_at, c + retention);
+    let d = claim(&e, 1).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [0]);
+    let s = state(&db).await;
+    assert_eq!(
+        (s.frontier, s.lane_expire_at),
+        (1, c + 1_000 + retention),
+        "the lane next expires with the message the frontier now stands at"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_claim_at_a_due_scheduled_messages_retention_end_takes_it_into_the_gap() {
+    let (e, db, c) = clocked("nq-avail-claim-expired", QueueConfig::default()).await;
+    let retention = QueueConfig::default().retention_ms;
+    let at = c + 60_000;
+    op(&e, send_op(vec![scheduled("late", at)])).await.unwrap();
+    let page = super::stored(&db, 0).await;
+    assert_eq!(state(&db).await.inline_bytes, page, "the page rides inline");
+    set_clock(&db, at + retention).await;
+    assert!(
+        claim(&e, 1).await.is_empty(),
+        "an expired message is not leased"
+    );
+    let s = state(&db).await;
+    let counts = (s.gap_count, s.counters.expired, s.scheduled, s.inline_bytes);
+    assert_eq!(counts, (1, 1, 0, 0));
+    assert_eq!((s.queued_messages, s.queued_bytes), (0, 0));
+    let entry = db.get(keys::by_time(&HASH, keys::AVAIL, at, 0)).await;
+    assert!(entry.unwrap().is_none(), "its scheduled entry is gone");
+    let by_offset = db.get(keys::by_offset(&HASH, keys::SCHEDULED_AT, 0)).await;
+    assert!(by_offset.unwrap().is_none(), "its by-offset row is gone");
+}

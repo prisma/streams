@@ -439,3 +439,23 @@ async fn a_retry_scheduled_later_is_not_claimed_before_its_time_nor_failed_by_a_
     assert_eq!((s.retrying, s.failed), (1, 0));
     assert_eq!(claim(&e, 1).await[0].attempt, 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_claim_leaves_a_due_retry_that_would_pass_its_byte_limit() {
+    let (e, db, c) = clocked("nq-claim-retry-past-limit", QueueConfig::default()).await;
+    let body = |n: usize| msg(&"x".repeat(n));
+    op(&e, send_op(vec![body(100), body(100)])).await.unwrap();
+    let limit = stored(&db, 0).await + stored(&db, 1).await - 1;
+    let d = claim(&e, 2).await;
+    let now = SettleKind::Retry { delay_ms: Some(0) };
+    let items = d.iter().map(|v| (v.offset, v.lease_gen, now)).collect();
+    op(&e, settle(items)).await.unwrap();
+    assert_eq!(
+        claim_within(&e, limit).await,
+        vec![0],
+        "the second retry would pass the limit"
+    );
+    let s = state(&db).await;
+    assert_eq!((s.leased, s.retrying, s.floors.retries), (1, 1, c));
+    assert_eq!(claim_within(&e, limit).await, vec![1]);
+}
