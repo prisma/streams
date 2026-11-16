@@ -124,12 +124,14 @@ fn the_saving_scaled_rule_is_clean_pays_at_a_month() {
             );
         }
     }
-    let day = MONTH_MS / 30;
+    // Days in milliseconds, not fractions of `MONTH_MS`: they pin the month
+    // at thirty days.
+    let day: u64 = 86_400_000;
     assert!(clean_pays_over(560 * KB, 4 * KB, 1, MONTH_MS));
     assert!(!clean_pays_over(560 * KB, 4 * KB, 1, day), "a day");
     assert!(!clean_pays_over(560 * KB, 4 * KB, 1, 0), "no saving");
     assert!(!clean_pays_over(u64::MAX, 0, 1, day), "too large to scale");
-    let half = MONTH_MS / 2;
+    let half = 15 * day;
     assert!(!clean_pays_over(12_579_233, 4_190_625, 68, half), "a tie");
     assert!(
         clean_pays_over(12_579_234, 4_190_625, 68, half),
@@ -137,6 +139,10 @@ fn the_saving_scaled_rule_is_clean_pays_at_a_month() {
     );
     assert!(!clean_pays_over(10 * MB, 0, 0, half), "no live chunk");
     assert!(!clean_pays_over(100 * MB, 50 * MB, 1, half), "half live");
+    assert!(
+        !clean_pays_over(100 * MB, 50 * MB, 1, MONTH_MS - 1),
+        "half live: its dead half would pay over a month less a millisecond"
+    );
 }
 
 fn row(object_len: u64, live_bytes: u64) -> Refcount {

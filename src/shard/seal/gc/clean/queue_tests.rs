@@ -401,11 +401,16 @@ async fn an_object_with_a_free_queue_chunk_waits_for_the_trim() {
 }
 
 /// One object of the neighbour's ~1 MB, kept by one leased message of a
-/// queue of `cfg`, under the production rule: the pass's report.
-async fn held_alone(label: &str, cfg: QueueConfig) -> CleanReport {
+/// queue of `cfg` (and, `with_ledger`, by a ledger's live chunk), under the
+/// production rule: the pass's report.
+async fn held(label: &str, cfg: QueueConfig, with_ledger: bool) -> CleanReport {
     let (_rig, e) = rig(label, cfg).await;
     e.gc_state()
         .configure(|s| s.clean_pays = super::clean_pays_over);
+    if with_ledger {
+        let oracle = Mutex::new(Oracle::new());
+        append_recorded(&e, &oracle, LEDGER, vec![Bytes::from(vec![1; 32])]).await;
+    }
     op(&e, QUEUE, send(1, 16)).await;
     op(&e, NEIGHBOUR, send(16, 64_000)).await;
     seal(&e).await;
@@ -422,15 +427,35 @@ async fn held_alone(label: &str, cfg: QueueConfig) -> CleanReport {
 /// two hours (a queue of one hour each), under the production prices.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_queue_chunk_held_for_hours_does_not_pay_a_copy() {
-    let far = held_alone("clean-q-far", QueueConfig::default()).await;
+    let far = held("clean-q-far", QueueConfig::default(), false).await;
     assert_eq!((far.released, far.copied_chunks), (1, 1), "{far:?}");
+    let near = held("clean-q-near", hours(), false).await;
+    assert_eq!(near, CleanReport::default(), "two hours do not pay");
+}
+
+/// A queue whose messages are held for an hour each.
+fn hours() -> QueueConfig {
     let hour = crate::native_queue::HOUR_MS;
-    let short = QueueConfig {
+    QueueConfig {
         retention_ms: hour,
         failure_retention_ms: hour,
         dedup_window_ms: hour,
         ..QueueConfig::default()
+    }
+}
+
+/// **T6, beside an ordinary chunk: the saving counts a month.** The object
+/// that does not pay over its queue chunk's two hours, with a ledger's live
+/// chunk beside the queue's: the ledger's chunk holds the object for good,
+/// so its dead bytes save for a month and the copy pays, both chunks
+/// moved. Control: the saving taken from the queue chunk alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_ordinary_chunk_beside_a_held_queue_chunk_saves_for_a_month() {
+    let report = held("clean-q-mixed", hours(), true).await;
+    let want = CleanReport {
+        released: 1,
+        copied_chunks: 2,
+        abandoned: false,
     };
-    let near = held_alone("clean-q-near", short).await;
-    assert_eq!(near, CleanReport::default(), "two hours do not pay");
+    assert_eq!(report, want);
 }
