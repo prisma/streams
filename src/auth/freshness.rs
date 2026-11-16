@@ -58,6 +58,21 @@ impl AuthService {
         }
         Ok(())
     }
+
+    /// The feeds that have not published a first snapshot, in the order `/readyz` names them
+    /// (review item 6). No clock is involved: a feed stays unpublished until a snapshot
+    /// stamps `fetched_at_unix`.
+    pub(crate) fn unpublished_feeds(&self) -> Vec<&'static str> {
+        [
+            ("jwks", self.jwks.load().fetched_at_unix),
+            ("policies", self.projects.load().fetched_at_unix),
+            ("grants", self.credentials.load().fetched_at_unix),
+        ]
+        .into_iter()
+        .filter(|(_, fetched_at_unix)| *fetched_at_unix == 0)
+        .map(|(feed, _)| feed)
+        .collect()
+    }
 }
 
 #[cfg(test)]

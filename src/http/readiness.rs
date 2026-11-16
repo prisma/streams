@@ -23,16 +23,7 @@ pub(super) async fn health_axum(State(state): State<Arc<AppState>>) -> Response 
     // traffic to a cell that would fail-closed (or shadow-count
     // nothing but noise) helps nobody.
     if state.auth.mode != crate::auth::AuthMode::Off {
-        let feeds = state.auth.feed_json(crate::shard::now_ms() / 1000);
-        let unpublished = [
-            ("jwks", &feeds["jwks"]["ageSecs"]),
-            ("policies", &feeds["policies"]["ageSecs"]),
-            ("grants", &feeds["grants"]["ageSecs"]),
-        ]
-        .iter()
-        .filter(|(_, age)| age.is_null())
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>();
+        let unpublished = state.auth.unpublished_feeds();
         if !unpublished.is_empty() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
