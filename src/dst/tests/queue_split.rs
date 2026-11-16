@@ -397,3 +397,158 @@ async fn a_split_counts_no_chunk_a_trim_released_into_an_interval() {
     }
     engine_shutdown(&cell.state).await;
 }
+
+/// The first `n` queues created that land in the leaf `00`: each one's name
+/// and hash.
+async fn queues_in_00(cell: &Cell, n: usize) -> Vec<(String, [u8; 16])> {
+    let mut out = Vec::new();
+    for i in 0..800 {
+        let name = format!("qc-{i}");
+        let (st, v) = q(cell.addr, "PUT", &format!("/v1/queues/{name}"), Value::Null).await;
+        assert_eq!(st, 201, "{v}");
+        let sref = crate::tenant::ProjectId::new("proj-test")
+            .unwrap()
+            .stream_ref(&name);
+        let desc = cell.state.registry.get(&sref).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        if cell.state.shards.prefix_for(&seg.shard_route) == "00" {
+            out.push((name, seg.identity));
+            if out.len() == n {
+                return out;
+            }
+        }
+    }
+    panic!("not {n} queues in 00");
+}
+
+/// A test rule: anything less than half live, at any saving.
+fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64, _saving_ms: u64) -> bool {
+    live_chunks > 0 && 2 * live_bytes < object_len
+}
+
+/// Each object's `'O'` row (the chunks a copy superseded), for `ids`.
+async fn orphans(e: &crate::shard::ShardEngine, ids: &[ObjectId]) -> BTreeMap<ObjectId, u64> {
+    let mut out = BTreeMap::new();
+    for id in ids {
+        let raw =
+            e.db.get(crate::spill::runindex::orphan_key(*id))
+                .await
+                .unwrap();
+        if let Some(o) = raw
+            .as_deref()
+            .and_then(crate::spill::runindex::decode_orphans)
+        {
+            out.insert(*id, o.chunks);
+        }
+    }
+    out
+}
+
+/// **A cleaner's copy of a queue chunk survives a trim, a fold, a split and
+/// a merge with every count exact** (S3b-DESIGN §7.4; the cleaner ruling of
+/// 2026-11-16, T8). In `00`, the kept queue's first message is acked and
+/// trimmed (its queue is Trimming); its next four share a seal object with
+/// a dying queue's large messages; the dying queue is purged and the
+/// cleaner copies the four's chunk, the old object reaching zero. A claim
+/// then serves the four from the copy, bodies and first attempts exact;
+/// acked, the trim gives the copy back and its object reaches zero. After a
+/// fold, `00` splits: each object's count is the parent's summed over the
+/// children, and the copy's `'O'` row goes whole to one child. The halves
+/// merge back and the queue holds nothing: each message was delivered once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_cleaners_copy_of_a_queue_chunk_keeps_every_count_through_a_split_and_a_merge() {
+    let cell = super::split_k::cold_cell().await;
+    let p = cell.parent.clone();
+    p.gc_state().configure(|s| {
+        s.auto = false;
+        s.purge_delay = Duration::ZERO;
+        s.clean_pays = half_dead;
+    });
+    let queues = queues_in_00(&cell, 2).await;
+    let ((name, hash), (dying, dhash)) = (queues[0].clone(), queues[1].clone());
+    send(&cell, &name, 0..1).await;
+    p.seal_requested().await.expect("seal");
+    let first = claim(&cell, &name, 1).await;
+    assert_eq!(
+        ack(&cell, &name, &[first[0].2.clone()]).await,
+        [json!("ok")]
+    );
+    assert_eq!(p.trim_pass().await.unwrap().released, 1, "m0's chunk");
+    send(&cell, &name, 1..5).await;
+    for seed in 0..3 {
+        let text = super::fixture_storage::noise_text(30 * 1024, seed);
+        let path = format!("/v1/queues/{dying}/messages");
+        let (st, v) = q(cell.addr, "POST", &path, json!({ "body": text })).await;
+        assert_eq!(st, 201, "{v}");
+    }
+    p.seal_requested().await.expect("seal");
+    let four = |e: Vec<crate::spill::directory::DirEntry>| {
+        let c = e.into_iter().find(|c| (c.first, c.last) == (1, 4));
+        c.expect("the four's chunk").object
+    };
+    let old = four(p.live_chunks(hash).await.unwrap());
+    p.submit_native_queue(dhash, crate::native_queue::NqOp::BeginDelete)
+        .await
+        .unwrap();
+    while !matches!(
+        p.submit_native_queue(
+            dhash,
+            crate::native_queue::NqOp::DeleteStep { max_rows: 64 }
+        )
+        .await
+        .unwrap(),
+        crate::native_queue::NqOut::DeleteStepped { remaining: false }
+    ) {}
+    p.request_purge(dhash, 0).await.unwrap();
+    p.purge_stream_at(dhash, u64::MAX).await.unwrap();
+    let report = p.clean_pass().await.unwrap();
+    assert_eq!(
+        (report.released, report.copied_chunks),
+        (1, 1),
+        "{report:?}"
+    );
+    assert_eq!(counts(&p).await.get(&old).copied().unwrap_or(0), 0);
+    let copy = four(p.live_chunks(hash).await.unwrap());
+    assert_ne!(copy, old);
+    let taken = claim(&cell, &name, 10).await;
+    let got: Vec<(Value, Value)> = taken.iter().map(|t| (t.0.clone(), t.1.clone())).collect();
+    let want: Vec<(Value, Value)> = (1..5).map(|n| (json!(n), json!(1))).collect();
+    assert_eq!(got, want, "served from the copy, first attempts");
+    let tokens: Vec<Value> = taken.iter().map(|t| t.2.clone()).collect();
+    assert_eq!(ack(&cell, &name, &tokens).await, vec![json!("ok"); 4]);
+    assert_eq!(p.trim_pass().await.unwrap().released, 1, "the copy's chunk");
+    assert_eq!(counts(&p).await.get(&copy).copied().unwrap_or(0), 0);
+    p.fold_once().await.expect("fold");
+    let before = counts(&p).await;
+    let ids: Vec<ObjectId> = before.keys().copied().chain([copy]).collect();
+    let before_o = orphans(&p, &ids).await;
+    super::merge_k::split_00(&cell.state, &p).await;
+    let halves = super::merge_k::halves_of_00(&cell.state).await;
+    let mut summed: BTreeMap<ObjectId, u64> = BTreeMap::new();
+    let mut summed_o: BTreeMap<ObjectId, u64> = BTreeMap::new();
+    for child in &halves {
+        for (id, n) in counts(child).await {
+            *summed.entry(id).or_default() += n;
+        }
+        for (id, n) in orphans(child, &ids).await {
+            *summed_o.entry(id).or_default() += n;
+        }
+    }
+    assert_eq!(summed, before, "'R' summed over the children");
+    assert_eq!(summed_o, before_o, "'O' whole in one child");
+    let clock = cell.state.runtime.clock.clone();
+    let merged = crate::topology::merge::merge(
+        &cell.state.shards,
+        [&halves[0], &halves[1]],
+        "op-qc",
+        "inst-a",
+        &*clock,
+    )
+    .await
+    .expect("the merge publishes");
+    assert!(merged.merged.2.is_some(), "the merged leaf opened");
+    assert!(claim(&cell, &name, 10).await.is_empty(), "nothing left");
+    let (st, v) = q(cell.addr, "GET", &format!("/v1/queues/{name}"), Value::Null).await;
+    assert_eq!((st, &v["stats"]["queuedMessages"]), (200, &json!(0)), "{v}");
+    engine_shutdown(&cell.state).await;
+}

@@ -49,6 +49,46 @@ async fn queue_engine(state: &State, name: &str) -> (Engine, [u8; 16]) {
     (engine, seg.identity)
 }
 
+/// A test cleaner rule: anything less than half live, at any saving.
+fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64, _saving_ms: u64) -> bool {
+    live_chunks > 0 && 2 * live_bytes < object_len
+}
+
+/// The end of every DST here (the cleaner ruling of 2026-11-16): a cleaner
+/// pass runs, then every stored `'R'` row equals its object's chunks of the
+/// queue the index still counts (its live entries less what its `'H'` row and
+/// released intervals give back, the split's recount), and no decrement was
+/// refused as inexact.
+async fn cleaned_and_exact(engine: &Engine, hash: [u8; 16]) {
+    engine.gc_state().configure(|s| {
+        s.purge_delay = Duration::ZERO;
+        s.clean_pays = half_dead;
+    });
+    engine.clean_pass().await.expect("a cleaner pass");
+    let reclaimed = engine
+        .head_row(&hash)
+        .await
+        .unwrap()
+        .map_or(0, |h| h.reclaimed);
+    let trimmed = engine.intervals(&hash).await.unwrap();
+    let released = crate::native_queue::intervals::Released::new(reclaimed, &trimmed);
+    let mut expected = std::collections::BTreeMap::new();
+    for c in engine.live_chunks(hash).await.unwrap() {
+        if !released.holds(c.first, c.last) {
+            *expected.entry(c.object).or_insert(0u64) += 1;
+        }
+    }
+    let stored: std::collections::BTreeMap<_, _> = engine
+        .refcount_rows()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(id, r)| Some((id, r?.live_chunks)).filter(|(_, n)| *n > 0))
+        .collect();
+    assert_eq!(stored, expected, "every 'R' row as the index counts it");
+    assert_eq!(engine.gc_inexact(), 0);
+}
+
 /// Create `name` and send `n` messages `{"n": i}` of `pad` bytes each, in
 /// batches of 100.
 async fn filled(addr: Addr, name: &str, n: u32, pad: usize) {
@@ -152,13 +192,13 @@ async fn a_large_acked_backlog_is_given_back_to_its_last_object() {
         objects.len() as u64,
         "exactly its objects deleted"
     );
+    cleaned_and_exact(&engine, hash).await;
     engine_shutdown(&state).await;
 }
 
 /// **DST 2: the first message failed, the rest acked** (§4.4): exactly one
 /// chunk stays pinned, the failed message's, and every other is given back.
-/// (The cleaner copying it out when the queue rule pays comes with part 2
-/// step 4, package 6's cleaner change.)
+/// The cleaner then copies nothing: the failed chunk is alone in its object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_failed_first_message_pins_exactly_its_own_chunk() {
     let (state, addr) = http_rig(mem()).await;
@@ -202,6 +242,7 @@ async fn a_failed_first_message_pins_exactly_its_own_chunk() {
         .map(|c| counted.get(&c.object).copied().unwrap_or(0))
         .collect();
     assert_eq!(live, [1, 0, 0, 0], "exactly one chunk pinned");
+    cleaned_and_exact(&engine, hash).await;
     engine_shutdown(&state).await;
 }
 
@@ -269,6 +310,7 @@ async fn one_unreadable_message_among_a_thousand_sealed_fails_alone() {
         (&json!(1), &json!(0)),
         "{v}"
     );
+    cleaned_and_exact(&engine, hash).await;
     engine_shutdown(&state).await;
 }
 
@@ -281,7 +323,7 @@ async fn one_unreadable_message_among_a_thousand_sealed_fails_alone() {
 async fn a_thousand_parked_claims_reserve_zero_bytes() {
     let (state, addr) = http_rig(mem()).await;
     filled(addr, "idle", 100, 64).await;
-    let (engine, _) = queue_engine(&state, "idle").await;
+    let (engine, hash) = queue_engine(&state, "idle").await;
     engine.seal_requested().await.expect("seal");
     let leased = claim(addr, "idle", 100).await;
     let tokens: Vec<Value> = leased.into_iter().map(|l| l.1).collect();
@@ -311,5 +353,6 @@ async fn a_thousand_parked_claims_reserve_zero_bytes() {
         answers.iter().all(|a| *a == (200, Some(0))),
         "each answers empty"
     );
+    cleaned_and_exact(&engine, hash).await;
     engine_shutdown(&state).await;
 }
