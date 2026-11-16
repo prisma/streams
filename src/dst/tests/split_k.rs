@@ -370,7 +370,8 @@ async fn the_preparing_fold_leaves_the_children_no_parent_k_rows() {
 }
 
 /// The split's pause, its barrier's park to its release to the children, with every store request
-/// taking `ms`: printed in milliseconds and round trips, and held to the 2 s hold
+/// taking `ms`, on a parent with forty run-index objects: printed in milliseconds and round trips,
+/// and held to the 2 s hold
 /// (`shard::transaction::barrier::HOLD`). Timing-sensitive: its figures are quoted only from a run
 /// under the machine's lock.
 async fn pause_at(ms: u64) {
@@ -382,8 +383,22 @@ async fn pause_at(ms: u64) {
         ..FaultPlan::CLEAN
     };
     let store: Arc<dyn object_store::ObjectStore> = FaultStore::uniform(mem(), 0x5411, plan);
-    let Cell { state, parent, .. } = cell_over(store).await;
+    let Cell {
+        state,
+        addr,
+        low,
+        parent,
+        ..
+    } = cell_over(store).await;
     parent.seal_requested().await.expect("seal");
+    // A parent with history (meas149-reshaping F1c): forty run-index objects, which the pause
+    // reads none of. Collection off, as Preparing sets it: no merge joins them.
+    parent.gc_state().gate.set_collection_off(true);
+    for n in 0..40 {
+        assert_eq!(append(addr, &low, 100 + n).await.0, 204, "append {n}");
+        parent.seal_requested().await.expect("seal");
+        parent.fold_once().await.expect("fold");
+    }
     let clock = state.runtime.clock.clone();
     let published =
         crate::topology::split::split(&state.shards, &parent, "op-pause", "inst-a", &*clock)
@@ -412,6 +427,80 @@ async fn the_pause_on_a_store_ten_ms_away_stays_within_the_hold() {
 #[ignore = "a timing measurement, run under the machine's lock"]
 async fn the_pause_on_a_store_twenty_five_ms_away_stays_within_the_hold() {
     pause_at(25).await;
+}
+
+/// The store requests of a split of a cold cell whose parent holds `runs` run-index objects, from
+/// the barrier's park to the publish's topology CAS, less those of the shard logs' own machinery:
+/// how many, and how many read a run-index object.
+async fn pause_requests(runs: u32) -> (usize, usize) {
+    use crate::dst::StoreOp;
+    use crate::dst::trace_store::{TraceEventKind, TraceStore};
+    let trace = TraceStore::verbatim(mem());
+    let cell = super::fixture_split::cold_cell_over(trace.clone()).await;
+    // Collection off, as the split's Preparing sets it: no run-index merge joins the folds' objects.
+    cell.parent.gc_state().gate.set_collection_off(true);
+    for n in 0..runs {
+        assert_eq!(
+            append(cell.addr, &cell.low, 100 + n).await.0,
+            204,
+            "append {n}"
+        );
+        cell.parent.seal_requested().await.expect("seal");
+        cell.parent.fold_once().await.expect("fold");
+    }
+    let pointers = tagged(&cell.parent, crate::keyspace::tag::POINTER).await;
+    assert_eq!(
+        pointers.len(),
+        runs as usize,
+        "one run-index object per fold"
+    );
+    let parked_at = std::sync::atomic::AtomicU64::new(0);
+    let at_park = async {
+        let last = trace.events().last().map_or(0, |event| event.seq);
+        parked_at.store(last, std::sync::atomic::Ordering::Relaxed);
+    };
+    let published = split_paused_while(&cell, "op-runs", at_park).await;
+    assert!(published.is_ok(), "the split publishes");
+    let parked_at = parked_at.load(std::sync::atomic::Ordering::Relaxed);
+    let events = trace.events();
+    let paused = events.iter().filter(|event| event.seq > parked_at);
+    let cas = paused
+        .clone()
+        .find(|event| event.op == StoreOp::Put && event.path.ends_with("topology.json"))
+        .map(|event| event.seq)
+        .expect("the publish's topology CAS");
+    // The split's own requests: not those of any shard log's own machinery (its manifest, its
+    // SSTs, its compactor, its gc and its WAL), whose count follows the window's length.
+    let log_machinery = |path: &str| {
+        let part = path.split('/').nth(2).unwrap_or_default();
+        ["manifest", "compacted", "compactions", "gc", "wal"].contains(&part)
+    };
+    let window: Vec<_> = paused
+        .filter(|event| event.seq < cas && event.kind == TraceEventKind::Operation)
+        .filter(|event| !log_machinery(&event.path))
+        .collect();
+    let run_reads = window
+        .iter()
+        .filter(|event| event.op == StoreOp::Get && event.path.contains("/ridx/"))
+        .count();
+    engine_shutdown(&cell.state).await;
+    (window.len(), run_reads)
+}
+
+/// **The pause reads no run-index object Preparing read** (GATE-DECISION-meas149-reshaping F1c,
+/// S4-DESIGN §9.2). A parent with one run-index object and one with forty, each from a fold of its
+/// own seal: from the barrier's park to the topology CAS, the split makes as many store requests of
+/// its own for forty as for one (a shard log's own manifest, SST, compaction, gc and WAL requests
+/// follow the window's length and are not counted), and none of them reads a run-index object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_pause_reads_no_run_index_object_preparing_read() {
+    let one = pause_requests(1).await;
+    let forty = pause_requests(40).await;
+    assert_eq!((one.1, forty.1), (0, 0), "run-index reads in the pause");
+    assert_eq!(
+        forty.0, one.0,
+        "the pause's requests grow with the parent's runs"
+    );
 }
 
 /// The split of `cell`'s parent as `op_id`, paused at its park while `at_park` runs.

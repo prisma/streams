@@ -6,8 +6,8 @@
 //! - [`key_bounds`]: a child's range of keys in the log, which its clone projects.
 //! - [`seed_rows`]: what a child is seeded with: its routed rows, its recomputed `'R'` and `'O'` rows
 //!   and a fresh `'Y'` naming its home.
-//! - [`run_entries`]: the parent's run-index entries (one GET per object its `'I'` rows name), which
-//!   the children's counts include.
+//! - [`run_entries`]: the parent's run-index entries (one GET per object its `'I'` rows name, of
+//!   those a plan has not read yet), which the children's counts include.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -26,6 +26,7 @@ use crate::keyspace::{SENTINEL, tag};
 use crate::shard::ShardEngine;
 use crate::shard_directory::{Adoption, RetirementReason, ShardDirectory};
 use crate::spill::directory::DirEntry;
+use crate::spill::object::ObjectId;
 use crate::spill::{gc, lineage, runindex};
 
 /// The pause's quiesce deadline: the gate exclusive within it, or the split rolls back.
@@ -75,38 +76,78 @@ pub(crate) fn seed_rows(routed: &[Row], counts: &Counts, home: u32) -> Vec<Row> 
     seed.into_iter().collect()
 }
 
-/// The `(hash, entry)` pairs of the run-index objects the source's `'I'` rows name, each object read
-/// whole from `root_of(its home)` and checked against its pointer row.
+/// The run-index objects a plan read, by id, each as its `(hash, entry)` pairs. A run-index object
+/// is immutable, so the pause reuses what Preparing read and reads only the objects new since
+/// (S4-DESIGN §9.2: the pause's delta and checks cost no store read of what Preparing read).
+pub(crate) type Runs = BTreeMap<ObjectId, Vec<([u8; 16], DirEntry)>>;
+
+/// At most this many run-index objects are read at once.
+const RUN_READS: usize = 16;
+
+/// The `(hash, entry)` pairs of the run-index objects the source's `'I'` rows name, by object: those
+/// `known` holds as they are, every other one read whole from `root_of(its home)` and checked
+/// against its pointer row, at most [`RUN_READS`] at once.
 pub(crate) async fn run_entries(
     store: &dyn ObjectStore,
     root_of: impl Fn(u32) -> String,
     rows: &[Row],
-) -> Result<Vec<([u8; 16], DirEntry)>, String> {
-    let mut out = Vec::new();
+    known: &Runs,
+) -> Result<Runs, String> {
+    use futures_util::StreamExt;
+    let mut out = Runs::new();
+    let mut unread = Vec::new();
     for (key, value) in rows {
         if key.get(SENTINEL.len()) != Some(&tag::POINTER) {
             continue;
         }
         let id = runindex::parse_sentinel_key(tag::POINTER, key)
             .ok_or_else(|| "a corrupt 'I' key".to_string())?;
+        if let Some(entries) = known.get(&id) {
+            out.insert(id, entries.clone());
+            continue;
+        }
         let pointer = runindex::decode_pointer(id, value)
             .ok_or_else(|| format!("a corrupt 'I' row of {id:?}"))?;
-        let path = runindex::run_index_path(&root_of(id.home), id);
-        let got = store
-            .get(&object_store::path::Path::from(path.as_str()))
+        unread.push((
+            id,
+            runindex::run_index_path(&root_of(id.home), id),
+            pointer.len,
+        ));
+    }
+    let reads = futures_util::stream::iter(unread).map(|(id, path, len)| async move {
+        read_run(store, &path, len)
             .await
-            .map_err(|e| format!("{path}: {e}"))?;
-        let body = got.bytes().await.map_err(|e| format!("{path}: {e}"))?;
-        if body.len() as u64 != pointer.len {
-            return Err(format!("{path}: length differs from its 'I' row"));
-        }
-        let (_, runs) = runindex::whole::decode_object(&body)
-            .ok_or_else(|| format!("{path}: does not decode"))?;
-        for (footer, entries) in runs {
-            out.extend(entries.into_iter().map(|e| (footer.hash, e)));
-        }
+            .map(|entries| (id, entries))
+    });
+    let mut reads = reads.buffer_unordered(RUN_READS);
+    while let Some(read) = reads.next().await {
+        let (id, entries) = read?;
+        out.insert(id, entries);
     }
     Ok(out)
+}
+
+/// The `(hash, entry)` pairs of the run-index object at `path`, read whole and checked to be `len`
+/// bytes long.
+async fn read_run(
+    store: &dyn ObjectStore,
+    path: &str,
+    len: u64,
+) -> Result<Vec<([u8; 16], DirEntry)>, String> {
+    let got = store
+        .get(&object_store::path::Path::from(path))
+        .await
+        .map_err(|e| format!("{path}: {e}"))?;
+    let body = got.bytes().await.map_err(|e| format!("{path}: {e}"))?;
+    if body.len() as u64 != len {
+        return Err(format!("{path}: length differs from its 'I' row"));
+    }
+    let (_, runs) =
+        runindex::whole::decode_object(&body).ok_or_else(|| format!("{path}: does not decode"))?;
+    let pairs = runs
+        .into_iter()
+        .flat_map(|(footer, entries)| entries.into_iter().map(move |e| (footer.hash, e)));
+    Ok(pairs.collect())
 }
 
 /// Why a split did not happen (the route's refusal codes, S4-DESIGN §6.2 step 0.1).
@@ -474,12 +515,12 @@ async fn begin(
 /// Preparing (S4-DESIGN §6.2 steps 0.3 to 0.5), unpaused: the parent folds what it can, its
 /// collection stands down and the touched-queue mark starts; the plan is made from its sentinel,
 /// its sums are checked (a refusal here rolls back before the gate and the barrier park anything),
-/// and its lists are PUT.
+/// and its lists are PUT. What it PUT, and the run-index objects it read for the pause to reuse.
 async fn prepare(
     store: &dyn ObjectStore,
     parent: &Arc<ShardEngine>,
     children: &[Child],
-) -> Result<Vec<Lists>, String> {
+) -> Result<Prepared, String> {
     fold_ahead(
         || async { parent.fold_once().await.is_ok_and(|report| report.more) },
         PREPARING_FOLDS,
@@ -488,7 +529,8 @@ async fn prepare(
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
     gate.start_marking();
-    let (rows, released) = log_reads(parent).await?;
+    let log = log_reads(parent).await?;
+    let rows = &log.rows;
     // Tests only: a point after Preparing read the parent's log.
     #[cfg(test)]
     if let Some(point) = gate.take_after_reads()
@@ -496,15 +538,23 @@ async fn prepare(
     {
         drop(point.go.await);
     }
-    let plan = plan(store, parent, children, &rows, &released).await?;
-    check_sums(&rows, &plan)?;
+    let none = Runs::new();
+    let (plan, runs) = plan(store, parent, children, &log, &none).await?;
+    check_sums(rows, &plan)?;
     let mut put = Vec::with_capacity(children.len());
     for (child, (_, counts)) in children.iter().zip(&plan) {
-        let lists = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
+        let lists = sentinel::child_lists(rows, counts).map_err(|e| e.to_string())?;
         put_lists(store, parent, child, &lists, lineage::reference_list_path).await?;
         put.push(lists);
     }
-    Ok(put)
+    Ok(Prepared { lists: put, runs })
+}
+
+/// What Preparing leaves the pause: each child's lists as it PUT them, and the run-index objects
+/// it read.
+struct Prepared {
+    lists: Vec<Lists>,
+    runs: Runs,
 }
 
 /// Preparing's fold ahead (S4-DESIGN §6.2 step 0.3): `fold` runs while it answers that rows are
@@ -540,9 +590,9 @@ async fn drained(queued: impl Fn() -> usize, within: Duration) {
 }
 
 /// Quiesced (S4-DESIGN §6.2 steps 1.3 to 2.5): the WAL flushed and a checkpoint of everything, the
-/// plan made again from the quiesced sentinel and its sums checked, then each child cloned from the
-/// checkpoint into its range and seeded.
-async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), String> {
+/// plan made again from the quiesced sentinel (reading only the run-index objects Preparing did not)
+/// and its sums checked, then each child cloned from the checkpoint into its range and seeded.
+async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(), String> {
     let (store, parent, children, op_id) = (op.store, op.parent, op.children, op.op_id);
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
     let options = CheckpointOptions {
@@ -555,11 +605,12 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
         .create_checkpoint(CheckpointScope::All, &options)
         .await
         .map_err(|e| format!("checkpoint: {e}"))?;
-    let (rows, released) = log_reads(parent).await?;
-    let plan = plan(store, parent, children, &rows, &released).await?;
-    check_sums(&rows, &plan)?;
-    for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(prepared) {
-        let now = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
+    let log = log_reads(parent).await?;
+    let rows = &log.rows;
+    let (plan, _) = plan(store, parent, children, &log, &prepared.runs).await?;
+    check_sums(rows, &plan)?;
+    for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(&prepared.lists) {
+        let now = sentinel::child_lists(rows, counts).map_err(|e| e.to_string())?;
         let (first, more) = pause_lists(put, supplements(put, &now));
         put_lists(store, parent, child, &first, lineage::reference_list_path).await?;
         put_lists(
@@ -590,25 +641,27 @@ fn check_sums(rows: &[Row], plan: &[(Vec<Row>, Counts)]) -> Result<(), String> {
     sentinel::check_sums(rows, &counts).map_err(|e| e.to_string())
 }
 
-/// Each child's routed rows and counts from the parent's sentinel `rows` and the `released`
-/// entries, both read at one sequence (`log_reads`); the plan reads nothing more from the log.
+/// Each child's routed rows and counts from what `log_reads` read of the parent's log, with the run-index objects `known` holds
+/// reused (`run_entries`); and the run-index objects it used. It reads nothing more from the log.
 async fn plan(
     store: &dyn ObjectStore,
     parent: &ShardEngine,
     children: &[Child],
-    rows: &[Row],
-    released: &sentinel::Released,
-) -> Result<Vec<(Vec<Row>, Counts)>, String> {
+    log: &LogReads,
+    known: &Runs,
+) -> Result<(Vec<(Vec<Row>, Counts)>, Runs), String> {
+    let rows = &log.rows;
     let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
     let routed = sentinel::route(rows, &ranges).map_err(|e| e.to_string())?;
-    let run = run_entries(store, |home| parent.object_root(home), rows).await?;
+    let runs = run_entries(store, |home| parent.object_root(home), rows, known).await?;
+    let run: Vec<([u8; 16], DirEntry)> = runs.values().flatten().cloned().collect();
     let mut out = Vec::with_capacity(children.len());
     for (routed, range) in routed.into_iter().zip(ranges) {
         let counts =
-            sentinel::child_counts(rows, &run, range, released).map_err(|e| e.to_string())?;
+            sentinel::child_counts(rows, &run, range, &log.released).map_err(|e| e.to_string())?;
         out.push((routed, counts));
     }
-    Ok(out)
+    Ok((out, runs))
 }
 
 /// What a plan reads from the parent's log: its sentinel rows, and the entries they and its queues'
@@ -618,7 +671,7 @@ async fn plan(
 /// fact (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote` here: its cap is recomputed per
 /// read, so two reads could see different batches. The snapshot is dropped on return, before the
 /// run-index GETs: it holds the log's compaction back while it lives.
-async fn log_reads(parent: &ShardEngine) -> Result<(Vec<Row>, sentinel::Released), String> {
+async fn log_reads(parent: &ShardEngine) -> Result<LogReads, String> {
     let snapshot = parent.db.snapshot().map_err(|e| format!("snapshot: {e}"))?;
     let mut scan = snapshot
         .scan_prefix(&SENTINEL[..], ..)
@@ -637,7 +690,15 @@ async fn log_reads(parent: &ShardEngine) -> Result<(Vec<Row>, sentinel::Released
         let intervals = crate::shard::seal::gc::trim::intervals_at(&snapshot, &hash).await?;
         released.add_intervals(hash, &intervals);
     }
-    Ok((rows, released))
+    Ok(LogReads { rows, released })
+}
+
+/// What a plan read of the parent's log, at one sequence (`log_reads`).
+struct LogReads {
+    /// Its sentinel rows.
+    rows: Vec<Row>,
+    /// The entries those rows and its queues' `'k'` rows release.
+    released: sentinel::Released,
 }
 
 /// A child's lists: per ancestor home, the objects of that home it holds (`sentinel::child_lists`).
