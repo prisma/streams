@@ -9,7 +9,8 @@
 use super::{HASH, claim, clocked, edit_state, msg, op, send_op, set_clock, settle, state};
 use crate::native_queue::rows::decode_scheduled;
 use crate::native_queue::{
-    NqOut, NqRefusal, QueueConfig, SCHEDULED_INLINE_BUDGET_BYTES, SendMessage, SettleKind, keys,
+    NqOp, NqOut, NqRefusal, QueueConfig, SCHEDULED_INLINE_BUDGET_BYTES, SendMessage, SettleKind,
+    keys,
 };
 
 fn capped(cap: u64) -> QueueConfig {
@@ -179,4 +180,19 @@ async fn at_the_scheduled_cap_a_send_due_now_is_taken_and_one_more_scheduled_is_
     assert_eq!(more.unwrap_err(), NqRefusal::ScheduledFull);
     let s = state(&db).await;
     assert_eq!((s.counters.sent, s.scheduled), (1, 1_000));
+}
+
+/// A cancelled scheduled message whose page rides inline gives its inline bytes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_cancelled_inline_scheduled_message_gives_its_inline_bytes_back() {
+    let (e, db, c) = clocked("nq-cap-inline-cancel", QueueConfig::default()).await;
+    op(&e, send_op(vec![scheduled("small", c + 60_000)]))
+        .await
+        .unwrap();
+    let page = super::stored(&db, 0).await;
+    assert_eq!(state(&db).await.inline_bytes, page);
+    let cancel = op(&e, NqOp::Cancel { offsets: vec![0] }).await.unwrap();
+    assert_eq!(cancel.count(), 1);
+    let s = state(&db).await;
+    assert_eq!((s.inline_bytes, s.scheduled), (0, 0));
 }

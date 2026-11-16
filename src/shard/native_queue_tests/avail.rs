@@ -256,3 +256,60 @@ async fn a_claim_at_a_due_scheduled_messages_retention_end_takes_it_into_the_gap
     let by_offset = db.get(keys::by_offset(&HASH, keys::SCHEDULED_AT, 0)).await;
     assert!(by_offset.unwrap().is_none(), "its by-offset row is gone");
 }
+
+/// A cancelled scheduled message at the frontier keeps its page until the frontier passes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_cancelled_scheduled_message_at_the_frontier_keeps_its_page_until_passed() {
+    let (e, db, c) = clocked("nq-avail-cancel-at-frontier", QueueConfig::default()).await;
+    let sent = vec![scheduled("s", c + 60_000), msg("m")];
+    op(&e, send_op(sent)).await.unwrap();
+    let cancel = op(&e, crate::native_queue::NqOp::Cancel { offsets: vec![0] }).await;
+    assert_eq!(cancel.unwrap().count(), 1);
+    assert!(
+        db.get(shard_page_key(&HASH, 0)).await.unwrap().is_some(),
+        "page 0 stays"
+    );
+    assert_eq!(state(&db).await.frontier, 0);
+    let d = claim(&e, 1).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [1]);
+    assert_eq!(state(&db).await.frontier, 2);
+    assert!(
+        db.get(shard_page_key(&HASH, 0)).await.unwrap().is_none(),
+        "passed, it goes"
+    );
+}
+
+/// An open delivery that ends with the frontier at its offset keeps its page for the frontier,
+/// which then passes it and leases the next message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_delivery_ending_at_the_frontier_keeps_its_page_for_the_frontier_to_pass() {
+    let (e, db, c) = clocked("nq-avail-end-at-frontier", QueueConfig::default()).await;
+    let mut sent: Vec<SendMessage> = (0..18).map(|i| msg(&format!("m{i}"))).collect();
+    sent.push(scheduled("s", c + 1));
+    op(&e, send_op(sent)).await.unwrap();
+    let cancel = crate::native_queue::NqOp::Cancel {
+        offsets: (0..18).collect(),
+    };
+    assert_eq!(op(&e, cancel).await.unwrap().count(), 18);
+    set_clock(&db, c + 1).await;
+    let d = claim(&e, 1).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [18]);
+    assert_eq!(
+        state(&db).await.frontier,
+        18,
+        "the frontier stands at the leased message"
+    );
+    let ack = vec![(18, d[0].lease_gen, crate::native_queue::SettleKind::Ack)];
+    op(&e, super::settle(ack)).await.unwrap();
+    assert!(
+        db.get(shard_page_key(&HASH, 18)).await.unwrap().is_some(),
+        "page 18 stays"
+    );
+    op(&e, send_op(vec![msg("next")])).await.unwrap();
+    let d = claim(&e, 1).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), [19]);
+    assert!(
+        db.get(shard_page_key(&HASH, 18)).await.unwrap().is_none(),
+        "passed, it goes"
+    );
+}
