@@ -461,6 +461,10 @@ OWNERS = (
           'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::runtime_isolation::'),
     owner('http', 'src/http.rs', 'http:: livefeed_engine_retired security_workload:: security_usage:: debug_store_reports_this_runtimes_shard_opens debug_surface_ dst_tests::billing_readiness:: dst_tests::billing_operation_counts::raw_'),
     owner('http_debug', 'src/http/debug.rs', 'debug_surface_'),
+    # /health and /readyz: each unready reason through the real route.
+    owner('http_readiness', 'src/http/readiness.rs',
+          'dst_tests::billing_readiness:: dst_tests::fence_yield:: '
+          'dst_tests::runtime_engine_lifecycle::r17a_each_required_engine_exit_changes_real_health_and_readyz'),
     owner('http_close_identity', 'src/http/close_identity.rs', 'http::close_identity:: dst_tests::seal_fencing:: dst_tests::seal_coordination:: dst_tests::security_seal::'),
     owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver::'),
     # F1-a's relaying sender (82a14a8f); the owner approved the row on 2026-10-02.
