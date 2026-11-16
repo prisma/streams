@@ -1,8 +1,8 @@
 //! A product read's failure, as the product surface answers it: a typed
 //! status, code and retry hint per failure, the replay header for a
-//! non-owner, and the refusal a read's first sealed chunk met after its
-//! wait (`admission::park::read_refused`, edge #240) in place of a storage
-//! failure.
+//! non-owner (also a watch's, `resolve`), and the refusal a read's first
+//! sealed chunk met after its wait (`admission::park::read_refused`, edge
+//! #240) in place of a storage failure.
 use axum::http::StatusCode;
 use axum::response::Response;
 
@@ -20,6 +20,24 @@ pub(crate) fn render_product_read_failure(
         return super::read_memory::refusal_response(refusal);
     }
     failure_response(error)
+}
+
+/// A watch's shard resolution refusal (`WatchFailure::Resolve`): a shard
+/// another instance owns is answered as a read of it is, `409
+/// not_stream_owner` with its replay target and `Retry-After: 1` (edge change
+/// #264, A3); any other refusal keeps `transport`'s answer, the shared
+/// transport mapping.
+pub(super) fn resolve(
+    error: crate::shard_directory::ResolveError,
+    transport: fn(crate::shard_directory::ResolveError) -> Response,
+) -> Response {
+    use crate::shard_directory::ResolveError;
+    match error {
+        ResolveError::NotOwner { .. } => {
+            failure_response(crate::application::read::ReadFailure::Resolve(error))
+        }
+        other => transport(other),
+    }
 }
 
 /// The answer to `error`, by its kind.
@@ -89,9 +107,11 @@ fn failure_response(error: crate::application::read::ReadFailure) -> Response {
             false,
             None,
         ),
+        // Edge change #264 (A3): the product's code for "another instance
+        // owns it, retry", as an append, a consumer and a queue answer it.
         E::Resolve(crate::shard_directory::ResolveError::NotOwner { owner, .. }) => (
             StatusCode::CONFLICT,
-            "not_ring_owner",
+            "not_stream_owner",
             "stream is owned by another instance; retry",
             true,
             Some(owner),

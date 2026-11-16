@@ -15,7 +15,9 @@ the same version, and published from that candidate's tarball.
   consumers and queues. It used to surface at once as a `StreamsError`
   (`status` 409, `retryable: true`), so a caller that retried it can keep
   doing so; it now sees it only once the four attempts are spent. The
-  server sends `Retry-After: 1` with it (edge change #264).
+  server sends `Retry-After: 1` with it, and a read, a `:scan` and a watch
+  wait of another instance's shard now answer this code too, where they
+  answered `409 not_ring_owner` (edge change #264).
 
 - `read()` and `subscribe()` name a 1 MiB page (`maxBytes=1048576`,
   exported as `DEFAULT_READ_MAX_BYTES`) when the caller names none, so an
