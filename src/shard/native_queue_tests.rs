@@ -855,6 +855,49 @@ async fn every_queue_writer_leaves_its_tail_sealed_and_out_of_the_unsealed_index
     assert_queue_tail_sealed(&db, "after the delete's last step").await;
 }
 
+/// A queue created again on the stream an earlier incarnation used starts its frontier at the
+/// stream's next offset: the earlier incarnation's offsets are behind it, so a cancel naming one
+/// cancels nothing and the new queue's one message stays queued and is the one claimed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_queue_created_again_starts_its_frontier_past_the_earlier_incarnations_offsets() {
+    let (e, db) = engine("nq-recreate").await;
+    create(&e, QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("a"), msg("b"), msg("c")]))
+        .await
+        .unwrap();
+    op(&e, NqOp::BeginDelete).await.unwrap();
+    let mut done = false;
+    for _ in 0..100 {
+        if let NqOut::DeleteStepped { remaining: false } =
+            op(&e, NqOp::DeleteStep { max_rows: 7 }).await.unwrap()
+        {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the delete never finished");
+    create(&e, QueueConfig::default()).await;
+    assert_eq!(
+        state(&db).await.frontier,
+        3,
+        "the frontier starts at the stream's next offset"
+    );
+    op(&e, send_op(vec![msg("d")])).await.unwrap();
+    let cancelled = op(&e, NqOp::Cancel { offsets: vec![1] }).await.unwrap();
+    assert_eq!(
+        cancelled.count(),
+        0,
+        "an earlier incarnation's offset cancels nothing"
+    );
+    let s = state(&db).await;
+    assert_eq!(
+        (s.queued_messages, s.counters.cancelled, s.frontier),
+        (1, 0, 3)
+    );
+    let d = claim(&e, 5).await;
+    assert_eq!(d.iter().map(|v| v.offset).collect::<Vec<_>>(), vec![3]);
+}
+
 /// The stored queue tail, if any, is sealed, and the unsealed index does not name the queue.
 async fn assert_queue_tail_sealed(db: &Db, when: &str) {
     let raw = db.get(crate::shard::queue_tail_key(&HASH)).await.unwrap();
