@@ -928,3 +928,60 @@ async fn a_merge_left_unfinished_is_rolled_forward_with_no_request() {
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
 }
+
+/// The split entry's double for a split that always rolls back: each call recorded as
+/// `prefix@ms`, its milliseconds since the double was made.
+fn rolled_back_double(_: &Arc<crate::http::AppState>, asked: Arc<Mutex<Vec<String>>>) -> SplitFn {
+    let t0 = std::time::Instant::now();
+    Arc::new(move |prefix: String| {
+        let asked = asked.clone();
+        Box::pin(async move {
+            let at = t0.elapsed().as_millis();
+            asked.lock().unwrap().push(format!("{prefix}@{at}"));
+            Err(crate::topology::policy_loop::Refused("rolled_back"))
+        })
+    })
+}
+
+/// **A rolled-back split is not started again at the next tick** (GATE-DECISION-meas149-reshaping
+/// F1d). A one-shard cell over its split line, whose every split rolls back, ticks every 200 ms with
+/// a topology cooldown of 1 s. The second call comes one cooldown after the first, the third two
+/// cooldowns after the second (each no earlier, and at most two ticks and a margin later), and
+/// none in the 6.5 s after the first call, before the fourth is due four cooldowns after the third.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_rolled_back_split_is_not_started_again_at_the_next_tick() {
+    let fleet = seeded().await;
+    let cli = |cli: &mut crate::config::CliArgs| {
+        cli.fleet_max = 1;
+        lines(cli);
+    };
+    let (rig, asked) = policy_rig(fleet, cli, rolled_back_double).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let calls = || -> Vec<u128> {
+        let asked = asked.lock().unwrap();
+        asked
+            .iter()
+            .filter_map(|a| a.split_once('@')?.1.parse().ok())
+            .collect()
+    };
+    let watch = async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while calls().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!calls().is_empty(), "the split is started once");
+        // Up to just before a fourth call is due: 1 + 2 + 4 cooldowns after the first.
+        tokio::time::sleep(Duration::from_millis(6_500)).await;
+        stop.store(true, Ordering::Relaxed);
+    };
+    futures_util::future::join(load(rig.addr, 20, stop.clone()), watch).await;
+    let at = calls();
+    let gaps: Vec<u128> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    let within = |gap: u128, wait: u128| (wait..=wait + 600).contains(&gap);
+    assert!(gaps.len() >= 2, "three calls: {:?}", asked.lock().unwrap());
+    assert!(within(gaps[0], 1_000) && within(gaps[1], 2_000), "{gaps:?}");
+    assert_eq!(gaps.len(), 2, "no fourth call within 6.5 s: {gaps:?}");
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
