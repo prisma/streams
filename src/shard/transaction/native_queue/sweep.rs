@@ -204,7 +204,7 @@ impl CommitTransaction<'_> {
             return Ok(0);
         }
         let mut moved = 0;
-        for (i, page) in pages.iter().enumerate() {
+        for page in &pages {
             let mut range = self.nq_range(hash, st, page.offset).await?;
             let step = at_frontier(&range, (page.offset, page.ts), st.state.cfg.retention_ms, t);
             if step == AtFrontier::Live {
@@ -214,7 +214,9 @@ impl CommitTransaction<'_> {
             }
             self.nq_frontier_step(hash, st, page, (step, &mut range, t));
             Self::nq_set_range(st, page.offset, range);
-            Self::nq_advance(st, page, pages.get(i + 1).map(|p| p.ts), next);
+            // The next page's time is this walk's next step to set, or
+            // this page's (a lower bound) at the walk's end.
+            Self::nq_advance(st, page, None, next);
             moved += 1;
         }
         Ok(moved)
