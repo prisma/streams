@@ -222,42 +222,55 @@ async fn a_fold_after_a_purge_request_still_drops_what_the_trim_released() {
     assert_eq!(released[&HASH], Released::new(0, &[iv(1, 2)]));
 }
 
-/// The cleaner's horizon of a chunk (§7.4): the latest hard expiry of its
-/// open deliveries (retention end plus failure retention); for a chunk held
-/// only by a scheduled message, now plus twice the retention plus the
-/// failure retention; none for a chunk nothing holds.
+/// **The cleaner's read of a chunk's hold** (S3b-DESIGN §7.4; the cleaner
+/// ruling of 2026-11-16, Q2, T1). Four seals: `a` alone; `b` with a
+/// scheduled `s`; `d` with `e`; `g` alone. A claim of three leases `a`, `b`
+/// and `d` (the frontier passes `s`, stops inside `[3, 4]`), then `a` is
+/// acked. At the queue's clock `c`: `[0, 0]` is free; `[1, 2]` holds the
+/// larger of `b`'s delivery and `s`'s scheduled bit, `c + 2r + f`; `[3, 4]`,
+/// which the frontier is inside, and the backlog `[5, 5]` hold `c + r + f`.
+/// A hash with no queue state row is an ordinary stream, and a deleting
+/// queue is the purge's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
-async fn a_chunks_horizon_is_its_latest_hold() {
-    let (e, db, c) = clocked("nq-trim-horizon", QueueConfig::default()).await;
-    for body in ["a", "b"] {
-        send_sealed(&e, msg(body)).await;
-    }
+async fn the_cleaners_read_gives_each_chunk_its_latest_hold() {
+    use crate::shard::seal::gc::trim::{Hold, QueueView};
+    const NEIGHBOUR: [u8; 16] = [7; 16];
+    let (e, _db, c) = clocked("nq-trim-hold", QueueConfig::default()).await;
+    let cfg = QueueConfig::default();
+    let (r, f) = (cfg.retention_ms, cfg.failure_retention_ms);
+    send_sealed(&e, msg("a")).await;
     let scheduled = SendMessage {
         deliver_at: Some(c + 3_600_000),
-        ..msg("later")
+        ..msg("s")
     };
-    send_sealed(&e, scheduled).await;
-    let leased = claim(&e, 2).await;
-    ack(&e, &leased[1..]).await;
-    let cfg = QueueConfig::default();
-    let raw = db
-        .get(crate::native_queue::keys::by_offset(
-            &HASH,
-            crate::native_queue::keys::DELIVERY,
-            0,
-        ))
+    op(&e, send_op(vec![msg("b"), scheduled])).await.unwrap();
+    seal(&e).await;
+    op(&e, send_op(vec![msg("d"), msg("e")])).await.unwrap();
+    seal(&e).await;
+    send_sealed(&e, msg("g")).await;
+    let leased = claim(&e, 3).await;
+    let offsets: Vec<u64> = leased.iter().map(|l| l.0).collect();
+    assert_eq!(offsets, [0, 1, 3]);
+    ack(&e, &leased[..1]).await;
+    let QueueView::Live(q) = e.queue_view(&HASH).await.unwrap() else {
+        panic!("a live queue");
+    };
+    let mut holds = Vec::new();
+    for span in [(0, 0), (1, 2), (3, 4), (5, 5)] {
+        holds.push(e.chunk_hold(&HASH, q, span, c).await.unwrap());
+    }
+    let (late, backlog) = (Hold::Until(c + 2 * r + f), Hold::Until(c + r + f));
+    assert_eq!(holds, [Hold::Free, late, backlog, backlog]);
+    assert_eq!(e.queue_view(&NEIGHBOUR).await.unwrap(), QueueView::NotQueue);
+    let create = NqOp::Create {
+        cfg,
+        container: super::CONTAINER,
+    };
+    e.submit_native_queue(NEIGHBOUR, create).await.unwrap();
+    e.submit_native_queue(NEIGHBOUR, NqOp::BeginDelete)
         .await
-        .unwrap()
         .unwrap();
-    let row = crate::native_queue::rows::DeliveryRow::decode(&raw).unwrap();
-    let held = row.cycle_deadline + cfg.failure_retention_ms;
-    assert_eq!(e.chunk_horizon(&HASH, 0, 0).await, Ok(Some(held)));
-    assert_eq!(e.chunk_horizon(&HASH, 1, 1).await, Ok(None), "acked");
-    let before = crate::shard::now_ms();
-    let far = e.chunk_horizon(&HASH, 2, 2).await.unwrap().unwrap();
-    let after = crate::shard::now_ms();
-    let span = 2 * cfg.retention_ms + cfg.failure_retention_ms;
-    assert!((before + span..=after + span).contains(&far), "{far}");
+    assert_eq!(e.queue_view(&NEIGHBOUR).await.unwrap(), QueueView::Deleting);
 }
 
 /// A queue's chunks never join (§7.4): its released intervals rely on them

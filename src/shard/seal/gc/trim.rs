@@ -12,7 +12,7 @@
 //! design.
 //!
 //! The pass (part 2 step 3) and the reads the cleaner makes through it
-//! (`intervals`, `chunk_horizon`) live here; the rows it keeps are the
+//! (`intervals`, `queue_view`, `chunk_hold`) live here; the rows it keeps are the
 //! purge head's Trimming state (`spill::gc::HeadState::Trimming`) and the
 //! queue's released intervals (`native_queue::intervals`).
 use std::collections::BTreeMap;
@@ -71,6 +71,39 @@ fn remote_scan() -> slatedb::config::ScanOptions {
 
 fn store(e: impl std::fmt::Display) -> GcError {
     GcError::Store(e.to_string())
+}
+
+/// Hold `until` to `t` at least.
+fn later(until: &mut Option<i64>, t: i64) {
+    *until = Some(until.map_or(t, |u| u.max(t)));
+}
+
+/// A stream as the cleaner reads it (S3b-DESIGN §7.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueView {
+    /// No native-queue state row: an ordinary stream.
+    NotQueue,
+    /// A queue being deleted: the purge's.
+    Deleting,
+    /// A live queue, as its state row stood when read.
+    Live(LiveQueue),
+}
+
+/// What a live queue's chunk holds are read against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiveQueue {
+    frontier: u64,
+    retention_ms: i64,
+    failure_ms: i64,
+}
+
+/// A live queue chunk's hold (`ShardEngine::chunk_hold`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Nothing holds it: the trim will give it back.
+    Free,
+    /// Held until then (epoch ms) at the latest.
+    Until(i64),
 }
 
 impl ShardEngine {
@@ -267,6 +300,11 @@ impl ShardEngine {
     /// Whether anything still references an offset of `[first, last]`: an
     /// open delivery, or an unresolved scheduled message's bit (§7.3).
     async fn queue_refs_in(&self, hash: &[u8; 16], first: u64, last: u64) -> Result<bool, GcError> {
+        Ok(self.open_in(hash, first, last).await? || self.sbits_in(hash, first, last).await?)
+    }
+
+    /// Whether an open delivery lies in `[first, last]`.
+    async fn open_in(&self, hash: &[u8; 16], first: u64, last: u64) -> Result<bool, GcError> {
         let from = keys::by_offset(hash, keys::DELIVERY, first);
         let to = keys::by_offset(hash, keys::DELIVERY, last.saturating_add(1));
         let mut open = self
@@ -274,9 +312,11 @@ impl ShardEngine {
             .scan_with_options(from..to, &remote_scan())
             .await
             .map_err(store)?;
-        if open.next().await.map_err(store)?.is_some() {
-            return Ok(true);
-        }
+        Ok(open.next().await.map_err(store)?.is_some())
+    }
+
+    /// Whether an unresolved scheduled message's bit lies in `[first, last]`.
+    async fn sbits_in(&self, hash: &[u8; 16], first: u64, last: u64) -> Result<bool, GcError> {
         for index in (first >> SHIFT)..=(last >> SHIFT) {
             let raw = self
                 .db
@@ -327,55 +367,72 @@ impl ShardEngine {
         }
     }
 
-    /// When nothing will hold the chunk `[first, last]` of the queue `hash`
-    /// any more (S3b-DESIGN §7.4, the cleaner's horizon, epoch ms): the
-    /// latest hard expiry of its open deliveries (retention end plus failure
-    /// retention); else, for a chunk held only by scheduled messages, now
-    /// plus twice the retention plus the failure retention; `None` when
-    /// nothing holds it, or the queue is gone. Its caller is package 6's
-    /// cleaner (part 2 step 4); until it lands, only tests call it.
-    #[cfg(test)]
-    pub(crate) async fn chunk_horizon(
-        &self,
-        hash: &[u8; 16],
-        first: u64,
-        last: u64,
-    ) -> Result<Option<i64>, String> {
+    /// A queue as the cleaner reads it (S3b-DESIGN §7.4; the cleaner ruling
+    /// of 2026-11-16, Q1-Q2): its state row, read first and Remote, as the
+    /// trim reads its frontier before the references.
+    pub(crate) async fn queue_view(&self, hash: &[u8; 16]) -> Result<QueueView, GcError> {
         let raw = self
             .db
             .get_with_options(keys::state(hash), &remote_read())
             .await
-            .map_err(|e| e.to_string())?;
-        let Some(state) = raw.as_deref().map(StateRow::decode).transpose()? else {
-            return Ok(None);
+            .map_err(store)?;
+        let Some(state) = raw
+            .as_deref()
+            .map(StateRow::decode)
+            .transpose()
+            .map_err(store)?
+        else {
+            return Ok(QueueView::NotQueue);
         };
-        let (retention, failure) = (state.cfg.retention_ms, state.cfg.failure_retention_ms);
+        if state.deleting {
+            return Ok(QueueView::Deleting);
+        }
+        Ok(QueueView::Live(LiveQueue {
+            frontier: state.frontier,
+            retention_ms: state.cfg.retention_ms,
+            failure_ms: state.cfg.failure_retention_ms,
+        }))
+    }
+
+    /// When nothing will hold the chunk `[first, last]` of the live queue
+    /// `hash` (`q`, read before it) any more, at `now`: the latest of its
+    /// open deliveries' hard expiries (cycle deadline plus failure
+    /// retention), `now` plus twice the retention plus the failure retention
+    /// for a scheduled message's bit in it, and `now` plus the retention plus
+    /// the failure retention for a chunk at or past the frontier; free when
+    /// nothing holds it, so the trim will give it back.
+    pub(crate) async fn chunk_hold(
+        &self,
+        hash: &[u8; 16],
+        q: LiveQueue,
+        span: (u64, u64),
+        now: i64,
+    ) -> Result<Hold, GcError> {
+        let (first, last) = span;
+        let mut until = None;
         let from = keys::by_offset(hash, keys::DELIVERY, first);
         let to = keys::by_offset(hash, keys::DELIVERY, last.saturating_add(1));
         let mut rows = self
             .db
             .scan_with_options(from..to, &remote_scan())
             .await
-            .map_err(|e| e.to_string())?;
-        let mut horizon: Option<i64> = None;
-        while let Some(kv) = rows.next().await.map_err(|e| e.to_string())? {
-            let row = crate::native_queue::rows::DeliveryRow::decode(&kv.value)?;
-            let hard = row.cycle_deadline.saturating_add(failure);
-            horizon = Some(horizon.map_or(hard, |h| h.max(hard)));
+            .map_err(store)?;
+        while let Some(kv) = rows.next().await.map_err(store)? {
+            let row = crate::native_queue::rows::DeliveryRow::decode(&kv.value).map_err(store)?;
+            later(&mut until, row.cycle_deadline.saturating_add(q.failure_ms));
         }
-        if horizon.is_none()
-            && self
-                .queue_refs_in(hash, first, last)
-                .await
-                .map_err(|e| e.to_string())?
-        {
-            let now = crate::shard::now_ms();
-            horizon = Some(
-                now.saturating_add(retention.saturating_mul(2))
-                    .saturating_add(failure),
+        if self.sbits_in(hash, first, last).await? {
+            let twice = q.retention_ms.saturating_mul(2);
+            later(
+                &mut until,
+                now.saturating_add(twice).saturating_add(q.failure_ms),
             );
         }
-        Ok(horizon)
+        if last >= q.frontier {
+            let backlog = now.saturating_add(q.retention_ms);
+            later(&mut until, backlog.saturating_add(q.failure_ms));
+        }
+        Ok(until.map_or(Hold::Free, Hold::Until))
     }
 
     /// A queue's released intervals as the shard log durably holds them

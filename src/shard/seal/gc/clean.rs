@@ -41,18 +41,27 @@
 //!   which chunks still count; an object whose remaining live chunks are all
 //!   `'H'`-pinned backs off (from a tick or the purge delay, doubling to the
 //!   recount's interval);
+//! - a native queue (a stream with a queue state row; S3b-DESIGN §7.4, the
+//!   cleaner ruling of 2026-11-16): live (`'H'` absent or Trimming, not
+//!   deleting), its live set loses what its trim released, below `reclaimed`
+//!   or inside a `'k'` interval; Requested, Purged or deleting, it is the
+//!   purge's. An object holding a queue chunk nothing holds any more waits
+//!   for the trim (backs off). The saving counts a month when the copy holds
+//!   an ordinary chunk, else until its queue chunks' latest hold
+//!   (`clean_pays_over`); a queue's chunks are never joined in the copy;
 //! - the live chunks are fetched (ranged GETs, self-verifying) and the copy
 //!   object PUT before the refcount lock, within a pass budget of bytes and
 //!   GETs drawn from the process's consolidation permits;
-//! - under the lock every copied chunk is checked again (no `'H'` row, still
-//!   in its stream's live set); any change abandons the copy object whole
+//! - under the lock every copied chunk is checked again (still in its
+//!   stream's live set, a queue's `'H'` row and intervals read again, never
+//!   from the gather); any change abandons the copy object whole
 //!   (its claim drops, the sweep deletes it). Then one batch: the old
 //!   objects' decrements, the copy's `'K'`, `'R'` and `'O'` rows; the copy's
 //!   entries are published before it and withdrawn if it fails.
 //!
 //! No pass while the shard log is at its L0 watermark's yield mark.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
@@ -60,10 +69,12 @@ use bytes::Bytes;
 use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload};
 use slatedb::WriteBatch;
 
+use super::trim::{Hold, LiveQueue, QueueView};
 use super::{GcError, duration_ms, lock};
+use crate::native_queue::intervals::Released;
 use crate::shard::ShardEngine;
 use crate::spill::directory::{self, DirEntry, KeySummary};
-use crate::spill::gc::{self, Decrements, Refcount};
+use crate::spill::gc::{self, Decrements, HeadState, Refcount};
 use crate::spill::object::{self, ObjectId};
 use crate::spill::object_table::{self, Table};
 use crate::spill::runindex::{self, Orphans};
@@ -93,8 +104,36 @@ pub(crate) fn clean_pays(object_len: u64, live_bytes: u64, live_chunks: u64) -> 
     dead * STORAGE_BYTE_MONTH > copy * GIB
 }
 
-/// A rewrite rule (`clean_pays`; tests rewrite small objects).
-pub(crate) type Rule = fn(u64, u64, u64) -> bool;
+/// A month, the saving a rewrite counts at most (30 days).
+pub(crate) const MONTH_MS: u64 = 30 * 24 * 3_600_000;
+
+/// `clean_pays` with the dead bytes' storage saved for `saving_ms` rather
+/// than a month (the cleaner ruling of 2026-11-16, Q3): a queue chunk frees
+/// its object by itself once nothing holds it. Exactly `clean_pays` at a
+/// month or more; never a rewrite whose comparison would overflow.
+pub(crate) fn clean_pays_over(
+    object_len: u64,
+    live_bytes: u64,
+    live_chunks: u64,
+    saving_ms: u64,
+) -> bool {
+    if saving_ms >= MONTH_MS {
+        return clean_pays(object_len, live_bytes, live_chunks);
+    }
+    if live_chunks == 0 || 2 * u128::from(live_bytes) >= u128::from(object_len) {
+        return false;
+    }
+    let dead = u128::from(object_len - live_bytes);
+    let copy =
+        2 * PUT + (u128::from(live_chunks) + 1) * GET + TRANSFER_BYTE * u128::from(live_bytes);
+    let saved = (dead * STORAGE_BYTE_MONTH).checked_mul(u128::from(saving_ms));
+    let cost = (copy * GIB).checked_mul(u128::from(MONTH_MS));
+    matches!((saved, cost), (Some(saved), Some(cost)) if saved > cost)
+}
+
+/// A rewrite rule with its saving horizon (`clean_pays_over`; tests rewrite
+/// small objects).
+pub(crate) type Rule = fn(u64, u64, u64, u64) -> bool;
 
 /// Candidates held at most (the smallest dead bytes leave first).
 const CANDIDATES: usize = 4096;
@@ -122,7 +161,7 @@ impl Candidates {
     /// A decrement left `id`'s row at `row` at `now_ms`.
     pub(crate) fn offer(&self, id: ObjectId, row: Refcount, now_ms: u64, pays: Rule) {
         let mut set = lock(&self.set);
-        if !pays(row.object_len, row.live_bytes, row.live_chunks) {
+        if !pays(row.object_len, row.live_bytes, row.live_chunks, MONTH_MS) {
             set.remove(&id);
             return;
         }
@@ -183,16 +222,29 @@ impl Candidates {
 
 /// What one object holds that still counts.
 enum Live {
-    /// Its live chunks (none `'H'`-pinned).
+    /// Its live chunks (none `'H'`-pinned), a copy of which pays.
     Chunks(Vec<DirEntry>),
-    /// Every live chunk is a dead stream's (the purge's to reclaim).
+    /// It waits: every live chunk is a dead stream's (the purge's to
+    /// reclaim), a queue chunk of it is free (the trim's to give back), or a
+    /// copy would not pay over its horizon.
     Pinned,
     /// Nothing to copy (its row zeroes, or it changed).
     Nothing,
 }
 
-/// A stream's live entries, or `None` when it has an `'H'` row.
-type LiveSets = HashMap<[u8; 16], Option<Vec<DirEntry>>>;
+/// A stream as the cleaner counts it: the entries that still count, and
+/// its live queue when it is one.
+struct Counted {
+    entries: Vec<DirEntry>,
+    queue: Option<LiveQueue>,
+}
+
+/// Each stream's counted entries, or `None` when its chunks are the purge's.
+type LiveSets = HashMap<[u8; 16], Option<Counted>>;
+
+/// A live queue's chunk in a candidate object: its queue's hash, the queue
+/// as read, and its span.
+type QueueChunk = ([u8; 16], LiveQueue, (u64, u64));
 
 /// What a pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -280,6 +332,7 @@ impl ShardEngine {
         let range = self.range();
         let entries = self.table_of(id, row.object_len).await?;
         let (mut live, mut pinned) = (Vec::new(), 0usize);
+        let mut queued: Vec<QueueChunk> = Vec::new();
         // A child counts only its range's chunks of a shared object (L2).
         for entry in entries
             .into_iter()
@@ -289,18 +342,58 @@ impl ShardEngine {
                 pinned += 1;
                 continue;
             };
-            if let Some(e) = set
+            let found = set
+                .entries
                 .iter()
-                .find(|e| e.object == id && e.chunk_off == entry.offset)
-            {
-                live.push(e.clone());
+                .find(|e| e.object == id && e.chunk_off == entry.offset);
+            let Some(e) = found else {
+                continue;
+            };
+            if let Some(q) = set.queue {
+                queued.push((entry.hash, q, (e.first, e.last)));
+            }
+            live.push(e.clone());
+        }
+        if live.is_empty() {
+            return Ok(if pinned == 0 {
+                Live::Nothing
+            } else {
+                Live::Pinned
+            });
+        }
+        let Some(saving) = self.saving_of(&queued, live.len() > queued.len()).await? else {
+            return Ok(Live::Pinned);
+        };
+        let pays = self.gc_state().settings().clean_pays;
+        if !pays(row.object_len, row.live_bytes, row.live_chunks, saving) {
+            return Ok(Live::Pinned);
+        }
+        Ok(Live::Chunks(live))
+    }
+
+    /// The saving a copy of an object's live chunks counts (the cleaner
+    /// ruling of 2026-11-16, Q3): a month when it holds an `ordinary` chunk,
+    /// else until the latest hold of its `queued` chunks (at most a month);
+    /// `None` when one of them is free: the object waits for the trim,
+    /// whose decrement offers it again.
+    async fn saving_of(
+        &self,
+        queued: &[QueueChunk],
+        ordinary: bool,
+    ) -> Result<Option<u64>, GcError> {
+        let now = crate::shard::now_ms();
+        let mut latest = now;
+        for (hash, q, span) in queued {
+            match self.chunk_hold(hash, *q, *span, now).await? {
+                Hold::Free => return Ok(None),
+                Hold::Until(t) => latest = latest.max(t),
             }
         }
-        Ok(match (live.is_empty(), pinned) {
-            (false, _) => Live::Chunks(live),
-            (true, 0) => Live::Nothing,
-            (true, _) => Live::Pinned,
-        })
+        if ordinary {
+            return Ok(Some(MONTH_MS));
+        }
+        let held = u64::try_from(latest - now).unwrap_or(0);
+        Ok(Some(held.min(MONTH_MS)))
     }
 
     /// `id`'s chunk table: one ranged GET of its tail, a second only for a
@@ -327,23 +420,57 @@ impl ShardEngine {
         Err(GcError::Index(format!("{id:?}: no table")))
     }
 
-    /// `hash`'s live entries (cached in `sets`), or `None` when it has an
-    /// `'H'` row.
+    /// `hash` as the cleaner counts it (`counted`), cached in `sets`.
     async fn live_set<'a>(
         &self,
         hash: [u8; 16],
         sets: &'a mut LiveSets,
-    ) -> Result<Option<&'a Vec<DirEntry>>, GcError> {
+    ) -> Result<Option<&'a Counted>, GcError> {
         if let std::collections::hash_map::Entry::Vacant(slot) = sets.entry(hash) {
-            let set = if self.head_row(&hash).await?.is_some() {
-                None
-            } else {
-                let entries = self.index_entries(hash).await?;
-                Some(gc::live_entries(entries).map_err(GcError::Index)?)
-            };
-            slot.insert(set);
+            slot.insert(self.counted(hash).await?);
         }
         Ok(sets.get(&hash).and_then(Option::as_ref))
+    }
+
+    /// What of `hash` still counts, read now (S3b-DESIGN §7.4, the cleaner
+    /// ruling of 2026-11-16, Q1 and Q4): an ordinary stream's live entries;
+    /// a live queue's (a state row, not deleting; `'H'` absent or Trimming)
+    /// less what its trim released, below `reclaimed` or inside a `'k'`
+    /// interval. `None` when its chunks are the purge's: `'H'` Requested or
+    /// Purged, a deleting queue, or a Trimming row with no state row.
+    async fn counted(&self, hash: [u8; 16]) -> Result<Option<Counted>, GcError> {
+        let head = self.head_row(&hash).await?;
+        if head.is_some_and(|h| h.state != HeadState::Trimming) {
+            return Ok(None);
+        }
+        let queue = match self.queue_view(&hash).await? {
+            QueueView::Live(q) => Some(q),
+            QueueView::NotQueue if head.is_none() => None,
+            QueueView::NotQueue | QueueView::Deleting => return Ok(None),
+        };
+        let mut entries =
+            gc::live_entries(self.index_entries(hash).await?).map_err(GcError::Index)?;
+        if let Some(head) = head {
+            let trimmed = self.intervals(&hash).await.map_err(GcError::Store)?;
+            let released = Released::new(head.reclaimed, &trimmed);
+            entries.retain(|e| !released.holds(e.first, e.last));
+        }
+        Ok(Some(Counted { entries, queue }))
+    }
+
+    /// Which of `hashes` are native queues (a queue state row): their chunks
+    /// are never joined in a copy.
+    async fn queue_streams<'a>(
+        &self,
+        hashes: impl Iterator<Item = &'a [u8; 16]>,
+    ) -> Result<BTreeSet<[u8; 16]>, GcError> {
+        let mut queues = BTreeSet::new();
+        for hash in hashes {
+            if self.queue_view(hash).await? != QueueView::NotQueue {
+                queues.insert(*hash);
+            }
+        }
+        Ok(queues)
     }
 
     /// One chunk's bytes (a ranged GET, verified).
@@ -363,7 +490,9 @@ impl ShardEngine {
     /// Write `copied` as one copy object and commit it in place of them;
     /// abandoned whole when a copied chunk changed meanwhile.
     async fn write_copy(&self, copied: Copied) -> Result<CleanReport, GcError> {
-        let (by_stream, inputs) = copy_inputs(copied)?;
+        let by_stream = by_stream(copied)?;
+        let queues = self.queue_streams(by_stream.keys()).await?;
+        let inputs = copy_inputs(&by_stream, &queues)?;
         let index = GcError::Index;
         let keys: Vec<KeySummary> = inputs
             .iter()
@@ -463,17 +592,17 @@ impl ShardEngine {
         })
     }
 
-    /// Under the refcount lock: every copied chunk's stream has no `'H'` row
-    /// and still counts the chunk.
+    /// Under the refcount lock: every copied chunk's stream still counts
+    /// the chunk (`counted`, its `'H'` row and intervals read again now,
+    /// never the gather's).
     async fn still_live(&self, by_stream: &ByStream) -> Result<bool, GcError> {
         for (hash, chunks) in by_stream {
-            if self.head_row(hash).await?.is_some() {
+            let Some(live) = self.counted(*hash).await? else {
                 return Ok(false);
-            }
-            let live =
-                gc::live_entries(self.index_entries(*hash).await?).map_err(GcError::Index)?;
+            };
             let counted = |e: &DirEntry| {
-                live.iter()
+                live.entries
+                    .iter()
                     .any(|l| l.object == e.object && l.chunk_off == e.chunk_off)
             };
             if !chunks.iter().all(|(e, _)| counted(e)) {
@@ -484,9 +613,8 @@ impl ShardEngine {
     }
 }
 
-/// The copied chunks by stream, and the copy's inputs: a stream's chunks
-/// that continue each other become one chunk.
-fn copy_inputs(mut copied: Copied) -> Result<(ByStream, Vec<object::ChunkInput>), GcError> {
+/// The copied chunks by stream, in offset order.
+fn by_stream(mut copied: Copied) -> Result<ByStream, GcError> {
     copied.sort_by_key(|(e, _)| (e.first, e.object));
     let mut by_stream = ByStream::new();
     for (e, body) in copied {
@@ -495,13 +623,24 @@ fn copy_inputs(mut copied: Copied) -> Result<(ByStream, Vec<object::ChunkInput>)
             .hash;
         by_stream.entry(hash).or_default().push((e, body));
     }
+    Ok(by_stream)
+}
+
+/// The copy's inputs: a stream's chunks that continue each other become one
+/// chunk, but a native queue's (`queues`) stay apart, as the sealer cut them
+/// (S3b-DESIGN §7.4).
+fn copy_inputs(
+    by_stream: &ByStream,
+    queues: &BTreeSet<[u8; 16]>,
+) -> Result<Vec<object::ChunkInput>, GcError> {
     let mut inputs = Vec::new();
-    for (hash, chunks) in &by_stream {
+    for (hash, chunks) in by_stream {
         let mut start = 0;
         for i in 1..=chunks.len() {
-            let ends = chunks
-                .get(i)
-                .is_none_or(|(e, _)| chunks[i - 1].0.last.saturating_add(1) != e.first);
+            let ends = queues.contains(hash)
+                || chunks
+                    .get(i)
+                    .is_none_or(|(e, _)| chunks[i - 1].0.last.saturating_add(1) != e.first);
             if ends {
                 let run = &chunks[start..i];
                 inputs.push(
@@ -512,8 +651,10 @@ fn copy_inputs(mut copied: Copied) -> Result<(ByStream, Vec<object::ChunkInput>)
             }
         }
     }
-    Ok((by_stream, inputs))
+    Ok(inputs)
 }
 
+#[cfg(test)]
+mod queue_tests;
 #[cfg(test)]
 mod tests;

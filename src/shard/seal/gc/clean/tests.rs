@@ -26,7 +26,9 @@ use super::super::super::minted;
 use super::super::super::test_hooks::Hold;
 use super::super::super::tests::{Oracle, Rig, append_recorded, read_back, reopen};
 use super::super::CleanHook;
-use super::{CANDIDATES, Candidates, CleanReport, PASS_BYTES, clean_pays};
+use super::{
+    CANDIDATES, Candidates, CleanReport, MONTH_MS, PASS_BYTES, clean_pays, clean_pays_over,
+};
 use crate::shard::Deliver;
 use crate::spill::gc::Refcount;
 use crate::spill::object::ObjectId;
@@ -90,6 +92,53 @@ fn the_rule_counts_dead_bytes_transfer_per_byte_and_no_tie() {
     );
 }
 
+/// **The saving-scaled rule is `clean_pays` at a month** (the cleaner
+/// ruling of 2026-11-16, Q3, T6): equal for every input of the rule's tests
+/// and an object too large to scale, at a month or more; the soak's object
+/// pays over a month, not over a day, and nothing pays over no saving; and
+/// at half a month the dead bytes must double for the same copy, a tie
+/// paying nothing.
+#[test]
+fn the_saving_scaled_rule_is_clean_pays_at_a_month() {
+    let inputs = [
+        (290 * KB, 0, 1),
+        (300 * KB, 0, 1),
+        (300 * KB, 0, 20),
+        (100 * MB, 49 * MB, 4),
+        (100 * MB, 50 * MB, 1),
+        (10 * MB, 0, 0),
+        (10 * MB, 10 * MB, 3),
+        (0, 0, 1),
+        (300 * KB, 100 * KB, 1),
+        (1_100 * KB, 500 * KB, 1),
+        (8_384_929, 4_190_625, 68),
+        (8_384_930, 4_190_625, 68),
+        (u64::MAX, 0, 1),
+    ];
+    for (o, l, k) in inputs {
+        for saving in [MONTH_MS, 2 * MONTH_MS] {
+            assert_eq!(
+                clean_pays_over(o, l, k, saving),
+                clean_pays(o, l, k),
+                "{o} {l} {k}"
+            );
+        }
+    }
+    let day = MONTH_MS / 30;
+    assert!(clean_pays_over(560 * KB, 4 * KB, 1, MONTH_MS));
+    assert!(!clean_pays_over(560 * KB, 4 * KB, 1, day), "a day");
+    assert!(!clean_pays_over(560 * KB, 4 * KB, 1, 0), "no saving");
+    assert!(!clean_pays_over(u64::MAX, 0, 1, day), "too large to scale");
+    let half = MONTH_MS / 2;
+    assert!(!clean_pays_over(12_579_233, 4_190_625, 68, half), "a tie");
+    assert!(
+        clean_pays_over(12_579_234, 4_190_625, 68, half),
+        "one dead byte more"
+    );
+    assert!(!clean_pays_over(10 * MB, 0, 0, half), "no live chunk");
+    assert!(!clean_pays_over(100 * MB, 50 * MB, 1, half), "half live");
+}
+
 fn row(object_len: u64, live_bytes: u64) -> Refcount {
     Refcount {
         live_bytes,
@@ -99,7 +148,7 @@ fn row(object_len: u64, live_bytes: u64) -> Refcount {
     }
 }
 
-fn always(_: u64, _: u64, _: u64) -> bool {
+fn always(_: u64, _: u64, _: u64, _: u64) -> bool {
     true
 }
 
@@ -153,7 +202,7 @@ const LEDGER: [u8; 16] = [0x50; 16];
 const DEAD: [u8; 16] = [0x51; 16];
 
 /// A test rule: anything less than half live (the rig's objects are small).
-fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64) -> bool {
+fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64, _saving_ms: u64) -> bool {
     live_chunks > 0 && 2 * live_bytes < object_len
 }
 

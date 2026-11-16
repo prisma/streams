@@ -213,7 +213,7 @@ fn pad(seed: usize) -> String {
 }
 
 /// The test cleaner's rule: rewrite anything less than half live.
-fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64) -> bool {
+fn half_dead(object_len: u64, live_bytes: u64, live_chunks: u64, _saving_ms: u64) -> bool {
     live_chunks > 0 && 2 * live_bytes < object_len
 }
 

@@ -81,7 +81,7 @@ pub(crate) struct GcSettings {
     pub(crate) wrap_every: Duration,
     /// Whether the loop runs by itself.
     pub(crate) auto: bool,
-    /// The cleaner's rewrite rule (`clean::clean_pays`).
+    /// The cleaner's rewrite rule with its saving horizon (`clean::clean_pays_over`).
     pub(crate) clean_pays: clean::Rule,
     /// Hint rows one trim pass reads, and chunks it examines (the rest are
     /// hinted again), at most (`trim`).
@@ -102,7 +102,7 @@ impl Default for GcSettings {
             reclaim_batch: 2048,
             wrap_every: Duration::from_secs(24 * 3600),
             auto: true,
-            clean_pays: clean::clean_pays,
+            clean_pays: clean::clean_pays_over,
             trim_hints: 4_096,
             trim_chunks: 4_096,
         }
