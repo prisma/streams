@@ -114,6 +114,31 @@ mod tests {
         );
     }
 
+    /// **The waits are exactly one cooldown, then each twice the last, up to exactly ten
+    /// minutes.** A cooldown of 1,000 ms, rolled back at 0 again and again: 1 s, 2 s, 4 s, ...,
+    /// 512 s, then 600 s (the cap, 600,000 ms, written out rather than read from [`MAX_MS`]) and
+    /// 600 s again. Each wait is observed as held 1 ms before its end and not at it.
+    #[test]
+    fn the_waits_are_one_cooldown_doubled_up_to_exactly_ten_minutes() {
+        let mut b = Backoff::default();
+        let mut waits = Vec::new();
+        for _ in 0..13 {
+            b.rolled_back("0", 0, 1_000);
+            let wait = (1..=700_000)
+                .find(|t| !b.holds("0", *t))
+                .expect("every wait ends within 700 s");
+            assert!(b.holds("0", wait - 1), "held until {wait}");
+            waits.push(wait);
+        }
+        assert_eq!(
+            waits,
+            [
+                1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 512_000,
+                600_000, 600_000, 600_000
+            ]
+        );
+    }
+
     /// **Only a `rolled_back` refusal starts a wait.** The split entry's other refusals (an
     /// instance full, a busy cell, a peer's parent) wait for nothing here.
     #[test]
