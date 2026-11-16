@@ -8,6 +8,15 @@ the same version, and published from that candidate's tarball.
 
 ### Changed
 
+- A `409` `not_stream_owner` (the instance that answered does not own the
+  stream's segment for a moment, during a move or a split; nothing was
+  written) is sent again on its `Retry-After`, 1 s, within the request's
+  four attempts, for every request: appends, producer appends, reads,
+  consumers and queues. It used to surface at once as a `StreamsError`
+  (`status` 409, `retryable: true`), so a caller that retried it can keep
+  doing so; it now sees it only once the four attempts are spent. The
+  server sends `Retry-After: 1` with it (edge change #264).
+
 - `read()` and `subscribe()` name a 1 MiB page (`maxBytes=1048576`,
   exported as `DEFAULT_READ_MAX_BYTES`) when the caller names none, so an
   SDK read never asks the server to reserve its 8 MiB default page. A page

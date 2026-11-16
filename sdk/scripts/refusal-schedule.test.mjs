@@ -74,3 +74,43 @@ for (const row of TABLE.rows) {
     assert.equal(requests, row.waits.length + 1);
   });
 }
+
+// Edge change #264: a 409 not_stream_owner is decided before any write (the
+// instance that answered does not own the stream's segment), so every request
+// kind sends it again within its attempts after its Retry-After, and the
+// second answer is the request's.
+const OWNER_REFUSAL = JSON.stringify({
+  error: {
+    code: "not_stream_owner",
+    message: "another instance owns the target segment; retry through the router",
+    retryable: true,
+  },
+});
+const APPENDED = '{"cursor":"c","count":1,"duplicate":false,"sealed":false}';
+for (const [label, run, ok] of [
+  ["append", s => s.append({ n: 1 }), APPENDED],
+  ["appendMany", s => s.appendMany([{ n: 1 }, { n: 2 }]), APPENDED],
+  ["producer append", s => s.producer("p1", { ephemeral: true }).append({ n: 1 }), APPENDED],
+  ["read", s => s.read(), "[]"],
+  ["metadata", s => s.metadata(), "{}"],
+]) {
+  test(`${label}: a 409 not_stream_owner is sent again after its Retry-After and the next answer is the request's`, async () => {
+    const sent = [];
+    const orders = new StreamsClient({
+      url: "https://cell.example",
+      fetch: async (url, init) => {
+        sent.push({ url: String(url), method: init.method, body: init.body });
+        return sent.length === 1
+          ? new Response(OWNER_REFUSAL, {
+            status: 409,
+            headers: { "content-type": "application/json", "retry-after": "1", "streams-replay-to": "streams-2" },
+          })
+          : new Response(ok, { headers: { "content-type": "application/json" } });
+      },
+    }).stream("orders", { encryptionKey: KEY });
+    const { waits } = await virtualClock(() => run(orders));
+    assert.deepEqual(waits, [1000]);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(sent[1], sent[0], "the same request is sent again");
+  });
+}

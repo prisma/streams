@@ -689,7 +689,7 @@ fn append_code_rows() -> Vec<(crate::application::append::AppendFailure, serde_j
     vec![
         (
             not_owner,
-            json!({"status": 409, "replayTo": "http://10.0.0.2:8080", "error": {
+            json!({"status": 409, "retryAfter": "1", "replayTo": "http://10.0.0.2:8080", "error": {
                 "code": "not_stream_owner", "retryable": true,
                 "message": "another instance owns the target segment; retry through the router"}}),
         ),

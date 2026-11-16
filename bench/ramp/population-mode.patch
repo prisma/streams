@@ -1,9 +1,9 @@
 diff --git a/bench/population_mode.rs b/bench/population_mode.rs
 new file mode 100644
-index 0000000..2c1e590
+index 0000000..18aebf2
 --- /dev/null
 +++ b/bench/population_mode.rs
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,559 @@
 +//! `--mode population`: many tiny streams or queues for Habanero's services
 +//! bench. Not part of Streams: the bench applies it to a clone.
 +//!
@@ -33,8 +33,9 @@ index 0000000..2c1e590
 +//!
 +//! A stream touch's append and read each follow the official client's rules
 +//! for a refusal (`population_rules.rs`, a copy of `@prisma/streams`'): a
-+//! refusal the server states as "nothing written, retry" is sent again on
-+//! its `Retry-After`, anything else fails the touch. A touch's latency runs
++//! refusal the server states as "nothing written, retry" (a 409
++//! `not_stream_owner` among them, edge change #264) is sent again on its
++//! `Retry-After`, anything else fails the touch. A touch's latency runs
 +//! from its first attempt to its last answer, waits included. Beside them
 +//! the summary reports the first-attempt figures (touches served without a
 +//! retry, first-attempt refusals by code, the retries made) and the
@@ -564,10 +565,10 @@ index 0000000..2c1e590
 +}
 diff --git a/bench/population_rules.rs b/bench/population_rules.rs
 new file mode 100644
-index 0000000..4124115
+index 0000000..17d689a
 --- /dev/null
 +++ b/bench/population_rules.rs
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,99 @@
 +//! The official client's rules for sending a refused request again, copied
 +//! for the population driver so the #149 ramp measures what a customer on
 +//! `@prisma/streams` gets (gate decision meas149-reshaping, 2026-11-16, "The
@@ -622,9 +623,14 @@ index 0000000..4124115
 +    if answer.status == 421 || answer.code == Some("wrong_cell") {
 +        return None;
 +    }
-+    // `retryableRequestError`: a 429 or 503 whose body does not say otherwise.
-+    let refusal = answer.status == 429 || answer.status == 503;
-+    let retryable = refusal && answer.stated.unwrap_or(true);
++    // `retryableRequestError`: a 429 or 503 whose body does not say otherwise,
++    // and a 409 `not_stream_owner` the body marks retryable (`ownerRefusal`,
++    // edge change #264: decided before any write).
++    let retryable = match answer.status {
++        429 | 503 => answer.stated.unwrap_or(true),
++        409 => answer.stated == Some(true) && answer.code == Some("not_stream_owner"),
++        _ => false,
++    };
 +    // `plainAppendReplays`: an append's 503 only on the server's own word.
 +    let replays = if kind == Kind::Append && answer.status == 503 {
 +        answer.stated == Some(true) && answer.code != Some("outcome_unknown")

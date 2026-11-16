@@ -15,7 +15,10 @@
   {"name": "append: 429 rate_limited, retryable, Retry-After 1: the four attempts only", "kind": "append", "status": 429, "body": "{\"error\":{\"code\":\"rate_limited\",\"message\":\"refused\",\"retryable\":true}}", "headers": {"retry-after": "1"}, "waits": [1000, 1000, 1000]},
   {"name": "append: 429 without a body is retryable", "kind": "append", "status": 429, "body": null, "headers": {"retry-after": "2"}, "waits": [2000, 2000, 2000]},
   {"name": "append: 429 marked not retryable", "kind": "append", "status": 429, "body": "{\"error\":{\"code\":\"quota_exceeded\",\"message\":\"refused\",\"retryable\":false}}", "headers": {"retry-after": "1"}, "waits": []},
-  {"name": "append: 409 not_stream_owner", "kind": "append", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {}, "waits": []},
+  {"name": "append: 409 not_stream_owner, Retry-After 1: sent again within the four attempts (edge change #264)", "kind": "append", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {"retry-after": "1"}, "waits": [1000, 1000, 1000]},
+  {"name": "append: 409 not_stream_owner without Retry-After: after 1 s", "kind": "append", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {}, "waits": [1000, 1000, 1000]},
+  {"name": "append: 409 not_stream_owner marked not retryable", "kind": "append", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":false}}", "headers": {"retry-after": "1"}, "waits": []},
+  {"name": "append: 409 of another code", "kind": "append", "status": 409, "body": "{\"error\":{\"code\":\"sealed\",\"message\":\"refused\",\"retryable\":false}}", "headers": {}, "waits": []},
   {"name": "append: 421 wrong cell", "kind": "append", "status": 421, "body": null, "headers": {}, "waits": []},
   {"name": "append: 503 wrong_cell", "kind": "append", "status": 503, "body": "{\"error\":{\"code\":\"wrong_cell\",\"message\":\"refused\",\"retryable\":true}}", "headers": {"retry-after": "1"}, "waits": []},
   {"name": "append: 500", "kind": "append", "status": 500, "body": "{\"error\":{\"code\":\"internal\",\"message\":\"refused\",\"retryable\":false}}", "headers": {}, "waits": []},
@@ -26,7 +29,8 @@
   {"name": "read: 503 marked not retryable", "kind": "read", "status": 503, "body": "{\"error\":{\"code\":\"outcome_unknown\",\"message\":\"refused\",\"retryable\":false}}", "headers": {"retry-after": "1"}, "waits": []},
   {"name": "read: 503 without Retry-After: the four attempts only", "kind": "read", "status": 503, "body": null, "headers": {}, "waits": [1000, 1000, 1000]},
   {"name": "read: 429 Retry-After 2", "kind": "read", "status": 429, "body": "{\"error\":{\"code\":\"rate_limited\",\"message\":\"refused\",\"retryable\":true}}", "headers": {"retry-after": "2"}, "waits": [2000, 2000, 2000]},
-  {"name": "read: 409 not_stream_owner", "kind": "read", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {}, "waits": []},
+  {"name": "read: 409 not_stream_owner, Retry-After 1: sent again within the four attempts (edge change #264)", "kind": "read", "status": 409, "body": "{\"error\":{\"code\":\"not_stream_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {"retry-after": "1"}, "waits": [1000, 1000, 1000]},
+  {"name": "read: 409 not_ring_owner is not sent again", "kind": "read", "status": 409, "body": "{\"error\":{\"code\":\"not_ring_owner\",\"message\":\"refused\",\"retryable\":true}}", "headers": {}, "waits": []},
   {"name": "read: 500", "kind": "read", "status": 500, "body": "{\"error\":{\"code\":\"internal\",\"message\":\"refused\",\"retryable\":false}}", "headers": {}, "waits": []},
   {"name": "read: a transport failure is sent again after 1, 2 and 4 s", "kind": "read", "status": 0, "body": null, "headers": {}, "waits": [1000, 2000, 4000]}
  ]

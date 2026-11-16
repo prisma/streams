@@ -2961,3 +2961,30 @@ not run (EDGE-260-RATIFICATION.md §5).
   count their successful answers too (red first, a queue DST like
   `a_product_surface_request_counts_toward_the_fleets_load`), an operator
   edge line.
+
+## 21. Follow-ups from edge change #264 (2026-11-16)
+
+A product `409 not_stream_owner` carries `Retry-After: 1` and the SDK
+sends it again within its four attempts (#264, GATE-DECISION-f4-edge-264
+A5). Two older gaps it does not close, each waiting for its own ruling:
+
+- **A settle across two owners never answers 200.** `settle`
+  (`src/application/consumer/delivery.rs`, around line 516) groups its
+  tokens per segment and resolves each segment's engine inside the loop.
+  When a stream's segments sit on shards of two owners, this instance
+  applies its own segments' tokens and then answers the other segment's
+  `NotOwner` as `409 not_stream_owner`; the owner the request reaches next
+  does the same with its part. Every attempt is refused although each
+  owner applied what it owns, and the answer's `acked`/`retried` counts
+  never sum (a resent token already settled counts `stale`, so nothing is
+  applied twice). Option: settle the owned segments, forward or report the
+  rest per segment, and answer `200` with the counts of all of them.
+- **The SDK does not follow `Streams-Replay-To`.** It resends a refused
+  request to the same base URL, so the resend reaches the owner only if
+  the router (Compute's edge, the rig's nginx) or the server's own forward
+  takes it there. The server forwards `/v1/stream*` routes only, so a
+  queue request to a non-owner is refused on every attempt unless the
+  router pins it. Option: the SDK pins the resend to the named owner
+  (`Compute-Instance`, where the edge honours it), or the server forwards
+  queue routes too. Ask Habanero whether Compute's edge follows
+  `Streams-Replay-To` first (meas149-reshaping, (d)).

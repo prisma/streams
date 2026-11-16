@@ -60,7 +60,7 @@ export interface StreamsClientOptions {
   /**
    * `transport` (default `true`): a request whose `fetch` fails is sent
    * again after 1, 2 and 4 s, within the four attempts it shares with the
-   * 429/503 replay (a `503` with `Retry-After` is also sent again after
+   * 429/503/409 `not_stream_owner` replay (a `503` with `Retry-After` is also sent again after
    * them until 15 s have passed since the first, whatever `transport`
    * says); a producer append is sent again with the same
    * sequence, which the server deduplicates (a replay it refuses rejects
@@ -472,7 +472,7 @@ function refusedReplayRecovery(cause: unknown): string {
  * without the field). The record may or may not have been written, and the
  * SDK does not send it again. (An earlier attempt the SDK made was a
  * refusal that writes nothing: a 401 before its token refresh, a retryable
- * 429, or a 503 the server marked retryable.) `status` is the HTTP status
+ * 429, a 409 `not_stream_owner`, or a 503 the server marked retryable.) `status` is the HTTP status
  * (0 for a transport failure); `cause` is the server's answer as a
  * `StreamsError`, or the value `fetch` threw. A retry the server
  * deduplicates needs a producer.
@@ -884,7 +884,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /** Whether a plain append sends a refusal again (`req()`'s `replays`): a
- * retryable `429`, as every request does, and a `503` only when its JSON body
+ * retryable `429` or `409 not_stream_owner`, as every request does, and a `503` only when its JSON body
  * itself says `"retryable": true` and is not `outcome_unknown`, the server's
  * word that nothing was written. Any other `503` (the server's
  * `outcome_unknown`, an edge's answer without the server's body, a body
@@ -982,7 +982,16 @@ async function appendedResult(res: Response): Promise<AppendResult> {
 function retryableRequestError(error: unknown): boolean {
   return error instanceof StreamsTransportError ||
     (error instanceof StreamsError && error.retryable &&
-      (error.status === 429 || error.status === 503));
+      (error.status === 429 || error.status === 503 || ownerRefusal(error)));
+}
+
+/** A `409 not_stream_owner`: the instance that answered does not own the
+ * stream's segment (a move or a split under way, or two instances whose
+ * views differ for a moment). It is decided before any write, so every
+ * request kind sends it again within its four attempts, after its
+ * `Retry-After` (1 s; edge change #264). After the attempts it surfaces. */
+function ownerRefusal(error: StreamsError): boolean {
+  return error.status === 409 && error.code === "not_stream_owner";
 }
 
 /** The wait before a transport failure's replay, by the attempt that failed. */
@@ -1079,7 +1088,7 @@ const PER_STREAM_CODES = new Set(["not_owner", "unsupported_format", "deliver_un
  * answer and pass through unchanged.
  *
  * `replays` decides which refusals are sent again on their `Retry-After`
- * within the attempts: a retryable `429` or `503`, except where a `503`
+ * within the attempts: a retryable `429` or `503`, or a `409 not_stream_owner`, except where a `503`
  * may have followed a write the server does not deduplicate (plain
  * appends). Such a `503` that carries `Retry-After` is also sent again
  * after the attempts until 15 s have passed since the first one

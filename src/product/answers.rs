@@ -4,7 +4,7 @@
 //! (`src/product.rs`) builds the same 200 without `Cache-Control` for the
 //! answers the matrix lists without it: the two usage routes (§2.19, §2.21)
 //! and the fleet-internal receivers. `retry_unavailable` gives every product
-//! 503 `temporarily_unavailable` its retry hint. `watch_event` is the watch
+//! 503 `temporarily_unavailable` and 409 `not_stream_owner` its retry hint. `watch_event` is the watch
 //! wait's body, which a multiplexed wait's watch entry carries too (§2.24).
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -37,9 +37,16 @@ pub(super) fn watch_observation_response(value: &serde_json::Value) -> Response 
 /// A product 503 `temporarily_unavailable` asks for a retry after one second
 /// unless its answer already states a delay (edge changes #64 and #178): the
 /// SDK rides through a restart only on a 503 that carries `Retry-After`
-/// (#177). Any other answer passes unchanged.
+/// (#177). So does a product 409 `not_stream_owner` (edge change #264): it is
+/// decided before any write, and the SDK sends it again within its attempts.
+/// Any other answer passes unchanged.
 pub(super) fn retry_unavailable(code: &str, mut response: Response) -> Response {
-    if code == "temporarily_unavailable" && response.status() == StatusCode::SERVICE_UNAVAILABLE {
+    let asks = match code {
+        "temporarily_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+        "not_stream_owner" => StatusCode::CONFLICT,
+        _ => return response,
+    };
+    if response.status() == asks {
         let headers = response.headers_mut();
         headers
             .entry(header::RETRY_AFTER)
@@ -97,12 +104,13 @@ mod tests {
         )
     }
 
-    /// Edge change #178's header is for a 503 `temporarily_unavailable`
-    /// alone: a 503 with any other code (`outcome_unknown` above all, which
-    /// the SDK must never resend) and a `temporarily_unavailable` under any
-    /// other status pass unchanged.
+    /// Edge change #178's header is for a 503 `temporarily_unavailable`,
+    /// and #264's for a 409 `not_stream_owner`: a 503 with any other code
+    /// (`outcome_unknown` above all, which the SDK must never resend), a 409
+    /// with any other code, and either code under any other status pass
+    /// unchanged.
     #[test]
-    fn only_a_503_temporarily_unavailable_gains_retry_after() {
+    fn only_a_503_temporarily_unavailable_or_a_409_not_stream_owner_gains_retry_after() {
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
         let answer = |status: StatusCode| (status, "{}").into_response();
@@ -124,6 +132,10 @@ mod tests {
                 None,
             ),
             ("outcome_unknown", StatusCode::INTERNAL_SERVER_ERROR, None),
+            ("not_stream_owner", StatusCode::CONFLICT, Some("1")),
+            ("not_ring_owner", StatusCode::CONFLICT, None),
+            ("sealed", StatusCode::CONFLICT, None),
+            ("not_stream_owner", StatusCode::SERVICE_UNAVAILABLE, None),
         ];
         for (code, status, want) in cases {
             let got = super::retry_unavailable(code, answer(status));
@@ -173,6 +185,44 @@ mod tests {
         let response = super::super::render_product_read_failure(failure);
         let want = (503, Some("1".to_string()), "temporarily_unavailable".into());
         assert_eq!(wire(response).await, want);
+    }
+
+    /// Edge change #264: every product `409 not_stream_owner` (an append's,
+    /// a consumer's, a queue's) asks for a retry after one second beside its
+    /// replay target, since it is decided before any write.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn every_not_stream_owner_asks_for_a_retry_after_one_second() {
+        use crate::application::{consumer, queues};
+        let owner = Some("streams-2".to_string());
+        let mut append = AppendFailure::new(FailureClass::Conflict, AppendCode::NotOwner, "x");
+        append.owner = owner.clone();
+        let consumer = consumer::ConsumerFailure {
+            class: consumer::FailureClass::Conflict,
+            code: "not_stream_owner",
+            message: "x".into(),
+            details: None,
+            retryable: true,
+            version: None,
+            owner: owner.clone(),
+            auth: None,
+            deletion_debt: None,
+        };
+        let mut queue = queues::fail(queues::FailureClass::Conflict, "not_stream_owner", "x");
+        queue.retryable = true;
+        queue.owner = owner;
+        for response in [
+            super::super::render_product_append_error(append),
+            super::super::consumer_failure_response(consumer),
+            super::super::queues::failure_response(queue),
+        ] {
+            let replay = response.headers().get("streams-replay-to").cloned();
+            assert_eq!(
+                replay.as_ref().map(|v| v.to_str().unwrap()),
+                Some("streams-2")
+            );
+            let want = (409, Some("1".to_string()), "not_stream_owner".into());
+            assert_eq!(wire(response).await, want);
+        }
     }
 
     /// An append refused `temporarily_unavailable` with no delay of its own

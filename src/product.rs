@@ -2526,7 +2526,7 @@ fn consumer_failure_response(error: crate::application::consumer::ConsumerFailur
     {
         response.headers_mut().insert("streams-replay-to", owner);
     }
-    response
+    answers::retry_unavailable(error.code, response)
 }
 #[expect(
     clippy::unwrap_used,

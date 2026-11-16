@@ -128,9 +128,10 @@ The driver is the official client (gate decision meas149-reshaping,
 2026-11-16): a touch's append and read each follow `@prisma/streams`' rules
 for a refusal (`population_rules.rs` in the patch). A refusal the server
 states as "nothing written, retry" (a retryable `503` that is not
-`outcome_unknown`, a retryable `429`, and a read's transport failure) is
-sent again on its `Retry-After`; anything else (a `409 not_stream_owner`,
-`outcome_unknown`, an append's transport failure) fails the touch, counts
+`outcome_unknown`, a retryable `429`, a `409 not_stream_owner` (edge change
+#264), and a read's transport failure) is sent again on its `Retry-After`;
+anything else (`outcome_unknown`, an append's transport failure, a read's
+`409 not_ring_owner`) fails the touch, counts
 against the 98% and is reported (`touch_errors`). A touch is timed from its
 first attempt to its last answer. Beside the verdict, never gating, each
 window and step report `first_attempt`: the share of the touches due

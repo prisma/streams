@@ -208,6 +208,11 @@ In plain words:
   request the server answers idempotently (and a producer append's `2xx`
   whose answer cannot be read), after 1, 2 and 4 s: at most four attempts
   in all, and one more after a `401` refreshes the token.
+- A `409` `not_stream_owner` (`retryable: true`) means the instance that
+  answered does not own the stream's segment for a moment (a move or a
+  split under way). It is decided before anything is written, so every
+  request, plain appends included, is sent again on its `Retry-After`
+  (1 s) within the same four attempts; after them it surfaces.
 - A restart or a deploy leaves the service unable to serve for up to about
   9 s, and it answers `503` `temporarily_unavailable` (`retryable: true`)
   with `Retry-After` meanwhile. A `503` that carries `Retry-After` is
