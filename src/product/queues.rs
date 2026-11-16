@@ -228,7 +228,7 @@ pub(crate) fn failure_response(f: QueueFailure) -> Response {
     if let Some(secs) = f.retry_after {
         r.headers_mut().insert("retry-after", secs.into());
     }
-    r
+    super::answers::retry_unavailable(f.code, r)
 }
 
 /// `GET /v1/queues`: the project's queues.

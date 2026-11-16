@@ -156,13 +156,15 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   - again: an append's `503` whose body says `"retryable": true` and whose
     code is not `outcome_unknown` (a `503 shard_splitting`, an append held
     past a split's pause, known unwritten: `AppendErr::Splitting`); a
-    read's retryable `503`; a retryable `429`; a read's transport failure.
+    read's retryable `503`; a retryable `429`; a `409 not_stream_owner`
+    (decided before any write, edge change #264); a read's transport
+    failure.
     The wait is `Retry-After` clamped to [0, 5] s (1 s without one), within
     four attempts; after them only a `503` that carries `Retry-After`,
-    until 15 s after the first attempt;
-  - not again, a failed touch: a `409 not_stream_owner` (the SDK does not
-    follow it today), `outcome_unknown`, an append's transport failure
-    (a plain append is never replayed), anything else. A failed touch
+    until 15 s after the first attempt (a `409` surfaces after the four);
+  - not again, a failed touch: `outcome_unknown`, an append's transport
+    failure (a plain append is never replayed), a read's `409
+    not_ring_owner`, anything else. A failed touch
     counts against the 98% and is reported; the bar does not also ask for
     zero.
   - A touch's latency runs from its first attempt to its last answer,
