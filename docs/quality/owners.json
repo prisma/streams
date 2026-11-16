@@ -329,6 +329,46 @@
       "syntax": "path = \"tests/fixture_split.rs\""
     },
     {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::counts_do_not_sum",
+      "path": "src/dst/tests/fixture_split.rs",
+      "reason": "F1b's refusal scenario (meas149-reshaping F1b, run twice by split_k's DST): the split runs pinned in the test task and a select tells whether it ended or reached its park first, so a split that parks for a refusal is caught without a spawn (primitive spawning is owner-only); the compiler checks the expansion.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::counts_do_not_sum",
+      "path": "src/dst/tests/fixture_split.rs",
+      "reason": "F1b's refusal scenario (meas149-reshaping F1b, run twice by split_k's DST): the split runs pinned in the test task and a select tells whether it ended or reached its park first, so a split that parks for a refusal is caught without a spawn (primitive spawning is owner-only); the compiler checks the expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::split_parked",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "The trim-race DSTs' split (GATE-DECISION-f1b-trim-race): the split runs pinned in the test task and a select tells whether it ended or reached its park first, so a refusal in Preparing fails the test with its text instead of a timeout (primitive spawning is owner-only); the compiler checks the expansion.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::split_parked",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "The trim-race DSTs' split (GATE-DECISION-f1b-trim-race): the split runs pinned in the test task and a select tells whether it ended or reached its park first, so a refusal in Preparing fails the test with its text instead of a timeout (primitive spawning is owner-only); the compiler checks the expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::trimmed_once_then_acked",
+      "path": "src/dst/tests/queue_split.rs",
+      "reason": "The queue the trim-race DSTs and F1b's control split: the expected settle outcomes (two acks, each ok) as JSON values the queue routes answer with; the compiler checks the expansion.",
+      "syntax": "serde_json::json"
+    },
+    {
       "category": "by-path-module",
       "count": 1,
       "owner": "crate::shared_cell_hostile",
