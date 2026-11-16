@@ -392,3 +392,79 @@ async fn a_chunk_of_a_seal_in_flight_is_never_given_back() {
     );
     assert_eq!(head(&e).await, Some(Head::trimming(2, 2)));
 }
+
+/// The live chunks the `'R'` row of `object` counts (0 once it is gone).
+async fn counted(e: &ShardEngine, object: crate::spill::object::ObjectId) -> u64 {
+    let raw = e.db.get(gc::refcount_key(object)).await.unwrap();
+    raw.as_deref()
+        .and_then(gc::decode_refcount)
+        .map_or(0, |r| r.live_chunks)
+}
+
+/// **A purge decrements no chunk the trim already released** (S3b-DESIGN
+/// §5.9, F4; TLA-047 control 8). Two queues share an object: one seal takes
+/// the queue's second message and the neighbour queue's one message. The
+/// queue's first message stays leased and its second is acked, so the trim
+/// releases the shared object's queue chunk into a `'k'` interval and the
+/// object counts only the neighbour's chunk. The queue is then deleted and
+/// purged: the purge reads `'k'` first and decrements only the queue's other
+/// chunk, so the shared object keeps the neighbour's count of 1, and the
+/// last batch deletes the `'k'` rows with `reclaimed = head`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_purge_decrements_no_chunk_the_trim_released() {
+    const NEIGHBOUR: [u8; 16] = [7; 16];
+    let (e, _db, _c) = clocked("nq-trim-purge-shared", QueueConfig::default()).await;
+    let neighbour = |op| e.submit_native_queue(NEIGHBOUR, op);
+    let create = NqOp::Create {
+        cfg: QueueConfig::default(),
+        container: super::CONTAINER,
+    };
+    neighbour(create).await.unwrap();
+    send_sealed(&e, msg("a")).await;
+    op(&e, send_op(vec![msg("b")])).await.unwrap();
+    neighbour(send_op(vec![msg("n")])).await.unwrap();
+    seal(&e).await;
+    let shared = e.live_chunks(NEIGHBOUR).await.unwrap()[0].object;
+    assert_eq!(
+        counted(&e, shared).await,
+        2,
+        "the queue's chunk [1, 1] and the neighbour's"
+    );
+    let leased = claim(&e, 2).await;
+    ack(&e, &leased[1..]).await;
+    e.trim_pass().await.unwrap();
+    assert_eq!(e.intervals(&HASH).await.unwrap(), [iv(1, 1)]);
+    assert_eq!(
+        counted(&e, shared).await,
+        1,
+        "the trim released the queue's chunk"
+    );
+    op(&e, NqOp::BeginDelete).await.unwrap();
+    while !matches!(
+        op(&e, NqOp::DeleteStep { max_rows: 64 }).await.unwrap(),
+        NqOut::DeleteStepped { remaining: false }
+    ) {}
+    let kept = e.intervals(&HASH).await.unwrap();
+    assert_eq!(kept, [iv(1, 1)], "the delete leaves 'k' to the purge");
+    e.request_purge(HASH, 0).await.unwrap();
+    let outcome = e.purge_stream_at(HASH, u64::MAX).await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            crate::shard::seal::gc::purge::PurgeOutcome::Reclaimed { chunks: 1 }
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        counted(&e, shared).await,
+        1,
+        "the neighbour's chunk still counts"
+    );
+    let done = head(&e).await.unwrap();
+    assert_eq!((done.state, done.reclaimed), (HeadState::Purged, done.head));
+    assert_eq!(
+        e.intervals(&HASH).await.unwrap(),
+        [],
+        "'k' went with the last decrement"
+    );
+}

@@ -20,6 +20,7 @@ use std::sync::atomic::Ordering;
 use slatedb::WriteBatch;
 
 use super::GcError;
+use crate::native_queue::intervals::{self, Interval, Released};
 use crate::shard::ShardEngine;
 use crate::shard::seal::SealCommit;
 use crate::spill::directory::DirEntry;
@@ -248,16 +249,22 @@ impl ShardEngine {
             .is_some_and(|h| h.state == HeadState::Purged))
     }
 
-    /// Step 2 (the caller holds `refs`): the stream's remaining rows
-    /// deleted (`delete_stream_rows`), then every unreclaimed chunk of
-    /// `hash` ending below `head` decremented, in offset order, at most
-    /// `reclaim_batch` chunks per batch, each batch moving `reclaimed` past
-    /// its last chunk (the last to `head`): a crash between batches resumes
-    /// exactly where the last one ended.
+    /// Step 2 (the caller holds `refs`): a trimmed queue's released
+    /// intervals read first (S3b-DESIGN §5.9, F4), the stream's remaining
+    /// rows deleted (`delete_stream_rows`), then every unreclaimed chunk of
+    /// `hash` ending below `head` and lying in no interval decremented, in
+    /// offset order, at most `reclaim_batch` chunks per batch, each batch
+    /// moving `reclaimed` past its last chunk (the last to `head`, deleting
+    /// the intervals): a crash between batches resumes exactly where the
+    /// last one ended. A chunk in an interval was decremented by the trim:
+    /// decremented again, an object it shares with another stream would
+    /// reach zero while that stream still needs it.
     async fn reclaim_locked(&self, hash: [u8; 16], head: Head) -> Result<u64, GcError> {
         if !head.owes() {
             return Ok(0);
         }
+        let trimmed = self.intervals(&hash).await.map_err(GcError::Store)?;
+        let released = Released::new(head.reclaimed, &trimmed);
         self.delete_stream_rows(hash).await?;
         let gc = self.gc_state();
         let batch_max = gc.settings().reclaim_batch.max(1);
@@ -271,6 +278,7 @@ impl ShardEngine {
         let due: Vec<&DirEntry> = live
             .iter()
             .filter(|e| e.first >= head.reclaimed && e.last < head.head)
+            .filter(|e| !released.inside(e.first, e.last))
             .filter(counted)
             .collect();
         let mut done = head;
@@ -282,12 +290,14 @@ impl ShardEngine {
             for e in part {
                 gc::decrement(&mut decrements, e);
             }
-            done.reclaimed = if n == last_batch {
-                head.head
+            let (reclaimed, gone): (u64, &[Interval]) = if n == last_batch {
+                (head.head, &trimmed)
             } else {
-                part.last().map_or(head.head, |e| e.last.saturating_add(1))
+                let next = part.last().map_or(head.head, |e| e.last.saturating_add(1));
+                (next, &[])
             };
-            self.write_reclaim(hash, &decrements, done).await?;
+            done.reclaimed = reclaimed;
+            self.write_reclaim(hash, &decrements, done, gone).await?;
             chunks += part.len() as u64;
             let bytes: u64 = part.iter().map(|e| u64::from(e.chunk_len)).sum();
             gc.counters
@@ -296,7 +306,8 @@ impl ShardEngine {
         }
         if due.is_empty() {
             done.reclaimed = head.head;
-            self.write_reclaim(hash, &Decrements::new(), done).await?;
+            self.write_reclaim(hash, &Decrements::new(), done, &trimmed)
+                .await?;
         }
         gc.counters.reclaims.fetch_add(1, Ordering::Relaxed);
         gc.counters
@@ -305,16 +316,21 @@ impl ShardEngine {
         Ok(chunks)
     }
 
-    /// One reclaim batch: `decrements` and the `'H'` row at `head`.
+    /// One reclaim batch: `decrements`, the `'H'` row at `head`, and the
+    /// deletes of the released intervals `gone` (the last batch's).
     async fn write_reclaim(
         &self,
         hash: [u8; 16],
         decrements: &Decrements,
         head: Head,
+        gone: &[Interval],
     ) -> Result<(), GcError> {
         let mut batch = WriteBatch::new();
         let zeroed = self.stage_decrements(&mut batch, decrements).await?;
         batch.put(gc::head_key(&hash), gc::encode_head(&head));
+        for iv in gone {
+            batch.delete(intervals::key(&hash, iv.last));
+        }
         self.write_decrements(batch, &zeroed).await
     }
 
