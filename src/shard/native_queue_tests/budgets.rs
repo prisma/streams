@@ -459,3 +459,22 @@ async fn a_claim_leaves_a_due_retry_that_would_pass_its_byte_limit() {
     assert_eq!((s.leased, s.retrying, s.floors.retries), (1, 1, c));
     assert_eq!(claim_within(&e, limit).await, vec![1]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_send_landing_exactly_on_the_byte_budget_is_taken() {
+    let (e, db, _c) = clocked("nq-send-bytes-edge", QueueConfig::default()).await;
+    op(&e, send_op(vec![msg("abc")])).await.unwrap();
+    op(&e, send_op(vec![msg("1234567")])).await.unwrap();
+    let (first, second) = (stored(&db, 0).await, stored(&db, 1).await);
+    let budget = first + second + first;
+    set_max_bytes(&e, budget).await;
+    op(&e, send_op(vec![msg("abc")])).await.unwrap();
+    assert_eq!(
+        stored(&db, 2).await,
+        first,
+        "the same body seals to the same length"
+    );
+    assert_eq!(state(&db).await.queued_bytes, budget, "the budget itself");
+    let over = op(&e, send_op(vec![msg("x")])).await;
+    assert_eq!(over.unwrap_err(), NqRefusal::QueueFull);
+}

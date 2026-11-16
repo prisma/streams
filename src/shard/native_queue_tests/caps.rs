@@ -162,3 +162,21 @@ async fn a_scheduled_page_rides_inline_only_under_the_inline_budget() {
     op(&e, settle(acks.collect())).await.unwrap();
     assert_eq!(state(&db).await.inline_bytes, 0, "back when it ends");
 }
+
+/// At the scheduled cap a send due exactly at the queue's clock is immediate and taken, and one
+/// more scheduled message, sent alone, is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn at_the_scheduled_cap_a_send_due_now_is_taken_and_one_more_scheduled_is_refused() {
+    let (e, db, c) = clocked("nq-cap-scheduled-edge", capped(1_000)).await;
+    edit_state(&db, |s| s.scheduled = 1_000).await;
+    let NqOut::Sent(sent) = op(&e, send_op(vec![scheduled("now", c)])).await.unwrap() else {
+        panic!("a send answers sent")
+    };
+    let first = (sent.len(), sent[0].available_at);
+    assert_eq!(first, (1, c), "due at the queue's clock: immediate");
+    assert_eq!(state(&db).await.scheduled, 1_000);
+    let more = op(&e, send_op(vec![scheduled("later", c + 60_000)])).await;
+    assert_eq!(more.unwrap_err(), NqRefusal::ScheduledFull);
+    let s = state(&db).await;
+    assert_eq!((s.counters.sent, s.scheduled), (1, 1_000));
+}
