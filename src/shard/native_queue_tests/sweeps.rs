@@ -380,3 +380,58 @@ async fn dedup_and_retention_sweeps_that_fill_their_step_look_again_in_a_second(
     assert_eq!(untaken, Some(c + RETENTION + 1_000), "untaken step");
     assert_eq!(state(&db).await.gap_count, u64::try_from(n).unwrap());
 }
+
+/// A sweep before the lane's expiry leaves the lane as it stands; one after it walks the lane,
+/// passing a scheduled message unresolved and expiring an untaken one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sweep_walks_the_lane_only_once_its_expiry_is_due() {
+    let (e, db, c) = clocked("nq-sweep-lane-due", QueueConfig::default()).await;
+    let later = SendMessage {
+        deliver_at: Some(c + 60_000),
+        ..msg("later")
+    };
+    op(&e, send_op(vec![later, msg("now")])).await.unwrap();
+    swept(&e).await;
+    assert_eq!(state(&db).await.frontier, 0, "the lane is not due");
+    set_clock(&db, c + RETENTION + 5_000).await;
+    swept(&e).await;
+    let s = state(&db).await;
+    let walked = (
+        s.frontier,
+        s.gap_count,
+        s.counters.expired,
+        s.queued_messages,
+    );
+    assert_eq!(walked, (2, 1, 1, 1));
+    assert!(
+        db.get(keys::page(&HASH, 1)).await.unwrap().is_none(),
+        "the expired page goes"
+    );
+}
+
+/// A sweep whose untaken step expires a full step of scheduled messages (only scheduled ones were
+/// sent, so the lane has no expiry and that step alone moves) gives back their inline bytes and
+/// looks again in a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_sweep_expiring_a_full_step_of_scheduled_messages_looks_again_in_a_second() {
+    let (e, db, c) = clocked("nq-sweep-full-untaken", QueueConfig::default()).await;
+    let at = c + 60_000;
+    for batch in 0..4 {
+        let due = |i| SendMessage {
+            deliver_at: Some(at),
+            ..msg(&format!("s{batch}-{i}"))
+        };
+        op(&e, send_op((0..64).map(due).collect())).await.unwrap();
+    }
+    let sent = state(&db).await;
+    assert_eq!((sent.lane_expire_at, sent.scheduled), (0, 256));
+    assert!(sent.inline_bytes > 0, "their pages ride inline");
+    let t = at + RETENTION;
+    set_clock(&db, t).await;
+    let (next, _) = swept(&e).await;
+    assert_eq!(next, Some(t + 1_000), "a full step looks again in a second");
+    let s = state(&db).await;
+    let counts = (s.gap_count, s.counters.expired, s.scheduled, s.inline_bytes);
+    assert_eq!(counts, (256, 256, 0, 0));
+    assert_eq!((s.queued_messages, s.queued_bytes), (0, 0));
+}
