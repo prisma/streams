@@ -310,3 +310,90 @@ async fn a_queue_split_then_merged_delivers_every_message_as_before_and_gives_ba
     assert_eq!((st, &v["stats"]["queuedMessages"]), (200, &json!(0)), "{v}");
     engine_shutdown(&cell.state).await;
 }
+
+/// **A split counts no chunk a trim already gave back** (S3a §2.8's
+/// recompute, S3b §7.3): the queue's chunk is folded into a run-index
+/// object, then retired and decremented by the trim, and only then is `00`
+/// split. The child that holds the queue must count none of the queue's
+/// chunks: each object's count in the child is the parent's after the trim,
+/// restricted to the child's streams.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_counts_no_chunk_a_trim_already_gave_back() {
+    let cell = cell().await;
+    let quiet = |e: &Engine| e.gc_state().configure(|s| s.auto = false);
+    quiet(&cell.parent);
+    let (name, hash, route) = queue_in_00(&cell).await;
+    three_acked(&cell, &name).await;
+    cell.parent.fold_once().await.expect("fold");
+    let chunks = cell.parent.live_chunks(hash).await.unwrap();
+    let objects: std::collections::BTreeSet<ObjectId> = chunks.iter().map(|c| c.object).collect();
+    let report = cell.parent.trim_pass().await.unwrap();
+    assert_eq!(report.released, chunks.len() as u64);
+    let trimmed = counts(&cell.parent).await;
+    super::merge_k::split_00(&cell.state, &cell.parent).await;
+    let Ok(child) = cell.state.engine_for_quiet(&route).await else {
+        panic!("this instance owns the queue's child");
+    };
+    quiet(&child);
+    let after = counts(&child).await;
+    for id in &objects {
+        let parent_left = trimmed.get(id).copied().unwrap_or(0);
+        let child_has = after.get(id).copied().unwrap_or(0);
+        assert!(
+            child_has <= parent_left,
+            "{id:?}: the child counts {child_has}, the parent had {parent_left} left after the trim"
+        );
+    }
+    engine_shutdown(&cell.state).await;
+}
+
+/// **A split counts no chunk a trim released behind a held one** (S3b-DESIGN
+/// §7.4, the split's recount row): three messages sealed one by one give
+/// three chunks; all three are leased and the second and third acked, so the
+/// first holds its chunk at the queue's `reclaimed` and the trim releases the
+/// other two into a `'k'` interval, not past `reclaimed`. After a fold and the
+/// trim, `00` splits: the child that holds the queue counts no chunk the
+/// interval names, so each object's count in the child is at most the
+/// parent's after the trim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_counts_no_chunk_a_trim_released_into_an_interval() {
+    let cell = cell().await;
+    let quiet = |e: &Engine| e.gc_state().configure(|s| s.auto = false);
+    quiet(&cell.parent);
+    let (name, hash, route) = queue_in_00(&cell).await;
+    for n in 0..3 {
+        send(&cell, &name, n..n + 1).await;
+        cell.parent.seal_requested().await.expect("seal");
+    }
+    let chunks = cell.parent.live_chunks(hash).await.unwrap();
+    assert_eq!(chunks.len(), 3, "one chunk per seal: {chunks:?}");
+    let leased = claim(&cell, &name, 3).await;
+    let acked = [leased[1].2.clone(), leased[2].2.clone()];
+    assert_eq!(ack(&cell, &name, &acked).await, [json!("ok"), json!("ok")]);
+    cell.parent.fold_once().await.expect("fold");
+    let report = cell.parent.trim_pass().await.unwrap();
+    assert_eq!(report.released, 2, "the second and third chunks");
+    let iv = cell.parent.intervals(&hash).await.unwrap();
+    assert_eq!(
+        iv.len(),
+        1,
+        "one released interval behind the held chunk: {iv:?}"
+    );
+    let trimmed = counts(&cell.parent).await;
+    let objects: std::collections::BTreeSet<ObjectId> = chunks.iter().map(|c| c.object).collect();
+    super::merge_k::split_00(&cell.state, &cell.parent).await;
+    let Ok(child) = cell.state.engine_for_quiet(&route).await else {
+        panic!("this instance owns the queue's child");
+    };
+    quiet(&child);
+    let after = counts(&child).await;
+    for id in &objects {
+        let parent_left = trimmed.get(id).copied().unwrap_or(0);
+        let child_has = after.get(id).copied().unwrap_or(0);
+        assert!(
+            child_has <= parent_left,
+            "{id:?}: the child counts {child_has}, the parent had {parent_left} left after the trim"
+        );
+    }
+    engine_shutdown(&cell.state).await;
+}

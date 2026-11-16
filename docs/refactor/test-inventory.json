@@ -3727,6 +3727,28 @@
     ]
   },
   {
+    "name": "a_split_counts_no_chunk_a_trim_already_gave_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4d6d6450c559854bd883d98a46afae94af7a568a36998273664c16ab1e38a243",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_counts_no_chunk_a_trim_released_into_an_interval",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "efaf4a9355dd101052ca32394fc2770d6eb61430053b502323fdb10256a021b9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/queue_split.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_incarnation_settles_segment_by_segment_and_only_then_forgets_its_debt",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

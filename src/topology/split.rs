@@ -585,7 +585,12 @@ async fn plan(
     let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
     let routed = sentinel::route(rows, &ranges).map_err(|e| e.to_string())?;
     let run = run_entries(store, |home| parent.object_root(home), rows).await?;
-    let released = sentinel::Released::of(rows).map_err(|e| e.to_string())?;
+    let mut released = sentinel::Released::of(rows).map_err(|e| e.to_string())?;
+    // A queue's trimmed intervals, as its 'k' rows durably hold them: stable here, since a trim's
+    // batch takes the gate this split holds exclusively.
+    for hash in released.streams() {
+        released.add_intervals(hash, &parent.intervals(&hash).await?);
+    }
     let mut out = Vec::with_capacity(children.len());
     for (routed, range) in routed.into_iter().zip(ranges) {
         let counts =

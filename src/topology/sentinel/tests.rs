@@ -4,8 +4,9 @@
 use super::{PlanError, Released, Row, check_sums, child_counts, child_lists, route};
 use crate::keyspace::range::Range;
 use crate::keyspace::{SENTINEL, tag};
+use crate::native_queue::intervals::Interval;
 use crate::spill::directory::split::decode_row_in_range;
-use crate::spill::directory::{KeySummary, directory_key, encode_row};
+use crate::spill::directory::{DirEntry, KeySummary, directory_key, encode_row};
 use crate::spill::gc::{self, ObjectKind, Refcount};
 use crate::spill::object::{ChunkInput, ObjectId, encode};
 use crate::spill::runindex::{self, Orphans};
@@ -348,6 +349,46 @@ fn a_child_counts_no_entry_its_stream_already_released() {
     assert_eq!(
         Released::of(&corrupt).map(|_| ()),
         Err(PlanError::Corrupt(gc::head_key(&low)))
+    );
+}
+
+/// **A queue's trimmed intervals release the entries inside them** (S3b-DESIGN §7.4). A queue's
+/// `'H'` row in Trimming keeps `reclaimed` at 0 (its first chunk held) while its `'k'` rows release
+/// `[4, 9]`: the recount drops an entry inside the interval and keeps one below it, one straddling
+/// its end and one past it; no interval releases nothing, and another stream's entry is its own.
+#[test]
+fn a_queues_trimmed_intervals_release_the_entries_inside_them() {
+    let q = hash(false, 3);
+    let input = chunk(q);
+    let object = encode(std::slice::from_ref(&input)).unwrap();
+    let summary = KeySummary::of(&input).unwrap();
+    let k = encode_row(&[(&object.chunks[0], &summary)]);
+    let (_, base) = decode_row_in_range(OBJECT, &k, Range::ALL)
+        .unwrap()
+        .remove(0);
+    let at = |first, last| DirEntry {
+        first,
+        last,
+        ..base.clone()
+    };
+    let trimming = gc::Head {
+        state: gc::HeadState::Trimming,
+        not_before_ms: 0,
+        head: 12,
+        reclaimed: 0,
+    };
+    let rows = [(gc::head_key(&q), gc::encode_head(&trimming))];
+    let mut heads = Released::of(&rows).unwrap();
+    assert_eq!(heads.streams(), [q]);
+    heads.add_intervals(q, &[]);
+    assert!(!heads.holds(&q, &at(4, 9)), "no interval releases nothing");
+    heads.add_intervals(q, &[Interval { first: 4, last: 9 }]);
+    let entries = [at(0, 3), at(4, 6), at(7, 9), at(8, 10), at(10, 11)];
+    let held: Vec<bool> = entries.iter().map(|e| heads.holds(&q, e)).collect();
+    assert_eq!(held, [false, true, true, false, false]);
+    assert!(
+        !heads.holds(&hash(false, 4), &at(4, 9)),
+        "another stream's entry"
     );
 }
 

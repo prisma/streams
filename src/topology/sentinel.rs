@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use crate::keyspace::range::Range;
 use crate::keyspace::split_rules::{SplitRule, routed_hash, split_rule};
 use crate::keyspace::{EntityHash, SENTINEL, tag};
+use crate::native_queue::intervals::{self, Interval};
 use crate::spill::directory::{self, DirEntry};
 use crate::spill::gc::{self, ObjectKind, Refcount};
 use crate::spill::object::ObjectId;
@@ -109,11 +110,15 @@ pub(crate) struct Counts {
 /// (the fold's `kept_entries` rule). A recount drops them too, so the children's `'R'` rows sum to
 /// the source's. The split builds it once from the source's rows ([`Released::of`]) and hands it to
 /// every child's [`child_counts`]; a release recorded outside the sentinel (a queue's trimmed
-/// intervals) is added by its caller before the counts, with one clause of [`Released::holds`].
+/// intervals, its `'k'` rows) is added by its caller before the counts ([`Released::add_intervals`]),
+/// with one clause of [`Released::holds`]: the fold's own `inside` (S3b-DESIGN §7.4).
 #[derive(Debug, Default)]
 pub(crate) struct Released {
-    /// Per dead stream, its `'H'` row's `reclaimed`: every entry ending below it is released.
+    /// Per stream with an `'H'` row, its `reclaimed`: every entry ending below it is released.
     below: BTreeMap<[u8; 16], u64>,
+    /// Per queue with an `'H'` row in any state, the intervals its trim released above
+    /// `reclaimed`: every entry lying inside one is released.
+    intervals: BTreeMap<[u8; 16], intervals::Released>,
 }
 
 impl Released {
@@ -131,11 +136,28 @@ impl Released {
         Ok(released)
     }
 
+    /// The streams with an `'H'` row: those whose queue intervals the caller reads.
+    pub(crate) fn streams(&self) -> Vec<[u8; 16]> {
+        self.below.keys().copied().collect()
+    }
+
+    /// Add the intervals the queue of `hash` released (its `'k'` rows, read by the caller).
+    pub(crate) fn add_intervals(&mut self, hash: [u8; 16], released: &[Interval]) {
+        if !released.is_empty() {
+            self.intervals
+                .insert(hash, intervals::Released::new(0, released));
+        }
+    }
+
     /// Whether the stream of `hash` already released `entry`.
     pub(crate) fn holds(&self, hash: &[u8; 16], entry: &DirEntry) -> bool {
         self.below
             .get(hash)
             .is_some_and(|reclaimed| entry.last < *reclaimed)
+            || self
+                .intervals
+                .get(hash)
+                .is_some_and(|k| k.inside(entry.first, entry.last))
     }
 }
 
