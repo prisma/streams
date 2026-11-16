@@ -1,9 +1,10 @@
 #![cfg(test)]
 //! The split DSTs' cell (`split_k` and its siblings): a rig whose stored topology is its own, with a
-//! stream in each half of the leaf `00` holding two records each, and the leaf's engine.
+//! stream in each half of the leaf `00` holding two records each, and the leaf's engine; and the
+//! scenario `split_k`'s refusal DST runs twice (`counts_do_not_sum`).
 
 use super::billing_closure_debts::{JSON, engine_of, raw_put, stored};
-use super::fixture_http::{http_rig_two_bit, http_rig_two_bit_cold};
+use super::fixture_http::{engine_shutdown, http_rig_two_bit, http_rig_two_bit_cold};
 use super::fixture_requests::hreq;
 use super::fixture_storage::mem;
 use std::sync::Arc;
@@ -112,4 +113,110 @@ async fn cell_of(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr
         high,
         parent,
     }
+}
+
+/// The records of `name` and the next offset its read reports.
+pub(super) async fn records_and_next(
+    addr: Addr,
+    name: &str,
+) -> (serde_json::Value, Option<String>) {
+    let (status, headers, body) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(status, 200, "{name}: {}", String::from_utf8_lossy(&body));
+    let records = serde_json::from_slice(&body).unwrap_or_default();
+    (records, headers.get("stream-next-offset").cloned())
+}
+
+/// `a_split_whose_counts_do_not_sum_rolls_back_without_parking` as `op_id`; with a `trimming_queue`
+/// on the leaf (GATE-DECISION-f1b-trim-race, its control: the check runs on a shard whose queue has
+/// trimmed intervals too).
+pub(super) async fn counts_do_not_sum(op_id: &str, trimming_queue: bool) {
+    use crate::spill::gc;
+    let cell = cell().await;
+    super::purge_lifecycle::drive(&cell.parent);
+    if trimming_queue {
+        super::queue_split::trimmed_once_then_acked(&cell).await;
+    }
+    let Cell {
+        state,
+        addr,
+        low,
+        parent,
+        ..
+    } = cell;
+    parent.seal_requested().await.expect("seal");
+    let (id, row) = parent
+        .refcount_rows()
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|(id, r)| Some((id, r?)))
+        .expect("a sealed object");
+    let stale = gc::Refcount {
+        live_chunks: row.live_chunks + 1,
+        ..row
+    };
+    parent
+        .db
+        .put(gc::refcount_key(id), gc::encode_refcount(&stale))
+        .await
+        .unwrap();
+    let (reached, mut reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    parent
+        .gc_state()
+        .gate
+        .pause_at_park(crate::topology::gate::PausePoint { reached, go });
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, op_id, "inst-a", &*clock);
+    let mut split = std::pin::pin!(split);
+    let control = async {
+        tokio::select! {
+            refused = &mut split => (refused, false),
+            Ok(()) = &mut reached_rx => {
+                assert!(go_tx.send(()).is_ok(), "the split waits for go");
+                ((&mut split).await, true)
+            }
+        }
+    };
+    let ((refused, parked), (status, next)) =
+        futures_util::future::join(control, append(addr, &low, 9)).await;
+    assert!(
+        !parked,
+        "the split parked the shard for a refusal Preparing could see"
+    );
+    let why = match refused {
+        Err(crate::topology::split::Refused::RolledBack(why)) => why,
+        other => panic!("the split rolls back: {:?}", other.map(|p| p.version)),
+    };
+    let sums = |chunks| Some((chunks, row.live_bytes, 0, 0));
+    let want = crate::topology::sentinel::PlanError::Mismatch {
+        id,
+        stored: sums(row.live_chunks + 1),
+        summed: sums(row.live_chunks),
+    };
+    assert_eq!(why, want.to_string());
+    let ended = crate::topology::intent::read(&**parent.data_store())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ended.intent.state,
+        crate::topology::intent::State::RolledBack
+    );
+    assert_eq!(status, 204, "the append is acked");
+    let (after, read_next) = records_and_next(addr, &low).await;
+    let last = after.as_array().and_then(|a| a.last()).cloned();
+    assert_eq!(
+        last,
+        serde_json::from_str::<serde_json::Value>(&body(9))
+            .unwrap()
+            .get(0)
+            .cloned()
+    );
+    assert_eq!(
+        next, read_next,
+        "acked at the offset the parent serves next"
+    );
+    assert!(!parent.is_closed(), "the parent serves on");
+    engine_shutdown(&state).await;
 }
