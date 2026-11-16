@@ -333,3 +333,39 @@ async fn a_group_whose_batch_was_not_written_leaves_the_sums_as_the_rows_hold_th
     op(&e, NqOp::Get).await.unwrap();
     assert_eq!(persisted(&db).await.shard()[3], 504, "the rows agree");
 }
+
+/// A commit group's later queue operations keep the gauge moves its earlier ones staged, of the
+/// same queue and of another: the shard's sums count every one, in memory and in the rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_groups_later_queue_operations_keep_its_earlier_gauge_moves() {
+    let (e, db, _c) = clocked("nq-slices-group", QueueConfig::default()).await;
+    other_queue(&e).await;
+    let (mut ops, mut replies) = (Vec::new(), Vec::new());
+    for (hash, m) in [
+        (HASH, keyed("a", 1)),
+        (HASH, keyed("b", 2)),
+        (OTHER, keyed("x", 9)),
+    ] {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let op = send_op(vec![m]);
+        ops.push(crate::shard::CommitOp::NativeQueue { hash, op, resp: tx });
+        replies.push(rx);
+    }
+    e.commit_group(ops).await;
+    for rx in replies {
+        let reply = tokio::time::timeout(super::REPLY_WITHIN, rx).await;
+        let sent = reply.expect("the group answers").expect("a reply");
+        assert!(matches!(sent, Ok(NqOut::Sent(_))), "{sent:?}");
+    }
+    let three = 3 * queue_gauges::W_DEDUP;
+    assert_eq!(
+        e.layout.queue_gauges.shard()[3],
+        three,
+        "every move of the group counts"
+    );
+    assert_eq!(
+        persisted(&db).await.shard()[3],
+        three,
+        "and its rows carry them"
+    );
+}
