@@ -219,12 +219,20 @@ fn the_childrens_counts_must_sum_to_the_sources() {
     let children = [Range::of("0"), Range::of("1")]
         .map(|r| child_counts(&rows, &[], r, &Released::default()).unwrap());
     assert_eq!(check_sums(&rows, &children), Ok(()));
+    let total = parent.live_bytes;
+    let mismatch = |id, stored, summed| Err(PlanError::Mismatch { id, stored, summed });
     let mut short = children.clone();
     short[1].refcounts.clear();
-    assert_eq!(check_sums(&rows, &short), Err(PlanError::Mismatch(OBJECT)));
+    assert_eq!(
+        check_sums(&rows, &short),
+        mismatch(OBJECT, Some((2, total, 3, 30)), Some((1, lens[0], 3, 30)))
+    );
     let mut extra = children.clone();
     extra[0].refcounts.push((OTHER, parent));
-    assert_eq!(check_sums(&rows, &extra), Err(PlanError::Mismatch(OTHER)));
+    assert_eq!(
+        check_sums(&rows, &extra),
+        mismatch(OTHER, None, Some((2, total, 0, 0)))
+    );
     let taken = (children[0].orphans.len(), children[1].orphans.len());
     assert_eq!(
         taken,
@@ -233,7 +241,10 @@ fn the_childrens_counts_must_sum_to_the_sources() {
     );
     let mut lost = children;
     lost.iter_mut().for_each(|c| c.orphans.clear());
-    assert_eq!(check_sums(&rows, &lost), Err(PlanError::Mismatch(OBJECT)));
+    assert_eq!(
+        check_sums(&rows, &lost),
+        mismatch(OBJECT, Some((2, total, 3, 30)), Some((2, total, 0, 0)))
+    );
 }
 
 /// **A child lists every ancestor object it holds, per home, once.** Its counts name `OBJECT`
@@ -482,6 +493,17 @@ fn a_plan_refusal_reads_as_its_cause() {
     assert_eq!(
         PlanError::NotSentinel(vec![0xab, 0x01]).to_string(),
         "not a sentinel row: ab01"
+    );
+    let mismatch = PlanError::Mismatch {
+        id: OBJECT,
+        stored: Some((3, 300, 1, 10)),
+        summed: None,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "the children's counts of ObjectId { home: 0, epoch: 1, seq: 1 } do not sum to the \
+         source's: (chunks, bytes, orphan chunks, orphan bytes) stored Some((3, 300, 1, 10)), \
+         summed None"
     );
     assert_eq!(
         PlanError::Index("two chunks hold [0, 9]".to_string()).to_string(),

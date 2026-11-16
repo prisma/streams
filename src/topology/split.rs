@@ -296,12 +296,13 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
         Some(_) => parent.barrier().await.ok(),
         None => None,
     };
+    // Tests only: the park is reached only once the barrier parked; a test that went away is no
+    // reason to stop the split.
     #[cfg(test)]
-    if let Some(point) = gate.take_pause() {
-        // Tests only: a test that went away is no reason to stop the split.
-        if point.reached.send(()).is_ok() {
-            drop(point.go.await);
-        }
+    if let Some(point) = barrier.as_ref().and_then(|_| gate.take_pause())
+        && point.reached.send(()).is_ok()
+    {
+        drop(point.go.await);
     }
     let paused_at = std::time::Instant::now();
     let copied = match (&prepared, &barrier) {
@@ -471,7 +472,8 @@ async fn begin(
 }
 
 /// Preparing (S4-DESIGN §6.2 steps 0.3 to 0.5), unpaused: the parent folds what it can, its
-/// collection stands down and the touched-queue mark starts; the plan is made from its sentinel
+/// collection stands down and the touched-queue mark starts; the plan is made from its sentinel,
+/// its sums are checked (a refusal here rolls back before the gate and the barrier park anything),
 /// and its lists are PUT.
 async fn prepare(
     store: &dyn ObjectStore,
@@ -488,6 +490,7 @@ async fn prepare(
     gate.start_marking();
     let rows = sentinel_rows(parent).await?;
     let plan = plan(store, parent, children, &rows).await?;
+    check_sums(&rows, &plan)?;
     let mut put = Vec::with_capacity(children.len());
     for (child, (_, counts)) in children.iter().zip(&plan) {
         let lists = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
@@ -547,8 +550,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
         .map_err(|e| format!("checkpoint: {e}"))?;
     let rows = sentinel_rows(parent).await?;
     let plan = plan(store, parent, children, &rows).await?;
-    let counts: Vec<Counts> = plan.iter().map(|(_, c)| c.clone()).collect();
-    sentinel::check_sums(&rows, &counts).map_err(|e| e.to_string())?;
+    check_sums(&rows, &plan)?;
     for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(prepared) {
         let now = sentinel::child_lists(&rows, counts).map_err(|e| e.to_string())?;
         let (first, more) = pause_lists(put, supplements(put, &now));
@@ -573,6 +575,12 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &[Lists]) -> Result<(), 
         cloned?;
     }
     actor.still_owned("'T', after the clones").await
+}
+
+/// Whether the children's counts in `plan` sum to the parent's in `rows` (`sentinel::check_sums`).
+fn check_sums(rows: &[Row], plan: &[(Vec<Row>, Counts)]) -> Result<(), String> {
+    let counts: Vec<Counts> = plan.iter().map(|(_, c)| c.clone()).collect();
+    sentinel::check_sums(rows, &counts).map_err(|e| e.to_string())
 }
 
 /// Each child's routed rows and counts from the parent's sentinel `rows`.
