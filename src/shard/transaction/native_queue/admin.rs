@@ -316,13 +316,13 @@ impl CommitTransaction<'_> {
     }
 
     /// Peek (§6.7): open deliveries, unresolved scheduled messages and the
-    /// lane's untaken messages, by offset.
+    /// lane's untaken messages, by offset. The lane is read from the frontier
+    /// on: no page lies at or past the stream's next offset.
     pub(super) async fn nq_peek(
         &self,
         hash: [u8; 16],
         st: &mut NativeStage,
         page: (Option<u64>, usize),
-        next: u64,
     ) -> NqResult {
         let (after, limit) = page;
         let from = after.map_or(0, |a| a.saturating_add(1));
@@ -347,10 +347,8 @@ impl CommitTransaction<'_> {
             }
         }
         let lane_from = from.max(st.state.frontier);
-        if lane_from < next {
-            for v in self.nq_lane_views(&hash, st, lane_from, limit).await? {
-                items.entry(v.offset).or_insert(v);
-            }
+        for v in self.nq_lane_views(&hash, st, lane_from, limit).await? {
+            items.entry(v.offset).or_insert(v);
         }
         let items: Vec<DeliveryView> = items.into_values().take(limit).collect();
         let next = (items.len() == limit)
@@ -418,13 +416,13 @@ impl CommitTransaction<'_> {
     }
 
     /// One message by offset: its open delivery, its scheduled entry, or
-    /// its untaken page; `Reclaimed` when it is resolved.
+    /// its untaken page at or past the frontier (no page lies at or past the
+    /// stream's next offset); `Reclaimed` when it is resolved.
     pub(super) async fn nq_message(
         &self,
         hash: [u8; 16],
         st: &mut NativeStage,
         offset: u64,
-        next: u64,
     ) -> NqResult {
         if let Some(row) = self.nq_delivery(&hash, st, offset).await? {
             return Ok(NqOut::Message(view(offset, &row.facts(), Some(&row))));
@@ -432,7 +430,7 @@ impl CommitTransaction<'_> {
         if let Some(sched) = self.nq_scheduled(&hash, st, offset).await? {
             return Ok(NqOut::Message(view(offset, &sched.facts, None)));
         }
-        if offset >= st.state.frontier && offset < next {
+        if offset >= st.state.frontier {
             let pages = self.nq_lane_pages(&hash, st, offset, 1).await?;
             if let Some(p) = pages.first().filter(|p| p.offset == offset)
                 && let Some(v) = self.nq_lane_view(&hash, st, p).await?

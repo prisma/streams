@@ -129,11 +129,8 @@ impl CommitTransaction<'_> {
             } => self.nq_redrive(hash, st, (offsets, all, limit), t).await,
             NqOp::Discard { offsets } => self.nq_discard(hash, st, offsets, t).await,
             NqOp::ListFailed { after, limit } => self.nq_list_failed(hash, st, after, limit).await,
-            NqOp::Peek { after, limit } => {
-                self.nq_peek(hash, st, (after, limit), local.fields.next)
-                    .await
-            }
-            NqOp::Message { offset } => self.nq_message(hash, st, offset, local.fields.next).await,
+            NqOp::Peek { after, limit } => self.nq_peek(hash, st, (after, limit)).await,
+            NqOp::Message { offset } => self.nq_message(hash, st, offset).await,
             NqOp::Sweep => self.nq_sweep(hash, st, (t, local.fields.next)).await,
             NqOp::ClearDebt {
                 generation,
