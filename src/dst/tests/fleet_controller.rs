@@ -322,7 +322,9 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         },
     )
     .await;
-    // Possession before the ring exists: this instance serves 00.
+    // Possession before the whole ring: in a view of itself alone (edge #263) it serves 00.
+    let alone = vec!["streams-1".to_string()];
+    rig.state.ownership.set_view(alone, Default::default());
     assert!(matches!(
         rig.state
             .shards
@@ -536,6 +538,12 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
         },
     )
     .await;
+    // A fleet instance opens nothing before a view (edge change #263): this instance alone, as a
+    // tick that has read only its own beat would publish, opens it; the fleet's tick replaces it.
+    rig.state.ownership.set_view(
+        vec!["streams-1".to_string()],
+        std::collections::HashMap::new(),
+    );
     let crate::sharddir::OpenOutcome::Ready(engine) = rig
         .state
         .shards

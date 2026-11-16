@@ -51,6 +51,16 @@ pub(super) async fn health_axum(State(state): State<Arc<AppState>>) -> Response 
         )
             .into_response();
     }
+    // A fleet instance before its first view opens nothing (edge change #263): routing to it
+    // only meets that refusal. The heartbeat's withdrawal and the unready watchdog do not read
+    // this: a lone member that withdrew would never be named by a view.
+    if state.ownership.awaits_view() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "fleet view not yet published",
+        )
+            .into_response();
+    }
     if state.config.cli.billing_required() {
         let spool_ok = state.billing.read_spool_open();
         let rollup_ok = !state.config.cli.runs_rollup() || state.rollup.installed();

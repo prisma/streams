@@ -451,6 +451,8 @@ async fn a_merge_waits_for_the_fleet_to_settle() {
         },
     )
     .await;
+    // No fleet tick runs here: a view of the cell's one member opens its shards (edge #263).
+    super::fixture_http::view_of(&rig.state, &["streams-1"]);
     store_topology(&rig.state).await;
     let parent = rig.state.engine_for_quiet(&[0; 16]).await.unwrap();
     assert_eq!(parent.prefix, "00");

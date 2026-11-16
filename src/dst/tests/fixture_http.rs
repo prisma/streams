@@ -395,6 +395,22 @@ fn fixture_config(
     Arc::new(rig_config)
 }
 
+/// Publishes a view of `members` on `state`, as a fleet tick that has read only their beats would:
+/// a rig with a fleet store opens nothing before a view (edge change #263).
+pub(super) fn view_of(state: &crate::http::AppState, members: &[&str]) {
+    let members = members.iter().map(|member| (*member).to_string()).collect();
+    state.ownership.set_view(members, Default::default());
+}
+
+/// The rig's ownership service, minted as production mints it: by a fleet repository over
+/// the scenario's fleet store.
+fn rig_ownership(
+    instance: Option<String>,
+    fleet_store: &Option<Arc<dyn ObjectStore>>,
+) -> crate::ownership::OwnershipService {
+    crate::fleet::FleetRepository::new(fleet_store.clone()).ownership(instance.unwrap_or_default())
+}
+
 /// Build a rig from ONE process runtime and the focused options.
 #[expect(
     clippy::too_many_lines,
@@ -473,7 +489,7 @@ pub(super) async fn http_rig_build(
     });
     let mut opener_shard_cfg = shard_cfg.clone();
     opener_shard_cfg.shared_ops = Some(rig_runtime.ops.clone());
-    let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
+    let ownership = rig_ownership(instance_name, &fleet_store);
     let (fleet_static_token, fleet_token_source) = match fleet_auth {
         Some((t, s)) => (t, s),
         None => (Some("dst-internal-token".to_string()), None),

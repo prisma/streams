@@ -118,6 +118,12 @@ async fn started(
         },
     )
     .await;
+    // A fleet instance opens nothing before a view (edge change #263): a view of this instance
+    // alone opens 00, and is withdrawn so the ring asserted below is the tick's own.
+    let owner = || vec!["streams-1".to_string()];
+    rig.state
+        .ownership
+        .set_view(owner(), std::collections::HashMap::new());
     let crate::sharddir::OpenOutcome::Ready(engine) = rig
         .state
         .shards
@@ -127,6 +133,9 @@ async fn started(
         panic!("shard 00 opens");
     };
     drop(engine);
+    rig.state
+        .ownership
+        .set_view(Vec::new(), std::collections::HashMap::new());
     assert!(crate::fleet::start_configured(
         rig.state.clone(),
         &rig.tasks

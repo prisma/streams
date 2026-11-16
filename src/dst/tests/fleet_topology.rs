@@ -219,6 +219,12 @@ async fn stale_halves_open_nothing(target: &str) {
     )
     .await;
     let state = &rig.state;
+    // A fleet instance opens nothing before a view (edge change #263): this instance alone, as a
+    // tick that has read only its own beat would publish, opens it; the fleet's tick replaces it.
+    state.ownership.set_view(
+        vec!["streams-1".to_string()],
+        std::collections::HashMap::new(),
+    );
     let opened = state
         .shards
         .open_or_wait("00", Duration::from_secs(5))

@@ -230,6 +230,16 @@ pub(super) async fn policy_rig_on(
         rig.state.clone(),
         &rig.tasks
     ));
+    // A fleet instance opens nothing before its first view (edge change #263): the scenario
+    // starts once the tick has published one.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while rig.state.ownership.awaits_view() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first tick publishes a view"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let asked = Arc::new(Mutex::new(Vec::new()));
     let cell = Cell {
         me: on.instance.into(),

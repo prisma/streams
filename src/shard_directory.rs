@@ -414,9 +414,7 @@ impl ShardDirectory {
         // R29: a customer who joins (or races) an open the sweep started is
         // adopted at its publication (`sharddir::adoption`).
         match self
-            .inner
-            .gate
-            .get_or_open_as(&prefix, self.inner.open_wait, external)
+            .open_viewed(&prefix, self.inner.open_wait, external)
             .await
         {
             OpenOutcome::Ready(engine) => Ok(engine),
@@ -438,7 +436,9 @@ impl ShardDirectory {
     /// as the request path. A prefix that is no leaf of the installed
     /// topology is never opened here (#251 amendment R3-d): it answers
     /// `not_a_leaf` at once, starting no open, arming no holdoff and taking no
-    /// strike, and opens on a later call once an install makes it a leaf.
+    /// strike, and opens on a later call once an install makes it a leaf. A
+    /// fleet instance whose view names no member opens nothing either (edge
+    /// change #263): it answers `no_ring_view` the same way.
     pub(crate) async fn open_or_wait(&self, prefix: &str, wait: Duration) -> OpenOutcome {
         if !self.prefixes().shards.leaves.contains_key(prefix) {
             return OpenOutcome::Wait {
@@ -446,7 +446,19 @@ impl ShardDirectory {
                 retry_after_secs: 1,
             };
         }
-        self.inner.gate.get_or_open(prefix, wait).await
+        self.open_viewed(prefix, wait, false).await
+    }
+
+    /// The one way this directory starts or joins an open. A fleet instance whose view names
+    /// no member opens nothing (edge change #263).
+    async fn open_viewed(&self, prefix: &str, wait: Duration, external: bool) -> OpenOutcome {
+        if self.inner.ownership.awaits_view() {
+            return OpenOutcome::Wait {
+                code: crate::ownership::NO_VIEW,
+                retry_after_secs: 1,
+            };
+        }
+        self.inner.gate.get_or_open_as(prefix, wait, external).await
     }
 
     /// The directory hides its gate; the operator surfaces need exactly one
@@ -654,6 +666,8 @@ async fn settle_engines(
 
 #[cfg(test)]
 mod install_tests;
+#[cfg(test)]
+mod view_tests;
 
 #[cfg(test)]
 mod directory_tests {
@@ -663,8 +677,16 @@ mod directory_tests {
 
     /// A directory over an empty serving map whose opener is scripted:
     /// `calls` counts opens, `behave` decides each one's fate.
-    fn directory(
+    pub(super) fn directory(
         instance: &str,
+        behave: impl Fn() -> anyhow::Result<Arc<ShardEngine>> + Send + Sync + 'static,
+    ) -> (ShardDirectory, OwnershipService, Arc<AtomicUsize>) {
+        directory_of(OwnershipService::new(instance), behave)
+    }
+
+    /// `directory` over a given ownership service.
+    pub(super) fn directory_of(
+        ownership: OwnershipService,
         behave: impl Fn() -> anyhow::Result<Arc<ShardEngine>> + Send + Sync + 'static,
     ) -> (ShardDirectory, OwnershipService, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -674,7 +696,6 @@ mod directory_tests {
             let r = behave();
             Box::pin(async move { r })
         });
-        let ownership = OwnershipService::new(instance);
         let dir = ShardDirectory::new(
             ["00", "01", "10", "11"].map(str::to_string).to_vec(),
             ownership.clone(),
@@ -687,7 +708,7 @@ mod directory_tests {
         (dir, ownership, calls)
     }
 
-    fn hash_in(dir: &ShardDirectory, prefix: &str) -> [u8; 16] {
+    pub(super) fn hash_in(dir: &ShardDirectory, prefix: &str) -> [u8; 16] {
         // Brute-force a route hash that lands in `prefix`.
         for b in 0u8..=255 {
             let mut h = [0u8; 16];

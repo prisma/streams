@@ -499,7 +499,7 @@ pub(crate) async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> 
     // own configuration here, before the composition root. PR 6.1-B: the
     // directory builds its serving map and gate itself, from the opener
     // factory and its timings.
-    let ownership = crate::ownership::OwnershipService::new(config.cli.instance_name.clone());
+    let ownership = fleet_repository.ownership(config.cli.instance_name.clone());
     let shard_directory = crate::shard_directory::ShardDirectory::new_at(
         topology.shards.clone(),
         ownership.clone(),
