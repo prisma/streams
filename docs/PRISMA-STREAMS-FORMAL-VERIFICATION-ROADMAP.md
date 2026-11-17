@@ -614,6 +614,8 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 **Required negative control.** Allow retirement to reclaim an already claimed batch, or let a new batch be admitted after the close boundary without valid authority.
 
+**Recorded scope (edge change #267).** An operation still in the committer's queue at the close was never offered to a group. Under a retired gate it is answered not-written (`Splitting`); otherwise unknown (`Moved`). The model's close answers the queue as unknown, which contains both (GATE-DECISION-f6-h2-shard-drain-2026-11-17 S6).
+
 **Related work:** TLA-005, 011, 028; KANI-069, 070.
 
 <a id="tla-007"></a>
@@ -695,6 +697,8 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Starting model and boundary.** Two nodes, one shard, an override, stale ring observations, delayed old work, and a move interrupted by crash. Represent single-instance/bootstrapping mode separately from managed fleet mode. Model the pinned storage fencing contract as an explicit dependency.
 
 **Required negative control.** Authorize solely from ring preference, or allow a new owner to begin before the dependency establishes fencing.
+
+**Recorded scope (edge change #267).** An operation still in the committer's queue at the close was never offered to a group. Under a retired gate it is answered not-written (`Splitting`); otherwise unknown (`Moved`). The model's close answers the queue as unknown, which contains both (GATE-DECISION-f6-h2-shard-drain-2026-11-17 S6).
 
 **Related work:** TLA-005, 006, 012, 039; KANI-062, 070, 095.
 
@@ -1251,6 +1255,8 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Starting model and boundary.** One leaf, two records (one per half; which half is KANI-106's), the actor on one instance, writer epochs up to `MaxEpoch`, attempts up to `MaxHomes` with fresh homes each, one crash anywhere. An attempted `'T'` counts as written and the actor never resumes after it (Addendum 6, package 5's `'T'`-outcome commit); no source write follows `'T'` (Addendum 5, the gate's final flag). The conservation check is abstract: the code decides it before the park on Preparing's own plan and again in it, and a refusal ends the attempt before `'T'` (GATE-DECISION-meas149-reshaping F1b). Placement and routing are abstract.
 
 **Required negative controls.** Serve the source under a live intent, publish before `'T'`, roll back after `'T'`, checkpoint before the barrier, reuse a home, decide before the fence, claim without the fence, delete a successor's intent, let a fenced actor reopen, serve under `'T'` before the publish (the 11 in the manifest).
+
+**Recorded scope (edge change #267).** A retired parent's operations queued at its close are answered as its held operations are (`Splitting`), never unknown; the model's release already answers its held operations so (GATE-DECISION-f6-h2-shard-drain-2026-11-17 S6). Not re-recorded for this line.
 
 **Related work:** TLA-011, 019, 048; KANI-106.
 

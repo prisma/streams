@@ -708,3 +708,50 @@ async fn tla005_f5_a_failed_write_answers_nothing_from_its_batch() {
         "TLA-005-F5: {duplicate:?} {reuse:?}"
     );
 }
+
+/// An append queued behind a parked committer when its engine closes, and its answer. With
+/// `retired` the gate is set as a published split, or a planned move, sets it before the close
+/// (`MaintenanceGate::set_retired`), with no child for the append's route.
+async fn queued_at_the_close(retired: bool) -> Result<AppendAck, AppendErr> {
+    let fixture = Fixture::new(if retired {
+        "drain-retired"
+    } else {
+        "drain-live"
+    })
+    .await;
+    let engine = &fixture.engine;
+    let parked = engine.barrier().await.unwrap();
+    if retired {
+        let nowhere: crate::topology::gate::Reroute =
+            Arc::new(|_| Box::pin(futures_util::future::ready(None)));
+        engine.gc_state().gate.set_retired(nowhere);
+    }
+    let (request, reply) = fixture.append();
+    engine.try_enqueue(request).unwrap();
+    until(|| engine.queued_ops() == 1).await;
+    engine.begin_close();
+    let answer = tokio::time::timeout(Duration::from_secs(10), reply)
+        .await
+        .expect("the queued append is answered")
+        .expect("its reply is sent");
+    parked.resume();
+    fixture.finish().await;
+    answer
+}
+
+/// **An operation still queued when a retired engine closes is answered as held, never as outcome
+/// unknown** (F6 H2, GATE-DECISION-f6-h2-shard-drain-2026-11-17 S3). It was never offered to a
+/// group, so `Splitting`: the append path re-resolves it to the new owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_operation_queued_at_a_retired_engines_close_is_answered_as_held() {
+    let answer = queued_at_the_close(true).await;
+    assert!(matches!(answer, Err(AppendErr::Splitting)), "{answer:?}");
+}
+
+/// **Without a reroute the close still answers its queue `Moved`** (S1's narrow scope): a fenced
+/// or failed engine keeps today's answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_operation_queued_at_a_live_engines_close_stays_moved() {
+    let answer = queued_at_the_close(false).await;
+    assert!(matches!(answer, Err(AppendErr::Moved)), "{answer:?}");
+}
