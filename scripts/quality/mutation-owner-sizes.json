@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "80f65b965cc5c9e7ee274e723ae89d47bb654310",
+  "commit": "151e1074bd7c513fd22a7e4c83fe1b42e286ecae",
   "measured_on": "2026-11-17",
   "owners": {
     "admission_body": 14,
@@ -232,7 +232,7 @@
     "spill_gc": 101,
     "spill_gc_recompute": 8,
     "spill_lineage": 19,
-    "spill_metrics": 34,
+    "spill_metrics": 38,
     "spill_mod": 2,
     "spill_object": 89,
     "spill_object_table": 31,
@@ -294,6 +294,7 @@
     "topology_sentinel": 43,
     "topology_split": 85,
     "topology_split_birth": 9,
+    "topology_split_phases": 9,
     "topology_store": 5,
     "topology_view": 20,
     "touch": 72,
