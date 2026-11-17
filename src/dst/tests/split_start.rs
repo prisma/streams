@@ -137,7 +137,8 @@ async fn a_split_started_with_a_birth_names_its_actor_for_both_children() {
 /// (`flush`, `checkpoint`, the log reads' `snapshot`, `sentinel` and `intervals`, `plan`, `lists`,
 /// `clones`, `'T'`, `births`, `cas`), then both children's opens (as each finished) and `drain`;
 /// the pause the split reports is at least the sum of the pause's phases, and the published split
-/// notes the rows and queues the pause read (F5's counts).
+/// notes the rows and queues the pause read (F5's counts), which its log line prints after
+/// the phases.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_published_split_carries_its_phases_in_order() {
     let Cell { state, parent, .. } = cell().await;
@@ -178,6 +179,12 @@ async fn a_published_split_carries_its_phases_in_order() {
     );
     let notes: Vec<&str> = published.notes.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(notes, ["rows", "heads"], "the pause's read counts");
+    let shown = crate::topology::split::shown_phases(&published);
+    let heads = format!(" heads={}", published.notes[1].1);
+    assert!(
+        shown.starts_with("flush=") && shown.contains(" drain=") && shown.ends_with(&heads),
+        "the log line's phases then counts: {shown}"
+    );
     assert!(
         published.notes[0].1 > 0,
         "the sentinel rows read: {:?}",
