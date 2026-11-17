@@ -247,6 +247,9 @@ pub(super) async fn split_with_a_held_append(
         assert!(t0.elapsed() < BOUND, "the split publishes");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // The held append is answered once its own child opened; the publish opens both children
+    // and retires the parent before the split ends its intent.
+    intent_ended(&pair.a.state).await;
     answer
 }
 
@@ -609,11 +612,15 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
         window_ms + 60_000,
     )
     .await;
-    // Count balance paces itself on the rig's manual clock: its boot hold, one move cooldown.
+    // Count balance paces itself on each rig's manual clock: its boot hold, one move cooldown.
+    // Every member's passes, not only the actor's: under load a member may miss a beat in another's
+    // view for a tick, so return-home there sees a share of two and gives a member both returns;
+    // that member's count balance then moves one on.
     let past_cooldown = u64::try_from(move_ms).unwrap() + 1_000;
-    actor
-        .clock
-        .advance_monotonic(Duration::from_millis(past_cooldown));
+    for rig in &rigs {
+        rig.clock
+            .advance_monotonic(Duration::from_millis(past_cooldown));
+    }
     let spread = || {
         let mut held = ["0", "10", "11"].map(owner);
         held.sort();
