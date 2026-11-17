@@ -63,7 +63,8 @@ from rig import HERE, sh
 
 WARMUP_SECS = 30
 # The servers log topology and fleet at INFO (a split's pause_ms, every move) over the posture's warn.
-SERVER_LOG = "warn,streams_slate::topology=info,streams_slate::fleet=info"
+SERVER_LOG = ("warn,streams_slate::topology=info,streams_slate::fleet=info,"
+              "streams_slate::native_queue::compaction_guard=info,streams_slate::shard::open_index=info")
 FAILED = []  # the counts of failed steps: a failed step keeps the host store for its analysis
 POLICY_PASS_SECS = 10  # topology::policy_loop::PERIOD: one pass co-locates a pair, the next merges it
 STORE = []  # the run's rig.HostStore, once started (s3lite on the host: a ramp's store outgrows the VM)
