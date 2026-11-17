@@ -755,3 +755,48 @@ async fn an_operation_queued_at_a_live_engines_close_stays_moved() {
     let answer = queued_at_the_close(false).await;
     assert!(matches!(answer, Err(AppendErr::Moved)), "{answer:?}");
 }
+
+/// An append queued behind a parked committer when its engine closes, the engine retired to the
+/// live engine of `child` for every route (a published split's reroute); the append's answer.
+async fn queued_at_a_rerouted_close(round: u32) -> Result<AppendAck, AppendErr> {
+    let parent = Fixture::new(&format!("drain-parent-{round}")).await;
+    let child = Fixture::new(&format!("drain-child-{round}")).await;
+    let engine = &parent.engine;
+    let parked = engine.barrier().await.unwrap();
+    let to = child.engine.clone();
+    let reroute: crate::topology::gate::Reroute = Arc::new(move |_| {
+        let to = to.clone();
+        Box::pin(async move { Some(to) })
+    });
+    engine.gc_state().gate.set_retired(reroute);
+    let (request, reply) = parent.append();
+    engine.try_enqueue(request).unwrap();
+    until(|| engine.queued_ops() == 1).await;
+    engine.begin_close();
+    let answer = tokio::time::timeout(Duration::from_secs(10), reply)
+        .await
+        .expect("the queued append is answered")
+        .expect("its reply is sent");
+    parked.resume();
+    parent.finish().await;
+    child.finish().await;
+    answer
+}
+
+/// **An operation the committer takes after its retired engine closed is drained, never served**
+/// (the guard of `committer_loop`'s `Some(op) if !self.is_closed()`). Once the engine is closed
+/// both of the committer's select arms are ready and tokio picks one at random; when the queue's
+/// arm wins, the guard still sends the op to the drain. With a reroute to a live child the two
+/// differ: served, the child would ack the op through the closed parent; drained, it is answered
+/// `Splitting` and its client re-resolves. 32 rounds let the queue's arm win at least once, short
+/// of a chance of 2^-32.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_operation_taken_after_a_retired_close_is_drained_not_served() {
+    for round in 0..32 {
+        let answer = queued_at_a_rerouted_close(round).await;
+        assert!(
+            matches!(answer, Err(AppendErr::Splitting)),
+            "round {round}: {answer:?}"
+        );
+    }
+}
