@@ -210,6 +210,17 @@ pub(crate) struct Published {
     /// The phases the split timed, in the order they ended (`phases`): the pause's, then each
     /// child's open (as each finished) and the drain.
     pub phases: Vec<phases::Phase>,
+    /// What the pause's log reads counted (`reads`): the sentinel rows and the queues read.
+    pub notes: Vec<phases::Phase>,
+}
+
+/// A published split's phases then its counts, `name=ms ... name=count ...` (`phases`).
+pub(crate) fn shown_phases(published: &Published) -> String {
+    let (timed, counted) = (
+        phases::shown(&published.phases),
+        phases::shown(&published.notes),
+    );
+    format!("{timed} {counted}")
 }
 
 /// The operation's parts every step reads.
@@ -327,7 +338,7 @@ impl Started {
         };
         if let Ok(published) = &ran {
             let (op_id, pause_ms) = (&self.op_id, published.pause.as_millis());
-            let phases = phases::shown(&published.phases);
+            let phases = shown_phases(published);
             tracing::info!(%op_id, pause_ms, phases, "the split published, by phase");
         }
         match &ran {
@@ -556,7 +567,7 @@ async fn prepare(
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
     gate.start_marking();
-    let log = log_reads(parent).await?;
+    let log = log_reads(parent, None).await?;
     let rows = &log.rows;
     // Tests only: a point after Preparing read the parent's log.
     #[cfg(test)]
@@ -634,8 +645,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
         .await
         .map_err(|e| format!("checkpoint: {e}"))?;
     op.phases.mark("checkpoint");
-    let log = log_reads(parent).await?;
-    op.phases.mark("log_reads");
+    let log = log_reads(parent, Some(op.phases)).await?;
     let rows = &log.rows;
     let (plan, _) = plan(store, parent, children, &log, &prepared.runs).await?;
     check_sums(rows, &plan)?;
@@ -696,43 +706,6 @@ async fn plan(
         out.push((routed, counts));
     }
     Ok((out, runs))
-}
-
-/// What a plan reads from the parent's log: its sentinel rows, and the entries they and its queues'
-/// `'k'` rows release. Both from one `db.snapshot()` at the default (Memory) durability, so at one
-/// sequence: every writer of these rows (a seal, a fold, a trim, a purge, the cleaner's commit)
-/// writes one batch, which commits at one sequence, so sums that do not hold at it are a stable
-/// fact (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote` here: its cap is recomputed per
-/// read, so two reads could see different batches. The snapshot is dropped on return, before the
-/// run-index GETs: it holds the log's compaction back while it lives.
-async fn log_reads(parent: &ShardEngine) -> Result<LogReads, String> {
-    let snapshot = parent.db.snapshot().map_err(|e| format!("snapshot: {e}"))?;
-    let mut scan = snapshot
-        .scan_prefix(&SENTINEL[..], ..)
-        .await
-        .map_err(|e| format!("sentinel scan: {e}"))?;
-    let mut rows = Vec::new();
-    while let Some(kv) = scan
-        .next()
-        .await
-        .map_err(|e| format!("sentinel scan: {e}"))?
-    {
-        rows.push((kv.key.to_vec(), kv.value.to_vec()));
-    }
-    let mut released = sentinel::Released::of(&rows).map_err(|e| e.to_string())?;
-    for hash in released.streams() {
-        let intervals = crate::shard::seal::gc::trim::intervals_at(&snapshot, &hash).await?;
-        released.add_intervals(hash, &intervals);
-    }
-    Ok(LogReads { rows, released })
-}
-
-/// What a plan read of the parent's log, at one sequence (`log_reads`).
-struct LogReads {
-    /// Its sentinel rows.
-    rows: Vec<Row>,
-    /// The entries those rows and its queues' `'k'` rows release.
-    released: sentinel::Released,
 }
 
 /// A child's lists: per ancestor home, the objects of that home it holds (`sentinel::child_lists`).
@@ -895,6 +868,7 @@ async fn publish(
         children: opened,
         pause: Duration::ZERO,
         phases: phases.taken(),
+        notes: phases.noted(),
     })
 }
 
@@ -924,6 +898,8 @@ mod birth;
 pub(crate) use birth::Birth;
 mod phases;
 use phases::Phases;
+mod reads;
+use reads::{LogReads, log_reads};
 
 #[cfg(test)]
 mod tests;
