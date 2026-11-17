@@ -1336,27 +1336,14 @@
       "path": "src/shard.rs",
       "owner": "crate::ShardEngine::committer_loop",
       "scope": "function",
-      "lint": "clippy::let_underscore_must_use",
-      "metrics": {
-        "scope_lines": 80,
-        "nested_items": 1,
-        "syntax_facts": 92
-      },
-      "rationale": "A closing engine refuses queued native-queue operations as it refuses every other queued operation.",
-      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
-    },
-    {
-      "path": "src/shard.rs",
-      "owner": "crate::ShardEngine::committer_loop",
-      "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 80,
+        "scope_lines": 55,
         "nested_items": 1,
-        "syntax_facts": 92
+        "syntax_facts": 88
       },
-      "rationale": "A closing engine refuses queued native-queue operations as it refuses every other queued operation.",
-      "approver": "the lead under the owner's delegation of 2026-10-27 (\"Please make your own judgement ... Bring 6A to completion.\"), layout 6A package 4 step-3 batch 1, S1: the scope shrank with the absorber, history2 and trim retirement, so the row takes the gate's after values; the row was approved by Lead (Claude Opus 5.5), under the owner's delegation of 2026-10-23 (\"implement this full feature ... in the next 24 hours. Don't wait for my input\"), recorded for the owner's review in docs/reviews/2026-09-hardening/README.md Owner decisions"
+      "rationale": "A closing engine refuses queued native-queue operations as it refuses every other queued operation. The close's drain left the committer for `shard::transaction::drain_closed`, so the scope shrank; the row takes the gate's after values.",
+      "approver": "Fable 5.2 under the owner's delegation for exception-growth rows, GATE-DECISION-f6-h2-rows-2026-11-17, for the owner's review."
     },
     {
       "path": "src/shard.rs",
