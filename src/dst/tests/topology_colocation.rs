@@ -118,7 +118,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         document(&fleet, "streams-2").await["topology_decision"].clone(),
     );
     assert_eq!(stored_leaves(&data).await, [""], "decisions {decisions:?}");
-    moved_to_the_actor_then_pruned(&fleet).await;
+    moved_onto_then_pruned(&fleet, "", "streams-2").await;
     let root = owner("").expect("the ring owns the merged root");
     let serving = if root == "streams-1" { a.addr } else { b.addr };
     for (name, before) in &kept {
@@ -136,36 +136,41 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     engine_shutdown(&b.state).await;
 }
 
-/// The actor moved both halves to itself first: the overrides document's `rebalance_move` events
-/// are exactly `("0", streams-2)` and `("1", streams-2)` (nothing in the rig drains them: the
-/// fleet's event drain runs from the telemetry loop, which this rig never starts). The merge
-/// published `[""]`, so neither half is a leaf and a beat drops both entries
-/// (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 3; #251 R3-d, C2): within 10 s the
-/// document names neither.
-async fn moved_to_the_actor_then_pruned(fleet: &Arc<dyn ObjectStore>) {
+/// Both halves of `parent` were moved onto `to` first, then their entries pruned: of the overrides
+/// document's `rebalance_move` events, those whose shard is `<parent>0` or `<parent>1` are exactly
+/// `(<parent>0, to)` and `(<parent>1, to)` (filtered by shard: after the merge the parent has no
+/// override and count balance may move it; nothing in the rig drains the events, whose drain runs
+/// from the telemetry loop this rig never starts). The merge published `parent`, so neither half is
+/// a leaf and a beat drops both entries (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 3;
+/// #251 R3-d, C2): within 10 s the document names neither. An entry is never read after the publish
+/// as a fact, and the merged leaf's owner is not asserted: it is the ring's pick, which #251 B1
+/// records may move it off `to` (GATE-DECISION-colocation-prune-race-2026-11-17).
+async fn moved_onto_then_pruned(fleet: &Arc<dyn ObjectStore>, parent: &str, to: &str) {
+    let halves = [format!("{parent}0"), format!("{parent}1")];
     let moved = document(fleet, "overrides").await;
     let mut moves: Vec<(String, String)> = moved["pending_events"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|event| event["event_type"] == "rebalance_move")
+        .filter(|event| halves.iter().any(|half| event["shard"] == half.as_str()))
         .map(|event| {
             (
-                event["shard"].to_string(),
-                event["fields"]["to"].to_string(),
+                event["shard"].as_str().unwrap_or_default().to_string(),
+                event["fields"]["to"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect();
     moves.sort();
-    let to_the_actor = [r#""0""#, r#""1""#].map(|shard| (shard.into(), r#""streams-2""#.into()));
-    assert_eq!(
-        moves, to_the_actor,
-        "the actor moved both halves to itself first: {moved}"
-    );
+    let onto = halves.clone().map(|half| (half, to.to_string()));
+    assert_eq!(moves, onto, "both halves moved onto {to} first: {moved}");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let entries = document(fleet, "overrides").await["entries"].clone();
-        if entries["0"].is_null() && entries["1"].is_null() {
+        if halves.iter().all(|half| entries[half.as_str()].is_null()) {
             return;
         }
         assert!(
@@ -313,20 +318,6 @@ async fn merged_within(
     ))
 }
 
-/// Both halves of `parent` are overridden onto `to`.
-async fn moved_onto(fleet: &Arc<dyn ObjectStore>, parent: &str, to: &str) {
-    let overrides = document(fleet, "overrides").await;
-    let entries = &overrides["entries"];
-    assert_eq!(
-        (
-            &entries[format!("{parent}0")]["to"],
-            &entries[format!("{parent}1")]["to"]
-        ),
-        (&to.into(), &to.into()),
-        "both halves moved onto {to}: {overrides}"
-    );
-}
-
 /// Every stream of `kept` reads back its records from whichever of `rigs` serves it, and the rigs
 /// shut down cleanly.
 async fn whole_and_shut(
@@ -349,8 +340,8 @@ async fn whole_and_shut(
 /// serves `00`, `10` and `11`, `streams-2` serves `01`. The pair `0` is cold. Its actor, `00`'s
 /// owner `streams-1`, has no room for `01` and the merged leaf (3 + 2 > 3); its partner, `01`'s
 /// owner `streams-2`, has (1 + 2 = 3). The actor moves both halves onto the partner, which then owns
-/// `00`, is the actor, and merges: `0` is a leaf of the stored topology, both overrides name
-/// `streams-2`, and every stream reads back the records it had.
+/// `00`, is the actor, and merges: `0` is a leaf of the stored topology, both halves moved to
+/// `streams-2` and their entries are then dropped, and every stream reads back the records it had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
     let (fleet, data) = (seeded().await, mem());
@@ -385,7 +376,7 @@ async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
     pinned(&fleet, &layout[1..], now).await;
     laid_out(&a, &layout).await;
     merged_within(&data, &fleet, "0", 300).await.unwrap();
-    moved_onto(&fleet, "0", "streams-2").await;
+    moved_onto_then_pruned(&fleet, "0", "streams-2").await;
     whole_and_shut(&[&a, &b], &kept).await;
 }
 
@@ -416,8 +407,8 @@ async fn pinned(fleet: &Arc<dyn ObjectStore>, layout: &[(&str, &str)], now: i64)
 /// one, as a split does: the actor's beat says `instance_full shards_per_instance=4/4`, and the
 /// fleet's one-shard allowance grows the desired count past two. `streams-3` then beats, empty; it
 /// has room for both halves and the merged leaf (0 + 3 within 4), takes both, is the actor, and
-/// merges: `00` is a leaf of the stored topology, both overrides name `streams-3`, and every
-/// stream reads back the records it had.
+/// merges: `00` is a leaf of the stored topology, both halves moved to `streams-3` and their entries
+/// are then dropped, and every stream reads back the records it had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_merged_there() {
     let (fleet, data) = (seeded().await, mem());
@@ -496,7 +487,7 @@ async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_me
     )
     .await;
     merged_within(&data, &fleet, "00", 300).await.unwrap();
-    moved_onto(&fleet, "00", "streams-3").await;
+    moved_onto_then_pruned(&fleet, "00", "streams-3").await;
     whole_and_shut(&[&a, &b, &c], &kept).await;
 }
 
