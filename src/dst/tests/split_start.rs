@@ -131,3 +131,47 @@ async fn a_split_started_with_a_birth_names_its_actor_for_both_children() {
     );
     engine_shutdown(&state).await;
 }
+
+/// **A published split carries its phases in order** (GATE-DECISION-meas149-rerun-10000-2026-11-17,
+/// M). Leaf `00` split by `inst-a`: the published split's phases are the pause's, in order
+/// (`flush`, `checkpoint`, `log_reads`, `plan`, `lists`, `clones`, `'T'`, `births`, `cas`), then
+/// both children's opens (as each finished) and `drain`; the pause the split reports is at least the
+/// sum of the pause's phases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_published_split_carries_its_phases_in_order() {
+    let Cell { state, parent, .. } = cell().await;
+    let clock = state.runtime.clock.clone();
+    let published =
+        crate::topology::split::split(&state.shards, &parent, "op-ph", "inst-a", &*clock)
+            .await
+            .map_err(|refused| refused.to_string())
+            .expect("the split publishes");
+    let names: Vec<&str> = published.phases.iter().map(|(n, _)| n.as_str()).collect();
+    let pause = [
+        "flush",
+        "checkpoint",
+        "log_reads",
+        "plan",
+        "lists",
+        "clones",
+        "'T'",
+        "births",
+        "cas",
+    ];
+    assert_eq!(names.len(), pause.len() + 3, "{names:?}");
+    assert_eq!(names[..pause.len()], pause, "the pause's phases");
+    let mut opens = names[pause.len()..pause.len() + 2].to_vec();
+    opens.sort_unstable();
+    assert_eq!(opens, ["open 000", "open 001"], "the children's opens");
+    assert_eq!(names[pause.len() + 2], "drain");
+    let paused: u64 = published.phases[..pause.len()]
+        .iter()
+        .map(|(_, ms)| ms)
+        .sum();
+    let reported = u64::try_from(published.pause.as_millis()).unwrap();
+    assert!(
+        reported + 1 >= paused,
+        "pause {reported} ms, its phases {paused} ms"
+    );
+    engine_shutdown(&state).await;
+}

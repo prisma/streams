@@ -2711,6 +2711,17 @@
     "scenarios": []
   },
   {
+    "name": "a_published_split_carries_its_phases_in_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "24589aa86b0b0c2bdf94d7eb8f1406aeafeab042c28de8832e50e1b57c7fdaa5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_start.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_pull_delivers_a_run_of_one_routing_key_with_one_lease_token_per_record",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

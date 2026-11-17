@@ -207,6 +207,9 @@ pub(crate) struct Published {
     pub children: Vec<(String, u32, Arc<ShardEngine>)>,
     /// The pause: from the barrier's park to its release to the children (S4-DESIGN §9).
     pub pause: Duration,
+    /// The phases the split timed, in the order they ended (`phases`): the pause's, then each
+    /// child's open (as each finished) and the drain.
+    pub phases: Vec<phases::Phase>,
 }
 
 /// The operation's parts every step reads.
@@ -220,6 +223,8 @@ struct Op<'a> {
     version: u64,
     /// How its children are born on this instance, if they are (`birth`).
     birth: Option<&'a Birth>,
+    /// Its timings by phase (`phases`).
+    phases: &'a Phases,
 }
 
 /// One child: its prefix, home and range.
@@ -303,6 +308,7 @@ impl Started {
     ) -> Result<Published, Refused> {
         let store = self.parent.data_store().clone();
         let actor = Actor::new(&*store, clock, self.held);
+        let phases = Phases::new();
         let op = Op {
             dir: &self.dir,
             store: &*store,
@@ -311,6 +317,7 @@ impl Started {
             op_id: &self.op_id,
             version: self.version,
             birth: self.birth.as_ref(),
+            phases: &phases,
         };
         let steps = std::pin::pin!(run(&op, &actor));
         let renewals = std::pin::pin!(actor.renew());
@@ -318,6 +325,11 @@ impl Started {
             futures_util::future::Either::Left((ran, _)) => ran,
             futures_util::future::Either::Right((never, _)) => match never {},
         };
+        if let Ok(published) = &ran {
+            let (op_id, pause_ms) = (&self.op_id, published.pause.as_millis());
+            let phases = phases::shown(&published.phases);
+            tracing::info!(%op_id, pause_ms, phases, "the split published, by phase");
+        }
         match &ran {
             Ok(_) => {
                 actor.end(intent::State::Reclaimed, "published").await;
@@ -359,6 +371,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
         drop(point.go.await);
     }
     let paused_at = std::time::Instant::now();
+    op.phases.start();
     let copied = match (&prepared, &barrier) {
         (Ok(put), Some(_)) => copy(op, actor, put).await,
         (Err(e), _) => Err(e.clone()),
@@ -368,6 +381,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
         Ok(()) => write_retired(op, actor).await,
         Err(e) => Err(Retiring::Before(e)),
     };
+    op.phases.mark("'T'");
     if !matches!(retired, Err(Retiring::Before(_))) {
         // From an attempted `'T'` the parent's log is final; the hold is still exclusive (see
         // `gate`).
@@ -608,6 +622,7 @@ async fn drained(queued: impl Fn() -> usize, within: Duration) {
 async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(), String> {
     let (store, parent, children, op_id) = (op.store, op.parent, op.children, op.op_id);
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
+    op.phases.mark("flush");
     let options = CheckpointOptions {
         lifetime: Some(CHECKPOINT_LIFETIME),
         source: None,
@@ -618,10 +633,13 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
         .create_checkpoint(CheckpointScope::All, &options)
         .await
         .map_err(|e| format!("checkpoint: {e}"))?;
+    op.phases.mark("checkpoint");
     let log = log_reads(parent).await?;
+    op.phases.mark("log_reads");
     let rows = &log.rows;
     let (plan, _) = plan(store, parent, children, &log, &prepared.runs).await?;
     check_sums(rows, &plan)?;
+    op.phases.mark("plan");
     for ((child, (_, counts)), put) in children.iter().zip(&plan).zip(&prepared.lists) {
         let now = sentinel::child_lists(rows, counts).map_err(|e| e.to_string())?;
         let (first, more) = pause_lists(put, supplements(put, &now));
@@ -635,6 +653,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
         )
         .await?;
     }
+    op.phases.mark("lists");
     // A clone CASes its final checkpoint onto the parent's manifest, which no writer epoch fences
     // (S4-REVIEW-rev2 N1): ownership is checked right before and right after them.
     actor.still_owned("the clones").await?;
@@ -645,7 +664,9 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
     for cloned in futures_util::future::join_all(clones).await {
         cloned?;
     }
-    actor.still_owned("'T', after the clones").await
+    let owned = actor.still_owned("'T', after the clones").await;
+    op.phases.mark("clones");
+    owned
 }
 
 /// Whether the children's counts in `plan` sum to the parent's in `rows` (`sentinel::check_sums`).
@@ -815,12 +836,14 @@ async fn publish(
         children,
         op_id,
         birth,
+        phases,
         ..
     } = *op;
     if let Some(birth) = birth {
         let prefixes: Vec<&str> = children.iter().map(|c| c.prefix.as_str()).collect();
         birth.born(dir, &prefixes, op_id).await;
     }
+    phases.mark("births");
     let failed = |e: store::WriteError| format!("{e:?}");
     let (topology, etag) = store::read(store).await.map_err(failed)?;
     let homes = [children[0].home, children[1].home];
@@ -829,6 +852,7 @@ async fn publish(
     let mut shards = next.shards.clone();
     shards.version = next.version;
     dir.install(shards, Some(etag), now);
+    phases.mark("cas");
     let ranges: Vec<Range> = children.iter().map(|c| c.range).collect();
     let resolver = dir.clone();
     let reroute: super::gate::Reroute = Arc::new(move |route: [u8; 16]| {
@@ -847,10 +871,10 @@ async fn publish(
     let opens = children.iter().map(|child| async move {
         let bits = u128::from_str_radix(&child.prefix, 2).unwrap_or(0);
         let route = (bits << (128 - child.prefix.len())).to_be_bytes();
-        let engine = dir
-            .resolve(&route, Adoption::Internal)
-            .await
-            .map_err(|e| format!("open {}: {e:?}", child.prefix))?;
+        let opening = std::time::Instant::now();
+        let engine = dir.resolve(&route, Adoption::Internal).await;
+        phases.record(&format!("open {}", child.prefix), opening.elapsed());
+        let engine = engine.map_err(|e| format!("open {}: {e:?}", child.prefix))?;
         Ok::<_, String>((child.prefix.clone(), child.home, engine))
     });
     // The split is published: a child that fails to open here opens on its next request, and the
@@ -862,12 +886,15 @@ async fn publish(
             Err(error) => tracing::warn!(op_id, "a published split's child did not open: {error}"),
         }
     }
+    let draining = std::time::Instant::now();
     drained(|| parent.queued_ops(), DRAIN).await;
+    phases.record("drain", draining.elapsed());
     dir.retire(&parent.prefix, RetirementReason::Split, |_, _| true);
     Ok(Published {
         version: next.version,
         children: opened,
         pause: Duration::ZERO,
+        phases: phases.taken(),
     })
 }
 
@@ -895,6 +922,8 @@ async fn roll_back(
 
 mod birth;
 pub(crate) use birth::Birth;
+mod phases;
+use phases::Phases;
 
 #[cfg(test)]
 mod tests;

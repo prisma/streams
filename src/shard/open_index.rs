@@ -332,6 +332,7 @@ pub(super) async fn recorded_home(db: &Db) -> Result<Option<u32>, slatedb::Error
 /// decode, or is gone, is left out and logged (its stream fails alone when loaded); a store error
 /// fails the open.
 pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
+    let loading = std::time::Instant::now();
     let marked = db.get(&repair_key()).await?.is_some();
     if marked {
         let repair = repair_indexes(db).await?;
@@ -349,6 +350,14 @@ pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<Shard
         );
         total = unsealed_bytes(db).await?.0;
     }
+    // The open's index phase (GATE-DECISION-meas149-rerun-10000-2026-11-17, M); the shard log's
+    // line just before it (`compaction_guard`) names the path.
+    tracing::info!(
+        index_ms = loading.elapsed().as_millis(),
+        unsealed_bytes = total,
+        repaired = marked || stale,
+        "shard open's indexes loaded"
+    );
     let now = now_ms();
     Ok(ShardMaintenance {
         version: 1,
