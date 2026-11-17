@@ -81,12 +81,11 @@ pub(crate) fn dirty_cleared(through: u64, durable: Option<u64>) -> bool {
 /// uncached, so a prefix holding thousands of index versions and tombstones cost one round trip
 /// per block: these read 1 MiB ahead, sixteen fetches at once, and keep the blocks cached, so a
 /// second read of the same tables (the sealer's after the open, the pause's after Preparing)
-/// fetches only tables written since. The durability stays Memory, the default: a split's reads
-/// see one snapshot's sequence, never a `Remote` cap recomputed per read
-/// (GATE-DECISION-f1b-trim-race-2026-11-16).
+/// fetches only tables written since. The durability is SlateDB's default, Memory (pinned by
+/// `the_sentinel_scan_options_are_pinned`): a split's reads see one snapshot's sequence, never a
+/// `Remote` cap recomputed per read (GATE-DECISION-f1b-trim-race-2026-11-16).
 pub(crate) fn sentinel_scan_opts() -> slatedb::config::ScanOptions {
     slatedb::config::ScanOptions {
-        durability_filter: slatedb::config::DurabilityLevel::Memory,
         read_ahead_bytes: 1024 * 1024,
         max_fetch_tasks: 16,
         cache_blocks: true,
