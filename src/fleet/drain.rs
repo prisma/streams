@@ -1,25 +1,35 @@
-//! This runtime's planned drain (item 40, the owner's decision). A requested
-//! stop runs it before any loop is cancelled (`tasks::drain`), so the
-//! runtime keeps its liveness and its fencing until its ownership has
-//! moved; it never drops its heartbeat first and leaves its peers to
-//! presume it dead.
+//! This runtime's planned drain (item 40, the owner's decision; F6's drain addendum,
+//! GATE-DECISION-f6-prep-rows-rev2-2026-11-17 G1-G10). A requested stop runs it before any loop is
+//! cancelled (`tasks::drain`), so the runtime keeps its liveness and its fencing until its
+//! ownership has moved; it never drops its heartbeat first and leaves its peers to presume it
+//! dead.
 //!
-//! The drain publishes `draining` at once and keeps beating. Every ring, its
-//! own included, then drops this instance: its tick yields what it holds,
-//! those engines close, and the owners the ring names now open those shards,
-//! fencing this writer. The drain is complete only when this runtime holds
-//! nothing (no shard, no open still running, no close unsettled) and every
-//! peer whose views keep being published has published one that read one of
-//! its draining beats and leaves it out (`Heartbeat::viewed`). Completion
-//! compares this runtime's own boot and beat sequence, never one host's
-//! clock with another's; which peers are waited for follows the ring's own
-//! liveness rule, on this host's clock. A drain that runs out of budget
-//! names what was still pending: a timeout is never reported as a handoff.
+//! The drain is a sequence of planned moves, then an announcement. It first hands every shard it
+//! holds off to the member the ring gives it without this runtime, giver first and one at a time
+//! (`fleet::handoff`): each append on a moving shard is held up to the move's hold and acked by
+//! the successor, and each entry the moves write names a live member both rings honour. Only when
+//! this runtime holds nothing (no shard, no open still running, no close unsettled) does it seal
+//! its open gate against opens (`sharddir::drain`) and publish `draining`; until then its peers
+//! still count it, so none of them opens one of its shards under it. From its first handoff it
+//! starts no split, merge, co-location or move but the drain's own. A shard a peer moves here
+//! meanwhile (giver first, so nothing is fenced) is handed off again on the next look.
 //!
-//! A drain is begun only when the ring would keep another member within the
-//! desired count and every peer it waits for honours a drain: a peer of an
-//! earlier version publishes no beat sequence and would keep routing here,
-//! so with one in the fleet the runtime stops without a handoff.
+//! The handoff phase has its own bound inside the budget (`HANDOFF_PHASE`). Past it, or with a
+//! shard kept on every try, the drain stops opening, announces anyway and the shards it still
+//! holds are taken by fence, warned and counted (G3, G6). It never stops unannounced: that would
+//! leave its shards dark for the ring's liveness window.
+//!
+//! The drain is complete only when this runtime holds nothing and every peer whose views keep
+//! being published has published one that read one of its draining beats and leaves it out
+//! (`Heartbeat::viewed`). Completion compares this runtime's own boot and beat sequence, never
+//! one host's clock with another's; which peers are waited for follows the ring's own liveness
+//! rule, on this host's clock. A drain that runs out of budget names what was still pending: a
+//! timeout is never reported as a handoff.
+//!
+//! A drain is begun only when the ring would keep another member within the desired count and
+//! every peer it waits for honours a drain: a peer of an earlier version publishes no beat
+//! sequence and would keep routing here, so with one in the fleet the runtime stops without a
+//! handoff.
 #[cfg(test)]
 pub(crate) use super::heartbeat::instance_refusals;
 use std::collections::HashMap;
@@ -40,9 +50,11 @@ use crate::shard::now_ms;
 /// progress deadline; a peer reads a runtime the marker names at every tick,
 /// though it reads its other peers on one tick in three, item 8); that
 /// view's echo (a beat in flight, a beat period, then its own PUT: two
-/// document deadlines and a period); and the closes of the shards it yields
-/// (the ordered stop's close grace): 144 s.
-pub(crate) const BUDGET: Duration = repository::DOCUMENT_DEADLINE
+/// document deadlines and a period); the closes of the shards it yields
+/// (the ordered stop's close grace); and before all of it, the handoff phase
+/// (`HANDOFF_PHASE`): 176 s.
+pub(crate) const BUDGET: Duration = HANDOFF_PHASE
+    .saturating_add(repository::DOCUMENT_DEADLINE)
     .saturating_add(repository::DOCUMENT_DEADLINE)
     .saturating_add(planning::PASS_DEADLINE)
     .saturating_add(planning::TICK_PERIOD)
@@ -61,6 +73,11 @@ const SHARD_CLOSE_GRACE: Duration = Duration::from_secs(10);
 
 /// How often the drain looks again.
 const POLL: Duration = Duration::from_millis(250);
+
+/// The handoff phase's bound (G3): the shards of an instance at the default ceiling
+/// (`SHARDS_PER_INSTANCE_MAX`, 7) and one a peer moved here meanwhile, one after another, each
+/// within one planned move's own bound (`handoff::BOUND`, 4 s): 32 s.
+const HANDOFF_PHASE: Duration = super::handoff::BOUND.saturating_mul(8);
 
 /// The drain marker announcement's bound: a read and a CAS PUT, the two
 /// document deadlines the draining beat's own term allows.
@@ -91,6 +108,11 @@ pub(crate) enum DrainOutcome {
 pub(super) async fn run(state: Arc<AppState>, instance: String) {
     tracing::info!(%instance, budget = ?BUDGET, "planned drain: handing off ownership");
     let outcome = drain(&state, &instance, BUDGET).await;
+    // G6: a planned move's writer fenced, by its two causes: a move's own late close, and a
+    // fence ahead of the move. Both are zero on a drain that met its contract.
+    let late = state.fleet.standing().handoffs_fenced();
+    let ahead = state.shards.fenced_ahead();
+    tracing::info!(%instance, late, ahead, "planned drain: writers fenced");
     let (warning, line) = report(&outcome);
     if warning {
         tracing::warn!(%instance, "{line}");
@@ -137,44 +159,21 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
     let deadline = started + budget;
     let announce_by = started + repository::DOCUMENT_DEADLINE;
     let standing = state.fleet.standing();
-    let mut announced = false;
+    let mut look = Look {
+        instance,
+        handed_by: started + HANDOFF_PHASE,
+        announced: false,
+    };
     loop {
         let pending = match observe(state, deadline).await {
-            Ok((beats, count)) => {
-                let now = now_ms();
-                let candidacies: HashMap<String, Candidacy> = beats
-                    .iter()
-                    .map(|beat| (beat.instance.clone(), beat.candidacy(now)))
-                    .collect();
-                let waited = waited(&beats, instance, now);
-                if !planning::another_member(count, instance, &candidacies)
-                    || waited.iter().any(|peer| peer.seq == 0)
-                {
-                    return DrainOutcome::NoPeer;
-                }
-                if !standing.draining() {
-                    standing.begin_draining();
-                }
-                if !announced {
-                    announced = announce(state, instance).await;
-                }
-                hand_off_held(state, instance).await;
-                let drained = ViewedBeat {
-                    boot_id: state.runtime.identity.boot_id.clone(),
-                    seq: standing.draining_from().unwrap_or(u64::MAX),
-                };
-                let mut pending = not_yet_excluded(&waited, instance, &drained);
-                let holdings = holdings(state).await;
-                if pending.is_empty() && holdings.only_failures() {
-                    return DrainOutcome::Failed {
-                        failures: holdings.pending(),
-                    };
-                }
-                pending.extend(holdings.pending());
-                pending
-            }
+            Ok((beats, count)) => match look.at(state, &beats, count).await {
+                Ok(pending) => pending,
+                Err(outcome) => return outcome,
+            },
+            // Before its first handoff, a fleet it cannot read stops the drain unannounced; once a
+            // shard has moved it keeps going (G3: never stop unannounced mid-phase).
             Err(unreadable)
-                if !standing.draining() && tokio::time::Instant::now() >= announce_by =>
+                if !standing.drain_begun() && tokio::time::Instant::now() >= announce_by =>
             {
                 return DrainOutcome::TimedOut {
                     pending: vec![unreadable],
@@ -193,10 +192,89 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
     }
 }
 
-/// Hand off every shard this draining runtime still holds to its ring successor, giver first and
-/// one at a time (F6): each is parked, flushed and closed here, then an override names the member
-/// the ring gives it without `instance`. The views that leave `instance` out make each entry a
-/// no-op that return-home drops.
+/// One drain's progress between its looks.
+struct Look<'a> {
+    instance: &'a str,
+    /// The handoff phase's end (G3).
+    handed_by: tokio::time::Instant,
+    /// Whether the drain marker names this runtime yet.
+    announced: bool,
+}
+
+impl Look<'_> {
+    /// One look at the fleet (`beats`, the desired `count`): what is still pending, or how the
+    /// drain ended. Until the drain is announced it hands its shards off (G1); once it is, it
+    /// waits for every peer's view to leave it out.
+    async fn at(
+        &mut self,
+        state: &AppState,
+        beats: &[Heartbeat],
+        count: u64,
+    ) -> Result<Vec<String>, DrainOutcome> {
+        let (instance, standing) = (self.instance, state.fleet.standing());
+        let now = now_ms();
+        let candidacies: HashMap<String, Candidacy> = beats
+            .iter()
+            .map(|beat| (beat.instance.clone(), beat.candidacy(now)))
+            .collect();
+        let waited = waited(beats, instance, now);
+        if !planning::another_member(count, instance, &candidacies)
+            || waited.iter().any(|peer| peer.seq == 0)
+        {
+            return Err(DrainOutcome::NoPeer);
+        }
+        if !standing.draining() && !handed_off_all(state, instance, self.handed_by).await {
+            let held = holdings(state).await.pending();
+            let settling =
+                || vec!["an open or a close still settling before the drain announces".into()];
+            return Ok(if held.is_empty() { settling() } else { held });
+        }
+        if !standing.draining() {
+            standing.begin_draining();
+        }
+        if !self.announced {
+            self.announced = announce(state, instance).await;
+        }
+        let drained = ViewedBeat {
+            boot_id: state.runtime.identity.boot_id.clone(),
+            seq: standing.draining_from().unwrap_or(u64::MAX),
+        };
+        let mut pending = not_yet_excluded(&waited, instance, &drained);
+        let holdings = holdings(state).await;
+        if pending.is_empty() && holdings.only_failures() {
+            return Err(DrainOutcome::Failed {
+                failures: holdings.pending(),
+            });
+        }
+        pending.extend(holdings.pending());
+        Ok(pending)
+    }
+}
+
+/// The handoff phase (G1-G3): hand off every shard still held, then seal the open gate if
+/// nothing is left. True once sealed, or once the phase's bound has passed: the drain then stops
+/// opening and announces anyway, and the shards still held are taken by fence or by this
+/// instance's own yield (each warned and counted, G6).
+async fn handed_off_all(state: &AppState, instance: &str, handed_by: tokio::time::Instant) -> bool {
+    state.fleet.standing().begin_handing_off_all();
+    hand_off_held(state, instance).await;
+    if state.shards.seal_for_drain() {
+        return true;
+    }
+    if tokio::time::Instant::now() < handed_by {
+        return false;
+    }
+    state.shards.stop_opens();
+    let held = state.shards.held_prefixes();
+    tracing::warn!(%instance, ?held, "planned drain: its handoff phase ran out; announcing, the shards still held are taken by fence");
+    state.shards.note_evacuated(&held);
+    true
+}
+
+/// Hand off every shard this runtime still holds to its ring successor, giver first and one at a
+/// time (F6): each is parked, flushed and closed here, then an override names the member the ring
+/// gives it without `instance`, a live member both rings honour (G10). The views that leave
+/// `instance` out once it announces make each entry a no-op that return-home drops.
 async fn hand_off_held(state: &AppState, instance: &str) {
     let successors: Vec<String> = state
         .ownership
@@ -210,7 +288,7 @@ async fn hand_off_held(state: &AppState, instance: &str) {
     for prefix in state.shards.held_prefixes() {
         let to = successors[crate::ownership::ring_pick(&prefix, &successors)].clone();
         let change = super::handoff::Change::To(to);
-        let outcome = super::handoff::hand_off(&state.fleet, &prefix, change, false).await;
+        let outcome = super::handoff::drained(&state.fleet, &prefix, change).await;
         tracing::info!(shard = %prefix, ?outcome, "drain: handing a shard off");
     }
 }
@@ -365,7 +443,7 @@ mod tests {
     fn the_budget_is_what_the_drain_waits_for_each_at_its_bound() {
         assert_eq!(
             BUDGET,
-            Duration::from_secs((10 + 10) + (45 + 2 + 45) + (10 + 2 + 10) + 10)
+            Duration::from_secs(8 * (2 + 2) + (10 + 10) + (45 + 2 + 45) + (10 + 2 + 10) + 10)
         );
         assert_eq!(SUPERVISED, BUDGET + Duration::from_secs(1));
     }

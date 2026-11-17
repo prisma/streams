@@ -205,8 +205,12 @@ fn split_refused(decision: &Decision, split: bool) -> Option<&'static str> {
 /// `decision`, after the split or merge entry's answer to the operation it names. A refused
 /// merge holds, by its refusal's code, and the next pass decides again. A split of a prefix whose
 /// last split rolled back waits out its backoff (`backoff`), and a `rolled_back` refusal starts or
-/// doubles it.
+/// doubles it. Once this runtime's planned drain has begun it starts none of them (F6's drain
+/// addendum, G5): the pass holds steady.
 async fn act(cell: &Cell, view: &View, decision: Decision, backoff: &mut Backoff) -> Decision {
+    if cell.fleet.standing().drain_begun() {
+        return Decision::Hold(super::policy::Hold::Steady);
+    }
     if let Decision::Merge { parent } = &decision {
         return match (cell.merge)(parent.clone()).await {
             Ok(()) => decision,

@@ -43,4 +43,47 @@ impl ShardDirectory {
         };
         Some((mark, engine))
     }
+
+    /// Seal this instance against opens for a planned drain, if it holds nothing (the drain
+    /// addendum, G1-G2, `sharddir::drain`). Whether it sealed.
+    pub(crate) fn seal_for_drain(&self) -> bool {
+        self.inner.gate.seal_for_drain()
+    }
+
+    /// Start no more opens, whatever this instance still holds: a planned drain whose handoff
+    /// phase ran out (G3), before it announces.
+    pub(crate) fn stop_opens(&self) {
+        self.inner.gate.stop();
+    }
+
+    /// A drain whose handoff phase ran out gives up `held`, the shards it still holds: each is
+    /// taken by fence or by this instance's own yield, not by a move, and counts as a writer
+    /// fenced ahead of a move (G3, G6).
+    pub(crate) fn note_evacuated(&self, held: &[String]) {
+        for prefix in held {
+            tracing::warn!(shard = %prefix, "planned drain: evacuated, not handed off");
+            self.inner.handoffs.note_fenced();
+        }
+    }
+
+    /// Writers fenced ahead of a planned move on this instance (G6).
+    pub(crate) fn fenced_ahead(&self) -> u64 {
+        self.inner.handoffs.fenced()
+    }
+}
+
+/// An engine of `prefix` (`incarnation`) closed: count it as fenced ahead of a planned move when
+/// its storage closed fenced while this instance's view named it the owner (G6). Judged before the
+/// eviction drops the resident. Once the gate is stopped nothing is counted here: a drain's
+/// evacuation counted what it gave up itself ([`ShardDirectory::note_evacuated`]).
+pub(super) fn judge_fence(
+    dir: &super::DirInner,
+    prefix: &str,
+    incarnation: crate::sharddir::EngineIncarnation,
+) {
+    let ahead = dir.ownership.foreign_owner(prefix).is_none() && !dir.gate.sealed();
+    if ahead && dir.gate.resident_fenced(prefix, incarnation) {
+        tracing::warn!(shard = %prefix, "a writer here was fenced ahead of a planned move");
+        dir.handoffs.note_fenced();
+    }
 }

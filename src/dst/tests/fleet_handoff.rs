@@ -22,17 +22,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::Instant;
 
-const BOUND: Duration = Duration::from_secs(30);
+pub(super) const BOUND: Duration = Duration::from_secs(30);
 
 /// How long a planned move may hold an append (`shard::transaction::barrier::HOLD`).
-const HOLD: Duration = Duration::from_secs(2);
+pub(super) const HOLD: Duration = Duration::from_secs(2);
 
 /// Appenders per stream and member: enough that a commit group is in flight at any moment.
-const LANES: usize = 2;
+pub(super) const LANES: usize = 2;
 
 /// A stream created through `addr` (served by `state`) whose route the cell gives to the leaf
 /// `leaf`: the first `h-<n>` after `taken`.
-async fn stream_in(
+pub(super) async fn stream_in(
     state: &Arc<crate::http::AppState>,
     addr: std::net::SocketAddr,
     leaf: &str,
@@ -90,28 +90,28 @@ async fn created(state: &crate::http::AppState, addr: std::net::SocketAddr, name
 }
 
 /// One acked append: the member that acked it and when.
-struct Ack {
-    n: u32,
-    by: String,
-    at: Instant,
+pub(super) struct Ack {
+    pub(super) n: u32,
+    pub(super) by: String,
+    pub(super) at: Instant,
 }
 
 /// What the appenders saw, per stream.
 #[derive(Default)]
-struct Tally {
-    acked: BTreeMap<String, Vec<Ack>>,
+pub(super) struct Tally {
+    pub(super) acked: BTreeMap<String, Vec<Ack>>,
     /// Every final answer but `204`, by (stream, status, code).
-    refused: BTreeMap<(String, u16, String), u32>,
+    pub(super) refused: BTreeMap<(String, u16, String), u32>,
     /// `409 not_ring_owner` answers replayed to the owner they named, as the SDK does (#264).
-    replayed: u32,
+    pub(super) replayed: u32,
 }
 
 /// The cell's two members by name and address, for the appenders.
-type Members = [(&'static str, std::net::SocketAddr); 2];
+pub(super) type Members = [(&'static str, std::net::SocketAddr); 2];
 
 /// Append `[{"n": <n>}]` to `stream` through `members[lane % 2]` until `stop`, numbering from
 /// `next`.
-async fn appender(
+pub(super) async fn appender(
     members: Members,
     stream: String,
     lane: usize,
@@ -303,7 +303,7 @@ async fn a_returned_child_moves_without_fencing_its_writer() {
 
 /// The count-balance cell's leaves: the ring gives 00 and 01 to `streams-1`, 10 and 11 to
 /// `streams-2` (`fleet_count_balance`).
-const LEAVES: [&str; 4] = ["00", "01", "10", "11"];
+pub(super) const LEAVES: [&str; 4] = ["00", "01", "10", "11"];
 
 /// The rig's in-flight cap of 512 and a ring that keeps both members for the scenario.
 fn balance_members(cli: &mut crate::config::CliArgs) {
@@ -312,7 +312,7 @@ fn balance_members(cli: &mut crate::config::CliArgs) {
 }
 
 /// `name` of the count-balance cell over `fleet` and `data`, its fleet started.
-async fn balance_member(
+pub(super) async fn balance_member(
     fleet: &Arc<dyn ObjectStore>,
     data: &Arc<dyn ObjectStore>,
     name: &str,
@@ -337,7 +337,7 @@ async fn balance_member(
 /// [`LEAVES`], and 10 and 11 overridden to `streams-1`, older than the move cooldown and younger
 /// than return-home's window. `streams-1` holds four of a share of two, so its count balance moves
 /// 00, which no override names, to `streams-2` once its boot cooldown has run.
-async fn balance_cell() -> (HttpRig, HttpRig) {
+pub(super) async fn balance_cell() -> (HttpRig, HttpRig) {
     use crate::dst::fault_store::{FaultPlan, FaultStore};
     let fleet = mem();
     let put = |path: &'static str, body: String| {
@@ -880,107 +880,4 @@ async fn produced(members: Members, stream: &str, seq: u32) -> u16 {
         }
     }
     status
-}
-
-/// **A drain of several shards hands each off giver first, within its budget** (the planned drain,
-/// F6). [`balance_cell`]'s `streams-1` holds all four leaves; a stream in each takes appends at
-/// both members while `streams-1` drains. The drain ends `HandedOff` in well under its budget, one
-/// handoff per shard, none of them a takeover by fence; no append is refused; each stream's target
-/// first ack follows the giver's last within `HOLD`; and every acked append is stored once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_drain_of_several_shards_hands_each_off_within_its_budget() {
-    let errors = ErrorLines::install();
-    let (a, b) = balance_cell().await;
-    let mut taken = 0;
-    let mut streams = Vec::new();
-    for leaf in LEAVES {
-        streams.push(stream_in(&a.state, a.addr, leaf, &mut taken).await);
-    }
-    let members: Members = [("streams-1", a.addr), ("streams-2", b.addr)];
-    let (stop, tally) = (
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(Mutex::new(Tally::default())),
-    );
-    let next = Arc::new(AtomicU32::new(0));
-    let appenders = streams.iter().flat_map(|stream| {
-        let (stop, tally, next) = (&stop, &tally, &next);
-        (0..LANES).map(move |lane| {
-            appender(
-                members,
-                stream.clone(),
-                lane,
-                next.clone(),
-                (stop.clone(), tally.clone()),
-            )
-        })
-    });
-    let drained = async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let t0 = Instant::now();
-        let outcome =
-            crate::fleet::drain::drain(&a.state, "streams-1", crate::fleet::drain::BUDGET).await;
-        let took = t0.elapsed();
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        stop.store(true, Ordering::SeqCst);
-        (outcome, took)
-    };
-    let (_, (outcome, took)) =
-        futures_util::future::join(futures_util::future::join_all(appenders), drained).await;
-    eprintln!("HANDOFF drain took={took:?} outcome={outcome:?}");
-    assert_eq!(outcome, crate::fleet::drain::DrainOutcome::HandedOff);
-    assert!(took < BOUND, "four handoffs, one after another: {took:?}");
-    assert!(
-        a.state.shards.held_prefixes().is_empty(),
-        "streams-1 holds nothing"
-    );
-    assert_eq!(
-        a.state.fleet.standing().handoffs_fenced(),
-        0,
-        "no takeover by fence"
-    );
-    let tally = std::mem::take(&mut *tally.lock().unwrap());
-    eprintln!(
-        "HANDOFF drain replayed={} refused={:?}",
-        tally.replayed, tally.refused
-    );
-    assert_eq!(
-        tally.refused,
-        BTreeMap::new(),
-        "no append is refused across the drain"
-    );
-    for stream in &streams {
-        let acks = &tally.acked[stream];
-        let last = acks
-            .iter()
-            .filter(|a| a.by == "streams-1")
-            .map(|a| a.at)
-            .max();
-        let first = acks
-            .iter()
-            .filter(|a| a.by == "streams-2")
-            .map(|a| a.at)
-            .min();
-        let (Some(last), Some(first)) = (last, first) else {
-            panic!("both members acked {stream}");
-        };
-        let gap = first.saturating_duration_since(last);
-        eprintln!("HANDOFF drain {stream} gap={gap:?}");
-        assert!(
-            gap < HOLD,
-            "{stream}: giver's last ack to target's first: {gap:?}"
-        );
-        let mut acked: Vec<u32> = acks.iter().map(|a| a.n).collect();
-        acked.sort_unstable();
-        assert_eq!(
-            stored_ns(b.addr, stream).await,
-            acked,
-            "{stream}: stored = acked"
-        );
-    }
-    errors.report();
-    for rig in [a, b] {
-        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
-        assert!(report.aborted.is_empty(), "{report:?}");
-        engine_shutdown(&rig.state).await;
-    }
 }

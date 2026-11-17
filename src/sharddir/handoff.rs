@@ -46,6 +46,11 @@ pub(crate) struct Handoffs {
     held: Mutex<HashMap<String, Hold>>,
     /// The serial the next hold takes.
     next: std::sync::atomic::AtomicU64,
+    /// Writers fenced ahead of a planned move (the drain addendum, G6): an engine this instance
+    /// served as the owner its view names whose storage a newer writer fenced, and each shard a
+    /// drain gave up when its handoff phase ran out. A late close of a move's own engine is
+    /// counted apart, on the fleet standing (`handoffs_fenced`).
+    fenced: std::sync::atomic::AtomicU64,
 }
 
 /// One prefix's hold: its deadline and its end, once known.
@@ -66,6 +71,17 @@ pub(crate) struct Mark {
 }
 
 impl Handoffs {
+    /// A writer here was fenced ahead of a planned move (G6).
+    pub(crate) fn note_fenced(&self) {
+        self.fenced
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Writers fenced ahead of a planned move so far (G6).
+    pub(crate) fn fenced(&self) -> u64 {
+        self.fenced.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Hold `prefix` until `until` at the latest; `None` while another move holds it.
     pub(crate) fn begin(self: &Arc<Self>, prefix: &str, until: Instant) -> Option<Mark> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);

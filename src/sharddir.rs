@@ -81,6 +81,8 @@ struct OpenCounters {
 
 /// A customer's open: its adoption is stamped at publication (R29).
 mod adoption;
+/// A planned drain's seal of the gate and its fence observation (F6, the drain addendum).
+mod drain;
 mod health;
 pub(crate) use health::ShardHealth;
 /// The anti-flap ledger's verdict on a departure: evidence, or a release.

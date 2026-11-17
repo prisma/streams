@@ -1427,6 +1427,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_handoff_drain",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "F6's planned drain on real rigs (the drain addendum, G1-G10): every shard handed off before the announcement, no leaf leaving the drainer but through a hold, no writer fenced by either cause, a sealed drainer answering a late request to retry, and a handoff phase that runs out announcing anyway with its fence counted; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_handoff_drain.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_handoff_reads",
       "path": "src/dst/dst_tests.rs",
       "reason": "F6's peer read hop on real rigs (addendum 2026-11-18): a read at a planned move's stale target is served there once the giver's 409 names it, and a burst of such reads refreshes the target once; compiler and the full DST suite exercise the module.",

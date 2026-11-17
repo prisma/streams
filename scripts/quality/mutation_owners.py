@@ -143,7 +143,7 @@ OWNERS = (
           ' dst_tests::live_wait::'),
     owner('shard_directory', 'src/shard_directory.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede:: '
-          'dst_tests::shard_ownership::a_fleet_instance_opens_only_once_a_view_is_known'),
+          'dst_tests::shard_ownership::a_fleet_instance_opens_only_once_a_view_is_known dst_tests::fleet_handoff_drain::'),
     owner('storage_close', 'src/shard/storage_close.rs', 'shard::storage_close::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
     owner('scaler', 'src/scaler3.rs', 'scaler3:: dst_tests::scaler_loop::'),
@@ -159,7 +159,7 @@ OWNERS = (
           'application::topology:: dst_tests::topology_lifecycle:: dst_tests::scaler_split_gate:: '
           'dst_tests::topology_scaling:: '
           '--skip=post_split_throughput_scales'),
-    owner('sharddir', 'src/sharddir.rs', 'sharddir::'),
+    owner('sharddir', 'src/sharddir.rs', 'sharddir:: dst_tests::fleet_handoff_drain::'),
     # The cell's versioned shard topology (S4-DESIGN §3): its stored map, the directory's
     # snapshot of it and the revalidation that installs a newer one.
     owner('topology_mod', 'src/topology.rs', 'topology::'),
@@ -216,7 +216,7 @@ OWNERS = (
     owner('topology_policy_loop', 'src/topology/policy_loop.rs',
           'topology::policy:: topology::policy_loop:: '
           'dst_tests::topology_policy::one_stream_carrying_a_shards_appends_holds_hot_entity '
-          'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal'),
+          'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal dst_tests::fleet_handoff_drain::'),
     # A rolled-back split's backoff (meas149-reshaping F1d): its waits are unit tests, exact to the
     # millisecond; the loop's use of it is topology_policy_loop's.
     # A split refused for room moves its shard to an instance with room
@@ -435,7 +435,7 @@ OWNERS = (
     # each GET and listing, the rigs the passes that list only to discover.
     owner('fleet_members', 'src/fleet/repository/members.rs', 'fleet:: dst_tests::fleet_controller::'),
     # The drain's handoff is proven by the two-instance rigs.
-    owner('fleet_drain', 'src/fleet/drain.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_drain::'),
+    owner('fleet_drain', 'src/fleet/drain.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_drain:: dst_tests::fleet_handoff_drain::'),
     # The drain marker's entries are module tests; the tick's reads of the
     # runtimes it names are the members tests, its write by a drain the rig.
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
@@ -451,8 +451,9 @@ OWNERS = (
     # are reached through the handoff DSTs; the tags' decisions have their own unit tests.
     owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
-    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
-    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
+    owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain::'),
+    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
+    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
     owner('fleet_moves', 'src/fleet/moves.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
@@ -467,7 +468,7 @@ OWNERS = (
     # Overrides that name no stored leaf, dropped by the writers that rewrite the document.
     owner('fleet_stale', 'src/fleet/stale.rs',
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
-    owner('fleet_standing', 'src/fleet/standing.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_topology::'),
+    owner('fleet_standing', 'src/fleet/standing.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_topology:: dst_tests::fleet_handoff_drain::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     # The beat's open of a live intent's unopened sources is pinned by the fleet_topology DSTs that
     # call it directly. fleet_topology::the_fleet_tick_opens_no_override_whose_prefix_is_no_leaf

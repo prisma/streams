@@ -925,10 +925,21 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ae597d6bf649671c26d00700e9015bbb514dc0d0aa776f9582e3418c842b25ba",
+    "function_sha256": "552a5f83a13c7cc56452db9b1b5a0129b637eaa65e61a1c6ffee49eea06403fc",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/fleet_handoff.rs",
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_drain_whose_handoff_phase_runs_out_announces_and_counts_the_fence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "39d9b15547734ae8167663b094e3be9148a5bbf2543ffa7e680f51a59485ac82",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
     "scenarios": []
   },
   {
@@ -940,6 +951,28 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/live_wait.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_drainer_killed_mid_phase_leaves_every_record_exact",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7544c8fef5eef87fba2366d3cca730412397d3d9cffe629561c01a759fbbc9a5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_drainer_sealed_against_opens_answers_a_late_request_to_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "77769a11b1f994d11ee3e415a5338d00d47a2ed94e826c8300e0c4862eed4845",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
     "scenarios": []
   },
   {
@@ -2576,6 +2609,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "75e64a6d68212f8754aff03ceea167a2b4f1e36cce71e4941dca89519f53607a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
     "scenarios": []
   },
   {
@@ -8484,6 +8528,17 @@
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
     ],
     "file": "src/dst/tests/billing_maintenance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "moves_towards_an_unannounced_drainer_are_handed_off_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c22be8efca066731e98b4821485b670c8e19cab38fce45b6f63b13ff138c658d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
     "scenarios": []
   },
   {

@@ -41,6 +41,9 @@ const CLOSE: Duration = Duration::from_millis(300);
 const CAS: Duration = Duration::from_millis(400);
 /// Moves waiting for the runner at once.
 const QUEUED: usize = 16;
+/// One planned move's bound, end to end: step 0's flush, then the hold from the park, which
+/// bounds steps 2 to 7.
+pub(crate) const BOUND: Duration = PRE_FLUSH.saturating_add(HOLD);
 
 /// The overrides change a planned move writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,8 +82,32 @@ pub(crate) struct Request {
 pub(crate) type Queue = mpsc::Sender<Request>;
 
 /// Move `prefix` by `change`, giver first; its end. Without a runner (a fleet-off runtime, or one
-/// whose runner stopped) nothing is moved.
+/// whose runner stopped) nothing is moved, and neither is anything once this runtime's planned
+/// drain has begun: from then on only the drain moves its shards (the drain addendum G5,
+/// [`drained`]).
 pub(crate) async fn hand_off(
+    fleet: &super::FleetRepository,
+    prefix: &str,
+    change: Change,
+    evacuable: bool,
+) -> Outcome {
+    if fleet.standing().drain_begun() {
+        return Outcome::NotStarted;
+    }
+    queued(fleet, prefix, change, evacuable).await
+}
+
+/// A planned drain's move of `prefix` by `change`, giver first (G1); its end.
+pub(crate) async fn drained(
+    fleet: &super::FleetRepository,
+    prefix: &str,
+    change: Change,
+) -> Outcome {
+    queued(fleet, prefix, change, false).await
+}
+
+/// One move through this runtime's runner; its end.
+async fn queued(
     fleet: &super::FleetRepository,
     prefix: &str,
     change: Change,

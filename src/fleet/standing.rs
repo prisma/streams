@@ -32,7 +32,11 @@ pub(crate) struct Standing {
     progress: AtomicU64,
     /// Beats this runtime has built.
     beats: AtomicU64,
-    /// Whether this runtime's planned drain has begun (`fleet::drain`).
+    /// Whether this runtime's planned drain has begun handing its shards off (the drain
+    /// addendum G5: from then on this runtime starts no split, merge, co-location or move but the
+    /// drain's own), announced or not.
+    handing_off_all: AtomicBool,
+    /// Whether this runtime's planned drain has been announced (`fleet::drain`).
     draining: AtomicBool,
     /// The first beat built after the drain began; zero before it.
     draining_from: AtomicU64,
@@ -113,6 +117,7 @@ impl Default for Standing {
             origin: Instant::now(),
             progress: AtomicU64::new(0),
             beats: AtomicU64::new(0),
+            handing_off_all: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             draining_from: AtomicU64::new(0),
             beat_now: tokio::sync::Notify::new(),
@@ -175,8 +180,8 @@ impl Standing {
         self.handoffs_fenced.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Planned moves that became takeovers by fence (F6 H8).
-    #[cfg(test)]
+    /// Planned moves whose own close was late and became takeovers by fence (F6 H8; the drain
+    /// addendum G6 counts a fence ahead of a move apart, on the directory).
     pub(crate) fn handoffs_fenced(&self) -> u64 {
         self.handoffs_fenced.load(Ordering::Relaxed)
     }
@@ -366,8 +371,19 @@ impl Standing {
         self.beats.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// This runtime's planned drain begins: its next beat, published at
-    /// once, says so, and so does every beat after it.
+    /// This runtime's planned drain begins handing its shards off, before it announces (G1, G5).
+    pub(crate) fn begin_handing_off_all(&self) {
+        self.handing_off_all.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether this runtime's planned drain has begun, its handoffs included: it starts no
+    /// topology change and no move but the drain's own (G5).
+    pub(crate) fn drain_begun(&self) -> bool {
+        self.handing_off_all.load(Ordering::SeqCst) || self.draining()
+    }
+
+    /// This runtime's planned drain is announced: its next beat, published
+    /// at once, says so, and so does every beat after it.
     pub(crate) fn begin_draining(&self) {
         self.draining.store(true, Ordering::SeqCst);
         let first = self.beats.load(Ordering::SeqCst) + 1;

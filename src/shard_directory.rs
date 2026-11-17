@@ -179,6 +179,7 @@ impl ShardCloseNotifier {
         let Some(dir) = self.inner.upgrade() else {
             return false;
         };
+        handoff::judge_fence(&dir, prefix, incarnation);
         let evicted = dir.gate.notify_closed(prefix, incarnation);
         if evicted {
             dir.supersession.engine_died();
