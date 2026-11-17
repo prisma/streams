@@ -292,7 +292,7 @@ OWNERS = (
           'dst_tests::l0_watermark:: dst_tests::admission_maintenance::'),
     owner('shard_queue_gauges', 'src/shard/layout/queue_gauges.rs', 'shard::layout::queue_gauges:: native_queue_tests::slices:: dst_tests::queue_overload::one_project'),
     owner('shard_layout', 'src/shard/layout.rs', 'shard::billing_read_tests:: shard::bounded_outbox_tests:: dst_tests::billing_restart:: dst_tests::billing_usage:: shard::seal::gc_tests:: shard::seal::gc::root_tests::'),
-    owner('shard_billing_ops', 'src/shard/billing_ops.rs', 'shard:: dst_tests::billing_walk_custody::'),
+    owner('shard_billing_ops', 'src/shard/billing_ops.rs', 'shard:: dst_tests::billing_walk_custody:: dst_tests::fleet_handoff_cases::a_month_final_the_giver_left_is_written_by_the_next_owner'),
     owner('bootstrap', 'src/bootstrap.rs', 'bootstrap::'),
     owner('bootstrap_allocator', 'src/bootstrap/allocator.rs', 'bootstrap::allocator:: bootstrap::service_runtime:: bootstrap::process_executor::'),
     owner('bootstrap_idle', 'src/bootstrap/idle.rs', 'bootstrap::idle:: dst_tests::idle_release::'),

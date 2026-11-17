@@ -769,12 +769,9 @@ pub(crate) async fn drain_once(
             state
                 .billing
                 .set_drain_row_cursor(&engine.prefix, Some(hash));
-            let (row_finals, more_finals) = match engine.usage_month_finals_page(hash, 32).await {
-                Ok(page) => page,
-                Err(error) => {
-                    tracing::error!("month-final read failed (dirty row deferred): {error}");
-                    continue;
-                }
+            let Some((row_finals, more_finals)) = engine.usage_month_finals_or_note(hash, 32).await
+            else {
+                continue;
             };
             let mut meta = match engine.load_billing_meta(hash).await {
                 Ok(Some(meta)) => meta,

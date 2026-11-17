@@ -346,6 +346,137 @@ async fn a_giver_that_dies_after_its_write_leaves_the_shard_to_its_target() {
     stop(target).await;
 }
 
+/// A day of billing time.
+const DAY: i64 = 86_400_000;
+
+/// Resets the injected billing clock, also on a panic.
+struct ClockReset;
+
+impl Drop for ClockReset {
+    fn drop(&mut self) {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// **A month final the giver did not drain is written by the shard's next owner, exactly** (H6). A
+/// stream in `00` closes September with an append in October, so the giver stores September's
+/// final; a planned move closes the giver's engine before any drain round. A final read there now
+/// fails on the closed engine and is logged at DEBUG (on an open engine it stays ERROR).
+/// `streams-2`, the shard's next owner, drains the row: the ledger holds September's snapshot of
+/// the stream once, equal to the final the giver stored, and no final is left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_month_final_the_giver_left_is_written_by_the_next_owner() {
+    let _clock = crate::billing::billing_clock_lock().write().await;
+    let _reset = ClockReset;
+    let set = |ms: i64| {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(ms, std::sync::atomic::Ordering::Relaxed)
+    };
+    let sep = crate::billing::month_start_ms(2026, 9);
+    let (data, fleet) = (mem(), mem());
+    let rig = member(&data, fleet.clone(), "streams-1", RigRuntime::first(), true).await;
+    set(sep + 14 * DAY);
+    let name = stream_in_00(&rig).await;
+    appended(&rig, &name, 0..1).await;
+    set(sep + 39 * DAY);
+    appended(&rig, &name, 1..2).await;
+    let giver = rig.state.shards.open("00").expect("00 is open");
+    let finals = giver.usage_month_finals().await.unwrap();
+    let [(_, september)] = finals.as_slice() else {
+        panic!("one final: {finals:?}");
+    };
+    assert_eq!(
+        (
+            september.month.as_str(),
+            september.identity.stream_name.as_str()
+        ),
+        ("2026-09", name.as_str())
+    );
+    let sref = rig.state.deployment.raw_adapter_sref(&name);
+    let hash = super::billing_closure_debts::stored(&rig.state, &sref)
+        .await
+        .resolve_segment("")
+        .identity;
+    let moved = hand_off(
+        &rig.state.fleet,
+        "00",
+        Change::To("streams-2".to_string()),
+        false,
+    )
+    .await;
+    assert_eq!(moved, Outcome::Moved);
+    let failed = giver
+        .usage_month_finals_page(hash, 32)
+        .await
+        .expect_err("a closed engine's read fails");
+    assert!(
+        !giver.note_month_final_failure(&failed),
+        "a closed engine's failure is DEBUG"
+    );
+    drop(giver);
+    stop(rig).await;
+    let target = member(&data, fleet, "streams-2", RigRuntime::incarnation(1), false).await;
+    target
+        .state
+        .ownership
+        .set_view(vec!["streams-2".to_string()], Default::default());
+    let opened = target
+        .state
+        .shards
+        .open_or_wait("00", Duration::from_secs(5))
+        .await;
+    let crate::sharddir::OpenOutcome::Ready(engine) = opened else {
+        panic!("streams-2 opens 00");
+    };
+    let injected = anyhow::anyhow!("injected");
+    assert!(
+        engine.note_month_final_failure(&injected),
+        "an open engine's failure stays ERROR"
+    );
+    drained(&target, &engine).await;
+    let ledger = september_rows(&target, &name).await;
+    assert_eq!(
+        ledger,
+        vec![serde_json::to_value(september).unwrap()],
+        "September's final, once"
+    );
+    stop(target).await;
+}
+
+/// Drain `rig`'s usage until `engine` holds no final and no dirty row, bounded.
+async fn drained(rig: &HttpRig, engine: &crate::shard::ShardEngine) {
+    let mut wait = super::fixture_billing::DrainWait::default();
+    let t0 = tokio::time::Instant::now();
+    loop {
+        wait.round(&rig.state).await;
+        let finals = engine.usage_month_finals().await.unwrap();
+        if finals.is_empty() && engine.usage_dirty_scan().await.unwrap().is_empty() {
+            return;
+        }
+        wait.still_dirty(&rig.state, "September's final");
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "the next owner drains the final"
+        );
+    }
+}
+
+/// The `_usage` ledger's September snapshots of `stream`, as stored.
+async fn september_rows(rig: &HttpRig, stream: &str) -> Vec<serde_json::Value> {
+    let key = rig.state.billing.usage_key().expect("the rig meters usage");
+    let read = crate::billing::system_read(&rig.state, crate::billing::USAGE_STREAM, &key, None);
+    let (body, _) = read.await.unwrap().expect("the ledger exists");
+    let envelopes: Vec<crate::billing::UsageEnvelope> = serde_json::from_slice(&body).unwrap();
+    let september = |e: &crate::billing::UsageEnvelope| match &e.payload {
+        crate::billing::UsagePayload::SegmentSnapshot(s)
+            if s.identity.stream_name == stream && s.month == "2026-09" =>
+        {
+            Some(serde_json::to_value(s).unwrap())
+        }
+        _ => None,
+    };
+    envelopes.iter().filter_map(september).collect()
+}
+
 /// ERROR events logged while a loaded handoff DST ran (H8, I3: no ERROR line on either member).
 /// The counter is the process's default subscriber, installed by the first test that asks; any
 /// later test of the process counts nothing (`None`), and the first one counts the events of every

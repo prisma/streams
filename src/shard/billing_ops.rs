@@ -96,6 +96,38 @@ impl ShardEngine {
         Ok((rows, false))
     }
 
+    /// The usage drain's page of month finals for one dirty segment, as
+    /// [`Self::usage_month_finals_page`]; a failed read is noted
+    /// ([`Self::note_month_final_failure`]) and answered `None`, and the row
+    /// waits for the next round.
+    pub(crate) async fn usage_month_finals_or_note(
+        &self,
+        hash: [u8; 16],
+        limit: usize,
+    ) -> Option<(Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>, bool)> {
+        match self.usage_month_finals_page(hash, limit).await {
+            Ok(page) => Some(page),
+            Err(error) => {
+                self.note_month_final_failure(&error);
+                None
+            }
+        }
+    }
+
+    /// A month-final read of the usage drain failed with `error`, and its dirty row waits for the
+    /// next round: logged at DEBUG on a closed engine (a planned move, a split's retire or a stop
+    /// closed it, and the shard's next owner drains the row, H6), at ERROR otherwise. Whether it
+    /// was logged as an error.
+    pub(crate) fn note_month_final_failure(&self, error: &anyhow::Error) -> bool {
+        if self.is_closed() {
+            let shard = &self.prefix;
+            tracing::debug!(%shard, "month-final read failed on a closed engine (dirty row deferred to its next owner): {error}");
+            return false;
+        }
+        tracing::error!("month-final read failed (dirty row deferred): {error}");
+        true
+    }
+
     /// The billing meta the usage drain, the tombstone walk and the debt
     /// pass meter (layout 6, f3): the segment's **durable** static meta and
     /// usage counters, never a group's applied but not yet durable state (a

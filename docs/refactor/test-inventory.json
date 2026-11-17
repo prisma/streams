@@ -2238,6 +2238,17 @@
     "scenarios": []
   },
   {
+    "name": "a_month_final_the_giver_left_is_written_by_the_next_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3fe8d11c393039381b6e54275fbfc078612781c061cfd27195f21c5482b37280",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_move_and_a_split_never_hold_one_engine_together",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
