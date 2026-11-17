@@ -127,6 +127,19 @@ impl ShardLogMetrics {
             .sum()
     }
 
+    /// A gauge's value now, summed over its labels (0 before SlateDB registers it).
+    pub(crate) fn gauge(&self, metric: &str) -> i64 {
+        self.recorder
+            .snapshot()
+            .by_name(metric)
+            .iter()
+            .map(|m| match m.value {
+                MetricValue::Gauge(v) => v,
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// A counter's value now (0 before SlateDB registers it).
     pub(crate) fn counter(&self, metric: &str) -> u64 {
         self.recorder
