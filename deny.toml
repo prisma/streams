@@ -1,5 +1,5 @@
 # Every dependency, including development/build dependencies and target-specific
-# crates, is checked. Only the three named maintenance advisories below are
+# crates, is checked. Only the five named maintenance advisories below are
 # excepted; there are no workspace exclusions.
 [advisories]
 git-fetch-with-cli = true
@@ -10,6 +10,8 @@ ignore = [
   { id = "RUSTSEC-2025-0141", reason = "Pinned SlateDB -> foyer-common 0.22.6 uses bincode 1.3.3; unmaintained, no safe upgrade. Storage format changes need independent compatibility review. See docs/quality/dependencies.md." },
   { id = "RUSTSEC-2024-0436", reason = "Pinned SlateDB -> foyer 0.22.6 uses paste 1.0.15 at compile time; unmaintained, no safe upgrade. Track upstream macro migration. See docs/quality/dependencies.md." },
   { id = "RUSTSEC-2024-0449", reason = "Pinned SlateDB 6551458 enables figment's yaml provider -> serde_yaml 0.9.34 -> unsafe-libyaml 0.2.11; unmaintained, no safe upgrade. Streams builds Settings::default() only and SlateDB never calls its own file or env loaders, so the YAML parser is compiled but unreached. See docs/quality/dependencies.md." },
+  { id = "RUSTSEC-2026-0543", reason = "Until 2027-02-28 (gate decision of 2026-11-17): chrono 0.4.45 is unmaintained (soft-deprecated, chronotope/chrono#1768); no vulnerability, no safe upgrade. Streams uses it directly, and object_store 0.14.2 exposes it in its public API (ObjectMeta.last_modified), as does the pinned SlateDB fork, so it cannot leave the graph before object_store drops it. See docs/quality/dependencies.md." },
+  { id = "RUSTSEC-2026-0542", reason = "Until 2027-02-28 (gate decision of 2026-11-17): humantime 2.4.0 is unmaintained; no vulnerability, no safe upgrade. A non-optional dependency of object_store 0.14.2, used only to parse and format duration strings in its client config; Streams builds ClientOptions in code. See docs/quality/dependencies.md." },
 ]
 
 [licenses]

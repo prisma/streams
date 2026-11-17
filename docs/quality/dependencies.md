@@ -54,11 +54,27 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   `Settings` only through `Settings::default()`; SlateDB itself never calls its
   `from_file`, `from_env` or `load` providers, so the YAML parser is linked but
   unreached. Remove the exception when SlateDB drops or gates the provider.
+- `chrono` 0.4.45, used directly by Streams and through `object_store` 0.14.2
+  and the pinned SlateDB fork:
+  [RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543) reports
+  discontinued maintenance (chronotope/chrono#1768) and no safe upgrade; it
+  reports no vulnerability. `object_store` exposes chrono in its public API
+  (`ObjectMeta.last_modified`), so removing Streams' own use would not remove
+  the crate. Excepted until 2027-02-28 (gate decision of 2026-11-17); review
+  at that date, or sooner at a SlateDB pin bump or an `object_store` upgrade.
+  Remove the exception when `object_store` and SlateDB no longer depend on
+  chrono and Streams' own uses are migrated.
+- `humantime` 2.4.0, through `object_store` 0.14.2 only:
+  [RUSTSEC-2026-0542](https://rustsec.org/advisories/RUSTSEC-2026-0542) reports
+  discontinued maintenance and no safe upgrade; it reports no vulnerability.
+  `object_store` uses it to parse and format duration strings in client
+  configuration, and Streams builds its `ClientOptions` in code. Same date and
+  review rule as chrono; remove the exception when `object_store` drops it.
 - `zstd` 0.14.3 / `zstd-safe` 8.2.0 / `zstd-sys` 2.1.2: Streams, SlateDB
   (slatedb/slatedb#2193, on main) and the carried foyer (foyer-rs/foyer#1382) all take
   zstd 0.14.3 since the 2026-10-30 pin bump, which removed the owner's
   time-boxed ignores of RUSTSEC-2026-0391, -0398, -0403 and -0410 (2026-10-26).
-  These three named advisory exceptions do not exempt a new vulnerability
+  These five named advisory exceptions do not exempt a new vulnerability
   advisory.
 - `webpki-roots` and `webpki-root-certs`, each exactly 1.0.8, contain certificate
   data under CDLA-Permissive-2.0. `deny.toml` permits that license only for these
@@ -71,7 +87,7 @@ The workspace lock contained neither banned package nor `openssl-sys`.
   graphs on every run; it does not suppress duplicates.
 
 The owner for these adoption dispositions is the repository maintainer via this
-policy migration. Revisit the three maintenance exceptions whenever SlateDB/foyer
+policy migration. Revisit the five maintenance exceptions whenever SlateDB/foyer
 is updated; unknown advisories, Git sources and registries fail the gate. The
 source gate independently requires every Git lock entry to match an exact
 revision pinned in `quality-tools.toml` (SlateDB main, and the foyer fork
