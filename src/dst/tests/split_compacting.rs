@@ -445,6 +445,7 @@ async fn a_split_of_a_parent_compacting_past_the_bound_is_refused_before_the_par
     let (refused, answers) = ended.expect("the split ends within 30 s");
     match refused {
         Err(crate::topology::split::Refused::RolledBack(why)) => {
+            println!("REFUSED {why}");
             assert!(why.contains("did not settle"), "{why}");
         }
         other => panic!("the split is refused: {:?}", other.map(|p| p.version)),
@@ -601,6 +602,210 @@ async fn a_split_of_a_compacting_parent_without_l0_room_does_not_park() {
         !parked,
         "the split parked while the compactions write was held"
     );
+    tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
+        .await
+        .expect("the cell shuts down within 30 s");
+}
+
+/// The parent's log as the store holds it, read by the test's own admin (never through the parent,
+/// whose cache or manifest view the read would warm or refresh: the warm check would be handed
+/// its answer): its sorted runs' tables by view with their sizes, the runs' ids, and every table
+/// (L0 and sorted run) by id and size.
+struct Stored {
+    tables: std::collections::BTreeMap<u128, u64>,
+    runs: Vec<u32>,
+    shown: Vec<String>,
+}
+
+/// The parent's log at `admin`'s latest manifest.
+async fn stored(admin: &slatedb::admin::Admin) -> Stored {
+    let manifest = admin
+        .read_manifest(None)
+        .await
+        .expect("a manifest read")
+        .expect("the log's manifest");
+    let views = manifest.compacted().iter().flat_map(|run| {
+        run.sst_views().iter().map(move |view| {
+            (
+                run.id,
+                view.id.0,
+                view.estimate_size(),
+                format!("{:?}", view.sst.id),
+            )
+        })
+    });
+    let mut out = Stored {
+        tables: std::collections::BTreeMap::new(),
+        runs: manifest.compacted().iter().map(|run| run.id).collect(),
+        shown: manifest
+            .l0()
+            .iter()
+            .map(|view| format!("L0 {:?} {} B", view.sst.id, view.estimate_size()))
+            .collect(),
+    };
+    for (run, view, size, id) in views {
+        out.tables.insert(view, size);
+        out.shown.push(format!("SR{run} {id} {size} B"));
+    }
+    out
+}
+
+/// Waits, at most `HELD_WAIT`, until the stored log's sorted runs differ from `read`: the released
+/// compaction landed. The log as it then stands.
+async fn changed(
+    admin: &slatedb::admin::Admin,
+    read: &std::collections::BTreeMap<u128, u64>,
+) -> Stored {
+    let started = std::time::Instant::now();
+    loop {
+        let now = stored(admin).await;
+        if now.tables != *read {
+            return now;
+        }
+        assert!(
+            started.elapsed() < HELD_WAIT,
+            "the released compaction lands"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Submits through `admin` a compaction of all the sorted runs `runs` into one: an output that
+/// carries every interval row.
+async fn runs_merged(admin: &slatedb::admin::Admin, runs: Vec<u32>) {
+    use slatedb::compactor::{CompactionSpec, SourceId};
+    let destination = runs.iter().copied().min().expect("a sorted run");
+    let sources = runs.into_iter().map(SourceId::SortedRun).collect();
+    let spec = CompactionSpec::new(sources, destination);
+    let started = std::time::Instant::now();
+    while admin.submit_compaction(spec.clone()).await.is_err() {
+        assert!(
+            started.elapsed() < HELD_WAIT,
+            "the compactor accepts the merge"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// The smallest merge output the landing test waits for: the queues' interval rows merged into
+/// one sorted run (about 490 KB, which SlateDB writes as tables of about 225 KB), not a merge of a
+/// few small L0s.
+const LARGE_OUTPUT: u64 = 256 * 1024;
+
+/// Waits, at most `HELD_WAIT`, until the stored log holds one sorted run, every table of it new
+/// since `read`, of at least `LARGE_OUTPUT` together: the merge landed. Its bytes.
+async fn landed(
+    admin: &slatedb::admin::Admin,
+    read: &std::collections::BTreeMap<u128, u64>,
+) -> u64 {
+    let started = std::time::Instant::now();
+    loop {
+        let now = stored(admin).await;
+        let fresh = now.tables.keys().all(|view| !read.contains_key(view));
+        let bytes: u64 = now.tables.values().sum();
+        if now.runs.len() == 1 && fresh && bytes >= LARGE_OUTPUT {
+            return bytes;
+        }
+        let shown = &now.shown;
+        assert!(
+            started.elapsed() < HELD_WAIT,
+            "no merged sorted run of {LARGE_OUTPUT} B landed: {shown:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// **A compaction landing after Preparing's read is read again before the park** (F5 part 1b,
+/// GATE-DECISION-f5-checkpoint-compaction-2026-11-17 addenda "cold output tables", "1b green and
+/// the cold-table counts", "Q1 variant"). The 400-queue parent with L0 room (line 32, L0 at
+/// `ROOM_L0`) and a compaction held; once Preparing has read the log the held compaction is
+/// released and lands, then a merge of all the parent's sorted runs is submitted, and Preparing
+/// goes on only once its output, of at least `LARGE_OUTPUT`, has landed: tables no read has
+/// warmed, observed on the store by the test's own reader. The large output is a submitted merge
+/// because the compactor's own merges of sorted runs come on its 5 s poll, not on a test's cue;
+/// the same compactor runs and writes it. Preparing's warm check refreshes the
+/// manifest, finds them and reads the log once more, so the pause reads warm blocks: `warm_reads`
+/// is 1, and at most 8 table GETs and 64 GETs from the park to the topology CAS unless the
+/// compactor writes inside that window (`COMPACTION_OVERLAP`). Red before the warm check: the
+/// pause reads the output cold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_compaction_landing_after_preparings_read_is_read_again_before_the_park() {
+    use crate::topology::gate::PausePoint;
+    let ready = compacting(None, ROOM_L0);
+    let (cell, held, trace, parent) = tokio::time::timeout(6 * HELD_WAIT, ready)
+        .await
+        .expect("the compacting parent is ready within 180 s");
+    let point = || {
+        let (reached, reached_rx) = tokio::sync::oneshot::channel();
+        let (go_tx, go) = tokio::sync::oneshot::channel();
+        (PausePoint { reached, go }, reached_rx, go_tx)
+    };
+    let gate = &parent.gc_state().gate;
+    let (reads, reads_rx, reads_go) = point();
+    let (park, park_rx, park_go) = point();
+    let (checkpoint, checkpoint_rx, checkpoint_go) = point();
+    gate.pause_after_reads(reads);
+    gate.pause_at_park(park);
+    gate.pause_after_checkpoint(checkpoint);
+    // The test's own reader of the parent's log, on the store under the trace: its reads are not
+    // the split's.
+    let admin = slatedb::admin::AdminBuilder::new(parent.log_path(), held.0.clone()).build();
+    let clock = cell.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&cell.state.shards, &parent, "op-landed", "inst-a", &*clock);
+    let control = async {
+        reads_rx.await.expect("Preparing reads the log");
+        let read = stored(&admin).await.tables;
+        held.release();
+        let runs = changed(&admin, &read).await.runs;
+        runs_merged(&admin, runs).await;
+        let landed = landed(&admin, &read).await;
+        assert!(reads_go.send(()).is_ok(), "Preparing waits for go");
+        let Ok(Ok(())) = tokio::time::timeout(HELD_WAIT, park_rx).await else {
+            panic!("the split did not park within 30 s of the landing");
+        };
+        let parked = last_seq(&trace);
+        let at_park = stored(&admin).await.shown;
+        assert!(park_go.send(()).is_ok(), "the split waits for go");
+        checkpoint_rx.await.expect("the pause checkpoints");
+        let checkpointed = last_seq(&trace);
+        assert!(checkpoint_go.send(()).is_ok(), "the split waits for go");
+        let at = At {
+            before: parked,
+            parked,
+            checkpointed,
+        };
+        (at, at_park, landed)
+    };
+    let both = futures_util::future::join(split, control);
+    let (published, (at, at_park, landed)) = tokio::time::timeout(3 * HELD_WAIT, both)
+        .await
+        .expect("the split publishes within 90 s of the start");
+    let published = published
+        .map_err(|refused| refused.to_string())
+        .expect("the split publishes");
+    let phases = crate::topology::split::shown_phases(&published);
+    let seen = window(&trace, &at);
+    let window = format!("{} tables at the park {at_park:?} [{phases}]", seen.shown());
+    println!("LANDED_PAUSE {window}");
+    let warm_reads = published
+        .notes
+        .iter()
+        .find_map(|(name, value)| (*name == "warm_reads").then_some(*value))
+        .expect("the phase line's warm_reads");
+    assert_eq!(warm_reads, 1, "Preparing's warm reads: {window}");
+    assert!(
+        landed >= LARGE_OUTPUT,
+        "the landed merge: {landed} B: {window}"
+    );
+    let table_gets = seen.gets() - seen.untabled_gets();
+    if seen.compactor_writes.is_empty() {
+        assert!(table_gets <= 8, "table GETs from park to CAS: {window}");
+        assert!(seen.gets() <= BOUND, "GETs from park to CAS: {window}");
+    } else {
+        let writes = seen.compactor_writes.len();
+        println!("COMPACTION_OVERLAP {writes} compactor writes in the window: {window}");
+    }
     tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
         .await
         .expect("the cell shuts down within 30 s");

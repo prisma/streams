@@ -455,6 +455,17 @@
     "scenarios": []
   },
   {
+    "name": "a_compaction_landing_after_preparings_read_is_read_again_before_the_park",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c4975991ef946f30fed89c953d02479755c30b8eb4f3180bda92d2514d552735",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_compacting.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_compliant_crowd_at_its_ceilings_leaves_the_victim_admitted",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2726,7 +2737,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "27bb343f68b3be452c6fdc4ca1b1ceab8646a34e3c928e0e045b36b6e540d0cc",
+    "function_sha256": "395ed6b87f85668e04e347ada1d73ab2fbd40c35bfe7897f58df49f96db685e8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_start.rs",
@@ -3967,7 +3978,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "44d8330326ad2c7e967db2ddd66106d6e2906e682640145a287beb2024a03af0",
+    "function_sha256": "a02ecc4f5fde2f880d6ab578b0ce1bc112a10f87b77897fa31859cdbe00b3c6f",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",

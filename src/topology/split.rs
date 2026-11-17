@@ -553,8 +553,9 @@ async fn begin(
 /// Preparing (S4-DESIGN §6.2 steps 0.3 to 0.5), unpaused: the parent's log settles (`settle`),
 /// the parent folds what it can, its collection stands down and the touched-queue mark starts; the
 /// plan is made from its sentinel, its sums are checked (a refusal here rolls back before the gate
-/// and the barrier park anything), and its lists are PUT. What it PUT, and the run-index objects
-/// it read for the pause to reuse.
+/// and the barrier park anything), its lists are PUT, and a warm check reads the log again if a
+/// compaction landed since its read. What it PUT, and the run-index objects it read for the pause
+/// to reuse.
 async fn prepare(
     store: &dyn ObjectStore,
     parent: &Arc<ShardEngine>,
@@ -569,6 +570,7 @@ async fn prepare(
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
     gate.start_marking();
+    let seen = settle::compacted_views(parent);
     let log = log_reads(parent, None).await?;
     let rows = &log.rows;
     // Tests only: a point after Preparing read the parent's log.
@@ -587,6 +589,7 @@ async fn prepare(
         put_lists(store, parent, child, &lists, lineage::reference_list_path).await?;
         put.push(lists);
     }
+    let settled = settle::warmed(parent, settled, seen).await?;
     Ok(Prepared {
         lists: put,
         runs,
@@ -647,6 +650,7 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
     );
     op.phases.note("l0", settled.l0);
     op.phases.note("l0_max", parent.l0_max_seen());
+    op.phases.note("warm_reads", settled.warm_reads);
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
     op.phases.mark("flush");
     let options = CheckpointOptions {
