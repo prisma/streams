@@ -10,15 +10,15 @@ use std::time::{Duration, Instant};
 /// One timed phase: its name and how many milliseconds it took.
 pub(crate) type Phase = (String, u64);
 
-/// When the current phase started, and the phases recorded so far, in order.
-type Held = (Instant, Vec<Phase>);
+/// When the current phase started, the phases recorded so far, in order, and the counts noted.
+type Held = (Instant, Vec<Phase>, Vec<Phase>);
 
 /// A split's phase recorder.
 pub(crate) struct Phases(Mutex<Held>);
 
 impl Phases {
     pub(crate) fn new() -> Self {
-        Self(Mutex::new((Instant::now(), Vec::new())))
+        Self(Mutex::new((Instant::now(), Vec::new(), Vec::new())))
     }
 
     /// The next phase starts now (the time before it is not recorded).
@@ -43,6 +43,19 @@ impl Phases {
         if let Ok(mut held) = self.0.lock() {
             held.1.push((phase.to_string(), millis(took)));
         }
+    }
+
+    /// A count the phases carry: `label` was `count`.
+    pub(crate) fn note(&self, label: &str, count: usize) {
+        if let Ok(mut held) = self.0.lock() {
+            held.2
+                .push((label.to_string(), u64::try_from(count).unwrap_or(u64::MAX)));
+        }
+    }
+
+    /// The counts noted so far, in order.
+    pub(crate) fn noted(&self) -> Vec<Phase> {
+        self.0.lock().map(|held| held.2.clone()).unwrap_or_default()
     }
 
     /// The phases recorded so far, in order.
@@ -80,6 +93,10 @@ mod tests {
         assert_eq!(taken, [("a".to_string(), 3), ("open 0".to_string(), 7)]);
         assert_eq!(shown(&taken), "a=3 open 0=7");
         assert_eq!(shown(&Phases::new().taken()), "", "none recorded");
+        phases.note("rows", 20_000);
+        phases.note("heads", 0);
+        assert_eq!(shown(&phases.noted()), "rows=20000 heads=0");
+        assert_eq!(phases.taken().len(), 2, "a note is no phase");
     }
 
     /// **A mark takes the time since the last mark or start, not since the recorder was made.**
