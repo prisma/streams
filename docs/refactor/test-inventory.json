@@ -4485,6 +4485,17 @@
     "scenarios": []
   },
   {
+    "name": "a_tick_that_read_before_the_split_cannot_unpublish_its_children",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "093791a96e95510829ed3cb1970f68362abbca0889c12112d4a3b8c97d271b76",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_tombstone_older_than_the_index_is_backfilled_and_released",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
