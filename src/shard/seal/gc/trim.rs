@@ -449,12 +449,14 @@ impl ShardEngine {
 /// A queue's released intervals as `snapshot` holds them, at its sequence and the default (Memory)
 /// durability: the split's plan, which reads them with the sentinel rows from one snapshot
 /// (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote` here: its cap is recomputed per read.
+/// Read with the sentinel's scan options (`open_index::sentinel_scan_opts`, F5), so Preparing's read
+/// leaves the blocks cached for the pause's.
 pub(crate) async fn intervals_at(
     snapshot: &slatedb::DbSnapshot,
     hash: &[u8; 16],
 ) -> Result<Vec<Interval>, String> {
     let (from, to) = intervals::key_range(hash);
-    let options = crate::native_queue::scan_options();
+    let options = crate::shard::open_index::sentinel_scan_opts();
     let rows = snapshot.scan_with_options(from..to, &options).await;
     decoded(rows.map_err(|e| e.to_string())?).await
 }

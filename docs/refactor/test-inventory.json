@@ -11397,6 +11397,42 @@
     "scenarios": []
   },
   {
+    "name": "the_pause_of_a_loaded_parent_stays_within_the_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4d59a60384d6fff88f37f9ca524514e9967f47ba034ac4696fc5f45fa337cc48",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_pause.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_pause_of_a_parent_with_trimmed_queues_reads_its_intervals_at_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "28fdd82de27f0999f9304dc26acc2df760806568546eeead1bf6c37ff99114be",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_pause.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a timing measurement, run under the machine's lock\"]"
+    ],
+    "function_sha256": "d0566bd4f533e971e249d8d253ffd6526e2407d88f9e451cbf0eae5e9c41a9a0",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/split_pause.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_pause_on_a_store_ten_ms_away_stays_within_the_hold",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

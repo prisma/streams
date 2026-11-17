@@ -5,6 +5,10 @@
 use super::phases::Phases;
 use crate::keyspace::SENTINEL;
 use crate::topology::sentinel::{self, Row};
+use futures_util::{StreamExt, TryStreamExt};
+
+/// The queues whose `'k'` rows the reads scan at once, on the one snapshot.
+const INTERVAL_SCANS: usize = 16;
 
 /// What a plan read of the parent's log, at one sequence (`log_reads`).
 pub(super) struct LogReads {
@@ -20,17 +24,23 @@ pub(super) struct LogReads {
 /// do not hold at it are a stable fact (GATE-DECISION-f1b-trim-race-2026-11-16). Never `Remote`
 /// here: its cap is recomputed per read, so two reads could see different batches. The snapshot is
 /// dropped on return, before the run-index GETs: it holds the log's compaction back while it lives.
-/// The pause's call marks its phases on `phases` (`snapshot`, `sentinel`, `intervals`) and notes
-/// the rows it read and the queues whose intervals it read (`rows`, `heads`); Preparing's marks
-/// none.
+/// Every scan reads with the sentinel's scan options (`open_index::sentinel_scan_opts`, F5,
+/// GATE-DECISION-f5-pause-log-reads-2026-11-17): 1 MiB ahead, sixteen fetches at once, cached, so
+/// Preparing's read leaves the blocks cached and the pause fetches only tables written since; the
+/// `'k'` scans run `INTERVAL_SCANS` at once. A snapshot read is capped at the snapshot's sequence
+/// whatever its fetch shape and whatever order concurrent scans finish in, so both reads still see
+/// one set of batches. The pause's call marks its phases on `phases` (`snapshot`, `sentinel`,
+/// `intervals`) and notes the rows it read and the queues whose intervals it read (`rows`,
+/// `heads`); Preparing's marks none.
 pub(super) async fn log_reads(
     parent: &crate::shard::ShardEngine,
     phases: Option<&Phases>,
 ) -> Result<LogReads, String> {
     let snapshot = parent.db.snapshot().map_err(|e| format!("snapshot: {e}"))?;
     mark(phases, "snapshot");
+    let options = crate::shard::open_index::sentinel_scan_opts();
     let mut scan = snapshot
-        .scan_prefix(&SENTINEL[..], ..)
+        .scan_prefix_with_options(&SENTINEL[..], .., &options)
         .await
         .map_err(|e| format!("sentinel scan: {e}"))?;
     let mut rows = Vec::new();
@@ -44,9 +54,17 @@ pub(super) async fn log_reads(
     mark(phases, "sentinel");
     let mut released = sentinel::Released::of(&rows).map_err(|e| e.to_string())?;
     let heads = released.streams();
-    for hash in &heads {
-        let intervals = crate::shard::seal::gc::trim::intervals_at(&snapshot, hash).await?;
-        released.add_intervals(*hash, &intervals);
+    let snapshot = &snapshot;
+    let read: Vec<_> = futures_util::stream::iter(heads.iter().copied())
+        .map(|hash| async move {
+            let intervals = crate::shard::seal::gc::trim::intervals_at(snapshot, &hash).await?;
+            Ok::<_, String>((hash, intervals))
+        })
+        .buffer_unordered(INTERVAL_SCANS)
+        .try_collect()
+        .await?;
+    for (hash, intervals) in &read {
+        released.add_intervals(*hash, intervals);
     }
     mark(phases, "intervals");
     if let Some(phases) = phases {
