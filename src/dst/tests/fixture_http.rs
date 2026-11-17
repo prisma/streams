@@ -389,6 +389,9 @@ fn fixture_config(
     if let Some(admission) = admission {
         rig_config.admission = admission;
     }
+    // A named rig is a fleet member on 127.0.0.1: its peers' plain-http URLs are trusted, as
+    // FLEET_ALLOW_HTTP_PEERS=1 trusts them on a local rig, so a published URL map forwards.
+    rig_config.fleet.allow_http_peers = instance_name.is_some();
     // A rig's stop resets its connections at once, as every stop did before
     // #180; `http::serve`'s tests pin the drain.
     rig_config.http.stop_drain = std::time::Duration::ZERO;
