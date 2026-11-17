@@ -51,6 +51,9 @@ pub(crate) struct Standing {
     /// moves one of its sources (S4-DESIGN §4.4), and return-home leaves its sources and a live
     /// split's children where they are (GATE-DECISION-f2-children-on-actor A4).
     topology_intent: Mutex<Option<crate::topology::intent::Live>>,
+    /// Tests: the fleet tick's next view publication pauses after its overrides read.
+    #[cfg(test)]
+    view_pause: ViewPause,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -85,6 +88,17 @@ pub(crate) struct DocTimes {
     pub age_ms: Option<u64>,
 }
 
+/// Tests: the slot of the tick's view pause.
+#[cfg(test)]
+struct ViewPause(Mutex<Option<crate::topology::gate::PausePoint>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ViewPause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ViewPause")
+    }
+}
+
 impl Default for Standing {
     fn default() -> Self {
         Standing {
@@ -99,6 +113,8 @@ impl Default for Standing {
             drained: Mutex::new(None),
             split_demand: AtomicU64::new(0),
             topology_intent: Mutex::new(None),
+            #[cfg(test)]
+            view_pause: ViewPause(Mutex::new(None)),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
@@ -155,6 +171,21 @@ impl Standing {
         if let Ok(mut kept) = self.topology_intent.lock() {
             *kept = live;
         }
+    }
+
+    /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides
+    /// read, under the revalidation lock, and publishes once `point.go` resolves.
+    #[cfg(test)]
+    pub(crate) fn pause_view_publication(&self, point: crate::topology::gate::PausePoint) {
+        if let Ok(mut slot) = self.view_pause.0.lock() {
+            *slot = Some(point);
+        }
+    }
+
+    /// Tests: the pause the next view publication takes, if one is armed.
+    #[cfg(test)]
+    pub(crate) fn take_view_pause(&self) -> Option<crate::topology::gate::PausePoint> {
+        self.view_pause.0.lock().ok()?.take()
     }
 
     /// Tests: a live split intent naming `sources`, as a beat would have read it.

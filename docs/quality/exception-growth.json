@@ -1559,11 +1559,11 @@
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::unwrap_used",
-      "rationale": "Fleet count hysteresis (FLEET-HYSTERESIS.md, option B), C1 the extraction and C2 the sustained in-flight: the publish decision (a grow at once, a shrink to the conservative target after SCALE_IN_SECS) left fleet::start for the pure fleet::hysteresis::Gate, which also holds the in-flight the planner reads (from C2 the in-flight that lasted 30 s, read from the move cooldown after a change; Gate::new takes that cooldown); start reads desired.json before planning so the decision sees the published count. The scope shrank (scope_lines 371 -> 364, syntax_facts 742 -> 740); the three unwrap sites, the fleet_io! serialisations of the fleet documents, are unchanged in count and fingerprint; the new or grown fingerprints are the hysteresis types' constructor and calls (Gate::new with its two settings, Now::current), their bindings (gate, now, decided), the decision's Some, and the loads and cur the gate takes, none an unwrap, expect or panic site. S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site.",
+      "rationale": "Fleet count hysteresis (FLEET-HYSTERESIS.md, option B), C1 the extraction and C2 the sustained in-flight: the publish decision (a grow at once, a shrink to the conservative target after SCALE_IN_SECS) left fleet::start for the pure fleet::hysteresis::Gate, which also holds the in-flight the planner reads (from C2 the in-flight that lasted 30 s, read from the move cooldown after a change; Gate::new takes that cooldown); start reads desired.json before planning so the decision sees the published count. The scope shrank (scope_lines 371 -> 364, syntax_facts 742 -> 740); the three unwrap sites, the fleet_io! serialisations of the fleet documents, are unchanged in count and fingerprint; the new or grown fingerprints are the hysteresis types' constructor and calls (Gate::new with its two settings, Now::current), their bindings (gate, now, decided), the decision's Some, and the loads and cur the gate takes, none an unwrap, expect or panic site. S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site. F2 A1 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md): the tick's overrides read and view publication left the scope for fleet::view::published, which holds the directory's revalidation lock; the scope shrank, no fingerprint grew.",
       "metrics": {
         "nested_items": 2,
-        "scope_lines": 354,
-        "syntax_facts": 735,
+        "scope_lines": 344,
+        "syntax_facts": 701,
         "unwrap_site:macro::2f0c39814bc1185b": 1,
         "unwrap_site:macro::4d014f917951ced2": 1,
         "unwrap_site:macro::be987c2cb440ff9d": 1,
@@ -1610,7 +1610,7 @@
         "unwrap_site:path::1953b2461162f4da": 1,
         "unwrap_site:path::1d74ad74232c4ee9": 4,
         "unwrap_site:path::1ec518a9d6c133c0": 2,
-        "unwrap_site:path::1f6e56e6d7d48be4": 8,
+        "unwrap_site:path::1f6e56e6d7d48be4": 7,
         "unwrap_site:path::20127871bb98506f": 13,
         "unwrap_site:path::23b2401d839ddc70": 1,
         "unwrap_site:path::26208c35f8883b53": 1,
@@ -1625,7 +1625,6 @@
         "unwrap_site:path::33d0532e5be52818": 6,
         "unwrap_site:path::358abe520f526f8e": 1,
         "unwrap_site:path::35ef353869290031": 2,
-        "unwrap_site:path::3a7d613e4be9748f": 1,
         "unwrap_site:path::3b3f4326f1571ec2": 5,
         "unwrap_site:path::3c936109f937e5c8": 1,
         "unwrap_site:path::40f70298e9067dd5": 2,
@@ -1635,7 +1634,7 @@
         "unwrap_site:path::4f66707177f26aca": 3,
         "unwrap_site:path::502daa09ac97600b": 1,
         "unwrap_site:path::50fa99d7558afe2e": 1,
-        "unwrap_site:path::5567a3b6444d979d": 4,
+        "unwrap_site:path::5567a3b6444d979d": 3,
         "unwrap_site:path::599b0f4e7ff8087b": 1,
         "unwrap_site:path::5a950f95c9705fc7": 8,
         "unwrap_site:path::5aa1e338d2fb8254": 1,
@@ -1663,7 +1662,7 @@
         "unwrap_site:path::8d3e5420f148c614": 5,
         "unwrap_site:path::8e19c089304c5dbe": 1,
         "unwrap_site:path::92c55efe0e2d937b": 1,
-        "unwrap_site:path::95c8a5710d194a76": 13,
+        "unwrap_site:path::95c8a5710d194a76": 11,
         "unwrap_site:path::9657ab665b7af98d": 4,
         "unwrap_site:path::98d8f6edced9fa92": 1,
         "unwrap_site:path::99149fc0dc21569b": 2,
@@ -1675,10 +1674,10 @@
         "unwrap_site:path::a6b8018632e412fe": 1,
         "unwrap_site:path::a94ab1b75555bc19": 1,
         "unwrap_site:path::acea5464b965a836": 3,
-        "unwrap_site:path::ae25805f061161e9": 6,
+        "unwrap_site:path::ae25805f061161e9": 5,
         "unwrap_site:path::af4dd3db287da30f": 2,
         "unwrap_site:path::b00c2e40580b5eac": 2,
-        "unwrap_site:path::b062d551b8684b55": 6,
+        "unwrap_site:path::b062d551b8684b55": 5,
         "unwrap_site:path::b1314dfe728a5ba5": 1,
         "unwrap_site:path::b41d32ae4957f586": 3,
         "unwrap_site:path::b489967f3d1a7221": 1,
@@ -1688,7 +1687,7 @@
         "unwrap_site:path::be4af05a46d8a5df": 2,
         "unwrap_site:path::beaad5c14abcae22": 4,
         "unwrap_site:path::c1cdfcd1572a7ef1": 5,
-        "unwrap_site:path::c34d456470cd9caa": 2,
+        "unwrap_site:path::c34d456470cd9caa": 1,
         "unwrap_site:path::c41f2c5f8c782b21": 1,
         "unwrap_site:path::c7bdf2fa951de076": 1,
         "unwrap_site:path::c7d673fcfe5db00e": 6,
@@ -1704,7 +1703,7 @@
         "unwrap_site:path::e60a13a0e2bef26d": 3,
         "unwrap_site:path::e9eb15d9b55bccd7": 1,
         "unwrap_site:path::eb9ec6f033c7b474": 2,
-        "unwrap_site:path::ed8ca5365d0895fe": 29,
+        "unwrap_site:path::ed8ca5365d0895fe": 26,
         "unwrap_site:path::f058b7c8ad26aebc": 5,
         "unwrap_site:path::f36b252d0f06dafe": 1,
         "unwrap_site:path::f3a5441d11e0c900": 2,
@@ -1712,13 +1711,13 @@
         "unwrap_site:path::f4339102f1ef5053": 1,
         "unwrap_site:path::f43e392e2aef5d84": 12,
         "unwrap_site:path::f5eea865f2aeee83": 1,
-        "unwrap_site:path::f6dc1034b093dd79": 3,
+        "unwrap_site:path::f6dc1034b093dd79": 2,
         "unwrap_site:path::f9111136fa50e1f6": 1,
         "unwrap_site:path::fb0c6fa64024ff79": 1,
         "unwrap_sites": 3,
         "unwrap_site:ordinary-call::c8ac9b54f7404eb5": 1
       },
-      "approver": "Fable 5.2 under the owner's delegation, 2026-11-10 (ROW-DECISION-fleet-start-return-home-2026-11-10.md, re-decided on package 6's v3 values: pkg6-fleet-start-rows-proposal-v3.json, re-measured with the scanner); for the owner's review"
+      "approver": "Fable 5.2 under the owner's delegation, 2026-11-17 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md); for the owner's review"
     },
     {
       "path": "src/http.rs",
@@ -2760,52 +2759,52 @@
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::cast_sign_loss",
-      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site.",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site. F2 A1 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md): the tick's overrides read and view publication left the scope for fleet::view::published, which holds the directory's revalidation lock; the scope shrank, no fingerprint grew.",
       "metrics": {
-        "scope_lines": 354,
+        "scope_lines": 344,
         "nested_items": 2,
-        "syntax_facts": 735
+        "syntax_facts": 701
       },
-      "approver": "Fable 5.2 under the owner's delegation, 2026-11-10 (ROW-DECISION-fleet-start-return-home-2026-11-10.md, re-decided on package 6's v3 values: pkg6-fleet-start-rows-proposal-v3.json, re-measured with the scanner); for the owner's review"
+      "approver": "Fable 5.2 under the owner's delegation, 2026-11-17 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md); for the owner's review"
     },
     {
       "path": "src/fleet.rs",
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::excessive_nesting",
-      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site.",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site. F2 A1 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md): the tick's overrides read and view publication left the scope for fleet::view::published, which holds the directory's revalidation lock; the scope shrank, no fingerprint grew.",
       "metrics": {
-        "scope_lines": 354,
+        "scope_lines": 344,
         "nested_items": 2,
-        "syntax_facts": 735
+        "syntax_facts": 701
       },
-      "approver": "Fable 5.2 under the owner's delegation, 2026-11-10 (ROW-DECISION-fleet-start-return-home-2026-11-10.md, re-decided on package 6's v3 values: pkg6-fleet-start-rows-proposal-v3.json, re-measured with the scanner); for the owner's review"
+      "approver": "Fable 5.2 under the owner's delegation, 2026-11-17 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md); for the owner's review"
     },
     {
       "path": "src/fleet.rs",
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
-      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site.",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site. F2 A1 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md): the tick's overrides read and view publication left the scope for fleet::view::published, which holds the directory's revalidation lock; the scope shrank, no fingerprint grew.",
       "metrics": {
-        "scope_lines": 354,
+        "scope_lines": 344,
         "nested_items": 2,
-        "syntax_facts": 735
+        "syntax_facts": 701
       },
-      "approver": "Fable 5.2 under the owner's delegation, 2026-11-10 (ROW-DECISION-fleet-start-return-home-2026-11-10.md, re-decided on package 6's v3 values: pkg6-fleet-start-rows-proposal-v3.json, re-measured with the scanner); for the owner's review"
+      "approver": "Fable 5.2 under the owner's delegation, 2026-11-17 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md); for the owner's review"
     },
     {
       "path": "src/fleet.rs",
       "owner": "crate::start",
       "scope": "function",
       "lint": "clippy::too_many_lines",
-      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site.",
+      "rationale": "S4 step 12 (S4-DESIGN §4.4, §10; S4-REVIEW finding 9, MEDIUM: the intent is a move reservation, held, not checked once): the fleet tick's two moves honour a live split's reservation, which the actor's heartbeat publishes as reserved_shards (55838385a). The lag move's target list leaves out a member holding one (`hb_age_ms.unreserved(&active)` in place of `&active` in the pick_move_target call: the actor is about to hold two more shards), and return-home's share check counts the home's reserved shards as held (`+ hb_age_ms.reserved_of(&home)` on the gain). Both are trait method calls on the tick's candidacy map (planning::Reservations, outside the scope), so the only new fingerprints are the pick_move_target call's argument text and the two locals' path counts; the logic lives in fleet::planning. Count balance and the lag move's source exclusion honour it outside this function (55838385a). No line is added (scope_lines 364 unchanged); syntax_facts 740 -> 747. Package 6, push 4 (S4-DESIGN §4.4; Fable 5.2 B4-c and the lag-move gap found while checking it): the fleet tick moves no live intent's source. Return-home's skip is one call on its existing line, `state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs)`, holding the age window and the source check in fleet::standing. The lag move's victim choice (possession first, else the wedged shard) left the scope for `AppState::lag_victim` (fleet::heartbeat), which filters the sources. The scope shrank (scope_lines 364 -> 354, syntax_facts 747 -> 735). The only grown fingerprint is `prefix` (f43e392e2aef5d84, 11 -> 12), the skip call's argument; no new unwrap, expect or panic site. F2 A1 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md): the tick's overrides read and view publication left the scope for fleet::view::published, which holds the directory's revalidation lock; the scope shrank, no fingerprint grew.",
       "metrics": {
-        "scope_lines": 354,
+        "scope_lines": 344,
         "nested_items": 2,
-        "syntax_facts": 735
+        "syntax_facts": 701
       },
-      "approver": "Fable 5.2 under the owner's delegation, 2026-11-10 (ROW-DECISION-fleet-start-return-home-2026-11-10.md, re-decided on package 6's v3 values: pkg6-fleet-start-rows-proposal-v3.json, re-measured with the scanner); for the owner's review"
+      "approver": "Fable 5.2 under the owner's delegation, 2026-11-17 (GATE-DECISION-f2-fleet-start-rows-2026-11-17.md); for the owner's review"
     }
   ],
   "schema": 1

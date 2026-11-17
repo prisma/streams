@@ -56,11 +56,15 @@ async fn member(
     rig
 }
 
-/// A heartbeat of `streams-2` at `addr` that stays fresh for the scenario, so the actor's ring holds
-/// a member whose own fleet tick never runs.
-async fn beat_of_held(fleet: &Arc<dyn ObjectStore>, addr: std::net::SocketAddr) {
+/// The URL the held member's seeded beat publishes: an `https` origin the tick accepts (the actor
+/// never forwards to it in these scenarios).
+const HELD_URL: &str = "https://streams-2.invalid";
+
+/// A heartbeat of `streams-2` that stays fresh for the scenario, so the actor's ring holds a member
+/// whose own fleet tick never runs.
+async fn beat_of_held(fleet: &Arc<dyn ObjectStore>) {
     let beat = format!(
-        r#"{{"instance":"streams-2","ts_ms":{},"rps":0.0,"cpu_pct":0.0,"inflight":0,"owned_shards":[],"draining":false,"url":"http://{addr}"}}"#,
+        r#"{{"instance":"streams-2","ts_ms":{},"rps":0.0,"cpu_pct":0.0,"inflight":0,"owned_shards":[],"draining":false,"url":"{HELD_URL}"}}"#,
         crate::shard::now_ms() + 600_000
     );
     fleet
@@ -120,7 +124,7 @@ impl Pair {
         )
         .await;
         if !b_ticks {
-            beat_of_held(&fleet, b.addr).await;
+            beat_of_held(&fleet).await;
         }
         if matches!(tick, Tick::Held) {
             let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
@@ -128,10 +132,23 @@ impl Pair {
         }
         let a = member(&fleet, &data, "streams-1", RigRuntime::first(), true).await;
         store_topology(&a).await;
-        for rig in [&a, &b] {
-            let peer = &rig.state.peer;
-            peer.set_peer("streams-1", &format!("http://{}", a.addr));
-            peer.set_peer("streams-2", &format!("http://{}", b.addr));
+        b.state
+            .peer
+            .set_peer("streams-1", &format!("http://{}", a.addr));
+        if b_ticks {
+            a.state
+                .peer
+                .set_peer("streams-2", &format!("http://{}", b.addr));
+        } else {
+            // The actor's tick publishes `streams-2`'s URL from its seeded beat (`set_peers`).
+            let t0 = tokio::time::Instant::now();
+            while a.state.peer.url_for("streams-2").as_deref() != Some(HELD_URL) {
+                assert!(
+                    t0.elapsed() < BOUND,
+                    "the actor's tick publishes the member's URL"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
         let viewing: &[&HttpRig] = if matches!(tick, Tick::Never) {
             &[&a]
@@ -631,4 +648,79 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
     for rig in &rigs {
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// **A tick that read before the split cannot unpublish its children** (F2, T3; A1). The actor's
+/// fleet tick is held between its overrides read and its publication, the pre-split view in hand,
+/// and the split of `""` is started meanwhile. The tick holds the directory's revalidation lock,
+/// so the actor's birth waits for it: the split publishes only after the tick published its older
+/// view, and the birth's mirror follows it. Then the actor serves both children through three
+/// more ticks with the same incarnations (no `possession yields` retire), its view names it for
+/// both, and the member, once its revalidation installed the split, opens nothing and names the
+/// actor too. Red without the lock: the held tick publishes its pre-split view after the birth's
+/// mirror, and the actor retires the children it just opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_tick_that_read_before_the_split_cannot_unpublish_its_children() {
+    let pair = Pair::new().await;
+    let (a, b) = (&pair.a.state, &pair.b.state);
+    let (reached, at_read) = tokio::sync::oneshot::channel();
+    let (release, go) = tokio::sync::oneshot::channel();
+    a.fleet
+        .standing()
+        .pause_view_publication(PausePoint { reached, go });
+    tokio::time::timeout(BOUND, at_read)
+        .await
+        .expect("the actor's tick reads the overrides")
+        .unwrap();
+    let ops = a.shards.topology_ops();
+    let started = crate::topology::ops::Handle::split(ops, String::new()).await;
+    assert!(started.is_ok(), "the split starts: {started:?}");
+    let published = || a.shards.prefixes().shards.shards == ["0", "1"];
+    let t0 = tokio::time::Instant::now();
+    while !published() && t0.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let progress = || a.fleet.standing().progress_age_ms().unwrap_or(u64::MAX);
+    assert!(
+        progress() >= 2_000,
+        "a held tick marks no progress: {}",
+        progress()
+    );
+    release.send(()).unwrap();
+    let t0 = tokio::time::Instant::now();
+    while !published() {
+        assert!(t0.elapsed() < BOUND, "the split publishes");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let t0 = tokio::time::Instant::now();
+    while progress() >= 2_000 {
+        assert!(t0.elapsed() < BOUND, "the released tick marks its progress");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let t0 = tokio::time::Instant::now();
+    while children_of(&pair.a).iter().any(Option::is_none) {
+        assert!(t0.elapsed() < BOUND, "the actor opens both children");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let opened = children_of(&pair.a);
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let owners = |state: &crate::http::AppState| {
+        ["0", "1"].map(|p| state.ownership.effective_owner(p).unwrap_or_default())
+    };
+    assert_eq!(
+        (children_of(&pair.a), owners(a)),
+        (opened, ["streams-1", "streams-1"].map(str::to_string)),
+        "three ticks on, the actor serves both children as it opened them"
+    );
+    let t0 = tokio::time::Instant::now();
+    while b.shards.prefixes().shards.version < 2 {
+        assert!(t0.elapsed() < BOUND, "the member installs the split");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        (b.shards.open_count(), owners(b)),
+        (0, ["streams-1", "streams-1"].map(str::to_string)),
+        "the member opens nothing and names the actor"
+    );
+    pair.shutdown().await;
 }

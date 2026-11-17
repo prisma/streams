@@ -35,6 +35,7 @@ use planning::Reservations as _;
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
 mod standing;
+mod view;
 pub(crate) use heartbeat::Heartbeat;
 pub(crate) use repository::{FleetDocument, FleetRepository};
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
@@ -625,25 +626,13 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
             // initiates a move (it alone knows per-shard lag), CAS-guarded.
             {
                 let (mut ov, ov_ver): (Overrides, Option<UpdateVersion>) =
-                    match fleet_io!(repository.read_overrides()) {
+                    match fleet_io!(view::published(&state, &active, &peer_urls)) {
                         Ok(view) => view,
                         Err(error) => {
                             tracing::warn!(%error, "fleet overrides unavailable; retaining last good view");
                             continue;
                         }
                     };
-                {
-                    let map: std::collections::HashMap<String, String> = ov
-                        .entries
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.to.clone()))
-                        .collect();
-                    // Publish only a complete successful authority read. This
-                    // synchronous replacement cannot expose a mixed ring/map.
-                    state.ownership.set_view(active.clone(), map);
-                    state.peer.set_peers(peer_urls.clone());
-                    state.fleet.standing().mark_progress();
-                }
 
                 // Round-11.4: when the OWNERSHIP VIEW changed, wake
                 // every parked SSE session — each re-checks its
