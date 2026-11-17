@@ -193,10 +193,23 @@ async fn member_tail(db: &Db, hash: &[u8; 16]) -> Result<Option<bytes::Bytes>, s
     }
 }
 
-/// The unabsorbed bytes over the `'W'` members' tails, and whether a member's tail is gone or
-/// sealed (a stale index row, which only a repair fixes).
-async fn unsealed_bytes(db: &Db) -> anyhow::Result<(u64, bool)> {
+/// What the open read of the unsealed index: the unabsorbed bytes over its members' tails, whether
+/// a member's tail is gone or sealed (a stale index row, which only a repair fixes), and the open
+/// line's counts: its members, the index scan's time and the tail reads' time.
+struct Unsealed {
+    total: u64,
+    stale: bool,
+    members: usize,
+    scan: std::time::Duration,
+    tails: std::time::Duration,
+}
+
+/// The unsealed index's members and the unabsorbed bytes over their tails (`Unsealed`).
+async fn unsealed_bytes(db: &Db) -> anyhow::Result<Unsealed> {
+    let scanning = std::time::Instant::now();
     let members = unsealed_members(db).await?;
+    let (scan, count) = (scanning.elapsed(), members.len());
+    let reading = std::time::Instant::now();
     let bytes: Vec<Option<u64>> = futures_util::stream::iter(members)
         .map(|hash| async move {
             let raw = member_tail(db, &hash).await?;
@@ -218,7 +231,13 @@ async fn unsealed_bytes(db: &Db) -> anyhow::Result<(u64, bool)> {
         .flatten()
         .try_fold(0u64, |sum, b| sum.checked_add(*b));
     let total = total.ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
-    Ok((total, stale))
+    Ok(Unsealed {
+        total,
+        stale,
+        members: count,
+        scan,
+        tails: reading.elapsed(),
+    })
 }
 
 impl super::ShardEngine {
@@ -341,19 +360,25 @@ pub(crate) async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<Shard
             "open repaired the shard's indexes: the log carried the repair marker"
         );
     }
-    let (mut total, stale) = unsealed_bytes(db).await?;
+    let mut unsealed = unsealed_bytes(db).await?;
+    let stale = unsealed.stale;
     if stale && !marked {
         let repair = repair_indexes(db).await?;
         tracing::warn!(
             ?repair,
             "open repaired the shard's indexes: an unsealed-index member's tail is gone or sealed"
         );
-        total = unsealed_bytes(db).await?.0;
+        unsealed = unsealed_bytes(db).await?;
     }
-    // The open's index phase (GATE-DECISION-meas149-rerun-10000-2026-11-17, M); the shard log's
+    let total = unsealed.total;
+    // The open's index phase (GATE-DECISION-meas149-rerun-10000-2026-11-17, M), with the last
+    // unsealed read's scan and tail reads (GATE-DECISION-open-cost-2026-11-17); the shard log's
     // line just before it (`compaction_guard`) names the path.
     tracing::info!(
         index_ms = loading.elapsed().as_millis(),
+        scan_ms = unsealed.scan.as_millis(),
+        tails_ms = unsealed.tails.as_millis(),
+        unsealed_members = unsealed.members,
         unsealed_bytes = total,
         repaired = marked || stale,
         "shard open's indexes loaded"
