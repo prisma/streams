@@ -282,6 +282,63 @@ mod tests {
         assert_eq!(dir.prefixes().shards.version, 2);
     }
 
+    /// **A re-read of the held version under a new ETag installs without a refresh** (PR #158's
+    /// survivor revalidate.rs:130:36, the refresh's `>` as `>=`). A fleet instance holding version 1
+    /// with no override: version 1 stored again (a new ETag) with `fleet/overrides.json` unreadable
+    /// still installs, as a refresh would have refused it; stored again with the document naming
+    /// `a` for `10`, it installs and the view still holds no override. Only a newer version
+    /// refreshes.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_reread_of_the_held_version_installs_without_a_refresh() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards = crate::config::validation::InitialShards::new(2).unwrap();
+        let v1 = crate::registry::load_or_init_topology(&store, shards, 1 << 20)
+            .await
+            .unwrap();
+        let cell = crate::tenant::CellId::new("test-cell").unwrap();
+        let registry = crate::registry::Registry::new(store.clone(), &cell);
+        let dir = directory(v1.shards.clone());
+        let fleet_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let fleet = crate::fleet::FleetRepository::new(Some(fleet_store.clone()));
+        let ownership = fleet.ownership("a".to_string());
+        ownership.set_view(vec!["a".to_string()], Default::default());
+        let refresh = super::Refresh::of(&fleet, &ownership);
+        let clock = crate::runtime::ManualClock::at(0);
+        let now = || crate::runtime::Clock::monotonic(&clock);
+        assert!(
+            super::once(&registry, &dir, refresh.as_ref(), now())
+                .await
+                .unwrap()
+        );
+        let overrides = object_store::path::Path::from("fleet/overrides.json");
+        fleet_store
+            .put(&overrides, b"not json".to_vec().into())
+            .await
+            .unwrap();
+        put(&store, &v1).await;
+        let reread = super::once(&registry, &dir, refresh.as_ref(), now()).await;
+        assert_eq!(
+            (
+                reread.map_err(|e| e.to_string()),
+                dir.prefixes().shards.version
+            ),
+            (Ok(true), 1),
+            "a re-read of the held version reads no overrides"
+        );
+        let named = br#"{"entries":{"10":{"to":"a","ms":1}}}"#.to_vec();
+        fleet_store.put(&overrides, named.into()).await.unwrap();
+        put(&store, &v1).await;
+        assert!(
+            super::once(&registry, &dir, refresh.as_ref(), now())
+                .await
+                .unwrap()
+        );
+        assert!(
+            ownership.view().overrides.is_empty(),
+            "no refresh on the same version"
+        );
+    }
+
     /// **An install whose overrides read fails is refused** (GATE-DECISION-f2-children-on-actor
     /// A1). A fleet instance holding version 1, its view of member `a`: with version 2 stored and
     /// `fleet/overrides.json` unreadable, the revalidation fails and the directory keeps version 1.
