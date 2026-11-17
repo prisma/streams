@@ -173,3 +173,21 @@ fn an_opens_requests_are_counted_per_kind() {
     );
     assert_eq!(super::metrics::requests_since(&after, &after), "");
 }
+
+/// **A gauge is read at its value, summed over its labels** (`ShardLogMetrics::gauge`, the open
+/// line's `memtable_bytes`): two gauges of one name at 3 and 4 read 7; a counter of that name adds
+/// nothing; a name never registered reads 0.
+#[test]
+fn a_gauge_is_read_at_its_value_summed_over_its_labels() {
+    let m = super::metrics::for_log("tests/gauge-sum");
+    let recorder = m.recorder();
+    let name = "tests.memtable_bytes";
+    recorder
+        .register_gauge(name, "test", &[("table", "a")])
+        .set(3);
+    recorder
+        .register_gauge(name, "test", &[("table", "b")])
+        .set(4);
+    assert_eq!(m.gauge(name), 7);
+    assert_eq!(m.gauge("tests.never_registered"), 0);
+}
