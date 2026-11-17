@@ -6,9 +6,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0718e5cdf676f6b4e75802d56c5d0797b6a118b160b2a4005b16e11ea4f66fad",
+      "log_sha256": "5e199c95e5e4a077820309bb2745bebef800adbaf0bdb1842a4f3453644e8dd8",
       "role": "baseline",
-      "seconds": 74.7,
+      "seconds": 120.5,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ce9095a1742bfa5855f3730fffffd3114b1d3811b5f21a68d24ad72c1579fd20",
+      "log_sha256": "c38d94c75264020ad6f2fe182b73ad693d7db6c6f2162c0774d3e15541013388",
       "role": "baseline",
-      "seconds": 81.9,
+      "seconds": 44.1,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"a delta moves the backlog by exactly its bytes\""
       ],
-      "log_sha256": "454fe5e0eb84a251e10f830aefd3aae559c6bd591272262f12a4fd8e6d684d16",
+      "log_sha256": "414b556d65ed66b67f15544d47769b5acde3798dd352b0207f2f76fbafa10cb6",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "7dc0dd913032aecc3bb304a83df685995b29ccec27b82c9f5baffb6f3eaff9a4",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 167.3,
+      "seconds": 94.0,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "attempt to subtract with overflow"
       ],
-      "log_sha256": "06b4c973202666d6a5f6bc2563a29aaab5c54e5463e24f7987549dd8cbbc12ce",
+      "log_sha256": "a8622847b4c5af4dea38cf6da99c3493044252fdc02834e2fe905cbee8e0abb2",
       "mutated": {
         "src/shard/maintenance_row.rs": {
           "baseline": "7dc0dd913032aecc3bb304a83df685995b29ccec27b82c9f5baffb6f3eaff9a4",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 122.1,
+      "seconds": 44.2,
       "verdict": "fail"
     }
   ],
@@ -74,7 +74,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard.rs": "3763309de0b0434c529ab7c60d0a151a92cb83340eafafcfca8c24b4a2c2e9b8",
+      "src/shard.rs": "ce17aab2c0c78435adb906426aeb778e615689a13da447f18b35154f453b64ef",
       "src/shard/maintenance_row.rs": "7dc0dd913032aecc3bb304a83df685995b29ccec27b82c9f5baffb6f3eaff9a4",
       "src/shard/maintenance_row/proofs.rs": "24502e1b90a9d592361d52cfafa85a63cdc25b678cff50fd67eeff03e2729e47",
       "verification/kani/controls/KANI-047-retire-past-the-backlog.patch": "8e56f5205d28e1c762a6b6da06a847fc20978044e4cfcdbded9d2f6f39ab6a95",
@@ -168,10 +168,10 @@
       }
     }
   },
-  "inputs_sha256": "9a895a56673045f2b6247d15cfa115d0996e6099deb2cbf1b8eadd11fe313370",
+  "inputs_sha256": "9a2283bf631aa5524b4aca409005009f0d1017e58472c734868f159025b89aaf",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "975e1c53452bc4ba107f708f52b40216cb3291ca"
   },
   "schema": 2,
   "tools": {
