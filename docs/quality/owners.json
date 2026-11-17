@@ -1323,6 +1323,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_pause",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The split's pause on a loaded parent (F5, GATE-DECISION-f5-pause-log-reads-2026-11-17): its store GETs from the park to the topology CAS stay under a bound that does not grow with the parent's streams or its trimmed queues; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_pause.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_t_outcome",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split whose 'T' write fails after the attempt (S4 6.4, addendum 6 of DESIGN-DECISION-c3-incomplete-rig-2026-11-11): the split refuses Unfinished with no resume and no rollback, the queued writer is refused as final, and the parent's next opener rolls forward from a landed 'T' or back without one; compiler and the full DST suite exercise the module.",

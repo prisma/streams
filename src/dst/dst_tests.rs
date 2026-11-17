@@ -67,6 +67,8 @@ mod split_k;
 mod split_lists;
 #[path = "tests/split_override.rs"]
 mod split_override;
+#[path = "tests/split_pause.rs"]
+mod split_pause;
 #[path = "tests/split_purged.rs"]
 mod split_purged;
 #[path = "tests/split_start.rs"]
