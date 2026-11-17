@@ -425,3 +425,96 @@ async fn an_open_repairs_an_index_row_whose_tail_is_sealed() {
         "the sealed member's row goes"
     );
 }
+
+/// A log at `path` over `store` whose unsealed index was put for `streams` streams, then deleted
+/// for all but the first `kept` as their tails sealed, twice, each batch flushed to its own table:
+/// four tables of index versions and tombstones, as a busy shard's prefix holds them until
+/// compaction. The kept members' tails each hold 70 unsealed bytes.
+async fn churned(store: &Arc<dyn ObjectStore>, path: &str, streams: u32, kept: u32) {
+    let db = open(store, path).await.unwrap();
+    let hash = |n: u32| {
+        let mut hash = [0u8; 16];
+        hash[..4].copy_from_slice(&n.to_be_bytes());
+        hash
+    };
+    for _ in 0..2 {
+        let mut put = slatedb::WriteBatch::new();
+        for n in 0..streams {
+            put.put(super::unsealed_key(&hash(n)), b"");
+            put.put(crate::shard::tail_key(&hash(n)), tail(0, 3, 70, None));
+        }
+        flushed(&db, put).await;
+        let mut deleted = slatedb::WriteBatch::new();
+        for n in kept..streams {
+            deleted.delete(super::unsealed_key(&hash(n)));
+            deleted.put(crate::shard::tail_key(&hash(n)), tail(3, 3, 0, None));
+        }
+        flushed(&db, deleted).await;
+    }
+    db.close().await.unwrap();
+}
+
+/// Writes `batch` to `db` and flushes the memtable to a table.
+async fn flushed(db: &slatedb::Db, batch: slatedb::WriteBatch) {
+    db.write(batch).await.unwrap();
+    let memtable = slatedb::config::FlushOptions {
+        flush_type: slatedb::config::FlushType::MemTable,
+    };
+    db.flush_with_options(memtable).await.unwrap();
+}
+
+/// The store GETs of an open's index load of a churned log of `streams` streams at `path`,
+/// reopened so no block is cached; the load finds the ten kept members' bytes.
+async fn index_load_gets(path: &str, streams: u32) -> u64 {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    churned(&store, path, streams, 10).await;
+    let db = open(&store, path).await.unwrap();
+    let metrics = crate::spill::metrics::for_log(path);
+    // Every GET of the database: whole objects (`db.get`) and blocks read by range
+    // (`db.get_range`, `db.get_ranges`).
+    let reads = || -> u64 {
+        let requests = metrics.requests();
+        requests
+            .iter()
+            .filter(|(kind, _)| kind.starts_with("db.get"))
+            .map(|(_, n)| n)
+            .sum()
+    };
+    let before = reads();
+    let ledger = super::load_or_rebuild_maintenance(&db).await.unwrap();
+    let gets = reads().saturating_sub(before);
+    assert_eq!(ledger.unabsorbed_frame_bytes, 10 * 70, "the kept members");
+    db.close().await.unwrap();
+    gets
+}
+
+/// **A flushed shard's open reads its indexes in bounded round trips**
+/// (GATE-DECISION-open-cost-2026-11-17, fix 1). A log whose unsealed index was put and deleted for
+/// 1,000 and then 4,000 streams over four flushed tables, ten members left, reopened cold: the
+/// open's index load makes at most 32 store GETs, the same bound at both sizes. Red before fix 1:
+/// the index scan fetches one block per GET, so the count grows with the streams.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_flushed_shards_open_reads_its_indexes_in_bounded_round_trips() {
+    let one = index_load_gets("shards/0110110", 1_000).await;
+    let four = index_load_gets("shards/0110111", 4_000).await;
+    println!("INDEX_GETS 1000={one} 4000={four}");
+    assert!(
+        one <= 32 && four <= 32,
+        "GETs of the open's index load: {one} at 1,000 streams, {four} at 4,000"
+    );
+}
+
+/// **The sentinel's scans read 1 MiB ahead, sixteen fetches at once, cached, at Memory
+/// durability** (GATE-DECISION-open-cost-2026-11-17): the four values pinned, Memory being F1b's
+/// condition for the split's reads at one sequence.
+#[test]
+fn the_sentinel_scan_options_are_pinned() {
+    let options = super::sentinel_scan_opts();
+    assert_eq!(
+        options.durability_filter,
+        slatedb::config::DurabilityLevel::Memory
+    );
+    assert_eq!(options.read_ahead_bytes, 1_048_576);
+    assert_eq!(options.max_fetch_tasks, 16);
+    assert!(options.cache_blocks);
+}
