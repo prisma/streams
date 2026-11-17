@@ -27,13 +27,14 @@ mod heartbeat;
 #[cfg(test)]
 pub(crate) use heartbeat::open_unopened_sources;
 mod hysteresis;
+// The tick's return-home and lag move.
+mod moves;
 mod outbox;
 mod planning;
-mod stale;
-use planning::Reservations as _;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
+mod stale;
 mod standing;
 mod view;
 pub(crate) use heartbeat::Heartbeat;
@@ -716,91 +717,14 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                     }
                 }
 
-                // Return-home: drop an override once the rendezvous owner
-                // is fresh and healthy again and the entry has aged past
-                // the hysteresis window — otherwise moves are sticky and
-                // an instance that lagged once is drained forever
-                // (ladder p3: streams-2 owned nothing by D3).
+                // Return-home, then the lag move (`moves`): each one CAS of the overrides document.
+                let drop_keys = state
+                    .moves(&cfg.instance, &active, &peer_load, &hb_age_ms)
+                    .returns(&ov);
+                if !drop_keys.is_empty()
+                    && let Some(next) = fleet_io!(ov.return_home(&drop_keys, &state, ov_ver.clone()))
                 {
-                    let return_secs: i64 = state.config.fleet.rebalance_return_secs as i64;
-                    let mut drop_keys: Vec<String> = Vec::new();
-                    let mut pending_returns: std::collections::HashMap<String, usize> =
-                        std::collections::HashMap::new();
-                    // A live topology intent's sources keep their override (S4-DESIGN §4.4).
-                    for (prefix, e) in ov.entries.iter() {
-                        if state.fleet.standing().return_home_skips(prefix, now_ms() - e.ms, return_secs) {
-                            continue;
-                        }
-                        if active.is_empty() {
-                            continue;
-                        }
-                        let home = active[crate::ownership::ring_pick(prefix, &active)].clone();
-                        if home == e.to {
-                            drop_keys.push(prefix.clone()); // override is a no-op
-                            continue;
-                        }
-                        let healthy = peer_load
-                            .get(&home)
-                            .map(|(_, lag)| *lag == 0)
-                            .unwrap_or(home == cfg.instance && state.shards.stall_max_secs() == 0);
-                        if !healthy {
-                            continue;
-                        }
-                        // Load-aware return: giving the shard back must not
-                        // push the home above its fair share, or the
-                        // rebalancer moves it right out again and the pair
-                        // flap on a ~return_secs period (FLEET-CAMPAIGN.md:
-                        // 4 shards over 4 instances). A drained home (the
-                        // ladder-p3 case this block exists for) is below
-                        // the mean and still gets its shards back.
-                        let owned = state
-                            .shards
-                            .prefixes()
-                            .iter()
-                            .filter(|p| {
-                                state.ownership.effective_owner(p).as_deref() == Some(home.as_str())
-                            })
-                            .count();
-                        let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1 + hb_age_ms.reserved_of(&home);
-                        if !return_home_allowed(
-                            owned,
-                            gain,
-                            state.shards.prefixes().len(),
-                            active.len(),
-                        ) {
-                            continue;
-                        }
-                        *pending_returns.entry(home).or_insert(0) += 1;
-                        drop_keys.push(prefix.clone());
-                    }
-                    if !drop_keys.is_empty() {
-                        let mut next = ov.clone();
-                        for k in &drop_keys {
-                            if next.pending_events.len() < 64 {
-                                next.pending_events.push(
-                                    crate::ops::OpsEvent::new(
-                                        "rebalance_return",
-                                        format!("return/{k}/{}", now_ms() / 1000),
-                                    )
-                                    .shard(k),
-                                );
-                            }
-                            next.entries.remove(k);
-                        }
-                        if fleet_io!(repository.replace_document(
-                                FleetDocument::Overrides,
-                                serde_json::to_vec(&next).unwrap(),
-                                ov_ver.clone(),
-                            ))
-                        {
-                            tracing::info!(
-                                "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
-                                drop_keys.len(),
-                                drop_keys
-                            );
-                            ov = next;
-                        }
-                    }
+                    ov = next;
                 }
 
                 lag_hot_ticks = if my_lag > rebalance_lag_secs {
@@ -811,68 +735,15 @@ fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervis
                 let cooled = last_move
                     .map(|t| t.elapsed().as_secs() >= rebalance_cooldown)
                     .unwrap_or(true);
-                if lag_hot_ticks >= 2 && cooled {
-                    // Move my laggiest shard to the coolest HEALTHY peer.
-                    // A peer that is itself lagging must not receive more
-                    // work: under global backlog every instance breaches
-                    // the threshold and unguarded moves just hand the
-                    // backlog around (ladder p3: 7 moves in 10 min, shard
-                    // ping-pong, zero net absorption gained).
-                    let target = pick_move_target(&peer_load, &hb_age_ms.unreserved(&active), &cfg.instance, rebalance_lag_secs);
-                    if target.is_none() {
-                        tracing::info!(
-                            "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
-                        );
-                    }
-                    let victim = state.lag_victim(&wedge_prefix, wedge_max_ms);
-                    if let (Some(to), Some(prefix)) = (target, victim) {
-                        if ov.pending_events.len() < 64 {
-                            ov.pending_events.push(
-                                crate::ops::OpsEvent::new(
-                                    "rebalance_move",
-                                    format!("move/{prefix}/{}", now_ms() / 1000),
-                                )
-                                .shard(&prefix)
-                                .fields(serde_json::json!({"to": to.clone()})),
-                            );
-                        }
-                        ov.entries.insert(
-                            prefix.clone(),
-                            OverrideEntry {
-                                to: to.clone(),
-                                ms: now_ms(),
-                            },
-                        );
-                        let committed = fleet_io!(repository.replace_document(
-                                FleetDocument::Overrides,
-                                serde_json::to_vec(&ov).unwrap(),
-                                ov_ver,
-                            ));
-                        match committed {
-                            true => {
-                                tracing::info!(
-                                    "rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)"
-                                );
-                                state.ownership.set_override(&prefix, &to);
-                                // Stop serving immediately and fail all
-                                // in-flight work fast (retryable) — the new
-                                // owner fences the log on first routed
-                                // request.
-                                state.shards.retire(
-                                    &prefix,
-                                    crate::shard_directory::RetirementReason::FleetEviction,
-                                    |_, _| true,
-                                );
-                                last_move = Some(Instant::now());
-                                lag_hot_ticks = 0;
-                            }
-                            false => {
-                                tracing::info!(
-                                    "rebalancer: overrides CAS lost; retry next tick"
-                                );
-                            }
-                        }
-                    }
+                if lag_hot_ticks >= 2
+                    && cooled
+                    && let Some(victim) = state
+                        .moves(&cfg.instance, &active, &peer_load, &hb_age_ms)
+                        .lag_plan(&wedge_prefix, wedge_max_ms)
+                    && fleet_io!(ov.lag_move(&victim, &state, ov_ver))
+                {
+                    last_move = Some(Instant::now());
+                    lag_hot_ticks = 0;
                 }
             }
 

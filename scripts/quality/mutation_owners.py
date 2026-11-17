@@ -439,6 +439,14 @@ OWNERS = (
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
           'fleet::hysteresis:: dst_tests::fleet_controller::desired::'),
+    # The tick's return-home and lag move: each test fails when its move is skipped, its mirror
+    # is skipped, or the reservation and intent checks are dropped.
+    owner('fleet_moves', 'src/fleet/moves.rs',
+          'fleet::moves:: dst_tests::fleet_controller:: '
+          'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
+          'dst_tests::fleet_count_balance::return_home_counts_its_homes_reserved_shards '
+          'dst_tests::fleet_topology::a_live_intents_source_is_never_the_lag_moves_shard '
+          'dst_tests::topology_colocation::return_home_skips_a_live_intents_sources'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     # The CAS over an in-memory fleet store (owner 2026-11-10: "Approve (1)+(2)"); the policy's
