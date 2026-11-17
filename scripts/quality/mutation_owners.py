@@ -188,7 +188,7 @@ OWNERS = (
     # The fleet tick's view publication under the revalidation lock (GATE-DECISION-f2-fleet-start-
     # rows C2): fleet_birth's tick-held DST kills a skipped lock or a skipped mark_progress, its held-
     # member cells a skipped set_peers, and every cell a skipped set_view or an empty body.
-    owner('fleet_view', 'src/fleet/view.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::fleet_birth::'),
+    owner('fleet_view', 'src/fleet/view.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::fleet_birth:: dst_tests::fleet_handoff_reads::'),
     # A split's timings by phase (GATE-DECISION-meas149-rerun-10000 M): its unit tests and the
     # split_start DST that pins the published phases in order.
     owner('topology_split_phases', 'src/topology/split/phases.rs',
@@ -300,13 +300,13 @@ OWNERS = (
     owner('bootstrap_s3_store', 'src/bootstrap/s3_store.rs', 'bootstrap::'),
     owner('bootstrap_service_runtime', 'src/bootstrap/service_runtime.rs', 'bootstrap::service_runtime::'),
     owner('bootstrap_tests', 'src/bootstrap/tests.rs', 'bootstrap::'),
-    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history:: dst_tests::read_memory::a_woken_long_poll dst_tests::read_memory_wakes:: dst_tests::reads_engine_closed::'),
+    owner('read_request', 'src/application/read_request.rs', 'dst_tests::read_application:: dst_tests::reads_applied:: dst_tests::reads_applied_history:: dst_tests::read_memory::a_woken_long_poll dst_tests::read_memory_wakes:: dst_tests::reads_engine_closed:: dst_tests::fleet_handoff_reads::'),
     owner('http_serve', 'src/http/serve.rs', 'http::serve::'),
     owner('http_serve_drain', 'src/http/serve/drain.rs', 'http::serve::drain::'),
     owner('http_serve_http2_bounds', 'src/http/serve/http2_bounds.rs', 'http::serve::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery:: dst_tests::reads_engine_closed::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
-    owner('http_forward', 'src/http/forward.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
+    owner('http_forward', 'src/http/forward.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership:: dst_tests::fleet_handoff_reads::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),
     owner('record', 'src/shard/record.rs', 'shard::'),
@@ -404,7 +404,7 @@ OWNERS = (
     owner('read_decode_tests', 'src/application/read_decode/tests.rs', 'application::read'),
     owner('read_decode_paging_tests', 'src/application/read_decode/paging_tests.rs', 'application::read'),
     owner('read_keys', 'src/application/read_keys.rs', 'application::read'),
-    owner('read_remote', 'src/application/read_remote.rs', 'application::read dst_tests::read_application:: dst_tests::read_page_limits::'),
+    owner('read_remote', 'src/application/read_remote.rs', 'application::read dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::fleet_handoff_reads::'),
     owner('read_remote_tests', 'src/application/read_remote_tests.rs', 'application::read'),
     owner('read_continuation', 'src/application/read_continuation.rs', 'application::read dst_tests::reads_applied_history::'),
     # execute_scan has no module tests: the frozen-scan rigs reach it (the
@@ -449,8 +449,8 @@ OWNERS = (
     # is skipped, or the reservation and intent checks are dropped.
     # F6, a planned move hands off giver first: the runner, the hold and the overrides version
     # are reached through the handoff DSTs; the tags' decisions have their own unit tests.
-    owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
-    owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
+    owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
+    owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
     owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
     owner('fleet_moves', 'src/fleet/moves.rs',
@@ -506,7 +506,7 @@ OWNERS = (
           'dst_tests::runtime_engine_lifecycle::r17a_each_required_engine_exit_changes_real_health_and_readyz '
           'dst_tests::shard_ownership::a_fleet_instance_is_unready_until_its_first_view'),
     owner('http_close_identity', 'src/http/close_identity.rs', 'http::close_identity:: dst_tests::seal_fencing:: dst_tests::seal_coordination:: dst_tests::security_seal::'),
-    owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver::'),
+    owner('http_internal_routes', 'src/http/internal_routes.rs', 'security_workload:: dst_tests::seal_convergence:: dst_tests::seal_fence_receiver:: dst_tests::fleet_handoff_reads:: dst_tests::read_peer_compatibility::'),
     # F1-a's relaying sender (82a14a8f); the owner approved the row on 2026-10-02.
     owner('lifecycle_fence_relay', 'src/application/lifecycle/fence_relay.rs', 'dst_tests::seal_fence_relay:: dst_tests::seal_convergence::'),
     # The anonymous capability surface (public-beta phase B step 15); the

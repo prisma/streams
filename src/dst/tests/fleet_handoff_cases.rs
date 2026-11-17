@@ -25,7 +25,7 @@ async fn giver(open: bool) -> HttpRig {
 /// `name` of a ring of `streams-1` and `streams-2` over `00` and `01` on `data` and `fleet`: its
 /// view the ring and the stored overrides, published by hand; its handoff runner started; and
 /// `00` open when `open`.
-async fn member(
+pub(super) async fn member(
     data: &Arc<dyn ObjectStore>,
     fleet: Arc<dyn ObjectStore>,
     name: &str,
@@ -58,7 +58,7 @@ async fn member(
     rig
 }
 
-async fn stop(rig: HttpRig) {
+pub(super) async fn stop(rig: HttpRig) {
     let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
@@ -185,7 +185,7 @@ async fn an_append_resolved_before_the_hold_is_answered_by_the_hold() {
 
 /// A stream created through `rig` whose route lands in `00` (a name the ring gives `streams-2` is
 /// refused `409` and skipped).
-async fn stream_in_00(rig: &HttpRig) -> String {
+pub(super) async fn stream_in_00(rig: &HttpRig) -> String {
     for n in 0..400 {
         let name = format!("c-{n}");
         let (status, _, body) =

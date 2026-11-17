@@ -514,7 +514,7 @@ fn assert_handed(acks: &[Ack], giver: &crate::http::AppState) {
 /// tick read the overrides before the move and publishes that read after it (its view pause), so
 /// for the next tick period it still names `streams-1` for the child `streams-1` handed it. The
 /// child's index and a stream in it.
-async fn moved_with_a_stale_target(pair: &Pair) -> (usize, String) {
+pub(super) async fn moved_with_a_stale_target(pair: &Pair) -> (usize, String) {
     let (status, _) = split_with_a_held_append(pair).await;
     assert_eq!(status, 204, "the held append");
     let mut taken = 0;
@@ -717,6 +717,12 @@ async fn reader(
             addr = member.1;
             answer = hreq(addr, "GET", &path, &[], b"").await;
         }
+        let tagged = answer.1.contains_key("streams-overrides-version");
+        assert!(
+            !tagged,
+            "R4, A5: no client answer carries it: {:?}",
+            answer.1
+        );
         let retry = answer.1.get("retry-after").cloned().unwrap_or_default();
         *seen.lock().unwrap().entry((answer.0, retry)).or_default() += 1;
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -729,6 +735,22 @@ async fn reader(
 /// close, #259), never `500`; the latter are counted and stay a handful.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn reads_across_a_handoff_are_served_or_retried() {
+    reads_across_a_handoff(true).await;
+}
+
+/// **Reads of a moved shard with no writer are served by its new owner** (D2, E1; the peer read
+/// hop). As above with no appender, so nothing forwards to the target before the reads do: a
+/// read either member relays to the other (`/v1/internal/segment-read`) teaches the target the
+/// move, and the reads stay served or retried a handful of times, never answered `503` until the
+/// target's next tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn reads_of_a_moved_shard_with_no_writer_are_served_by_its_new_owner() {
+    reads_across_a_handoff(false).await;
+}
+
+/// Readers on both children's streams at both members, and an appender to the first when
+/// `with_writer`, while a child returns home.
+async fn reads_across_a_handoff(with_writer: bool) {
     let pair = Pair::loaded().await;
     let (status, _) = split_with_a_held_append(&pair).await;
     assert_eq!(status, 204, "the held append");
@@ -746,18 +768,27 @@ async fn reads_across_a_handoff_are_served_or_retried() {
     });
     let tally = Arc::new(Mutex::new(Tally::default()));
     let next = Arc::new(AtomicU32::new(0));
-    let writer = appender(
-        members,
-        streams[0].clone(),
-        0,
-        next,
-        (stop.clone(), tally.clone()),
-    );
+    let appended = appender(members, streams[0].clone(), 0, next, (stop.clone(), tally));
+    let writer = async move {
+        if with_writer {
+            appended.await;
+        }
+    };
+    let reads = pair.b.state.fleet.standing().tags().reads();
     let moved = async { return_a_child(&pair, &stop).await };
+    let target = &pair.b.state;
+    let opened = async {
+        while !["0", "1"].iter().any(|c| target.shards.is_open(c)) && !stop.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        target.fleet.standing().tags().reads() - reads
+    };
     let both = futures_util::future::join(futures_util::future::join_all(readers), writer);
-    let (_, gone) = futures_util::future::join(both, moved).await;
+    let ((_, gone), at_open) =
+        futures_util::future::join(futures_util::future::join(both, moved), opened).await;
     let seen = std::mem::take(&mut *seen.lock().unwrap());
-    eprintln!("HANDOFF reads moved={gone} {seen:?}");
+    let read = target.fleet.standing().tags().reads() - reads;
+    eprintln!("HANDOFF reads moved={gone} {seen:?} overrides_reads={at_open}/{read}");
     let refused: u32 = seen
         .iter()
         .filter(|((s, _), _)| *s != 200)
@@ -771,6 +802,10 @@ async fn reads_across_a_handoff_are_served_or_retried() {
     assert!(
         retried <= 8,
         "in-flight reads at the close stay a handful: {seen:?}"
+    );
+    assert!(
+        with_writer || at_open == 1,
+        "the target reads the overrides once before it serves the moved child: {at_open}"
     );
     eprintln!("HANDOFF shutdown begins");
     pair.shutdown().await;

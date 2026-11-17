@@ -246,6 +246,42 @@ impl ReadService {
         Box::pin(self.execute_read(command)).await
     }
 
+    /// A page of `segment` from `owner`, through the peer read hop (F6, addendum 2026-11-18 A2).
+    /// A `409` naming this instance (its view was stale; the peer client refreshed it from that
+    /// answer) resolves the read once more from the top, here, when the refreshed view gives this
+    /// instance the segment. Otherwise the page's answer stands: no third hop.
+    async fn remote_page(
+        &self,
+        owner: &str,
+        command: &ReadCommand,
+        segment: u32,
+        from: ScanStart,
+    ) -> Result<ReadOutcome, ReadFailure> {
+        use crate::application::read_remote::RemoteSpanError::RedirectLoop;
+        let page = crate::application::read_remote::remote_read_page(
+            &self.peer, owner, command, segment, from,
+        );
+        let page = page.await;
+        let me = self.ownership.instance();
+        let named_here =
+            matches!(&page, Err(ReadFailure::Remote(RedirectLoop { second, .. })) if second == me);
+        if named_here && self.owns_here(command, segment) {
+            return Box::pin(self.execute_read(command.clone())).await;
+        }
+        page
+    }
+
+    /// Whether this instance's view gives it `segment` of `command`'s stream.
+    fn owns_here(&self, command: &ReadCommand, segment: u32) -> bool {
+        let Some(route) = command.descriptor.segment_route_by_id(segment) else {
+            return false;
+        };
+        let owner = self
+            .ownership
+            .effective_owner(&self.shards.prefix_for(&route));
+        owner.as_deref() == Some(self.ownership.instance())
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "ReadService::execute_read; one read resolves, checks the start of its entry span, waits, executes and meters in the order the wire contract promises, handing the serving writer's history to every outcome it builds; splitting it would hide which step each header reports"
@@ -298,14 +334,7 @@ impl ReadService {
                 Err(error) => {
                     if let crate::shard_directory::ResolveError::NotOwner { owner, .. } = &error {
                         if command.allow_remote && !matches!(command.mode, ReadMode::LongPoll(_)) {
-                            return crate::application::read_remote::remote_read_page(
-                                &self.peer,
-                                owner,
-                                &command,
-                                span.seg_id,
-                                from,
-                            )
-                            .await;
+                            return self.remote_page(owner, &command, span.seg_id, from).await;
                         }
                         if !command.allow_remote && index > entry_index {
                             return Ok(ReadOutcome::empty(

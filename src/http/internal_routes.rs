@@ -6,7 +6,8 @@
 //! in-flight tracking and origin marker layers.
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
+use axum::handler::Handler;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -85,10 +86,7 @@ pub(super) fn table() -> Router<Arc<AppState>> {
         // segment-positioned read served strictly from local ownership.
         // Peers relay here when a lineage crosses instances; the public
         // raw route keeps rejecting ?key= (audit P0 standards isolation).
-        .route(
-            "/v1/internal/segment-read/{*name}",
-            get(super::internal_segment_read),
-        )
+        .route("/v1/internal/segment-read/{*name}", get(segment_read))
         .route(
             "/v1/internal/segment-close/{*name}",
             post(super::internal_segment_close),
@@ -102,10 +100,7 @@ pub(super) fn table() -> Router<Arc<AppState>> {
             "/v1/internal/queue-cursor/{*name}",
             get(super::internal_queue_cursor),
         )
-        .route(
-            "/v1/internal/segment-scan/{*name}",
-            get(super::internal_segment_scan),
-        )
+        .route("/v1/internal/segment-scan/{*name}", get(segment_scan))
         .route(
             "/v1/internal/telemetry-append/{*name}",
             post(super::telemetry_append::internal_telemetry_append),
@@ -123,6 +118,26 @@ struct SealFenceParams {
 #[derive(Serialize)]
 struct SealFenceReply {
     closed: bool,
+}
+
+/// A peer read page, through the peer read hop ([`super::forward::peer_hop`]). The request goes
+/// to the route's own handler whole, so this wrapper reads no part of it but its headers.
+async fn segment_read(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let headers = request.headers().clone();
+    let operation = InternalOperation::SegmentRead;
+    let authorized = super::fleet_operation_authorized(&state, &headers, operation);
+    let route = Handler::call(super::internal_segment_read, request, state.clone());
+    super::forward::peer_hop(&state, &headers, authorized, route).await
+}
+
+/// A peer span page, through the peer read hop ([`super::forward::peer_hop`]), handed to the
+/// route's own handler whole as [`segment_read`] is.
+async fn segment_scan(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let headers = request.headers().clone();
+    let operation = InternalOperation::SegmentScan;
+    let authorized = super::fleet_operation_authorized(&state, &headers, operation);
+    let route = Handler::call(super::internal_segment_scan, request, state.clone());
+    super::forward::peer_hop(&state, &headers, authorized, route).await
 }
 
 /// NEXT-WORK §5 F1-a: the RECEIVER of a relayed seal fence. A takeover

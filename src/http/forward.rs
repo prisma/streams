@@ -90,7 +90,8 @@ pub(super) const TOPOLOGY_VERSION: &str = "streams-topology-version";
 /// #266): its own header, so `Streams-Forwarded` and a build without it are unchanged. A receiver
 /// that holds another version reads the document once before it resolves the forward, so the
 /// target of a planned move learns it owns the shard from the move's first forwarded request.
-const OVERRIDES_VERSION: &str = "streams-overrides-version";
+/// The peer client carries it on a peer read page or span page too (the peer read hop).
+use crate::peer::OVERRIDES_VERSION;
 
 /// A forward's hop as its header names it: the forwarder's topology version,
 /// and whether it is the last hop. `None` for any other value: a client's
@@ -147,10 +148,27 @@ async fn refresh_overrides(state: &AppState, headers: &HeaderMap) {
     crate::fleet::view::refresh_for(state, seen).await;
 }
 
+/// A peer read page or span page (`/v1/internal/segment-read`, `/v1/internal/segment-scan`; F6's
+/// peer read hop, addendum 2026-11-18 A1): an `authorized` request naming an overrides version
+/// this instance does not hold refreshes its mirror before `route` resolves it. The route's
+/// `409` naming the owner to replay to carries this instance's versions back to the asker
+/// ([`to_owner`], [`peer_page`]).
+pub(super) async fn peer_hop(
+    state: &AppState,
+    headers: &HeaderMap,
+    authorized: bool,
+    route: impl Future<Output = Response>,
+) -> Response {
+    if authorized {
+        refresh_overrides(state, headers).await;
+    }
+    route.await
+}
+
 /// `answer` with this instance's topology version, if it is a `409
 /// not_ring_owner` (it names the owner to replay to) that carries none yet; and with its overrides
-/// version for a peer that `forwarded` the request, never for a client (R4: stripped, a relayed
-/// owner's copy included).
+/// version for a peer that `forwarded` the request or asked for a peer page, never for a client
+/// (R4: stripped, a relayed owner's copy included).
 fn with_version(state: &AppState, mut answer: Response, forwarded: bool) -> Response {
     let refusal = answer.status() == StatusCode::CONFLICT
         && answer.headers().contains_key("streams-replay-to");
@@ -251,8 +269,17 @@ pub(super) async fn to_owner(
         catch_up(&state, seen).await;
         refresh_overrides(&state, request.headers()).await;
     }
+    let peer = forwarded.is_some() || peer_page(request.uri());
     let answer = serve(&state, request, next).await;
-    with_version(&state, answer, forwarded.is_some())
+    with_version(&state, answer, peer)
+}
+
+/// Whether `uri` is a peer read page or span page (the peer read hop): fleet-authorized routes
+/// whose `409` carries this instance's overrides version back to the asking peer, as a forward's
+/// does (R4 strips it from every other answer).
+fn peer_page(uri: &Uri) -> bool {
+    let path = uri.path();
+    path.starts_with("/v1/internal/segment-read/") || path.starts_with("/v1/internal/segment-scan/")
 }
 
 /// Serve `request` here, or forward it to its owner (see [`to_owner`]).

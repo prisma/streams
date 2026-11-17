@@ -5,6 +5,7 @@
 //! view after an install that refreshed to the newer one.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Weak};
 
 use object_store::UpdateVersion;
 
@@ -88,4 +89,33 @@ pub(super) fn tag_of(version: Option<&UpdateVersion>) -> String {
     version
         .and_then(|v| v.e_tag.clone().or_else(|| v.version.clone()))
         .unwrap_or_default()
+}
+
+/// Install this instance's overrides view on its peer client (F6's peer read hop, addendum
+/// 2026-11-18): every fleet request carries the version this instance holds, and a peer's `409`
+/// naming another version refreshes it through [`refresh_for`] before the asker's next step.
+pub(crate) fn watch(state: &Arc<AppState>) {
+    state
+        .peer
+        .watch_overrides(Arc::new(PeerView(Arc::downgrade(state))));
+}
+
+/// The peer client's view of this instance's overrides; it holds the state weakly, since the
+/// state holds the peer client.
+struct PeerView(Weak<AppState>);
+
+impl crate::peer::OverridesView for PeerView {
+    fn tag(&self) -> String {
+        let tag = |state: Arc<AppState>| state.fleet.standing().tags().tag();
+        self.0.upgrade().map(tag).unwrap_or_default()
+    }
+
+    fn refresh(&self, seen: String) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        let state = self.0.clone();
+        Box::pin(async move {
+            if let Some(state) = state.upgrade() {
+                refresh_for(&state, &seen).await;
+            }
+        })
+    }
 }

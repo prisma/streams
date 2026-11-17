@@ -154,11 +154,11 @@
       "scope": "function",
       "lint": "clippy::cast_possible_truncation",
       "metrics": {
-        "scope_lines": 190,
+        "scope_lines": 183,
         "syntax_facts": 343
       },
-      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f). F6 fix A (2026-11-18, GATE-DECISION-f6-execute-read-rows-2026-11-18.md): the not-owner branch calls the new method ReadService::remote_page(owner, &command, span.seg_id, from) instead of the eight-line path call to read_remote::remote_read_page, so a 409 naming this instance is re-resolved once and served here (addendum 2026-11-18 A2); the scope only shrank and these are the gate's after values (scope_lines 190 -> 183, syntax_facts 343 -> 343).",
+      "approver": "Fable 5.2 under the owner's delegation for exception-growth rows on #149, 2026-11-18 (GATE-DECISION-f6-execute-read-rows-2026-11-18.md), for the owner's review: the scope shrank, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
       "path": "src/application/read_request.rs",
@@ -166,11 +166,11 @@
       "scope": "function",
       "lint": "clippy::excessive_nesting",
       "metrics": {
-        "scope_lines": 190,
+        "scope_lines": 183,
         "syntax_facts": 343
       },
-      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f). F6 fix A (2026-11-18, GATE-DECISION-f6-execute-read-rows-2026-11-18.md): the not-owner branch calls the new method ReadService::remote_page(owner, &command, span.seg_id, from) instead of the eight-line path call to read_remote::remote_read_page, so a 409 naming this instance is re-resolved once and served here (addendum 2026-11-18 A2); the scope only shrank and these are the gate's after values (scope_lines 190 -> 183, syntax_facts 343 -> 343).",
+      "approver": "Fable 5.2 under the owner's delegation for exception-growth rows on #149, 2026-11-18 (GATE-DECISION-f6-execute-read-rows-2026-11-18.md), for the owner's review: the scope shrank, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
       "path": "src/application/read_request.rs",
@@ -178,11 +178,11 @@
       "scope": "function",
       "lint": "clippy::let_underscore_must_use",
       "metrics": {
-        "scope_lines": 190,
+        "scope_lines": 183,
         "syntax_facts": 343
       },
-      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f). F6 fix A (2026-11-18, GATE-DECISION-f6-execute-read-rows-2026-11-18.md): the not-owner branch calls the new method ReadService::remote_page(owner, &command, span.seg_id, from) instead of the eight-line path call to read_remote::remote_read_page, so a 409 naming this instance is re-resolved once and served here (addendum 2026-11-18 A2); the scope only shrank and these are the gate's after values (scope_lines 190 -> 183, syntax_facts 343 -> 343).",
+      "approver": "Fable 5.2 under the owner's delegation for exception-growth rows on #149, 2026-11-18 (GATE-DECISION-f6-execute-read-rows-2026-11-18.md), for the owner's review: the scope shrank, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
       "path": "src/application/read_request.rs",
@@ -190,11 +190,11 @@
       "scope": "function",
       "lint": "clippy::too_many_lines",
       "metrics": {
-        "scope_lines": 190,
+        "scope_lines": 183,
         "syntax_facts": 343
       },
-      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f).",
-      "approver": "Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
+      "rationale": "The read checks a continuation's entry start and verifies or settles it before serving (TLA-018-F3), with the u64::MAX position distinct from now (ec55262f). F6 fix A (2026-11-18, GATE-DECISION-f6-execute-read-rows-2026-11-18.md): the not-owner branch calls the new method ReadService::remote_page(owner, &command, span.seg_id, from) instead of the eight-line path call to read_remote::remote_read_page, so a 409 naming this instance is re-resolved once and served here (addendum 2026-11-18 A2); the scope only shrank and these are the gate's after values (scope_lines 190 -> 183, syntax_facts 343 -> 343).",
+      "approver": "Fable 5.2 under the owner's delegation for exception-growth rows on #149, 2026-11-18 (GATE-DECISION-f6-execute-read-rows-2026-11-18.md), for the owner's review: the scope shrank, so the row takes the gate's after values; the row was approved by Søren Bramer Schmidt (repository owner), approved 2026-09-25 for the formal-verification closure merge"
     },
     {
       "path": "src/application/read_request.rs",

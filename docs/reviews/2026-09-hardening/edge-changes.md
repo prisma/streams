@@ -5777,12 +5777,14 @@ One record has verified=false: its commit did not match the recorded text.
     - A read that resolved before the hold and is still running when the giver's storage closes gets today's `503`, `Retry-After: 1` (#259). Never `500`.
     - A multiplexed `live:wait` tail re-polls (`live_wait/tail.rs`) and is not answered.
     - Live sessions are woken after the mirror into the existing wrong-owner cutoff.
+    - A read of a moved shard with no writer is served by its new owner too: the peer read hop teaches the stale member the move from the read itself. A read that still meets two stale views (a refresh skipped inside R2's 100 ms floor, or a failed one, A4) is `503 temporarily_unavailable`, `Retry-After: 1`, as before F6; on the span route a live session retries it, and is never cut as a redirect loop.
   - **Past the hold.** Any request still held 2 s after the park, or arriving while the hold still stands past that, is answered at once: raw `503 shard_moving`, product `503 temporarily_unavailable`, `Retry-After: 1` (D9, H3). Nothing was written.
   - **A dropped move (E6, D9).** A CAS lost three times, or a step past its bound after the close began, ends the hold as kept. The shard reopens here on demand with no holdoff, and a held append is answered raw `503 shard_moving` / product `503 temporarily_unavailable`, `Retry-After: 1`.
   - **The target (step 8).** The target learns it owns the shard from the move's first request, not at its next 2 s tick:
-    - a forward carries the forwarder's overrides version in `Streams-Overrides-Version`;
-    - an owner's `409 not_ring_owner` answering a forward carries it too;
-    - a receiver holding another version reads the overrides once before it resolves, or relays the `409`.
+    - a forward, a peer read page (`/v1/internal/segment-read`) and a peer span page (`/v1/internal/segment-scan`) carry the sender's overrides version in `Streams-Overrides-Version`;
+    - an owner's `409 not_ring_owner` answering any of them carries it too;
+    - a receiver holding another version reads the overrides once before it resolves, or relays the `409`;
+    - the peer read hop (addendum 2026-11-18, A1-A3): an instance that asked a peer for a read or span page and is answered such a `409` reads the overrides once before its next step, so a second hop carries the refreshed version; a `409` naming the asker itself re-resolves the read once and serves it there. There is never a third hop or a second re-resolve.
   - **How long a planned move holds an append (I4).** On a 20 ms store a planned move holds an append about 1 s, and at most `HOLD` (2 s), whatever the store. Measured on the two loaded DSTs:
 
     | set | n | park to release p50 / max | release to the target's first ack p50 / max |
@@ -5824,6 +5826,9 @@ One record has verified=false: its commit did not match the recorded text.
   - `sharddir::handoff::tests::*` (the hold, its absolute deadline, a dropped mark).
   - `dst::dst_tests::fleet_handoff::reads_across_a_handoff_are_served_or_retried` (E1, D2, H7): every read answered `200`, or `503` with `Retry-After: 1`, at most 8 of them.
   - `dst::dst_tests::fleet_handoff::a_producer_keeps_its_sequence_across_a_handoff` (D8): each sequence acked `200` once and stored once, in order.
+  - `dst::dst_tests::fleet_handoff::reads_of_a_moved_shard_with_no_writer_are_served_by_its_new_owner` (the peer read hop, A8): the writerless child moved on every run, at most 8 reads retried, one overrides read on the target before it serves the moved child, no client answer carrying `Streams-Overrides-Version`. Red without the hop: `{(200, ""): 92, (503, "1"): 226}`, each refusal `peer read failed: RedirectLoop`.
+  - `dst::dst_tests::fleet_handoff_reads::*` (A2's three cases, R1 on the hop, the span route): a read at a stale target served there once the giver's `409` names it; a burst of 32 reads making one overrides read; the giver's span page served by the stale target; a stale target's span page never ending in a redirect loop; a `409` naming this instance that its refreshed view denies answered as before, one hop and one refresh.
+  - `peer::tests::a_409_refreshes_the_view_before_the_next_hop_which_carries_it` (A2's first case).
   - `dst::dst_tests::fleet_handoff::a_drain_of_several_shards_hands_each_off_within_its_budget` (the planned drain): four handoffs, `HandedOff`, no append refused, each stream's gap under `HOLD`, stored equal acked.
   - `dst::dst_tests::fleet_handoff_cases::a_park_past_its_bound_moves_nothing_and_evacuates_a_lag_victim` (D4, H4).
   - `dst::dst_tests::fleet_handoff_cases::a_holder_with_no_engine_moves_its_entry` (D6).

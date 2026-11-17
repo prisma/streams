@@ -103,8 +103,10 @@ pub(crate) async fn hand_off(
     end.await.unwrap_or(Outcome::Kept)
 }
 
-/// Start this runtime's handoff runner beside its fleet tick.
+/// Start this runtime's handoff runner beside its fleet tick, and install the fleet's overrides
+/// view on its peer client (the peer read hop).
 pub(crate) fn start(state: Arc<AppState>, tasks: &TaskSupervisor) {
+    super::view::watch(&state);
     let (queue, mut requests) = mpsc::channel(QUEUED);
     state.fleet.standing().set_handoffs(queue);
     let spawned = tasks.spawn(

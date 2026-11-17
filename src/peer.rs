@@ -19,6 +19,20 @@ pub(crate) const FORWARD_CONNECT: Duration = Duration::from_secs(1);
 /// rotated credential (peer 401) instead of serving the cache.
 pub(crate) type FleetTokenSource = Arc<dyn Fn(bool) -> Option<String> + Send + Sync>;
 
+/// The fleet-internal header naming the overrides version an instance holds (F6 step 8): on a
+/// forward and its `409`, and on a peer read page or span page and its `409` (the peer read hop).
+pub(crate) const OVERRIDES_VERSION: &str = "streams-overrides-version";
+
+/// This instance's overrides version as its fleet requests carry it, and the bounded refresh a
+/// peer's answer naming another version asks for (F6 step 8 on the peer read hop, addendum
+/// 2026-11-18 A1-A3). The fleet installs it; without it a request carries no version.
+pub(crate) trait OverridesView: Send + Sync {
+    /// The version this instance holds.
+    fn tag(&self) -> String;
+    /// Refresh this instance's mirror for a peer's version `seen`, within its bounds.
+    fn refresh(&self, seen: String) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
 #[derive(Clone)]
 pub(crate) struct PeerClient {
     inner: Arc<Inner>,
@@ -33,6 +47,8 @@ struct Inner {
     /// The transport of forwards to a stream's owner, built at the first
     /// forward; `None` inside when it could not be built.
     forward: OnceLock<Option<reqwest::Client>>,
+    /// The fleet's overrides view, installed once at the fleet's start.
+    overrides: OnceLock<Arc<dyn OverridesView>>,
 }
 
 /// Workload identity takes precedence at construction. The static bridge
@@ -58,6 +74,7 @@ impl PeerClient {
                 peer_urls: RwLock::new(HashMap::new()),
                 credentials,
                 forward: OnceLock::new(),
+                overrides: OnceLock::new(),
             }),
         }
     }
@@ -165,13 +182,46 @@ impl PeerClient {
         mk: impl Fn(Option<&str>) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let t = self.outbound_bearer(false);
-        let resp = mk(t.as_deref()).send().await?;
+        let mut resp = self.tagged(mk(t.as_deref())).send().await?;
         // (numeric: the transport-type lexer must not see a status type here)
         if resp.status().as_u16() == 401 && self.has_workload_source() {
             let t2 = self.outbound_bearer(true);
-            return mk(t2.as_deref()).send().await;
+            resp = self.tagged(mk(t2.as_deref())).send().await?;
         }
+        self.learn(&resp).await;
         Ok(resp)
+    }
+
+    /// Install the fleet's overrides view; the first one stays.
+    pub(crate) fn watch_overrides(&self, view: Arc<dyn OverridesView>) {
+        if self.inner.overrides.set(view).is_err() {
+            tracing::debug!("the peer client already watches the fleet's overrides");
+        }
+    }
+
+    /// `request` carrying this instance's overrides version, once the fleet installed its view.
+    fn tagged(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.inner.overrides.get() {
+            Some(view) => request.header(OVERRIDES_VERSION, view.tag()),
+            None => request,
+        }
+    }
+
+    /// A peer's `409` naming the owner to replay to under its overrides version refreshes this
+    /// instance's mirror before the asker takes its next step (the peer read hop, A2): a second
+    /// hop then carries the refreshed version, and an asker the `409` names resolves the read
+    /// here.
+    async fn learn(&self, answer: &reqwest::Response) {
+        let Some(view) = self.inner.overrides.get() else {
+            return;
+        };
+        let headers = answer.headers();
+        if answer.status().as_u16() != 409 || !headers.contains_key("streams-replay-to") {
+            return;
+        }
+        if let Some(seen) = headers.get(OVERRIDES_VERSION).and_then(|v| v.to_str().ok()) {
+            view.refresh(seen.to_string()).await;
+        }
     }
 }
 
@@ -223,6 +273,72 @@ pub(crate) fn client() -> &'static reqwest::Client {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An overrides view that holds `tag` and records each refresh, which adopts the version seen.
+    #[derive(Default)]
+    struct Recorded {
+        tag: std::sync::Mutex<String>,
+        refreshed: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl OverridesView for Recorded {
+        fn tag(&self) -> String {
+            self.tag.lock().unwrap().clone()
+        }
+
+        fn refresh(&self, seen: String) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+            self.refreshed.lock().unwrap().push(seen.clone());
+            *self.tag.lock().unwrap() = seen;
+            Box::pin(async {})
+        }
+    }
+
+    /// **A peer's `409` refreshes the asker's view before its next hop, and that hop carries the
+    /// refreshed version** (F6's peer read hop, addendum 2026-11-18 A2, its first case). The
+    /// first request carries `v1`; the peer answers `409` naming another owner under `v2`; the
+    /// view is refreshed for `v2` before `send` returns, and the second request carries `v2`.
+    /// An answer that is not such a `409` refreshes nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+    async fn a_409_refreshes_the_view_before_the_next_hop_which_carries_it() {
+        let carried = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = carried.clone();
+        let answer = move |headers: axum::http::HeaderMap| {
+            let tag = headers
+                .get(OVERRIDES_VERSION)
+                .map(|v| v.to_str().unwrap().to_string());
+            let mut seen = seen.lock().unwrap();
+            seen.push(tag);
+            let refusal = [("streams-replay-to", "p3"), (OVERRIDES_VERSION, "v2")];
+            let status = [axum::http::StatusCode::CONFLICT, axum::http::StatusCode::OK];
+            std::future::ready((status[seen.len().min(2) - 1], refusal))
+        };
+        let app = axum::Router::new().route("/r", axum::routing::get(answer));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/r", listener.local_addr().unwrap());
+        let view = Arc::new(Recorded::default());
+        *view.tag.lock().unwrap() = "v1".into();
+        let peer = PeerClient::new(None, None);
+        peer.watch_overrides(view.clone());
+        let hops = async {
+            let first = peer.send(|_| client().get(&url)).await.unwrap();
+            let refreshed = view.refreshed.lock().unwrap().clone();
+            let second = peer.send(|_| client().get(&url)).await.unwrap();
+            (first.status().as_u16(), refreshed, second.status().as_u16())
+        };
+        let serve = axum::serve(listener, app).into_future();
+        let ended = futures_util::future::select(Box::pin(hops), Box::pin(serve)).await;
+        let futures_util::future::Either::Left((hops, _)) = ended else {
+            panic!("the server ended first");
+        };
+        assert_eq!(hops, (409, vec!["v2".to_string()], 200));
+        let carried = carried.lock().unwrap().clone();
+        assert_eq!(carried, [Some("v1".to_string()), Some("v2".to_string())]);
+        assert_eq!(
+            view.refreshed.lock().unwrap().len(),
+            1,
+            "a 200 refreshes nothing"
+        );
+    }
 
     /// The peer table: published URLs, replaced wholesale by the fleet
     /// loop, read by relays; unknown instances are unroutable.
