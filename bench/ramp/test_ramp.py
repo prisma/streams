@@ -218,7 +218,11 @@ class Bookkeeping(unittest.TestCase):
         self.assertEqual(ramp.settle_budget(a, 100_000, Posture()), 300 + (32 - 1) * (10 + 30))
 
     def test_servers_log_topology_and_fleet_at_info(self):
-        self.assertEqual(ramp.SERVER_LOG, "warn,streams_slate::topology=info,streams_slate::fleet=info")
+        self.assertEqual(
+            ramp.SERVER_LOG,
+            "warn,streams_slate::topology=info,streams_slate::fleet=info,"
+            "streams_slate::native_queue::compaction_guard=info,streams_slate::shard::open_index=info",
+        )
 
     def test_a_worker_covers_two_ridden_out_requests(self):
         # 100,000 streams once a minute: 1,667 touches a second over 32-second workers.
