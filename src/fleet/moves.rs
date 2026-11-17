@@ -90,12 +90,8 @@ impl Tick<'_> {
     /// Whether `home` is healthy and may take one more shard back on top of `pending_returns`.
     fn takes_back(&self, home: &str, pending_returns: &HashMap<String, usize>) -> bool {
         let shards = &self.state.shards;
-        let healthy = self
-            .peer_load
-            .get(home)
-            .map(|(_, lag)| *lag == 0)
-            .unwrap_or(home == self.me && shards.stall_max_secs() == 0);
-        if !healthy {
+        let peer_lag = self.peer_load.get(home).map(|(_, lag)| *lag);
+        if !home_healthy(peer_lag, home, self.me, shards.stall_max_secs()) {
             return false;
         }
         // Load-aware return: giving the shard back must not push the home above its fair
@@ -139,7 +135,7 @@ impl Tick<'_> {
 impl Overrides {
     /// Return-home's commit: this document with each of `drop_keys` ([`Tick::returns`]) removed,
     /// by one CAS against `version`; the document as replaced, when it committed.
-    pub(super) async fn return_home(
+    pub(crate) async fn return_home(
         &self,
         drop_keys: &[String],
         state: &AppState,
@@ -159,7 +155,7 @@ impl Overrides {
 
     /// The lag move's commit: `prefix` moved to `to` ([`Tick::lag_plan`]) by one CAS against
     /// `version`, then mirrored and retired here; whether it moved.
-    pub(super) async fn lag_move(
+    pub(crate) async fn lag_move(
         self,
         (prefix, to): &(String, String),
         state: &AppState,
@@ -182,6 +178,14 @@ impl Overrides {
         );
         true
     }
+}
+
+/// Whether return-home may give a shard back to `home`: a home with a fresh heartbeat
+/// (`peer_lag`) when it reports no absorb lag; one without, only when it is this instance (`me`)
+/// and none of its shards stalls (`my_stall_secs`). Another member without a fresh heartbeat is
+/// never healthy.
+fn home_healthy(peer_lag: Option<u64>, home: &str, me: &str, my_stall_secs: u64) -> bool {
+    peer_lag.map_or(home == me && my_stall_secs == 0, |lag| lag == 0)
 }
 
 /// CAS-replace the overrides document with `next`; whether it committed.
@@ -214,7 +218,20 @@ fn returned(mut overrides: Overrides, drop_keys: &[String], now_ms: i64) -> Over
 
 #[cfg(test)]
 mod tests {
-    use super::returned;
+    use super::{home_healthy, returned};
+
+    #[test]
+    fn a_home_is_healthy_by_its_fresh_lag_or_as_this_unstalled_instance() {
+        let cases = [
+            (Some(0), "s2", 9),
+            (Some(3), "s1", 0),
+            (None, "s1", 0),
+            (None, "s1", 4),
+            (None, "s2", 0),
+        ];
+        let healthy = cases.map(|(lag, home, stall)| home_healthy(lag, home, "s1", stall));
+        assert_eq!(healthy, [true, false, true, false, false]);
+    }
     use crate::fleet::{OverrideEntry, Overrides};
 
     #[test]

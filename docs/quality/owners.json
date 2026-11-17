@@ -1395,6 +1395,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_moves",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The fleet tick's two commits held to their contract on a real rig (fleet::moves): a lag move or a return is mirrored and acted on only when its CAS of the overrides document committed; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_moves.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_barrier",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split's barrier on a serving engine (S4-DESIGN section 5.2): it parks the committer after its own group, a resume serves the held appends in order, and a barrier dropped unreleased closes the engine; compiler and the full DST suite exercise the module.",

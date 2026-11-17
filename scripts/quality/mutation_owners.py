@@ -436,7 +436,7 @@ OWNERS = (
     # The tick's return-home and lag move: each test fails when its move is skipped, its mirror
     # is skipped, or the reservation and intent checks are dropped.
     owner('fleet_moves', 'src/fleet/moves.rs',
-          'fleet::moves:: dst_tests::fleet_controller:: '
+          'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
           'dst_tests::fleet_count_balance::return_home_counts_its_homes_reserved_shards '
           'dst_tests::fleet_topology::a_live_intents_source_is_never_the_lag_moves_shard '

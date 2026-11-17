@@ -1515,6 +1515,17 @@
     "scenarios": []
   },
   {
+    "name": "a_lag_move_mirrors_and_retires_only_when_its_cas_commits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a4f32d0e3ef5fcfa9500eb15203ebbbb5a8213b3a4e705182698aa6cc5af7fd1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_moves.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_lagging_owner_moves_its_shard_only_to_an_active_member",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3426,6 +3437,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_return_home_reports_its_document_only_when_its_cas_commits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0d4ff6ba2eb56fb0efc8b71508f3ebcb3c6e8ad9469bbef4f1921318211ed772",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_moves.rs",
     "scenarios": []
   },
   {
