@@ -464,6 +464,9 @@ async fn refuse(dir: &ShardDirectory, parent: &ShardEngine) -> Result<u32, Refus
     if parent.prefix.len() >= crate::keyspace::ROUTE_PREFIX_BITS {
         return Err(Refused::NotSplittable("at the routing width".to_string()));
     }
+    if parent.gc_state().gate.moving() {
+        return Err(Refused::Busy("move"));
+    }
     match parent.db.get(fence::retired_key()).await {
         Ok(None) => {}
         Ok(Some(_)) => return Err(Refused::NotSplittable("a retired parent".to_string())),
@@ -541,6 +544,11 @@ async fn prepare(
     .await;
     let gate = &parent.gc_state().gate;
     gate.set_collection_off(true);
+    // A planned move that claimed the parent after the refusals ran (F6, step 1): it set
+    // `moving` before it read `collection_off`, so one of the two sees the other.
+    if gate.moving() {
+        return Err("a planned move holds the parent".to_string());
+    }
     gate.start_marking();
     let log = log_reads(parent).await?;
     let rows = &log.rows;

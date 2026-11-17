@@ -34,11 +34,14 @@ impl Departure {
     /// prevent. A release the runtime chose says nothing about the store.
     fn is_evidence(self) -> bool {
         use RetirementReason::{
-            FleetEviction, IndexRepair, OwnershipMoved, Shutdown, Split, SweepEviction,
+            FleetEviction, IndexRepair, OwnershipMoved, PlannedMove, Shutdown, Split,
+            SweepEviction,
         };
         match self {
             Departure::Died | Departure::Retired(OwnershipMoved | FleetEviction) => true,
-            Departure::Retired(SweepEviction | Shutdown | IndexRepair | Split) => false,
+            Departure::Retired(SweepEviction | Shutdown | IndexRepair | Split | PlannedMove) => {
+                false
+            }
         }
     }
 }
@@ -51,6 +54,10 @@ pub(super) fn ledger_after(
     lived: Option<Duration>,
     strikes: u32,
 ) -> (u32, Duration) {
+    if matches!(departure, Departure::Retired(RetirementReason::PlannedMove)) {
+        // A planned move's giver may reopen at once when its move is dropped (F6, step 10).
+        return (strikes, Duration::ZERO);
+    }
     if !departure.is_evidence() {
         return (strikes, HOLDOFF_BASE);
     }

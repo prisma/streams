@@ -78,6 +78,11 @@ impl Tick<'_> {
                 drop_keys.push(prefix.clone()); // override is a no-op
                 continue;
             }
+            // Only the instance an entry names hands its shard back, giver first (F6); an entry
+            // naming no member is void, and anyone may drop it.
+            if entry.to != self.me && self.active.contains(&entry.to) {
+                continue;
+            }
             if !self.takes_back(&home, &pending_returns) {
                 continue;
             }
@@ -145,16 +150,36 @@ impl Overrides {
         state: &AppState,
         version: Option<UpdateVersion>,
     ) -> Option<Overrides> {
-        let next = returned(self.clone(), drop_keys, now_ms());
-        if !replace(state, &next, version).await {
-            return None;
+        let (handed, plain): (Vec<String>, Vec<String>) =
+            drop_keys.iter().cloned().partition(|key| self.hands_back(key, state));
+        let mut replaced = None;
+        if !plain.is_empty() {
+            let next = returned(self.clone(), &plain, now_ms());
+            if replace(state, &next, version).await {
+                tracing::info!(
+                    "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
+                    plain.len(),
+                    plain
+                );
+                replaced = Some(next);
+            }
         }
-        tracing::info!(
-            "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
-            drop_keys.len(),
-            drop_keys
-        );
-        Some(next)
+        for key in &handed {
+            let change = super::handoff::Change::Return;
+            let outcome = super::handoff::hand_off(&state.fleet, key, change, false).await;
+            tracing::info!(shard = %key, ?outcome, "rebalancer: returned a shard to its rendezvous owner");
+        }
+        replaced
+    }
+
+    /// Whether return-home gives `key` back by a handoff: its entry names this instance and the
+    /// ring's home is another (F6). A no-op or a void entry is dropped by the plain CAS.
+    fn hands_back(&self, key: &str, state: &AppState) -> bool {
+        let me = state.config.cli.instance_name.as_str();
+        let active = state.ownership.ring_active();
+        let named_here = self.entries.get(key).is_some_and(|entry| entry.to == me);
+        let home_here = !active.is_empty() && active[crate::ownership::ring_pick(key, &active)] == me;
+        named_here && !home_here
     }
 
     /// The lag move's commit: `prefix` moved to `to` ([`Tick::lag_plan`]) by one CAS against
@@ -162,6 +187,30 @@ impl Overrides {
     pub(super) async fn lag_move(
         self,
         (prefix, to): &(String, String),
+        state: &AppState,
+        version: Option<UpdateVersion>,
+    ) -> bool {
+        let change = super::handoff::Change::To(to.clone());
+        match super::handoff::hand_off(&state.fleet, prefix, change, true).await {
+            super::handoff::Outcome::Moved => {
+                tracing::info!("rebalancer: moved shard {prefix} -> {to} giver first");
+                true
+            }
+            super::handoff::Outcome::Evacuate => {
+                self.evacuate((prefix.as_str(), to.as_str()), state, version).await
+            }
+            outcome => {
+                tracing::info!(shard = %prefix, ?outcome, "rebalancer: lag move not made");
+                false
+            }
+        }
+    }
+
+    /// The lag move's evacuation of a wedged shard that cannot park or flush within its bound
+    /// (F6 D4, H4; edge #266): today's CAS, mirror and retirement; the new owner fences the log.
+    async fn evacuate(
+        self,
+        (prefix, to): (&str, &str),
         state: &AppState,
         version: Option<UpdateVersion>,
     ) -> bool {
@@ -173,8 +222,8 @@ impl Overrides {
         let (_, _, my_lag) = state.fleet_pressure();
         tracing::info!("rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)");
         state.ownership.set_override(prefix, to);
-        // Stop serving immediately and fail all in-flight work fast (retryable): the new owner
-        // fences the log on first routed request.
+        // A wedged shard stops serving at once: the new owner fences the log on its first routed
+        // request.
         state.shards.retire(
             prefix,
             crate::shard_directory::RetirementReason::FleetEviction,
@@ -200,7 +249,7 @@ async fn replace(state: &AppState, next: &Overrides, version: Option<UpdateVersi
 
 /// `overrides` with each of `drop_keys` removed and its `rebalance_return` event, within the
 /// outbox bound.
-fn returned(mut overrides: Overrides, drop_keys: &[String], now_ms: i64) -> Overrides {
+pub(super) fn returned(mut overrides: Overrides, drop_keys: &[String], now_ms: i64) -> Overrides {
     for key in drop_keys {
         if overrides.pending_events.len() < MAX_PENDING_EVENTS {
             let id = format!("return/{key}/{}", now_ms / 1000);

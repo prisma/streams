@@ -51,6 +51,13 @@ pub(crate) struct Standing {
     /// moves one of its sources (S4-DESIGN §4.4), and return-home leaves its sources and a live
     /// split's children where they are (GATE-DECISION-f2-children-on-actor A4).
     topology_intent: Mutex<Option<crate::topology::intent::Live>>,
+    /// This runtime's planned-move runner, once its fleet started (`fleet::handoff`).
+    handoffs: std::sync::OnceLock<super::handoff::Queue>,
+    /// Planned moves whose close did not end clean, so the move was a takeover by fence (F6 E5).
+    handoffs_fenced: AtomicU64,
+    /// The version of the overrides document this instance last published, and a forwarded
+    /// version that still differed after a refresh (F6 D7: one read per distinct value).
+    overrides_tag: Mutex<(String, Option<String>)>,
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
@@ -113,6 +120,9 @@ impl Default for Standing {
             drained: Mutex::new(None),
             split_demand: AtomicU64::new(0),
             topology_intent: Mutex::new(None),
+            handoffs: std::sync::OnceLock::new(),
+            handoffs_fenced: AtomicU64::new(0),
+            overrides_tag: Mutex::new((String::new(), None)),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
             cached: Mutex::new((0, Arc::from([]))),
@@ -124,6 +134,60 @@ impl Default for Standing {
 }
 
 impl Standing {
+    /// This runtime's planned-move runner, if its fleet started.
+    pub(super) fn handoffs(&self) -> Option<super::handoff::Queue> {
+        self.handoffs.get().cloned()
+    }
+
+    /// The fleet started its planned-move runner; a second start keeps the first.
+    pub(super) fn set_handoffs(&self, queue: super::handoff::Queue) {
+        if self.handoffs.set(queue).is_err() {
+            tracing::debug!("handoff: a runner is already set");
+        }
+    }
+
+    /// This instance published the overrides document at version `tag`.
+    pub(super) fn set_overrides_tag(&self, tag: String) {
+        if let Ok(mut held) = self.overrides_tag.lock() {
+            held.0 = tag;
+        }
+    }
+
+    /// The overrides version this instance last published (F6 step 8: the forward header).
+    pub(crate) fn overrides_tag(&self) -> String {
+        self.overrides_tag
+            .lock()
+            .map(|held| held.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether a forward naming overrides version `seen` should refresh this instance's mirror:
+    /// it differs from what this instance published and from the last value that still differed
+    /// after a refresh (D7).
+    pub(crate) fn refreshes_for(&self, seen: &str) -> bool {
+        self.overrides_tag
+            .lock()
+            .is_ok_and(|held| held.0 != seen && held.1.as_deref() != Some(seen))
+    }
+
+    /// A refresh did not bring `seen`: no later forward naming it refreshes again.
+    pub(crate) fn remember_stale(&self, seen: &str) {
+        if let Ok(mut held) = self.overrides_tag.lock() {
+            held.1 = Some(seen.to_string());
+        }
+    }
+
+    /// A planned move's close did not end clean (F6 E5).
+    pub(super) fn note_handoff_fenced(&self) {
+        self.handoffs_fenced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Planned moves that became takeovers by fence (F6 H8).
+    #[cfg(test)]
+    pub(crate) fn handoffs_fenced(&self) -> u64 {
+        self.handoffs_fenced.load(Ordering::Relaxed)
+    }
+
     /// The fleet tick completed a pass now (or its loop started): the view
     /// it published was computed from the beats its latest read found.
     pub(crate) fn mark_progress(&self) {

@@ -1395,6 +1395,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_handoff",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A planned move hands off giver first (meas149-rerun F6, S5 addendum F6 rev 2): two real fleet members over a store 20 ms away under the rig's in-flight cap, a returned child moved while appends to both children reach both members; the giver is never fenced and no append is refused; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_handoff.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_barrier",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split's barrier on a serving engine (S4-DESIGN section 5.2): it parks the committer after its own group, a resume serves the held appends in order, and a barrier dropped unreleased closes the engine; compiler and the full DST suite exercise the module.",

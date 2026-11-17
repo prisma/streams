@@ -158,6 +158,7 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
                 if !announced {
                     announced = announce(state, instance).await;
                 }
+                hand_off_held(state, instance).await;
                 let drained = ViewedBeat {
                     boot_id: state.runtime.identity.boot_id.clone(),
                     seq: standing.draining_from().unwrap_or(u64::MAX),
@@ -189,6 +190,28 @@ pub(crate) async fn drain(state: &AppState, instance: &str, budget: Duration) ->
             return DrainOutcome::TimedOut { pending };
         }
         tokio::time::sleep(POLL.min(deadline.saturating_duration_since(now))).await;
+    }
+}
+
+/// Hand off every shard this draining runtime still holds to its ring successor, giver first and
+/// one at a time (F6): each is parked, flushed and closed here, then an override names the member
+/// the ring gives it without `instance`. The views that leave `instance` out make each entry a
+/// no-op that return-home drops.
+async fn hand_off_held(state: &AppState, instance: &str) {
+    let successors: Vec<String> = state
+        .ownership
+        .ring_active()
+        .into_iter()
+        .filter(|member| member != instance)
+        .collect();
+    if successors.is_empty() {
+        return;
+    }
+    for prefix in state.shards.held_prefixes() {
+        let to = successors[crate::ownership::ring_pick(&prefix, &successors)].clone();
+        let change = super::handoff::Change::To(to);
+        let outcome = super::handoff::hand_off(&state.fleet, &prefix, change, false).await;
+        tracing::info!(shard = %prefix, ?outcome, "drain: handing a shard off");
     }
 }
 
