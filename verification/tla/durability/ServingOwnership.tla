@@ -34,6 +34,26 @@
 (*   "R" A's idempotent retry (duplicate when the producer row is present)  *)
 (*   "X" plain append (record "x")                                          *)
 (* Clients route through stale routers to either node and retry.           *)
+(*                                                                          *)
+(* Two kinds of move (F6, edge #266):                                       *)
+(*   Move     the document changes while the old writer may still be open:  *)
+(*            a crash takeover, the wedged lag victim's evacuation (D4),    *)
+(*            and a ring change at scale-out. Its safety net is the fence.  *)
+(*   HandOff  a planned move (return-home, count balance, the lag move, the *)
+(*            room move, co-location, the planned drain), giver first      *)
+(*            (src/fleet/handoff.rs): HandOffStart parks the holder's       *)
+(*            engine (no commit starts; the flush lands what is            *)
+(*            registered), HandOffClose closes it once nothing is buffered  *)
+(*            or unanswered, its queue answered "reresolve" (H2), never     *)
+(*            "moved"; HandOffFlip writes the document and the giver's      *)
+(*            mirror only once that close terminated clean; HandOffRelease  *)
+(*            ends the directory's hold. A request that reaches the holder  *)
+(*            during the hold is not served there (it re-resolves). A close *)
+(*            that does not terminate clean is no HandOff: the abandoned    *)
+(*            branch of Terminate never follows HandOffClose, because the   *)
+(*            close begins with nothing buffered. HandOffAbort is a park or *)
+(*            flush past its bound (Resume, nothing written) and HandOffKeep *)
+(*            a CAS lost three times (the hold ends kept).                  *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC, CommitHandoff
 
@@ -50,7 +70,8 @@ CONSTANTS
     ClaimOp(_, _),  \* mutation point: which registered groups may be acknowledged
     ReadyGate,      \* mutation point: engine states from which serving may begin
     LandOp(_, _, _),\* mutation point: whether a WAL put by this writer succeeds
-    RefreshOp(_, _, _) \* mutation point: the opener's final manifest refresh
+    RefreshOp(_, _, _),\* mutation point: the opener's final manifest refresh
+    FlipGate       \* mutation point: handoff stages from which the document may change
 
 ASSUME /\ Mode \in {"fleet", "single"} /\ InitOwner \in Nodes /\ AmbiguousPut \in BOOLEAN
        /\ Reqs \subseteq {"A", "R", "X"} /\ "A" \in Reqs
@@ -95,6 +116,8 @@ RealLand(en, mine, walLen) == en.nextWal = walLen + 1
 (* FenceableManifest refresh: an opener whose writer epoch was superseded  *)
 (* fails; the ring plays no part.                                          *)
 RealRefresh(en, ringMine, epoch) == epoch = en.epoch
+(* A planned move writes the document only after its engine closed (D1).  *)
+RealFlipGate == {"closed"}
 
 VARIABLES
     desired,      \* fleet authority for the prefix (override / ring pick)
@@ -112,10 +135,16 @@ VARIABLES
     everReady,    \* ghost: engines that began serving
     casFailed,    \* ghost: engines whose WAL put-if-absent lost (fenced)
     zombieLanded, \* ghost: states ("crashed"/"gone") of dead engines whose PUT landed later
-    ambigPos      \* ghost: WAL position of a PUT that landed but reported Fenced (0: none)
+    ambigPos,     \* ghost: WAL position of a PUT that landed but reported Fenced (0: none)
+    hand,         \* per-node planned move: "none", "parked", "closed", "flipped"
+    handEng,      \* per-node engine the planned move holds (0: none)
+    handFlipped,  \* ghost: engines a planned move held when it wrote the document
+    handReplies,  \* ghost: reply kinds a planned move's close sent
+    handDeaths    \* ghost: the stages at which a giver died
 
+hvars == <<hand, handEng, handFlipped, handReplies, handDeaths>>
 vars == <<desired, view, moves, eng, nEng, resident, epochCtr, wal, crashes,
-          cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+          cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 IsMine(n) == view[n] \in {"none", n}
 (* The managed ring explicitly names this node (not bootstrapping).        *)
@@ -127,6 +156,10 @@ MayOpen(n) == IF Mode = "fleet" THEN RingSaysMine(n) ELSE IsMine(n)
 Min(a, b) == IF a < b THEN a ELSE b
 MaxBuf == Cardinality(Reqs) + MaxTries  \* no buffer is ever longer
 Other(n) == CHOOSE m \in Nodes : m # n
+(* No planned move stands anywhere.                                        *)
+NoHandOff == \A m \in Nodes : hand[m] = "none"
+(* Engine e is parked by a planned move: its committer starts no group.   *)
+Parked(e) == \E m \in Nodes : hand[m] = "parked" /\ handEng[m] = e
 
 (* Client-side effect of an outcome for (r, attempt att). *)
 Outcome(r, kind) ==
@@ -160,21 +193,26 @@ Init ==
     /\ tries = [r \in Reqs |-> 0]
     /\ acks = {}
     /\ everReady = {} /\ casFailed = {} /\ zombieLanded = {} /\ ambigPos = 0
+    /\ hand = [n \in Nodes |-> "none"] /\ handEng = [n \in Nodes |-> 0]
+    /\ handFlipped = {} /\ handReplies = {} /\ handDeaths = {}
 
 (* ---------------- fleet authority and views ---------------- *)
+(* A served shard's entry is written only by its holder, through a       *)
+(* HandOff; a takeover needs the holder dark, and Crash ends its handoff. *)
+(* So no Move is taken while a planned move stands.                      *)
 Move ==
-    /\ Mode = "fleet" /\ moves < MaxMoves
+    /\ Mode = "fleet" /\ moves < MaxMoves /\ NoHandOff
     /\ desired' = Other(desired)
     /\ moves' = moves + 1
     /\ UNCHANGED <<view, eng, nEng, resident, epochCtr, wal, crashes, cst, tries,
-                   acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* A fleet tick publishes a complete authority read (set_view). *)
 Observe(n) ==
     /\ Mode = "fleet" /\ view[n] # desired
     /\ view' = [view EXCEPT ![n] = desired]
     /\ UNCHANGED <<desired, moves, eng, nEng, resident, epochCtr, wal, crashes,
-                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- clients ---------------- *)
 CanSend(r) ==
@@ -187,7 +225,7 @@ CanSend(r) ==
 Send(r, n) ==
     /\ CanSend(r)
     /\ tries' = [tries EXCEPT ![r] = @ + 1]
-    /\ IF IsMine(n) /\ resident[n] # 0 /\ eng[resident[n]].st = "ready"
+    /\ IF IsMine(n) /\ resident[n] # 0 /\ eng[resident[n]].st = "ready" /\ hand[n] = "none"
        THEN /\ eng' = [eng EXCEPT ![resident[n]].q = Append(@, [req |-> r, att |-> tries[r] + 1])]
             /\ cst' = [cst EXCEPT ![r] = "waiting"]
        ELSE /\ cst' = [cst EXCEPT ![r] = IF r = "A" THEN "failed"
@@ -195,14 +233,14 @@ Send(r, n) ==
                                          ELSE "done"]
             /\ UNCHANGED eng
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, wal, crashes,
-                   acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* Client deadline: the attempt's receiver is dropped; the server goes on. *)
 GiveUp(r) ==
     /\ cst[r] = "waiting"
     /\ cst' = [cst EXCEPT ![r] = Outcome(r, "timeout")]
     /\ UNCHANGED <<desired, view, moves, eng, nEng, resident, epochCtr, wal,
-                   crashes, tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   crashes, tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- engine: retirement ---------------- *)
 (* begin_close: terminal handoff, stranded groups and the requests `q`      *)
@@ -227,7 +265,7 @@ Commit(e) ==
         x  == Head(en.q)
         s  == en.applied
     IN
-    /\ en.st = "ready" /\ en.q # <<>>
+    /\ en.st = "ready" /\ en.q # <<>> /\ ~Parked(e)
     /\ IF HasProducer(x.req) /\ s.prod.has
        THEN \* no-write duplicate verdict: join_prior_barrier
             LET rep == [req |-> x.req, att |-> x.att, kind |-> "dup", off |-> s.prod.off]
@@ -258,7 +296,7 @@ Commit(e) ==
                                                                 replies |-> {rep}])]
                /\ UNCHANGED <<acks, cst, resident>>
     /\ UNCHANGED <<desired, view, moves, nEng, epochCtr, wal, crashes,
-                   tries, everReady, casFailed, zombieLanded, ambigPos>>
+                   tries, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- engine: storage ---------------- *)
 (* The next buffered batch's WAL PUT: put-if-absent at nextWal. Landing and *)
@@ -286,7 +324,7 @@ Land(e) ==
             /\ casFailed' = casFailed \cup {e}
             /\ UNCHANGED <<wal, ambigPos>>
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, crashes, cst,
-                   tries, acks, everReady, zombieLanded>>
+                   tries, acks, everReady, zombieLanded, hvars>>
 
 (* ---------------- engine: durable dispatcher ---------------- *)
 Claim(e) ==
@@ -296,7 +334,7 @@ Claim(e) ==
        /\ c.take # <<>>
        /\ eng' = [eng EXCEPT ![e].claimed = c.take, ![e].ho = c.ho]
        /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, wal, crashes,
-                      cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+                      cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* The claimed effects run to completion even if the engine closes: the   *)
 (* legitimate late durable response.                                       *)
@@ -305,7 +343,7 @@ Reply(e) ==
     /\ SendReplies(e, RepliesOf(eng[e].claimed))
     /\ eng' = [eng EXCEPT ![e].claimed = <<>>]
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, wal, crashes,
-                   tries, everReady, casFailed, zombieLanded, ambigPos>>
+                   tries, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- engine: close triggers ---------------- *)
 (* The acker observes close_reason (e.g. Fenced) and closes the engine. *)
@@ -313,14 +351,14 @@ AckerClose(e) ==
     /\ eng[e].st = "ready" /\ eng[e].dbClosed
     /\ CloseEngine(e)
     /\ UNCHANGED <<desired, view, moves, nEng, epochCtr, wal, crashes, tries,
-                   everReady, casFailed, zombieLanded, ambigPos>>
+                   everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* Possession yields to the ring (fleet tick, or resolve() on a request). *)
 Yield(n) ==
     /\ resident[n] # 0 /\ ~IsMine(n)
     /\ CloseEngine(resident[n])
     /\ UNCHANGED <<desired, view, moves, nEng, epochCtr, wal, crashes, tries,
-                   everReady, casFailed, zombieLanded, ambigPos>>
+                   everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* Workers and stores terminated (EngineTasks::begin_close, lifecycle.rs): *)
 (* the storage close flushed the buffer, or the Db was already closed, or  *)
@@ -336,7 +374,7 @@ Terminate(e) ==
                eng' = [eng EXCEPT ![e].st = "gone", ![e].buf = <<>>,
                                   ![e].zombie = SubSeq(eng[e].buf, 1, k)]
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, wal, crashes,
-                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- opening (Db::builder().build()) ---------------- *)
 OpenStart(n) ==
@@ -347,7 +385,7 @@ OpenStart(n) ==
     /\ eng' = [eng EXCEPT ![nEng + 1] = [NoEngine EXCEPT !.node = n, !.st = "epoch",
                                                          !.epoch = epochCtr + 1]]
     /\ UNCHANGED <<desired, view, moves, resident, wal, crashes, cst, tries, acks,
-                   everReady, casFailed, zombieLanded, ambigPos>>
+                   everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 OpenFence(e) ==
     /\ eng[e].st = "epoch"
@@ -355,7 +393,7 @@ OpenFence(e) ==
     /\ eng' = [eng EXCEPT ![e].st = "fenced", ![e].fencePos = Len(wal) + 1,
                           ![e].nextWal = Len(wal) + 2]
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, crashes, cst,
-                   tries, acks, everReady, casFailed, zombieLanded, ambigPos>>
+                   tries, acks, everReady, casFailed, zombieLanded, ambigPos, hvars>>
 
 OpenReady(e) ==
     /\ eng[e].st \in ReadyGate
@@ -368,7 +406,7 @@ OpenReady(e) ==
             /\ resident' = [resident EXCEPT ![eng[e].node] = e]
             /\ everReady' = everReady \cup {e}
     /\ UNCHANGED <<desired, view, moves, nEng, epochCtr, wal, crashes, cst, tries,
-                   acks, casFailed, zombieLanded, ambigPos>>
+                   acks, casFailed, zombieLanded, ambigPos, hvars>>
 
 (* ---------------- node crash ---------------- *)
 (* The process dies: every engine of the node loses its volatile state; an *)
@@ -389,8 +427,10 @@ Crash(n) ==
                    ELSE eng[e]]
     /\ resident' = [resident EXCEPT ![n] = 0]
     /\ view' = [view EXCEPT ![n] = "none"]
+    /\ hand' = [hand EXCEPT ![n] = "none"] /\ handEng' = [handEng EXCEPT ![n] = 0]
+    /\ handDeaths' = IF hand[n] = "none" THEN handDeaths ELSE handDeaths \cup {hand[n]}
     /\ UNCHANGED <<desired, moves, nEng, epochCtr, wal, cst, tries, acks,
-                   everReady, casFailed, zombieLanded, ambigPos>>
+                   everReady, casFailed, zombieLanded, ambigPos, handFlipped, handReplies>>
 
 (* Delayed old work: a dead engine's PUT reaches the object store. It is   *)
 (* one conditional PUT at the dead writer's next id: it lands (all its     *)
@@ -403,7 +443,84 @@ ZombieLand(e) ==
        ELSE UNCHANGED <<wal, zombieLanded>>
     /\ eng' = [eng EXCEPT ![e].zombie = <<>>]
     /\ UNCHANGED <<desired, view, moves, nEng, resident, epochCtr, crashes, cst,
-                   tries, acks, everReady, casFailed, ambigPos>>
+                   tries, acks, everReady, casFailed, ambigPos, hvars>>
+
+(* ---------------- planned move, giver first (F6) ---------------- *)
+(* Steps 1-2: the holder of the authority claims and parks the engine it   *)
+(* serves. No other member's mirror names itself: a stale mirror would     *)
+(* fence the holder with or without a planned move (the fence net, Move's  *)
+(* and Observe's subject), so that start is outside this action's scope.   *)
+HandOffStart(n) ==
+    LET e == resident[n] IN
+    /\ Mode = "fleet" /\ moves < MaxMoves /\ NoHandOff
+    /\ desired = n /\ view[n] = n /\ \A m \in Nodes : m # n => view[m] # m
+    /\ e # 0 /\ eng[e].st = "ready" /\ ~eng[e].dbClosed
+    /\ moves' = moves + 1
+    /\ hand' = [hand EXCEPT ![n] = "parked"] /\ handEng' = [handEng EXCEPT ![n] = e]
+    /\ UNCHANGED <<desired, view, eng, nEng, resident, epochCtr, wal, crashes, cst,
+                   tries, acks, everReady, casFailed, zombieLanded, ambigPos,
+                   handFlipped, handReplies, handDeaths>>
+
+(* D4: a park or flush past its bound resumes the engine; nothing written. *)
+HandOffAbort(n) ==
+    /\ hand[n] = "parked"
+    /\ hand' = [hand EXCEPT ![n] = "none"] /\ handEng' = [handEng EXCEPT ![n] = 0]
+    /\ UNCHANGED <<desired, view, moves, eng, nEng, resident, epochCtr, wal, crashes,
+                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos,
+                   handFlipped, handReplies, handDeaths>>
+
+(* Steps 3-5: flushed (nothing buffered, every registered group durable    *)
+(* and answered), the engine leaves the serving map and closes; the        *)
+(* requests still queued are answered "reresolve" (H2), never "moved".     *)
+HandOffClose(n) ==
+    LET e == handEng[n]
+        en == eng[e]
+        rs == {[req |-> en.q[i].req, att |-> en.q[i].att, kind |-> "reresolve", off |-> 0]
+               : i \in 1..Len(en.q)}
+    IN
+    /\ hand[n] = "parked" /\ en.st = "ready" /\ ~en.dbClosed
+    /\ en.buf = <<>> /\ en.claimed = <<>> /\ en.ho.pending = <<>>
+    /\ eng' = [eng EXCEPT ![e].st = "closed", ![e].ho = RetireHandoff(en.ho), ![e].q = <<>>]
+    /\ SendReplies(e, rs)
+    /\ resident' = [resident EXCEPT ![n] = 0]
+    /\ hand' = [hand EXCEPT ![n] = "closed"]
+    /\ handReplies' = handReplies \cup {x.kind : x \in rs}
+    /\ UNCHANGED <<desired, view, moves, nEng, epochCtr, wal, crashes, tries, everReady,
+                   casFailed, zombieLanded, ambigPos, handEng, handFlipped, handDeaths>>
+
+(* Steps 6-7: the document names the other member and the giver mirrors   *)
+(* it, only once the close terminated clean (Terminate's first branch:     *)
+(* the close began with nothing buffered, so no PUT is left in flight).    *)
+HandOffFlip(n) ==
+    /\ hand[n] \in FlipGate
+    /\ hand[n] = "closed" => eng[handEng[n]].st = "gone"
+    /\ desired' = Other(n) /\ view' = [view EXCEPT ![n] = Other(n)]
+    /\ hand' = [hand EXCEPT ![n] = "flipped"]
+    /\ handFlipped' = handFlipped \cup {handEng[n]}
+    /\ UNCHANGED <<moves, eng, nEng, resident, epochCtr, wal, crashes, cst, tries, acks,
+                   everReady, casFailed, zombieLanded, ambigPos, handEng, handReplies,
+                   handDeaths>>
+
+(* Step 10: a CAS lost three times; the hold ends kept and the shard       *)
+(* reopens here on demand.                                                 *)
+HandOffKeep(n) ==
+    /\ hand[n] = "closed" /\ eng[handEng[n]].st = "gone"
+    /\ hand' = [hand EXCEPT ![n] = "none"] /\ handEng' = [handEng EXCEPT ![n] = 0]
+    /\ UNCHANGED <<desired, view, moves, eng, nEng, resident, epochCtr, wal, crashes,
+                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos,
+                   handFlipped, handReplies, handDeaths>>
+
+(* The hold ends: the requests it held resolve again, on the new mirror.  *)
+HandOffRelease(n) ==
+    /\ hand[n] = "flipped"
+    /\ hand' = [hand EXCEPT ![n] = "none"] /\ handEng' = [handEng EXCEPT ![n] = 0]
+    /\ UNCHANGED <<desired, view, moves, eng, nEng, resident, epochCtr, wal, crashes,
+                   cst, tries, acks, everReady, casFailed, zombieLanded, ambigPos,
+                   handFlipped, handReplies, handDeaths>>
+
+HandOff(n) ==
+    \/ HandOffStart(n) \/ HandOffAbort(n) \/ HandOffClose(n) \/ HandOffFlip(n)
+    \/ HandOffKeep(n) \/ HandOffRelease(n)
 
 (* ---------------- legitimate quiescence ---------------- *)
 Settled ==
@@ -416,7 +533,7 @@ Settled ==
 Quiescent == Settled /\ UNCHANGED vars
 
 Next ==
-    \/ Move \/ \E n \in Nodes : Observe(n) \/ Yield(n) \/ OpenStart(n) \/ Crash(n)
+    \/ Move \/ \E n \in Nodes : Observe(n) \/ Yield(n) \/ OpenStart(n) \/ Crash(n) \/ HandOff(n)
     \/ \E r \in Reqs : GiveUp(r) \/ \E n \in Nodes : Send(r, n)
     \/ \E e \in EngIds : \/ Commit(e) \/ Land(e) \/ Claim(e) \/ Reply(e)
                          \/ AckerClose(e) \/ Terminate(e)
@@ -432,6 +549,8 @@ TypeOK ==
     /\ \A e \in EngIds : eng[e].st \in {"none", "epoch", "fenced", "ready", "closed",
                                         "gone", "failed", "crashed"}
     /\ \A n \in Nodes : view[n] \in Nodes \cup {"none"}
+    /\ \A n \in Nodes : hand[n] \in {"none", "parked", "closed", "flipped"}
+                       /\ handEng[n] \in 0..MaxEngines
 
 PendingSortedInv == \A e \in EngIds : PendingSorted(eng[e].ho)
 
@@ -463,6 +582,13 @@ DataUnderWriterAuthority ==
             IN /\ f > 0 /\ f < p
                /\ ~\E q \in (f + 1)..(p - 1) : wal[q].kind = "fence"
 
+(* F6: a planned move fences nothing. No engine a HandOff held when it     *)
+(* wrote the document ever loses a WAL put to a newer fence, and the        *)
+(* HandOff's close answers no queued request "moved" or unknown.           *)
+HandOffFencesNothing ==
+    /\ handFlipped \cap casFailed = {}
+    /\ handReplies \cap {"moved", "internal"} = {}
+
 (* ---------------- reachability witnesses (expected VIOLATED) ---------------- *)
 Witness_TakeoverInstalls ==
     ~(\E e1, e2 \in everReady : eng[e1].node # eng[e2].node)
@@ -480,4 +606,8 @@ Witness_AmbiguousPutRecovered ==
 Witness_CrashBetweenFenceAndServe ==
     ~(\E e \in EngIds : eng[e].st = "crashed" /\ eng[e].fencePos > 0 /\ e \notin everReady)
 Witness_SupersededOpenFails == ~(\E e \in EngIds : eng[e].st = "failed")
+(* The giver dies with its engine parked, before the document changed.    *)
+Witness_GiverDiesParked == "parked" \notin handDeaths
+(* The giver dies after the document changed, before its hold ended.      *)
+Witness_GiverDiesAfterFlip == "flipped" \notin handDeaths
 =============================================================================

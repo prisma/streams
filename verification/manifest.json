@@ -2540,7 +2540,9 @@
         "src/shard.rs",
         "src/shard/lifecycle.rs",
         "src/shard/transaction/finalize.rs",
-        "src/application/append/contract.rs"
+        "src/application/append/contract.rs",
+        "src/fleet/handoff.rs",
+        "src/sharddir/handoff.rs"
       ],
       "verification_paths": [
         "verification/tla/durability/ServingOwnership.tla",
@@ -2549,7 +2551,8 @@
         "verification/tla/durability/MC_ServingOwnership_nc_ring_authorizes.tla",
         "verification/tla/durability/MC_ServingOwnership_nc_ring_grants_storage.tla",
         "verification/tla/durability/MC_ServingOwnership_nc_ring_skips_refresh.tla",
-        "verification/tla/durability/MC_ServingOwnership_nc_serve_before_fence.tla"
+        "verification/tla/durability/MC_ServingOwnership_nc_serve_before_fence.tla",
+        "verification/tla/durability/MC_ServingOwnership_nc_handoff_flips_before_close.tla"
       ],
       "requirements": [
         "T10",
@@ -2574,7 +2577,7 @@
         "ASM-DURABILITY-5",
         "ASM-DURABILITY-6"
       ],
-      "input_scope": "CONDITIONAL DESIGN CHECK: write authority rests on ASM-SLATEDB-FENCE, which rests on the unestablished ASM-OBJSTORE-CAS; two nodes, one shard prefix, one stream; fleet mode with 1 override move and stale per-node views, or single (no-ring) mode; A and R (small), A, R and X with 2 attempts of R (expanded), or A, R and X (single); 3 engine incarnations; 1 node crash (the restart bootstraps with no ring); 1 ambiguous WAL PUT; abandoned storage closes and crashed PUTs landing later; one request per committer group; safety only, no symmetry",
+      "input_scope": "CONDITIONAL DESIGN CHECK: write authority rests on ASM-SLATEDB-FENCE, which rests on the unestablished ASM-OBJSTORE-CAS; two nodes, one shard prefix, one stream; fleet mode with 1 override move and stale per-node views, or single (no-ring) mode; A and R (small), A, R and X with 2 attempts of R (expanded), or A, R and X (single); 3 engine incarnations; 1 node crash (the restart bootstraps with no ring); 1 ambiguous WAL PUT; abandoned storage closes and crashed PUTs landing later; one request per committer group; planned moves as HandOff (src/fleet/handoff.rs: park, close with the queue answered re-resolve, the document and mirror only after a clean storage close, release; abort and keep), sharing the one-move budget with Move, and started only while no other member's mirror names itself; Move models the crash takeover, the wedged lag victim's evacuation (D4), a failed or late close (D1) and the ring change at scale-out; safety only, no symmetry",
       "checks": [
         {
           "id": "TLA-011/baseline-small",
@@ -2754,6 +2757,36 @@
             "result": "violation",
             "property": "Witness_TakeoverInstalls"
           }
+        },
+        {
+          "id": "TLA-011/nc-handoff-flips-before-close",
+          "role": "negative-control",
+          "spec": "verification/tla/durability/MC_ServingOwnership_nc_handoff_flips_before_close.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_nc_handoff_flips_before_close.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "HandOffFencesNothing"
+          }
+        },
+        {
+          "id": "TLA-011/witness-giver-dies-parked",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_giver_dies_parked.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GiverDiesParked"
+          }
+        },
+        {
+          "id": "TLA-011/witness-giver-dies-after-flip",
+          "role": "witness",
+          "spec": "verification/tla/durability/MC_ServingOwnership.tla",
+          "config": "verification/tla/durability/MC_ServingOwnership_witness_giver_dies_after_flip.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_GiverDiesAfterFlip"
+          }
         }
       ],
       "regressions": [
@@ -2762,7 +2795,10 @@
         "history::tests::absorber_exits_when_shard_engine_is_fenced",
         "shard_directory::directory_tests::foreign_shard_is_refused_with_its_owner_and_never_opened",
         "dst::dst_tests::runtime_retirement::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
-        "verification/tla/durability/evidence/TLA-011_nc-ring-grants-storage.trace.txt"
+        "verification/tla/durability/evidence/TLA-011_nc-ring-grants-storage.trace.txt",
+        "dst::dst_tests::fleet_handoff::a_returned_child_moves_without_fencing_its_writer",
+        "dst::dst_tests::fleet_handoff_cases::a_giver_that_dies_before_its_write_leaves_the_shard_to_its_restart",
+        "dst::dst_tests::fleet_handoff_cases::a_giver_that_dies_after_its_write_leaves_the_shard_to_its_target"
       ]
     },
     {
