@@ -59,6 +59,11 @@ pub(crate) struct MaintenanceGate {
     splitting: AtomicBool,
     parked: AtomicBool,
     retired: Mutex<Option<Reroute>>,
+    /// A planned move claims the engine (F6, step 1): no split starts on it meanwhile.
+    moving: AtomicBool,
+    /// A planned move released the barrier (F6): a held operation that resolves here again is
+    /// the move's (`503 shard_moving`), not a split's.
+    handed_off: AtomicBool,
     /// The source wrote `'T'`: set once, never cleared.
     final_log: AtomicBool,
     marking: AtomicBool,
@@ -108,6 +113,44 @@ impl MaintenanceGate {
     /// Whether the collection passes stand down (a split prepares).
     pub(crate) fn collection_off(&self) -> bool {
         self.collection_off.load(Ordering::Acquire)
+    }
+
+    /// Claim the engine for a planned move (F6, step 1): whether it was free. A split claims it
+    /// by its Preparing's `collection_off`, set before it checks [`Self::moving`]; the move sets
+    /// `moving` before it checks `collection_off`, so the two never both proceed.
+    pub(crate) fn claim_move(&self) -> bool {
+        if self.parked() || self.splitting() {
+            return false;
+        }
+        if self.moving.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        if self.collection_off.load(Ordering::SeqCst) {
+            self.moving.store(false, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// The move's claim ends (F6).
+    pub(crate) fn release_move(&self) {
+        self.moving.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether a planned move holds the engine (F6): the split route refuses it
+    /// `topology_busy {reason: "move"}`.
+    pub(crate) fn moving(&self) -> bool {
+        self.moving.load(Ordering::SeqCst)
+    }
+
+    /// Whether a planned move released this engine's barrier (F6).
+    pub(crate) fn handed_off(&self) -> bool {
+        self.handed_off.load(Ordering::Acquire)
+    }
+
+    /// A planned move released the barrier (F6): set once, never cleared.
+    pub(crate) fn set_handed_off(&self) {
+        self.handed_off.store(true, Ordering::Release);
     }
 
     /// Whether a split holds the engine past its pause (S4-DESIGN §8): the committer answers
@@ -253,7 +296,7 @@ impl MaintenanceGate {
     /// The collection passes stand down or resume: while a split prepares (S4 step 11), and while
     /// an open is held by the fence (`topology::fence`).
     pub(crate) fn set_collection_off(&self, off: bool) {
-        self.collection_off.store(off, Ordering::Release);
+        self.collection_off.store(off, Ordering::SeqCst);
     }
 
     /// Whether the source's log is final: a split or merge wrote its `'T'` (see the module).

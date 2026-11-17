@@ -3001,3 +3001,48 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
   (`Compute-Instance`, where the edge honours it), or the server forwards
   queue routes too. Ask Habanero whether Compute's edge follows
   `Streams-Replay-To` first (meas149-reshaping, (d)).
+
+## 22. Follow-ups from F6, a planned move hands off giver first (2026-11-17)
+
+- **A ring change at scale-out moves served shards with no handoff**
+  (GATE-DECISION-f6-addendum-2026-11-17, item 4; not in F6's first code). A
+  scale-out (the desired count grows) gives the new member the shards the new
+  ring assigns it, with no override: each holder yields at its next tick, once
+  its view names the new member, and the new member's first routed request
+  opens the shard, which can fence the holder's live writer (its in-flight
+  appends answered `outcome_unknown`). The 10,000 rerun did not show it (F2
+  pins both children on the actor, and it had one scale-out), but every
+  scale-out towards 100,000 can.
+  - Direction (Fable, Q2): a ring change becomes handoffs. Each holder pins the
+    shards the new ring would take from it (an override naming itself) before
+    the new member counts as active, and return-home then moves them giver
+    first. Its own addendum states how the pin is ordered against the member's
+    first view, and what a holder that is dark at that moment does.
+  - Red first: `dst::dst_tests::fleet_handoff::a_scale_out_moves_its_shards_without_fencing`.
+    Expected failure today: the holder's engine of a moved shard closes
+    `Fenced`, and its in-flight appends answer raw `503 shard_moving` (product
+    `outcome_unknown`).
+  - The full #149 rerun needs it, unless M's leg and the DST both show no fence
+    at scale-out (Q4).
+
+- **A planned move holds an append about 1 s on a 20 ms store, at most `HOLD`; the fork's build
+  item is what shortens it** (GATE-DECISION-f6-prep-rows-rev2-2026-11-17, "Addendum: idle
+  bound", I4; GATE-DECISION-open-cost-2026-11-17, the fork item: `build_ms` at most 250 ms on the
+  20 ms store, its own track, owned by whoever holds the fork pin). Measured on the two loaded
+  DSTs (F6's committed tree):
+
+  | phase | line | measured max | share of the line |
+  |---|---|---|---|
+  | park to release | 0.6 s | 249 ms | 42% |
+  | release to first ack, idle and hogged | 0.9 s | 827 ms | 92% |
+  | park to first ack (open-cost condition 2) | 1.5 s | about 1.07 s | 71% |
+  | park to first ack, the suite's assertion | `HOLD`, 2 s | about 1.07 s | 54% |
+
+  - Release to first ack is the target's open (0.50 s build, the writer fence included) plus
+    0.40 s for the rest. Its 0.9 s line is a tripwire for legs and the stress pass, not a suite
+    assertion. **When the fork item lands, the line becomes 0.65 s in the same commit that moves
+    the pin.**
+  - No target is warmed ahead of a move (refused for good in the idle-bound addendum); rev 3
+    reopens only on evidence that identity plus index exceed 0.4 s on a flushed shard with fix 1.
+  - A leg that sees any move over 0.9 / 0.6 / 1.5 s, `handoff_fenced` above 0, or a shed in a
+    move's seconds brings the numbers back to the owner.

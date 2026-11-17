@@ -35,7 +35,57 @@ pub(super) async fn published(
     // Publish only a complete successful authority read. This synchronous replacement cannot
     // expose a mixed ring/map.
     state.ownership.set_view(active.to_vec(), map);
+    state.fleet.standing().tags().set(tag_of(version.as_ref()));
     state.peer.set_peers(peers.clone());
     state.fleet.standing().mark_progress();
     Ok((overrides, version))
+}
+
+/// Read `fleet/overrides.json` and publish its entries with the ring this instance last published,
+/// under the revalidation lock: a planned move's mirror of the document it wrote (F6, step 7), and
+/// a forward's refresh when its sender holds another version (step 8, D7). The version read, or
+/// `None` when the read failed (nothing is published).
+pub(crate) async fn refreshed(state: &AppState) -> Option<String> {
+    let _one = state.shards.revalidation().lock().await;
+    published_here(state).await
+}
+
+/// A peer's overrides version `seen` (`Streams-Overrides-Version` on a forward or on a relayed
+/// `409`) refreshes this instance's mirror when [`super::tags::Tags`] allows it: at most one read
+/// for a burst that saw one new version (R1: asked again under the revalidation lock), none for
+/// an empty one (R3), and none within the floor after a read that learnt nothing (R2).
+pub(crate) async fn refresh_for(state: &AppState, seen: &str) {
+    let tags = state.fleet.standing().tags();
+    if !tags.reads_for(seen, tokio::time::Instant::now()) {
+        return;
+    }
+    let _one = state.shards.revalidation().lock().await;
+    if !tags.reads_for(seen, tokio::time::Instant::now()) {
+        return;
+    }
+    let before = tags.tag();
+    let read = published_here(state).await;
+    tags.read_for(seen, &before, read.as_deref(), tokio::time::Instant::now());
+}
+
+/// Read the overrides document and publish it with the ring this instance last published, the
+/// revalidation lock held by the caller; the version read.
+async fn published_here(state: &AppState) -> Option<String> {
+    let (overrides, version) = state.fleet.read_overrides().await.ok()?;
+    let map: HashMap<String, String> = overrides
+        .entries
+        .iter()
+        .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
+        .collect();
+    state.ownership.set_view(state.ownership.ring_active(), map);
+    let tag = tag_of(version.as_ref());
+    state.fleet.standing().tags().set(tag.clone());
+    Some(tag)
+}
+
+/// A document version as the forward header carries it: its ETag, else its version, else empty.
+pub(super) fn tag_of(version: Option<&UpdateVersion>) -> String {
+    version
+        .and_then(|v| v.e_tag.clone().or_else(|| v.version.clone()))
+        .unwrap_or_default()
 }

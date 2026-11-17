@@ -23,10 +23,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use object_store::UpdateVersion;
-
 use super::planning::{self, Candidacy};
-use super::{AppState, FleetDocument, Heartbeat, OverrideEntry, Overrides};
+use super::{AppState, Heartbeat, OverrideEntry, Overrides};
 use crate::runtime::MonotonicNow;
 use crate::shard::now_ms;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
@@ -266,8 +264,8 @@ pub(super) fn moved_document(
 }
 
 /// What one read gives a pass: the ring's active members, the fresh
-/// members' lag, and the overrides document with the version its
-/// replacement must match.
+/// members' lag, and the overrides document (the move itself rereads it,
+/// `fleet::handoff`).
 struct FleetRead {
     active: Vec<String>,
     // mt-lint: allow(name-keyed-map): fleet instance -> its fresh lag
@@ -278,7 +276,6 @@ struct FleetRead {
     reserved: HashMap<String, u32>,
     sources: Vec<String>,
     overrides: Overrides,
-    version: Option<UpdateVersion>,
     /// An override stamped before now less `REBALANCE_RETURN_SECS` no longer pins its shard (A5).
     aged_before_ms: i64,
 }
@@ -299,7 +296,7 @@ impl FleetRead {
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
         let active = planning::active_members(count, me, &candidacies);
-        let (overrides, version) = state.fleet.read_overrides().await.ok()?;
+        let (overrides, _) = state.fleet.read_overrides().await.ok()?;
         let window = Duration::from_secs(state.config.fleet.rebalance_return_secs);
         Some(Self {
             active,
@@ -307,7 +304,6 @@ impl FleetRead {
             reserved,
             sources: state.fleet.standing().topology_sources(),
             overrides,
-            version,
             aged_before_ms: now_ms()
                 .saturating_sub(window.as_millis().try_into().unwrap_or(i64::MAX)),
         })
@@ -360,25 +356,6 @@ impl FleetRead {
             .map(|entry| now - entry.ms)
             .min()
     }
-
-    /// CAS-replace the overrides document with `prefix` moved to `to`, the entries that name no
-    /// stored leaf dropped (`stale`). Whether it committed.
-    async fn commit(self, state: &AppState, prefix: &str, to: &str) -> bool {
-        let current = super::stale::pruned(self.overrides, &*state.data_store).await;
-        let next = moved_document(current, prefix, to, now_ms());
-        match serde_json::to_vec(&next) {
-            Ok(body) => {
-                state
-                    .fleet
-                    .replace_document(FleetDocument::Overrides, body, self.version)
-                    .await
-            }
-            Err(error) => {
-                tracing::warn!(%error, "count balance: overrides unserialisable");
-                false
-            }
-        }
-    }
 }
 
 /// Whether this instance owns more than the fair share in its mirror of
@@ -411,20 +388,13 @@ async fn pass(state: &AppState, me: &str, pacing: &mut Pacing) {
     if !pacing.due(now, read.newest_override_age_ms()) {
         return;
     }
-    if !read.commit(state, &prefix, &to).await {
-        tracing::info!("count balance: overrides CAS lost; retry next pass");
-        return;
+    // Giver first (F6): parked, flushed and closed here before the overrides name `to`.
+    let change = super::handoff::Change::To(to.clone());
+    let outcome = super::handoff::hand_off(&state.fleet, &prefix, change, false).await;
+    tracing::info!(shard = %prefix, %to, ?outcome, "count balance: a shard past the fair share");
+    if outcome == super::handoff::Outcome::Moved {
+        pacing.moved(now);
     }
-    tracing::info!(shard = %prefix, %to, "count balance: moving a shard past the fair share");
-    state.ownership.set_override(&prefix, &to);
-    // Stop serving at once and fail in-flight work fast (retryable); the
-    // new owner fences the log when it opens the shard, as after a lag move.
-    state.shards.retire(
-        &prefix,
-        crate::shard_directory::RetirementReason::FleetEviction,
-        |_, _| true,
-    );
-    pacing.moved(now);
 }
 
 /// Start this runtime's count balance beside its fleet tick.
@@ -692,7 +662,6 @@ mod tests {
                 .collect(),
                 ..Default::default()
             },
-            version: None,
             aged_before_ms: i64::MIN,
         };
         let prefixes: Vec<String> = ["00", "01", "10", "11"].map(str::to_owned).to_vec();
@@ -723,7 +692,6 @@ mod tests {
                     .into(),
                 ..Default::default()
             },
-            version: None,
             aged_before_ms: 1_000,
         };
         let prefixes: Vec<String> = ["00", "01", "10", "11"].map(str::to_owned).to_vec();
@@ -761,7 +729,6 @@ mod tests {
                 .collect(),
             sources: vec![source.clone()],
             overrides: Overrides::default(),
-            version: None,
             aged_before_ms: i64::MIN,
         };
         let mut prefixes: Vec<String> = ones.iter().chain(&twos).cloned().collect();

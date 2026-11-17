@@ -1411,6 +1411,54 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_handoff",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A planned move hands off giver first (meas149-rerun F6, S5 addendum F6 rev 2): two real fleet members over a store 20 ms away under the rig's in-flight cap, a returned child moved while appends to both children reach both members; the giver is never fenced and no append is refused; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_handoff.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_handoff_cases",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "F6's handoff in the cases H8 lists beside the loaded moves: a park past its bound, a lag victim's evacuation, a holder with no engine, the claim against a split, an append resolved before the hold, a CAS whose answer is lost, and the giver's death before and after its write; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_handoff_cases.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::start",
+      "path": "src/fleet/handoff.rs",
+      "reason": "The handoff runner selects between supervised cancellation and its next move request, then between cancellation and the move it runs; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Pair::loaded",
+      "path": "src/dst/tests/fleet_birth.rs",
+      "reason": "The loaded pair's peer table (fleet/urls.json) naming both members' listeners, as the fleet stores it; serde macro output is compiled and read by the members.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::balance_cell",
+      "path": "src/dst/tests/fleet_handoff.rs",
+      "reason": "The count-balance cell's peer table (fleet/urls.json) naming both members' listeners, as the fleet stores it; serde macro output is compiled and read by the members.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_giver_that_dies_before_its_write_leaves_the_shard_to_its_restart",
+      "path": "src/dst/tests/fleet_handoff_cases.rs",
+      "reason": "The test selects between the move (which must not end) and the engagement of the held overrides write, so the giver dies between its close and its write; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_moves",
       "path": "src/dst/dst_tests.rs",
       "reason": "The fleet tick's two commits held to their contract on a real rig (fleet::moves): a lag move or a return is mirrored and acted on only when its CAS of the overrides document committed; compiler and the full DST suite exercise the module.",

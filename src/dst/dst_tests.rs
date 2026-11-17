@@ -35,6 +35,10 @@ mod latch_calibration;
 
 #[path = "tests/fleet_birth.rs"]
 mod fleet_birth;
+#[path = "tests/fleet_handoff.rs"]
+mod fleet_handoff;
+#[path = "tests/fleet_handoff_cases.rs"]
+mod fleet_handoff_cases;
 #[path = "tests/fleet_moves.rs"]
 mod fleet_moves;
 #[path = "tests/fleet_topology.rs"]

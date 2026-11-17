@@ -77,6 +77,8 @@ pub(crate) enum RetirementReason {
     /// An operator asked for the shard's open indexes to be repaired: the next open recomputes
     /// them from every tail (edge change #245).
     IndexRepair,
+    /// A planned move handed the shard off giver first (F6): no holdoff, no strike.
+    PlannedMove,
 }
 
 impl RetirementReason {
@@ -88,6 +90,7 @@ impl RetirementReason {
             RetirementReason::Split => "split",
             RetirementReason::Shutdown => "shutdown",
             RetirementReason::IndexRepair => "index repair",
+            RetirementReason::PlannedMove => "planned move",
         }
     }
 }
@@ -143,6 +146,8 @@ struct DirInner {
     open_wait: Duration,
     /// The way to this instance's topology loop (`topology::ops`).
     topology_ops: crate::topology::ops::Handle,
+    /// The prefixes a planned move holds (F6, `sharddir::handoff`).
+    handoffs: Arc<crate::sharddir::handoff::Handoffs>,
 }
 
 /// The two open timings the directory's gate applies: the ceiling on
@@ -248,6 +253,7 @@ impl ShardDirectory {
                 ownership,
                 open_wait: timing.open_wait,
                 topology_ops: crate::topology::ops::Handle::default(),
+                handoffs: Arc::default(),
             }
         });
         Self { inner }
@@ -381,7 +387,7 @@ impl ShardDirectory {
         adoption: Adoption,
     ) -> Result<Arc<ShardEngine>, ResolveError> {
         let prefix = self.prefix_for(hash);
-        let foreign = self.inner.ownership.foreign_owner(&prefix);
+        let foreign = self.owner_after_handoff(&prefix).await;
         let external = adoption == Adoption::External;
         if let Some(e) = {
             let guard = self.inner.shards.read().unwrap();
@@ -455,6 +461,13 @@ impl ShardDirectory {
         if self.inner.ownership.awaits_view() {
             return OpenOutcome::Wait {
                 code: crate::ownership::NO_VIEW,
+                retry_after_secs: 1,
+            };
+        }
+        // A planned move still holds the prefix past its hold (F6 H3): answered at once.
+        if self.inner.handoffs.holds(prefix) {
+            return OpenOutcome::Wait {
+                code: "shard_moving",
                 retry_after_secs: 1,
             };
         }
@@ -664,6 +677,8 @@ async fn settle_engines(
     (pending, failures.collect())
 }
 
+/// A planned move's hold and its resident's departure (F6).
+mod handoff;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]

@@ -43,31 +43,34 @@ async fn write(rig: &HttpRig, doc: &Overrides, version: Option<object_store::Upd
     );
 }
 
-/// **A lag move mirrors and retires its shard only when its CAS commits** (`Overrides::lag_move`).
-/// With a stale version the move is lost: `00` stays open here and the mirror still names this
-/// instance. With the current one, the mirror names the target and `00` is retired at once.
+/// **A lag move hands its shard off giver first** (`Overrides::lag_move`, F6). With this
+/// runtime's handoff runner started, the lag move parks, flushes and closes `00` here, then the
+/// overrides name the target: it reports the move, `00` is no longer open here, the mirror names
+/// the target, and the stored document holds the entry. (Under F6 the move rereads the document
+/// itself, so the version the tick read matters only to a wedged victim's evacuation.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_lag_move_mirrors_and_retires_only_when_its_cas_commits() {
+async fn a_lag_move_hands_its_shard_off_giver_first() {
     let rig = member().await;
     let state = &rig.state;
-    let (doc, stale) = state.fleet.read_overrides().await.unwrap();
-    write(&rig, &doc, stale.clone()).await;
+    crate::fleet::handoff::start(state.clone(), &rig.tasks);
+    let (doc, version) = state.fleet.read_overrides().await.unwrap();
     let pair = ("00".to_string(), "streams-2".to_string());
-    let owner = || state.ownership.effective_owner("00");
     assert!(
-        !doc.clone().lag_move(&pair, state, stale).await,
-        "a lost CAS moves nothing"
+        doc.lag_move(&pair, state, version).await,
+        "the move is made"
     );
+    let owner = state.ownership.effective_owner("00");
     assert_eq!(
-        (state.shards.is_open("00"), owner().as_deref()),
-        (true, Some("streams-1"))
-    );
-    let (doc, current) = state.fleet.read_overrides().await.unwrap();
-    assert!(doc.lag_move(&pair, state, current).await, "the CAS commits");
-    assert_eq!(
-        (state.shards.is_open("00"), owner().as_deref()),
+        (state.shards.is_open("00"), owner.as_deref()),
         (false, Some("streams-2"))
     );
+    let stored = state.fleet.read_overrides().await.unwrap().0;
+    assert_eq!(
+        stored.entries.get("00").map(|e| e.to.as_str()),
+        Some("streams-2")
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(state).await;
 }
 

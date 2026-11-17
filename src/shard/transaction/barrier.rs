@@ -86,6 +86,25 @@ impl Barrier {
     }
 }
 
+impl Barrier {
+    /// A planned move released the committer (F6, step 4): its engine leaves this instance. From
+    /// now on every held operation, then every later one, is answered `Splitting`, never offered
+    /// to a group, until the engine closes; the append path re-resolves it into the directory's
+    /// hold, and a resolve that finds the shard here again answers it as the move's
+    /// (`MaintenanceGate::handed_off`).
+    pub(crate) fn hand_off(mut self) {
+        let Some(release) = self.release.take() else {
+            return;
+        };
+        let gate = &self.engine.gc_state().gate;
+        gate.set_handed_off();
+        let nowhere: crate::topology::gate::Reroute =
+            Arc::new(|_| Box::pin(futures_util::future::ready(None)));
+        gate.set_retired(nowhere);
+        drop(release.send(Release::Retired));
+    }
+}
+
 impl Drop for Barrier {
     fn drop(&mut self) {
         if self.release.take().is_some() {

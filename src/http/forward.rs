@@ -86,6 +86,12 @@ const FORWARDED_TO: &str = "streams-forwarded-to";
 /// The answering instance's topology version, on every `409 not_ring_owner`.
 pub(super) const TOPOLOGY_VERSION: &str = "streams-topology-version";
 
+/// The version of the overrides document a forwarder published (F6 step 8, D7; edge change
+/// #266): its own header, so `Streams-Forwarded` and a build without it are unchanged. A receiver
+/// that holds another version reads the document once before it resolves the forward, so the
+/// target of a planned move learns it owns the shard from the move's first forwarded request.
+const OVERRIDES_VERSION: &str = "streams-overrides-version";
+
 /// A forward's hop as its header names it: the forwarder's topology version,
 /// and whether it is the last hop. `None` for any other value: a client's
 /// own header, or a bare legacy one.
@@ -132,9 +138,20 @@ async fn catch_up(state: &AppState, seen: u64) {
     }
 }
 
+/// A forward, or an owner's relayed `409`, naming an overrides version this instance does not hold
+/// refreshes its mirror, within `fleet::view::refresh_for`'s bounds (D7; R1-R3).
+async fn refresh_overrides(state: &AppState, headers: &HeaderMap) {
+    let Some(seen) = headers.get(OVERRIDES_VERSION).and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    crate::fleet::view::refresh_for(state, seen).await;
+}
+
 /// `answer` with this instance's topology version, if it is a `409
-/// not_ring_owner` (it names the owner to replay to) that carries none yet.
-fn with_version(state: &AppState, mut answer: Response) -> Response {
+/// not_ring_owner` (it names the owner to replay to) that carries none yet; and with its overrides
+/// version for a peer that `forwarded` the request, never for a client (R4: stripped, a relayed
+/// owner's copy included).
+fn with_version(state: &AppState, mut answer: Response, forwarded: bool) -> Response {
     let refusal = answer.status() == StatusCode::CONFLICT
         && answer.headers().contains_key("streams-replay-to");
     if refusal && !answer.headers().contains_key(TOPOLOGY_VERSION) {
@@ -142,6 +159,19 @@ fn with_version(state: &AppState, mut answer: Response) -> Response {
         answer
             .headers_mut()
             .insert(TOPOLOGY_VERSION, HeaderValue::from(version));
+    }
+    if !forwarded {
+        answer.headers_mut().remove(OVERRIDES_VERSION);
+        return answer;
+    }
+    // The overrides version beside it (F6 step 8): the forwarder that relays this 409 learns a
+    // planned move's new owner from it, as it learns a newer topology from the version above.
+    let overrides = HeaderValue::from_str(&state.fleet.standing().tags().tag());
+    if refusal
+        && !answer.headers().contains_key(OVERRIDES_VERSION)
+        && let Ok(overrides) = overrides
+    {
+        answer.headers_mut().insert(OVERRIDES_VERSION, overrides);
     }
     answer
 }
@@ -216,11 +246,13 @@ pub(super) async fn to_owner(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some((seen, _)) = hop(request.headers()) {
+    let forwarded = hop(request.headers());
+    if let Some((seen, _)) = forwarded {
         catch_up(&state, seen).await;
+        refresh_overrides(&state, request.headers()).await;
     }
     let answer = serve(&state, request, next).await;
-    with_version(&state, answer)
+    with_version(&state, answer, forwarded.is_some())
 }
 
 /// Serve `request` here, or forward it to its owner (see [`to_owner`]).
@@ -265,6 +297,9 @@ async fn serve(state: &AppState, request: Request, next: Next) -> Response {
         if let Some(seen) = seen.and_then(|v| v.to_str().ok()?.parse().ok()) {
             catch_up(state, seen).await;
         }
+        // The owner named another owner under overrides this instance does not hold (F6 step 8):
+        // read them, so the client's replay of this 409 meets the new owner's own answer here.
+        refresh_overrides(state, answer.headers()).await;
     }
     answer
 }
@@ -364,6 +399,7 @@ async fn forward(
     let version = state.shards.prefixes().shards.version;
     let request = request
         .header(FORWARDED, forwarded_value(version, last))
+        .header(OVERRIDES_VERSION, state.fleet.standing().tags().tag())
         .body(reqwest::Body::wrap_stream(held.body.into_data_stream()));
     match tokio::time::timeout(bound, request.send()).await {
         Ok(Ok(answer)) => relayed(answer, owner),

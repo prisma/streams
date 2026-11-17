@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 mod count_balance;
+// A planned move hands off giver first (F6).
+pub(crate) mod handoff;
 // A merge's co-location of its two halves on its actor (S6-DESIGN §7.2 step 0).
 pub(crate) mod colocate;
 // Overrides that name no leaf, dropped by the writers that rewrite the document.
@@ -36,7 +38,9 @@ mod planning;
 pub(crate) mod repository;
 mod stale;
 mod standing;
-mod view;
+// The overrides document's version this instance holds (F6 step 8).
+mod tags;
+pub(crate) mod view;
 pub(crate) use heartbeat::Heartbeat;
 pub(crate) use repository::{FleetDocument, FleetRepository};
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
@@ -418,6 +422,8 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     };
     state.fleet.standing().mark_progress();
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
+    // Every planned move runs giver first on this runtime's runner (F6).
+    handoff::start(state.clone(), tasks);
     count_balance::start(state.clone(), cfg.instance.clone(), tasks);
     let revalidation = crate::topology::revalidate::Revalidation {
         registry: state.registry.clone(),

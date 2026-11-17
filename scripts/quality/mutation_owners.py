@@ -142,7 +142,7 @@ OWNERS = (
           ' dst_tests::shared_cell_capacity::empty_pulls_are_held dst_tests::shared_cell_capacity::a_parked_pull'
           ' dst_tests::live_wait::'),
     owner('shard_directory', 'src/shard_directory.rs',
-          'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede:: '
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard_directory:: shard::task_lifecycle_tests:: sharddir::supersede:: '
           'dst_tests::shard_ownership::a_fleet_instance_opens_only_once_a_view_is_known'),
     owner('storage_close', 'src/shard/storage_close.rs', 'shard::storage_close::'),
     owner('ops', 'src/ops.rs', 'ops:: dst_tests::fork_debt:: dst_tests::runtime_journals::'),
@@ -165,7 +165,7 @@ OWNERS = (
     owner('topology_mod', 'src/topology.rs', 'topology::'),
     owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
-    owner('topology_gate', 'src/topology/gate.rs', 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
+    owner('topology_gate', 'src/topology/gate.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence:: dst_tests::fleet_topology:: dst_tests::topology_reclaim::'),
     owner('topology_reclaim', 'src/topology/reclaim.rs', 'topology::reclaim:: dst_tests::topology_reclaim::'),
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: dst_tests::merge_claim_traffic:: shard::seal::gc::lineage_tests::the_open_path_fence'),
@@ -188,7 +188,7 @@ OWNERS = (
     # The fleet tick's view publication under the revalidation lock (GATE-DECISION-f2-fleet-start-
     # rows C2): fleet_birth's tick-held DST kills a skipped lock or a skipped mark_progress, its held-
     # member cells a skipped set_peers, and every cell a skipped set_view or an empty body.
-    owner('fleet_view', 'src/fleet/view.rs', 'dst_tests::fleet_birth::'),
+    owner('fleet_view', 'src/fleet/view.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::fleet_birth::'),
     # A split's timings by phase (GATE-DECISION-meas149-rerun-10000 M): its unit tests and the
     # split_start DST that pins the published phases in order.
     owner('topology_split_phases', 'src/topology/split/phases.rs',
@@ -222,14 +222,14 @@ OWNERS = (
     # A split refused for room moves its shard to an instance with room
     # (GATE-DECISION-f2-convergence-2026-11-17): the two-member room DST (about 70 s: one move cooldown).
     owner('topology_policy_loop_room', 'src/topology/policy_loop/room.rs',
-          'dst_tests::topology_colocation::a_split_refused_for_room'),
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::topology_colocation::a_split_refused_for_room'),
     owner('topology_policy_loop_backoff', 'src/topology/policy_loop/backoff.rs',
           'topology::policy_loop::backoff'),
     # Its own unit tests (topology::recover::merge::tests, push 4's fix: every claimant witness,
     # the roll forward's act and the publish) beside the recovery table and the two claimant DSTs.
     owner('topology_recover_merge', 'src/topology/recover/merge.rs', 'topology::recover::merge::tests:: topology::merge::tests:: dst_tests::merge_k::a_lapsed dst_tests::merge_k::a_merge_claimant'),
     owner('sharddir_unwind', 'src/sharddir/unwind.rs', 'sharddir::'),
-    owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'sharddir::'),
+    owner('sharddir_holdoff', 'src/sharddir/holdoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'sharddir::'),
     owner('sharddir_open_at', 'src/sharddir/open_at.rs', 'sharddir:: shard_directory:: shard::open_index:: topology::lineage::never_leaf::'),
     owner('sharddir_adoption', 'src/sharddir/adoption.rs', 'sharddir::'),
     owner('crypto', 'src/crypto.rs', 'crypto::'),
@@ -306,7 +306,7 @@ OWNERS = (
     owner('http_serve_http2_bounds', 'src/http/serve/http2_bounds.rs', 'http::serve::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery:: dst_tests::reads_engine_closed::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
-    owner('http_forward', 'src/http/forward.rs', 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
+    owner('http_forward', 'src/http/forward.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),
     owner('record', 'src/shard/record.rs', 'shard::'),
@@ -358,7 +358,7 @@ OWNERS = (
     owner('transaction_finalize', 'src/shard/transaction/finalize.rs', 'shard::'),
     owner('transaction_maintenance', 'src/shard/transaction/maintenance.rs', 'shard::'),
     owner('transaction_group', 'src/shard/transaction/mod.rs', 'shard:: dst_tests::split_barrier::'),
-    owner('transaction_barrier', 'src/shard/transaction/barrier.rs', 'dst_tests::split_barrier::'),
+    owner('transaction_barrier', 'src/shard/transaction/barrier.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::split_barrier::'),
     owner('transaction_billing', 'src/shard/transaction/billing.rs', 'shard::'),
     owner('transaction_overlay', 'src/shard/transaction/overlay.rs', 'shard::'),
     owner('transaction_prepare', 'src/shard/transaction/prepare.rs', 'shard::'),
@@ -435,7 +435,7 @@ OWNERS = (
     # each GET and listing, the rigs the passes that list only to discover.
     owner('fleet_members', 'src/fleet/repository/members.rs', 'fleet:: dst_tests::fleet_controller::'),
     # The drain's handoff is proven by the two-instance rigs.
-    owner('fleet_drain', 'src/fleet/drain.rs', 'fleet:: dst_tests::fleet_drain::'),
+    owner('fleet_drain', 'src/fleet/drain.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_drain::'),
     # The drain marker's entries are module tests; the tick's reads of the
     # runtimes it names are the members tests, its write by a drain the rig.
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
@@ -447,21 +447,27 @@ OWNERS = (
           'fleet::hysteresis:: dst_tests::fleet_controller::desired::'),
     # The tick's return-home and lag move: each test fails when its move is skipped, its mirror
     # is skipped, or the reservation and intent checks are dropped.
+    # F6, a planned move hands off giver first: the runner, the hold and the overrides version
+    # are reached through the handoff DSTs; the tags' decisions have their own unit tests.
+    owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
+    owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
+    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
+    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases::'),
     owner('fleet_moves', 'src/fleet/moves.rs',
-          'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
           'dst_tests::fleet_count_balance::return_home_counts_its_homes_reserved_shards '
           'dst_tests::fleet_topology::a_live_intents_source_is_never_the_lag_moves_shard '
           'dst_tests::topology_colocation::return_home_skips_a_live_intents_sources'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
-          'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     # The CAS over an in-memory fleet store (owner 2026-11-10: "Approve (1)+(2)"); the policy's
     # co-location DSTs pin it end to end.
     owner('fleet_colocate', 'src/fleet/colocate.rs', 'fleet::colocate::'),
     # Overrides that name no stored leaf, dropped by the writers that rewrite the document.
     owner('fleet_stale', 'src/fleet/stale.rs',
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
-    owner('fleet_standing', 'src/fleet/standing.rs', 'fleet:: dst_tests::fleet_topology::'),
+    owner('fleet_standing', 'src/fleet/standing.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_topology::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     # The beat's open of a live intent's unopened sources is pinned by the fleet_topology DSTs that
     # call it directly. fleet_topology::the_fleet_tick_opens_no_override_whose_prefix_is_no_leaf
@@ -636,7 +642,7 @@ OWNERS = (
     owner('append_route', 'src/application/append/route.rs',
           'application::append:: dst_tests::append_application:: dst_tests::topology_lifecycle::'),
     owner('append_submit', 'src/application/append/submit.rs',
-          'application::append:: dst_tests::append_application:: dst_tests::durability_failures:: '
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'application::append:: dst_tests::append_application:: dst_tests::durability_failures:: '
           'dst_tests::persistence_faults:: dst_tests::l0_watermark:: dst_tests::split_barrier::'),
     # Production files under a critical prefix that the planner listed as
     # unregistered (NEXT-WORK §10): a push that changes one was refused.

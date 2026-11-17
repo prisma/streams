@@ -5754,6 +5754,88 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with amendments R1-R4 (GATE-DECISION-f2-edge-265-2026-11-17.md, Fable 5.2 under the owner's delegation, 2026-11-17).
 - **Check against commit:** written with the change.
 
+### #266 (this record's commit) — A planned move hands its shard off giver first: appends and reads on the moving shard are held up to 2 s and answered by the new owner, never `outcome_unknown`
+
+- **Program item:** prisma/streams#149, meas149-rerun F6 (GATE-DECISION-meas149-rerun-10000-2026-11-17 §(f) and "F6"; the S5 addendum F6 rev 2; GATE-DECISION-f6-addendum-2026-11-17 D1-D9 and E1-E7; GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H1-H8 and its addendum "relayed 409 refresh" R1-R6; Fable 5.2 under the owner's delegation).
+- **Lands after:**
+  - #267, the retired close's drain. A move's giver closes with a retired gate, so it inherits that drain, and no operation queued at a planned move's close is answered `outcome_unknown`.
+- **Surface:** raw and product, and fleet-internal.
+- **Endpoint:**
+  - every stream route that resolves a shard on the instance giving a shard up in a planned move: appends, reads, waiting reads, live sessions and consumer pulls;
+  - `POST /operator/topology/split` and `POST /operator/topology/merge`;
+  - the fleet-internal forward (`Streams-Forwarded`) and its answers.
+- **Condition:** a planned move of a served shard (return-home, count balance, the lag move, the room move, the planned drain), from the giver's park of the shard until the overrides document names the new owner and the giver's mirror follows it. Under a 20 ms store that is about 0.2 s (measured: park to release p50 199 ms, max 249 ms).
+- **Before:**
+  - The overrides document changed while the giver's engine was open. The giver served until its next tick yielded the shard. The target's first routed request opened the shard and fenced the giver's live writer.
+  - In-flight appends were answered `503 shard_moving`, product `503 outcome_unknown`. The rerun at 10,000 streams saw 5 of them and a 7.9 s stall.
+  - Return-home could be written by any member, the shard's home included (a target-first move).
+- **After:**
+  - **The handoff, giver first.** One runner per runtime (`fleet::handoff`) parks the shard, flushes it so the target replays no WAL, takes it out of the giver's serving map under a hold, and releases the parked queue into that hold. It then closes the engine through its one owned shutdown, and only then writes the overrides change and mirrors it. The hold ends, and every request held on the shard is resolved again.
+  - **Appends.** A held append re-resolves to the new owner: `409 not_ring_owner` with `Streams-Replay-To`, which the giver's forward layer takes one hop, and the new owner acks it at its next offset.
+    - E2: past the forward cap (a quarter of the in-flight cap), or with a body over 64 KiB, the client gets that `409` and replays it (#264). It was never written.
+  - **Reads, waiting reads, pulls (E1, D2).** A request that arrives during the hold waits on it and is served by the new owner, like an append.
+    - A read that resolved before the hold and is still running when the giver's storage closes gets today's `503`, `Retry-After: 1` (#259). Never `500`.
+    - A multiplexed `live:wait` tail re-polls (`live_wait/tail.rs`) and is not answered.
+    - Live sessions are woken after the mirror into the existing wrong-owner cutoff.
+  - **Past the hold.** Any request still held 2 s after the park, or arriving while the hold still stands past that, is answered at once: raw `503 shard_moving`, product `503 temporarily_unavailable`, `Retry-After: 1` (D9, H3). Nothing was written.
+  - **A dropped move (E6, D9).** A CAS lost three times, or a step past its bound after the close began, ends the hold as kept. The shard reopens here on demand with no holdoff, and a held append is answered raw `503 shard_moving` / product `503 temporarily_unavailable`, `Retry-After: 1`.
+  - **The target (step 8).** The target learns it owns the shard from the move's first request, not at its next 2 s tick:
+    - a forward carries the forwarder's overrides version in `Streams-Overrides-Version`;
+    - an owner's `409 not_ring_owner` answering a forward carries it too;
+    - a receiver holding another version reads the overrides once before it resolves, or relays the `409`.
+  - **How long a planned move holds an append (I4).** On a 20 ms store a planned move holds an append about 1 s, and at most `HOLD` (2 s), whatever the store. Measured on the two loaded DSTs:
+
+    | set | n | park to release p50 / max | release to the target's first ack p50 / max |
+    |---|---|---|---|
+    | idle | 10 | 199 / 249 ms | 774 / 818 ms |
+    | 16-process CPU hog | 8 | 200 / 231 ms | 777 / 827 ms |
+
+    Release to first ack has one line, 0.9 s, a tripwire and not a suite assertion. It becomes 0.65 s when the fork's 250 ms build item lands (NEXT-WORK). Park to release stays 0.6 s, park to first ack 1.5 s. No target is warmed ahead of a move.
+  - **`Streams-Overrides-Version` is fleet-internal (E3, R4).**
+    - It is sent only peer to peer. An instance strips it from its answer to any request that was not a forward.
+    - A mixed-build fleet, or a client that sends `Streams-Forwarded` itself, can still see it. It carries no meaning for a client.
+    - A client's own copy on a request has no effect unless the request is a forward, and then only a bounded read: one per distinct version (R1), none for an empty version (R3), and none within 100 ms after a read that learnt nothing (R2).
+  - **Operator routes (E4).** While a planned move holds a shard, a split of it is refused `409 topology_busy {reason: "move"}`, and a split that claimed the shard first makes the move back off.
+  - **Return-home's writer.** Return-home of a served shard is written only by the instance the override names, through the handoff. Any member may still drop a void entry (naming a non-member) or a no-op entry.
+- **Where `outcome_unknown` remains by design (E5):**
+  - a crash takeover;
+  - the lag move's evacuation of a wedged shard whose park or flush misses its bound (D4, H4), which keeps today's CAS and retirement, so its in-flight groups may answer `outcome_unknown`;
+  - a ring change at scale-out, until NEXT-WORK §22's addendum lands.
+  - A late or failed close of a planned move is no longer such a class. The move proceeds as a takeover by fence and is counted `handoff_fenced` on the giver's `handoff` INFO line, but no append is in the engine at the close (#267's drain), so no append answer changes.
+- **Retry semantics (E7):**
+  - `409 not_ring_owner`: replay to `Streams-Replay-To` (#264).
+  - `503 shard_moving` / `temporarily_unavailable`: retry after 1 s.
+  - A held request counts against `ADMIT_MAX_INFLIGHT` on the giver, then as a forward. The cap is not raised.
+- **Who is affected:** clients of a shard in a planned move, and operators who split a shard while a planned move holds it.
+- **Pinning tests:**
+  - `dst::dst_tests::fleet_handoff::a_returned_child_moves_without_fencing_its_writer`:
+    - setup: loaded, 20 ms store, in-flight cap 512, appends to both children at both members;
+    - asserts: no `Fenced`, `handoff_fenced` 0, no append refused after replays, stored equal acked, the target's first ack within `HOLD` of the giver's last;
+    - red on the stack without F6: `{("h-4", 503, "shard_moving"): 4}` plus a `409` ping-pong.
+  - `dst::dst_tests::fleet_handoff::a_count_balance_move_does_not_fence_its_writer`: the same assertions for a count-balance move.
+  - `dst::dst_tests::fleet_handoff::a_relayed_409_refreshes_the_targets_overrides_once`:
+    - asserts: one read; no `Streams-Overrides-Version` on the client's answer; the replay acked; the record stored once;
+    - red without the relayed refresh: the replay `409 not_ring_owner` ("shard 1 belongs to streams-2").
+  - `dst::dst_tests::fleet_handoff::a_burst_of_relayed_409s_makes_one_read` (R1).
+  - `dst::dst_tests::fleet_handoff::alternating_stale_versions_read_at_most_once_per_floor` (R2): 10 reads in 1.0 s across 3,407 forwards.
+  - `fleet::tags::tests::*` (R2, R3).
+  - `dst::dst_tests::fleet_moves::a_lag_move_hands_its_shard_off_giver_first`.
+  - `dst::dst_tests::fleet_controller::an_unreadable_router_report_defers_only_the_desired_publication` (the return-home writer rule; its void entry is dropped and `00`'s stays).
+  - `sharddir::handoff::tests::*` (the hold, its absolute deadline, a dropped mark).
+  - `dst::dst_tests::fleet_handoff::reads_across_a_handoff_are_served_or_retried` (E1, D2, H7): every read answered `200`, or `503` with `Retry-After: 1`, at most 8 of them.
+  - `dst::dst_tests::fleet_handoff::a_producer_keeps_its_sequence_across_a_handoff` (D8): each sequence acked `200` once and stored once, in order.
+  - `dst::dst_tests::fleet_handoff::a_drain_of_several_shards_hands_each_off_within_its_budget` (the planned drain): four handoffs, `HandedOff`, no append refused, each stream's gap under `HOLD`, stored equal acked.
+  - `dst::dst_tests::fleet_handoff_cases::a_park_past_its_bound_moves_nothing_and_evacuates_a_lag_victim` (D4, H4).
+  - `dst::dst_tests::fleet_handoff_cases::a_holder_with_no_engine_moves_its_entry` (D6).
+  - `dst::dst_tests::fleet_handoff_cases::a_move_and_a_split_never_hold_one_engine_together` (E4): `topology_busy: move`.
+  - `dst::dst_tests::fleet_handoff_cases::an_append_resolved_before_the_hold_is_answered_by_the_hold` (H2): `409` naming the target, never `outcome_unknown`.
+  - `dst::dst_tests::fleet_handoff_cases::a_cas_whose_answer_is_lost_is_the_move_done_written_once` (D5).
+  - `dst::dst_tests::fleet_handoff_cases::a_giver_that_dies_before_its_write_leaves_the_shard_to_its_restart` and `…_after_its_write_leaves_the_shard_to_its_target` (the failure table): exactly the acked records, and the next one.
+- **Formal:** TLA-011 (`ServingOwnership`) gains the giver's handoff, `HandOff(n)`: start, abort, close, flip, keep and release, the flip gated on a closed engine. `HandOffFencesNothing` (no flipped move ends in a failed CAS or answers `moved` or `internal`) holds in the small, single and expanded configurations; the negative control `nc_handoff_flips_before_close` (the flip allowed on a parked engine) breaks it, and the witnesses `Witness_GiverDiesParked` and `Witness_GiverDiesAfterFlip` reach both giver deaths. TLA-011's receipt is recorded with the model; TLA-048, TLA-002, TLA-003 and TLA-045 are re-recorded as their inputs require.
+- **Risk reason:** medium. It changes the order of every planned move and adds a hold on the request path for up to 2 s. In exchange it removes a fence of a live writer on every planned move, and with it the `outcome_unknown` answers and the multi-second stall the rerun measured.
+- **Status:** design approved (rev 2 and the rulings above, with the idle-bound addendum I1-I4: the 0.45 s idle line is withdrawn). This record awaits ratification.
+- **Check against commit:** written with the change.
+
 ### #267 (this record's commit) — An operation still queued when a retired shard closes is answered as held by the split, never as outcome unknown
 
 - **Program item:** prisma/streams#149, F6's H2 (GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H2; GATE-DECISION-f6-h2-shard-drain-2026-11-17, Fable 5.2 under the owner's delegation). A split's or a merge's retired source today, and a planned move's giver once F6 lands (#266), close while requests that resolved them may still be queued.
