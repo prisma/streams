@@ -193,6 +193,8 @@ OWNERS = (
     # split_start DST that pins the published phases in order.
     owner('topology_split_phases', 'src/topology/split/phases.rs',
           'topology::split::phases dst_tests::split_start::a_published_split_carries'),
+    owner('topology_split_reads', 'src/topology/split/reads.rs',
+          'dst_tests::split_start::a_published_split_carries dst_tests::split_k:: dst_tests::queue_split::a_trim_'),
     owner('topology_split_birth', 'src/topology/split/birth.rs',
           'topology::split::birth dst_tests::fleet_birth::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),

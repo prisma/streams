@@ -134,9 +134,10 @@ async fn a_split_started_with_a_birth_names_its_actor_for_both_children() {
 
 /// **A published split carries its phases in order** (GATE-DECISION-meas149-rerun-10000-2026-11-17,
 /// M). Leaf `00` split by `inst-a`: the published split's phases are the pause's, in order
-/// (`flush`, `checkpoint`, `log_reads`, `plan`, `lists`, `clones`, `'T'`, `births`, `cas`), then
-/// both children's opens (as each finished) and `drain`; the pause the split reports is at least the
-/// sum of the pause's phases.
+/// (`flush`, `checkpoint`, the log reads' `snapshot`, `sentinel` and `intervals`, `plan`, `lists`,
+/// `clones`, `'T'`, `births`, `cas`), then both children's opens (as each finished) and `drain`;
+/// the pause the split reports is at least the sum of the pause's phases, and the published split
+/// notes the rows and queues the pause read (F5's counts).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_published_split_carries_its_phases_in_order() {
     let Cell { state, parent, .. } = cell().await;
@@ -150,7 +151,9 @@ async fn a_published_split_carries_its_phases_in_order() {
     let pause = [
         "flush",
         "checkpoint",
-        "log_reads",
+        "snapshot",
+        "sentinel",
+        "intervals",
         "plan",
         "lists",
         "clones",
@@ -172,6 +175,13 @@ async fn a_published_split_carries_its_phases_in_order() {
     assert!(
         reported + 1 >= paused,
         "pause {reported} ms, its phases {paused} ms"
+    );
+    let notes: Vec<&str> = published.notes.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(notes, ["rows", "heads"], "the pause's read counts");
+    assert!(
+        published.notes[0].1 > 0,
+        "the sentinel rows read: {:?}",
+        published.notes
     );
     engine_shutdown(&state).await;
 }
