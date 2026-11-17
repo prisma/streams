@@ -228,6 +228,11 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   | 1,000,000 | 32 | not run (§6.1) |
   | 10,000,000 | 64, every leaf full: expect `topology_at_max` | not run |
 
+  The table is the steady state. Creating a step's streams touches every
+  stream within a minute, and that burst can leave them all resident: at
+  10,000 streams locally it left 10,003 and forced a split (gate decision
+  meas149-rerun-10000, 2026-11-17, (g)).
+
   At 10,000,000 streams `topology_at_max` is the expected outcome, not a
   finding. Whether the step still holds is what it shows. On Compute
   every touch reloads its handle, so the p99 is the cold path's.
@@ -277,7 +282,9 @@ Each step first settles. Its streams are touched in 60 s chunks until the
 shards, which instance owns each, the topology version and the live count
 have held still for `--settle-secs`, then the step is measured. The bound,
 `--settle-max-secs auto`, is 300 s plus one cooldown and 30 s per leaf the
-step adds, by the table above: 420 s at 100,000 streams with a 10 s cooldown. Every
+step adds, counting every stream resident, as the creation burst leaves them
+(§5): 340 s at 10,000 streams from one leaf with a 10 s cooldown, at most
+1,540 s at 100,000. It is not a check, the bar is. Every
 chunk's served share, p99, errors by code and sheds are kept beside the
 settled figures. The bar applies to the chunks too: the step's served share
 counts every chunk's touches and the measured window's, against the touches

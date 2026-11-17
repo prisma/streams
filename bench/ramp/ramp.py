@@ -609,13 +609,14 @@ def knob(a, key, default):
 def settle_budget(a, count, posture):
     """--settle-max-secs auto: 300 s plus one topology operation per leaf the step will add, each a
     cooldown plus about 30 s. The leaves the step needs follow the streams axis: a leaf splits at 70%
-    of its resident handles (HANDLE_MAX_RESIDENT, 8,192 on the 1 GiB profiles), and a stream stays
-    resident for HANDLE_IDLE_EVICT_SECS after its touch, so about count x min(1, idle / period)
-    streams are resident; doublings to the next power of two, at most 64 leaves."""
+    of its resident handles (HANDLE_MAX_RESIDENT, 8,192 on the 1 GiB profiles). In steady state a
+    stream stays resident for HANDLE_IDLE_EVICT_SECS after its touch, but the creation chunk touches
+    every stream within one minute and the burst leaves them all resident (10,003 at the 10,000 step,
+    which forced a split: gate decision meas149-rerun-10000, 2026-11-17, (g)), so the leaves count
+    every stream; doublings to the next power of two, at most 64 leaves. Not a check: the bar is."""
     if a.settle_max_secs != "auto":
         return int(a.settle_max_secs)
-    resident = count * min(1.0, knob(a, "HANDLE_IDLE_EVICT_SECS", 600) / a.period)
-    need = max(1, -(-int(resident) // int(0.7 * knob(a, "HANDLE_MAX_RESIDENT", 8192))))
+    need = max(1, -(-count // int(0.7 * knob(a, "HANDLE_MAX_RESIDENT", 8192))))
     leaves = 1
     while leaves < need and leaves < 64:
         leaves *= 2

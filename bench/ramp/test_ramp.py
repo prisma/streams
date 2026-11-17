@@ -204,6 +204,19 @@ class Bookkeeping(unittest.TestCase):
         self.assertEqual(ramp.last_change(topo[:2] + [dict(topo[1], t=120, shards=3)], [], 90), 120)
         self.assertEqual(ramp.last_change(topo[:2], [(95, 2)], 90), 95)
 
+    def test_the_settle_budget_counts_the_leaves_the_creation_burst_forces(self):
+        # The 10,000 rerun: a 60 s period and a 10 s idle-out leave 1,667 resident in steady state,
+        # but the creation chunk left all 10,003 resident and forced one split (5,734 a leaf).
+        class Posture:
+            def debug(self, k, path):
+                raise OSError("no cell")
+
+        a = type("A", (), {"settle_max_secs": "auto", "period": 60,
+                           "set": ["HANDLE_IDLE_EVICT_SECS=10", "SHARD_TOPOLOGY_COOLDOWN_SECS=10"]})()
+        self.assertEqual(ramp.settle_budget(a, 10_000, Posture()), 300 + 1 * (10 + 30))
+        self.assertEqual(ramp.settle_budget(a, 1_000, Posture()), 300)
+        self.assertEqual(ramp.settle_budget(a, 100_000, Posture()), 300 + (32 - 1) * (10 + 30))
+
     def test_servers_log_topology_and_fleet_at_info(self):
         self.assertEqual(ramp.SERVER_LOG, "warn,streams_slate::topology=info,streams_slate::fleet=info")
 
