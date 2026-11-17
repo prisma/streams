@@ -219,6 +219,23 @@ impl crate::shard::ShardEngine {
         Some(RETRY_AFTER_SECS)
     }
 
+    /// The most L0 SSTs any tree of this shard's log holds now, read from its manifest (not the
+    /// tick's count, up to a second old).
+    pub(crate) fn l0_now(&self) -> usize {
+        l0_count(&self.db.manifest())
+    }
+
+    /// The L0 count a split's Preparing waits below before it parks (`topology::split::settle`,
+    /// GATE-DECISION-f5-checkpoint-compaction-2026-11-17): the shed's release mark, half the line.
+    pub(crate) fn l0_settle_line(&self) -> usize {
+        self.layout.l0.marks().low
+    }
+
+    /// The most L0 SSTs the watermark's tick has seen on this shard since it opened.
+    pub(crate) fn l0_max_seen(&self) -> usize {
+        self.layout.l0.max_seen.load(Ordering::Relaxed)
+    }
+
     /// The watermark's gauges (`GET /v1/debug/timings`, each shard's `l0`).
     pub(crate) fn l0_json(&self) -> serde_json::Value {
         self.layout.l0.json()

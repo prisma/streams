@@ -1323,6 +1323,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_compacting",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split of a compacting parent (F5 part 1b, GATE-DECISION-f5-checkpoint-compaction-2026-11-17): Preparing waits until the parent's L0 is below its watermark's low mark before the park, a parent held past the bound is refused before it, and a parent with L0 room parks at once; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_compacting.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_pause",
       "path": "src/dst/dst_tests.rs",
       "reason": "The split's pause on a loaded parent (F5, GATE-DECISION-f5-pause-log-reads-2026-11-17): its store GETs from the park to the topology CAS stay under a bound that does not grow with the parent's streams or its trimmed queues; compiler and the full DST suite exercise the module.",

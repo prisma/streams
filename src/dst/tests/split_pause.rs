@@ -10,30 +10,32 @@
 use super::fixture_http::{HttpRig, HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, hreq, preq};
 use super::fixture_runtime::RigRuntime;
+use super::split_compacting::{At, Held, last_seq, topped_up, window};
 use super::topology_policy::store_topology;
-use crate::dst::StoreOp;
+use crate::dst::fault_store::{FaultPlan, FaultStore};
 use crate::dst::trace_store::{TraceEventKind, TraceStore};
+use crate::dst::{ObjClass, StoreOp};
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 type State = Arc<crate::http::AppState>;
-type Engine = Arc<crate::shard::ShardEngine>;
+pub(super) type Engine = Arc<crate::shard::ShardEngine>;
 
 /// The most store GETs the split may make from its park to its topology CAS, whatever the parent
 /// holds (F5's bound).
-const BOUND: usize = 64;
+pub(super) const BOUND: usize = 64;
 
 /// The trimmed queues of the queue case (400 rather than the ruling's 200: 200 queues' interval
 /// scans stayed just under the bound before F5).
-const QUEUES: usize = 400;
+pub(super) const QUEUES: usize = 400;
 
 /// Requests the fixtures run at once.
 const AT_ONCE: usize = 32;
 
 /// Flushes `engine`'s memtable to a table.
-async fn flush(engine: &crate::shard::ShardEngine) {
+pub(super) async fn flush(engine: &crate::shard::ShardEngine) {
     let memtable = slatedb::config::FlushOptions {
         flush_type: slatedb::config::FlushType::MemTable,
     };
@@ -45,7 +47,7 @@ async fn flush(engine: &crate::shard::ShardEngine) {
 }
 
 /// SlateDB's `min_compaction_sources`: a log holding this many L0 tables compacts them.
-const COMPACTION_SOURCES: usize = 4;
+pub(super) const COMPACTION_SOURCES: usize = 4;
 
 /// Waits, at most 30 s, until `leaf`'s log holds fewer L0 tables than start a compaction: the
 /// split then runs on a settled parent, so these tests count the pause's log reads only. A
@@ -63,14 +65,15 @@ async fn compacted(leaf: &crate::shard::ShardEngine) {
 }
 
 /// Closes every engine of `state` and reopens the leaf `prefix` by appending `body` to `stream`,
-/// as a replacement instance opens it, waits for its L0 to compact (`compacted`), then evicts every
-/// cached block, index, filter and stats entry of the leaf's tables (its open's own index scan
-/// cached some): the leaf, settled and cold.
-async fn reopened_cold(
+/// as a replacement instance opens it, waits for its L0 to compact (`compacted`) when `settle`
+/// says so, then evicts every cached block, index, filter and stats entry of the leaf's tables
+/// (its open's own index scan cached some): the leaf, cold.
+pub(super) async fn reopened_cold(
     state: &State,
     addr: std::net::SocketAddr,
     (prefix, stream): (&str, &str),
     body: &str,
+    settle: bool,
 ) -> Engine {
     use slatedb::DbCacheManagerOps;
     engine_shutdown(state).await;
@@ -79,7 +82,9 @@ async fn reopened_cold(
     let (status, _, _) = hreq(addr, "POST", &path, &json, body.as_bytes()).await;
     assert_eq!(status, 204, "the leaf reopens");
     let leaf = state.shards.open(prefix).expect("the leaf is open");
-    compacted(&leaf).await;
+    if settle {
+        compacted(&leaf).await;
+    }
     let manifest = leaf.db.manifest();
     for view in manifest.all_sst_views() {
         let all = slatedb::CacheTarget::all();
@@ -118,7 +123,7 @@ async fn loaded(store: Arc<dyn object_store::ObjectStore>, streams: usize) -> Ht
         })
         .await;
     flush(&rig.state.shards.open("").expect("the leaf is open")).await;
-    reopened_cold(&rig.state, addr, ("", "load-0"), r#"[{"n":1}]"#).await;
+    reopened_cold(&rig.state, addr, ("", "load-0"), r#"[{"n":1}]"#, true).await;
     rig
 }
 
@@ -204,7 +209,7 @@ async fn q(addr: std::net::SocketAddr, method: &str, path: &str, body: &str) -> 
 }
 
 /// `wanted` queues created in the leaf `00` of `cell`: their names.
-async fn queues_in_00(cell: &super::fixture_split::Cell, wanted: usize) -> Vec<String> {
+pub(super) async fn queues_in_00(cell: &super::fixture_split::Cell, wanted: usize) -> Vec<String> {
     let (state, addr) = (&cell.state, cell.addr);
     let landed = futures_util::stream::iter(0..wanted * 8)
         .map(|n| async move {
@@ -247,7 +252,7 @@ async fn leased_five(addr: std::net::SocketAddr, name: &str) -> Vec<Value> {
 /// Each of `names` sent five messages, each sealed apart, leased, and its second and third acked;
 /// the folds and trim passes run until none is left, so each queue's trim released two chunks into
 /// one interval.
-async fn trimmed(cell: &super::fixture_split::Cell, names: &[String]) {
+pub(super) async fn trimmed(cell: &super::fixture_split::Cell, names: &[String]) {
     let addr = cell.addr;
     for n in 0..5 {
         futures_util::stream::iter(names)
@@ -299,7 +304,7 @@ async fn the_pause_of_a_parent_with_trimmed_queues_reads_its_intervals_at_once()
     trimmed(&cell, &names).await;
     flush(&cell.parent).await;
     let body = super::fixture_split::body(9);
-    let parent = reopened_cold(&cell.state, cell.addr, ("00", &cell.low), &body).await;
+    let parent = reopened_cold(&cell.state, cell.addr, ("00", &cell.low), &body, true).await;
     let (gets, at_park, published) = pause_gets(&cell.state, &parent, &trace).await;
     let phases = crate::topology::split::shown_phases(&published);
     println!("PAUSE_GETS queues={QUEUES} {gets} [{phases}]");
@@ -348,23 +353,44 @@ async fn appending(
 }
 
 /// **The pause of a parent of 10,000 streams on a store 20 ms away stays within the hold** (F5's
-/// real-time case, a measurement: ignored in the suite, run once under the machine's lock). Appends
-/// arrive through the split: none is answered 503, and the stream then reads every acked record
-/// once, in order, the last ack's offset being the one the stream serves next.
+/// real-time case, a measurement: ignored in the suite, run once under the machine's lock). The
+/// parent's L0 at `min_compaction_sources`, below its settle line, the compaction scheduled and
+/// held until the park, so it runs through the pause (GATE-DECISION-f5-checkpoint-compaction
+/// addendum "test 1 GET bound"): the pause stays under 1,000 ms and its checkpoint at most 100 ms.
+/// Appends arrive through the split: none is answered 503, and the stream then reads every acked
+/// record once, in order, the last ack's offset being the one the stream serves next.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "a timing measurement, run under the machine's lock"]
 async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold() {
-    use crate::dst::fault_store::{FaultPlan, FaultStore};
-    const HOLD: std::time::Duration = std::time::Duration::from_secs(2);
     let plan = FaultPlan {
         latency_pct: 100,
         latency_ms: (20, 20),
         ..FaultPlan::CLEAN
     };
-    let store: Arc<dyn object_store::ObjectStore> =
-        FaultStore::uniform(super::fixture_storage::mem(), 0x5412, plan);
-    let rig = loaded(store, 10_000).await;
+    let fault = FaultStore::uniform(super::fixture_storage::mem(), 0x5412, plan);
+    let trace = TraceStore::verbatim(fault.clone());
+    let rig = loaded(trace.clone(), 10_000).await;
     let parent = rig.state.shards.open("").expect("the leaf is open");
+    let compactions = format!("{}/compactions", parent.log_path());
+    let engaged = fault.hold_class_under(StoreOp::Put, ObjClass::Other, &compactions, 1);
+    let held = Held(fault);
+    topped_up((rig.addr, "load-0"), &parent, COMPACTION_SOURCES, &mut 10).await;
+    until(
+        || engaged.load(Ordering::Relaxed) >= 1,
+        || {
+            format!(
+                "the compactor's compactions write is held (l0 {})",
+                parent.l0_now()
+            )
+        },
+    )
+    .await;
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    parent
+        .gc_state()
+        .gate
+        .pause_at_park(crate::topology::gate::PausePoint { reached, go });
     let done = std::sync::atomic::AtomicBool::new(false);
     let clock = rig.state.runtime.clock.clone();
     let split = async {
@@ -374,15 +400,30 @@ async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold(
         done.store(true, Ordering::Relaxed);
         published
     };
+    let at_park = async {
+        reached_rx.await.expect("the split parks");
+        let parked = (last_seq(&trace), parent.l0_now());
+        held.release();
+        assert!(go_tx.send(()).is_ok(), "the split waits for go");
+        parked
+    };
     let appended = appending(rig.addr, "load-1", &done);
-    let (published, answers) = futures_util::future::join(split, appended).await;
+    let (published, answers, (parked_at, l0_at_park)) =
+        futures_util::future::join3(split, appended, at_park).await;
     let published = published
         .map_err(|refused| refused.to_string())
         .expect("the split publishes");
     let phases = crate::topology::split::shown_phases(&published);
+    let at = At {
+        before: parked_at,
+        parked: parked_at,
+        checkpointed: parked_at,
+    };
+    let seen = window(&trace, &at);
     eprintln!(
-        "PAUSE {} ms at 10,000 streams, 20 ms away [{phases}]",
-        published.pause.as_millis()
+        "PAUSE {} ms at 10,000 streams, 20 ms away, l0 {l0_at_park} at the park, {} [{phases}]",
+        published.pause.as_millis(),
+        seen.shown()
     );
     let refused: Vec<_> = answers
         .iter()
@@ -407,6 +448,29 @@ async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold(
         next,
         "the last ack's offset"
     );
-    assert!(published.pause < HOLD, "{:?} ({phases})", published.pause);
+    let checkpoint = published
+        .phases
+        .iter()
+        .find_map(|(name, ms)| (*name == "checkpoint").then_some(*ms))
+        .expect("the checkpoint phase");
+    assert!(checkpoint <= 100, "checkpoint {checkpoint} ms ({phases})");
+    assert!(
+        published.pause < std::time::Duration::from_secs(1),
+        "{:?} ({phases})",
+        published.pause
+    );
     engine_shutdown(&rig.state).await;
+}
+
+/// Waits until `done` holds, at most 30 s.
+pub(super) async fn until(done: impl Fn() -> bool, what: impl Fn() -> String) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{}",
+            what()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }

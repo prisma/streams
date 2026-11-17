@@ -195,6 +195,10 @@ OWNERS = (
           'topology::split::phases dst_tests::split_start::a_published_split_carries'),
     owner('topology_split_reads', 'src/topology/split/reads.rs',
           'dst_tests::split_start::a_published_split_carries dst_tests::split_k:: dst_tests::queue_split::a_trim_ dst_tests::split_pause::'),
+    # Preparing's settle wait (F5 part 1b, GATE-DECISION-f5-checkpoint-compaction-2026-11-17): its
+    # unit tests, the two compacting-parent DSTs and the split_start DST that pins its notes.
+    owner('topology_split_settle', 'src/topology/split/settle.rs',
+          'topology::split::settle dst_tests::split_compacting:: dst_tests::split_start::a_published_split_carries'),
     owner('topology_split_birth', 'src/topology/split/birth.rs',
           'topology::split::birth dst_tests::fleet_birth::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),
@@ -277,11 +281,13 @@ OWNERS = (
     owner('spill_budget', 'src/spill/budget.rs', 'config::tests::layout6_index_and_read_budgets spill::cache_tests:: shard::seal::memory_tests:: shard::seal::fold_tests::'),
     owner('transaction_seal', 'src/shard/transaction/seal.rs', 'shard::seal:: shard::commit_plan::'),
     # The L0 watermark (edge #234): its marks, the tick, the shed and the
-    # collector's yield, and the debug view that reports it.
+    # collector's yield, and the debug view that reports it; the split's settle line and the
+    # L0 counts its phase line carries (F5 part 1b).
     owner('shard_l0_watermark', 'src/shard/layout/l0_watermark.rs',
           'shard::layout::l0_watermark:: dst_tests::l0_watermark:: '
           'native_queue_collection_yields_while_the_l0s_are_at_the_yield_mark '
-          'bootstrap::tests::the_shard_logs_l0_line_reaches_the_l0_watermark'),
+          'bootstrap::tests::the_shard_logs_l0_line_reaches_the_l0_watermark '
+          'dst_tests::split_compacting::a_split_of_a_compacting_parent_with_l0_room'),
     owner('http_maintenance_view', 'src/http/maintenance_view.rs',
           'dst_tests::l0_watermark:: dst_tests::admission_maintenance::'),
     owner('shard_queue_gauges', 'src/shard/layout/queue_gauges.rs', 'shard::layout::queue_gauges:: native_queue_tests::slices:: dst_tests::queue_overload::one_project'),

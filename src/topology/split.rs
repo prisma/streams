@@ -550,15 +550,17 @@ async fn begin(
     Ok((topology.version, children, held))
 }
 
-/// Preparing (S4-DESIGN §6.2 steps 0.3 to 0.5), unpaused: the parent folds what it can, its
-/// collection stands down and the touched-queue mark starts; the plan is made from its sentinel,
-/// its sums are checked (a refusal here rolls back before the gate and the barrier park anything),
-/// and its lists are PUT. What it PUT, and the run-index objects it read for the pause to reuse.
+/// Preparing (S4-DESIGN §6.2 steps 0.3 to 0.5), unpaused: the parent's log settles (`settle`),
+/// the parent folds what it can, its collection stands down and the touched-queue mark starts; the
+/// plan is made from its sentinel, its sums are checked (a refusal here rolls back before the gate
+/// and the barrier park anything), and its lists are PUT. What it PUT, and the run-index objects
+/// it read for the pause to reuse.
 async fn prepare(
     store: &dyn ObjectStore,
     parent: &Arc<ShardEngine>,
     children: &[Child],
 ) -> Result<Prepared, String> {
+    let settled = settle::settled(parent).await?;
     fold_ahead(
         || async { parent.fold_once().await.is_ok_and(|report| report.more) },
         PREPARING_FOLDS,
@@ -585,7 +587,11 @@ async fn prepare(
         put_lists(store, parent, child, &lists, lineage::reference_list_path).await?;
         put.push(lists);
     }
-    Ok(Prepared { lists: put, runs })
+    Ok(Prepared {
+        lists: put,
+        runs,
+        settled,
+    })
 }
 
 /// What Preparing leaves the pause: each child's lists as it PUT them, and the run-index objects
@@ -593,6 +599,8 @@ async fn prepare(
 struct Prepared {
     lists: Vec<Lists>,
     runs: Runs,
+    /// How Preparing's wait for a settled log ended (`settle`).
+    settled: settle::Settled,
 }
 
 /// Preparing's fold ahead (S4-DESIGN §6.2 step 0.3): `fold` runs while it answers that rows are
@@ -632,6 +640,13 @@ async fn drained(queued: impl Fn() -> usize, within: Duration) {
 /// and its sums checked, then each child cloned from the checkpoint into its range and seeded.
 async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(), String> {
     let (store, parent, children, op_id) = (op.store, op.parent, op.children, op.op_id);
+    let settled = &prepared.settled;
+    op.phases.note(
+        "settle_ms",
+        usize::try_from(settled.ms).unwrap_or(usize::MAX),
+    );
+    op.phases.note("l0", settled.l0);
+    op.phases.note("l0_max", parent.l0_max_seen());
     parent.db.flush().await.map_err(|e| format!("flush: {e}"))?;
     op.phases.mark("flush");
     let options = CheckpointOptions {
@@ -645,6 +660,13 @@ async fn copy(op: &Op<'_>, actor: &Actor<'_>, prepared: &Prepared) -> Result<(),
         .await
         .map_err(|e| format!("checkpoint: {e}"))?;
     op.phases.mark("checkpoint");
+    // Tests only: a point after the pause created its checkpoint.
+    #[cfg(test)]
+    if let Some(point) = parent.gc_state().gate.take_after_checkpoint()
+        && point.reached.send(()).is_ok()
+    {
+        drop(point.go.await);
+    }
     let log = log_reads(parent, Some(op.phases)).await?;
     let rows = &log.rows;
     let (plan, _) = plan(store, parent, children, &log, &prepared.runs).await?;
@@ -899,6 +921,7 @@ pub(crate) use birth::Birth;
 mod phases;
 use phases::Phases;
 mod reads;
+mod settle;
 use reads::{LogReads, log_reads};
 
 #[cfg(test)]

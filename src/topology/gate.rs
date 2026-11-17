@@ -69,6 +69,10 @@ pub(crate) struct MaintenanceGate {
     /// Tests: where a split's Preparing pauses once it read the parent's log (`pause_after_reads`).
     #[cfg(test)]
     after_reads: Mutex<Option<PausePoint>>,
+    /// Tests: where a split's pause pauses once its checkpoint was created
+    /// (`pause_after_checkpoint`).
+    #[cfg(test)]
+    after_checkpoint: Mutex<Option<PausePoint>>,
     /// Tests: how the next split's `'T'` write fails (`fail_t`).
     #[cfg(test)]
     t_fault: Mutex<Option<TFault>>,
@@ -135,6 +139,25 @@ impl MaintenanceGate {
             .after_reads
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(point);
+    }
+
+    /// Tests: the next split of this engine stops once its pause created the checkpoint, until the
+    /// test says go.
+    #[cfg(test)]
+    pub(crate) fn pause_after_checkpoint(&self, point: PausePoint) {
+        *self
+            .after_checkpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(point);
+    }
+
+    /// Tests: the after-checkpoint point a split's pause takes, if a test set one.
+    #[cfg(test)]
+    pub(crate) fn take_after_checkpoint(&self) -> Option<PausePoint> {
+        self.after_checkpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// Tests: the after-reads point a split's Preparing takes, if a test set one.

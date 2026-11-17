@@ -178,15 +178,19 @@ async fn a_published_split_carries_its_phases_in_order() {
         "pause {reported} ms, its phases {paused} ms"
     );
     let notes: Vec<&str> = published.notes.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(notes, ["rows", "heads"], "the pause's read counts");
+    assert_eq!(
+        notes,
+        ["settle_ms", "l0", "l0_max", "rows", "heads"],
+        "Preparing's settle and the pause's read counts"
+    );
     let shown = crate::topology::split::shown_phases(&published);
-    let heads = format!(" heads={}", published.notes[1].1);
+    let heads = format!(" heads={}", published.notes[4].1);
     assert!(
         shown.starts_with("flush=") && shown.contains(" drain=") && shown.ends_with(&heads),
         "the log line's phases then counts: {shown}"
     );
     assert!(
-        published.notes[0].1 > 0,
+        published.notes[3].1 > 0,
         "the sentinel rows read: {:?}",
         published.notes
     );
