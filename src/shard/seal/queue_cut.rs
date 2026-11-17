@@ -83,6 +83,14 @@ mod tests {
         );
     }
 
+    /// The page cap counts from each run's own start: five small pages in
+    /// one range row, two a run, are cut `[0, 2)`, `[2, 4)` and `[4, 5)`.
+    #[test]
+    fn a_queue_windows_page_cap_counts_from_each_runs_start() {
+        let pages: Vec<_> = (0..5).map(|o| page(o, 10)).collect();
+        assert_eq!(lens(&runs(&pages, true, 2)), [(0, 2), (2, 2), (4, 1)]);
+    }
+
     #[test]
     fn an_empty_queue_window_is_cut_into_no_run() {
         assert!(runs(&[], true, 100).is_empty(), "no empty chunk");
