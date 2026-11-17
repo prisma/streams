@@ -249,6 +249,11 @@ Scaled with `--set`, by 60x where the constant is a time window:
   share of streams resident as an hourly touch on Compute. No lower bound
   but 0, which `STREAMS_AUTH_MODE=enforce` refuses; idle handles are
   evicted every 5 s.
+- `REBALANCE_RETURN_SECS` 300 → 5, the window after which a split's
+  children may leave the split's actor (return-home or count balance). The
+  first ruling (meas149-reshaping, 2026-11-16) required it and the F2 ruling
+  assumed it. The rerun at 94e07955c ran it at 300, and its return came 299 s
+  after the split (meas149-rerun-10000, (g)).
 - `SHARD_TOPOLOGY_COOLDOWN_SECS` 60 → 10, and `REBALANCE_MOVE_COOLDOWN_SECS`
   60 → 10, the override cooldown that also gates an operation. Neither has
   a lower bound in the code (0 is accepted). The policy's 10 s tick and the
@@ -346,13 +351,15 @@ bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
   --counts 10 100 1000 10000 100000 --scale-in-secs 0 \
   --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto \
   --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
-        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10
+        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10 \
+        REBALANCE_RETURN_SECS=5
 # The confirmation after S3b: one tenancy to 100,000, the drain, and 1,000 queues gating each step
 bench/ramp/ramp.py --shards 1 --fleet-min 1 --fleet-max 12 --tenancy one \
   --counts 10 100 1000 10000 100000 --scale-in-secs 0 \
   --low-until 1000 --low-max-shards 2 --settle-secs 120 --drain-secs auto --queues 1000 --queue-gate \
   --set SHARD_SPLIT_SUSTAIN_SECS=10 SHARD_MERGE_SUSTAIN_SECS=360 SHARD_SPLIT_REVERSAL_MIN_SECS=720 \
-        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10
+        HANDLE_IDLE_EVICT_SECS=10 SHARD_TOPOLOGY_COOLDOWN_SECS=10 REBALANCE_MOVE_COOLDOWN_SECS=10 \
+        REBALANCE_RETURN_SECS=5
 ```
 
 It records, per step, the shards the live instances own (from their
