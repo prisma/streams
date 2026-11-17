@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "e44855eb2d6ab59850798661dcb69a4a0f24418c",
+  "commit": "80f65b965cc5c9e7ee274e723ae89d47bb654310",
   "measured_on": "2026-11-17",
   "owners": {
     "admission_body": 14,
@@ -79,7 +79,7 @@
     "http_internal_routes": 15,
     "http_maintenance_view": 1,
     "http_read": 107,
-    "http_readiness": 10,
+    "http_readiness": 8,
     "http_serve": 24,
     "http_serve_drain": 58,
     "http_serve_http2_bounds": 31,
