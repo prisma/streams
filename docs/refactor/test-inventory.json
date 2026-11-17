@@ -3919,6 +3919,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_refused_for_room_moves_its_shard_to_an_instance_with_room",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7e821aea9c23f2c808e31aad53fdf6d366a185bdedc6db8ea5b934c5fe8ab0bc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_renews_its_intent_while_it_runs",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

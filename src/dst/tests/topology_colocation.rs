@@ -10,7 +10,8 @@ use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use super::topology_policy::{
-    On, document, lines, policy_rig_on, records, seeded, served, split_double, store_topology,
+    On, document, lines, policy_rig_on, real_split, records, seeded, served, split_double,
+    store_topology,
 };
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
 use std::sync::Arc;
@@ -601,4 +602,204 @@ async fn return_home_skips_a_live_intents_sources() {
         assert!(report.aborted.is_empty(), "{report:?}");
         engine_shutdown(&rig.state).await;
     }
+}
+
+/// The rigs of the room DST: `full`'s three shards an instance, and no shrink for an hour, so a
+/// desired count past S4's 60 s settle holds the ring at two members.
+fn full_and_held(cli: &mut crate::config::CliArgs) {
+    full(cli);
+    cli.scale_in_secs = 3_600;
+}
+
+/// `n` streams whose routes land in the leaf `0` of `rig`'s cell, each created: their names.
+async fn streams_in_0(rig: &super::fixture_http::HttpRig, n: usize) -> Vec<String> {
+    use super::billing_closure_debts::{JSON, raw_put, stored};
+    let mut names = Vec::new();
+    for taken in 0..400 {
+        let name = format!("room-{taken}");
+        raw_put(rig.addr, &name, &[JSON], b"").await;
+        let desc = stored(&rig.state, &rig.state.deployment.raw_adapter_sref(&name)).await;
+        if rig
+            .state
+            .shards
+            .prefix_for(&desc.resolve_segment("").shard_route)
+            == "0"
+        {
+            names.push(name);
+        }
+        if names.len() == n {
+            return names;
+        }
+    }
+    panic!("no {n} streams land in 0");
+}
+
+/// The room DST's cell: the fleet and data stores, and `streams-1` and `streams-2`, peers of each
+/// other, once `streams-1` holds both leaves by their aged entries.
+async fn room_cell() -> (
+    Arc<dyn ObjectStore>,
+    Arc<dyn ObjectStore>,
+    super::fixture_http::HttpRig,
+    super::fixture_http::HttpRig,
+) {
+    let fleet = seeded().await;
+    let data = mem();
+    let settled = crate::shard::now_ms() - 120_000;
+    let desired = format!(r#"{{"count":2,"epoch":2,"reason":"test","computed_at_ms":{settled}}}"#);
+    let desired_path = Path::from("fleet/desired.json");
+    fleet
+        .put(&desired_path, PutPayload::from(desired))
+        .await
+        .unwrap();
+    let pinned = format!(
+        r#"{{"entries":{{"0":{{"to":"streams-1","ms":{settled}}},"1":{{"to":"streams-1","ms":{settled}}}}}}}"#
+    );
+    let overrides_path = Path::from("fleet/overrides.json");
+    fleet
+        .put(&overrides_path, PutPayload::from(pinned))
+        .await
+        .unwrap();
+    let halves = vec!["0".to_string(), "1".to_string()];
+    let on = |instance, runtime| On {
+        data: data.clone(),
+        instance,
+        runtime,
+        split_sustain_ms: 1_000,
+    };
+    let one = on("streams-1", RigRuntime::first());
+    let (a, _) = policy_rig_on(
+        fleet.clone(),
+        one,
+        full_and_held,
+        real_split,
+        halves.clone(),
+    )
+    .await;
+    store_topology(&a).await;
+    let two = on("streams-2", RigRuntime::incarnation(1));
+    let (b, _) = policy_rig_on(fleet.clone(), two, full_and_held, real_split, halves).await;
+    for rig in [&a, &b] {
+        rig.state
+            .peer
+            .set_peer("streams-1", &format!("http://{}", a.addr));
+        rig.state
+            .peer
+            .set_peer("streams-2", &format!("http://{}", b.addr));
+    }
+    laid_out(&a, &[("0", "streams-1"), ("1", "streams-1")]).await;
+    (fleet, data, a, b)
+}
+
+/// What the room DST saw while it loaded `0` until the stored leaves were `00`, `01`, `1`: the
+/// records acked per stream, whether `0` moved to `streams-2`, the `instance_full` beats after
+/// the move, and each desired count in turn.
+struct Loaded {
+    acked: std::collections::BTreeMap<String, u64>,
+    asked_after: usize,
+    counts: Vec<Option<u64>>,
+}
+
+/// Append to `0`'s streams at `a` 20 a second until the split of `0` published (see `Loaded`).
+async fn load_until_split(
+    fleet: &Arc<dyn ObjectStore>,
+    data: &Arc<dyn ObjectStore>,
+    a: &super::fixture_http::HttpRig,
+) -> Loaded {
+    let names = streams_in_0(a, 8).await;
+    let json = [("content-type", "application/json")];
+    let mut acked: std::collections::BTreeMap<String, u64> = Default::default();
+    let (mut n, mut moved, mut asked_after, mut counts) = (0_u64, false, Vec::new(), Vec::new());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    while stored_leaves(data).await != ["00", "01", "1"] {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "leaves {:?}, moved {moved}, desired counts {counts:?}, decision {}",
+            stored_leaves(data).await,
+            document(fleet, "streams-1").await["topology_decision"]
+        );
+        let name = &names[usize::try_from(n).unwrap() % names.len()];
+        let body = format!(r#"[{{"n":{n}}}]"#);
+        let (status, _, _) = hreq(
+            a.addr,
+            "POST",
+            &format!("/v1/stream/{name}"),
+            &json,
+            body.as_bytes(),
+        )
+        .await;
+        if status == 204 {
+            *acked.entry(name.clone()).or_default() += 1;
+        }
+        n += 1;
+        let count = document(fleet, "desired").await["count"].as_u64();
+        if counts.last() != Some(&count) {
+            counts.push(count);
+        }
+        let entries = document(fleet, "overrides").await["entries"].clone();
+        moved |= entries["0"]["to"] == "streams-2";
+        let refused = document(fleet, "streams-1").await["split_refused"].clone();
+        if moved && refused == "instance_full" {
+            asked_after.push(refused);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Loaded {
+        acked,
+        asked_after: asked_after.len(),
+        counts,
+    }
+}
+
+/// **A split refused for room moves its shard to an instance with room**
+/// (GATE-DECISION-f2-convergence-2026-11-17). Two members, three shards an instance at most:
+/// `streams-1` holds both leaves `0` and `1` by entries older than the move cooldown, `streams-2`
+/// none, and only `0` takes load over the split line. `streams-1`'s split of `0` is refused
+/// `instance_full` (2 + 2 > 3); since `streams-2` has room for `0` and its two children, the policy
+/// moves `0` there by one overrides CAS instead of asking for an instance. Exactly: the entry of
+/// `0` names `streams-2` and `1`'s still names `streams-1`; the desired count stays two throughout;
+/// no beat of `streams-1` says `instance_full` after the move; once the move's cooldown has passed
+/// `streams-2` splits `0`, so the stored leaves are `00`, `01` and `1` with `00` and `01` on
+/// `streams-2`; and every acked record reads back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
+    let (fleet, data, a, b) = room_cell().await;
+    let Loaded {
+        acked,
+        asked_after,
+        counts,
+    } = load_until_split(&fleet, &data, &a).await;
+    let entries = document(&fleet, "overrides").await["entries"].clone();
+    let owner = |p: &str| b.state.ownership.effective_owner(p).unwrap_or_default();
+    assert_eq!(
+        (
+            entries["0"]["to"].as_str(),
+            entries["1"]["to"].as_str(),
+            counts,
+            asked_after,
+            [owner("00"), owner("01")]
+        ),
+        (
+            Some("streams-2"),
+            Some("streams-1"),
+            vec![Some(2)],
+            0,
+            ["streams-2", "streams-2"].map(str::to_string)
+        ),
+        "the move, the count, no ask after it, and the children's owner"
+    );
+    for (name, count) in &acked {
+        let read = served(b.addr, name).await;
+        let got = read.as_array().map_or(0, Vec::len);
+        assert_eq!(
+            u64::try_from(got).unwrap(),
+            *count,
+            "{name} reads back every acked record"
+        );
+    }
+    for rig in [&a, &b] {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+    }
+    engine_shutdown(&a.state).await;
+    engine_shutdown(&b.state).await;
 }

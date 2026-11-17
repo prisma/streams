@@ -411,7 +411,10 @@ fn gate(view: &View, at: &Limits, actor: &Leaf) -> Option<Hold> {
 /// room for one; short of room it asks for an instance. At `FLEET_MAX` it never asks: with room
 /// here it splits without a destination, and without it holds at the topology's maximum. The
 /// transition's memory is S4's split entry's own check, whose `instance_full` the loop answers the
-/// same way.
+/// same way. Without room here, but with another instance that has room for the shard and its two
+/// children (`room_for_split`), the split goes ahead to S4, whose `instance_full` the loop answers by
+/// moving the shard there (`policy_loop::room`, GATE-DECISION-f2-convergence-2026-11-17): it asks
+/// for an instance only when no member has room.
 fn reserve(view: &View, at: &Limits) -> Option<Decision> {
     if view.leaves.len() >= MAX_LEAVES {
         return Some(Decision::Hold(Hold::TopologyAtMax));
@@ -428,9 +431,28 @@ fn reserve(view: &View, at: &Limits) -> Option<Decision> {
     });
     match (here, there, at_fleet_max(view, at)) {
         (true, true, _) | (true, false, true) => None,
+        (false, _, _) if room_for_split(view, max, &view.me).is_some() => None,
         (false, _, true) => Some(Decision::Hold(Hold::TopologyAtMax)),
         _ => Some(Decision::AskInstance { resident, max }),
     }
+}
+
+/// What an instance takes when a split's shard moves to it: the shard, then its two children
+/// beside it until the publish.
+const MOVED_SPLIT_TAKES: u32 = 3;
+
+/// The instance the shard of a split this instance `me` has no room for goes to: an accepting
+/// instance other than `me` whose resident shards plus the shard and its two children fit under
+/// `max`, fewest shards first, then by name; none when no instance has room.
+pub(crate) fn room_for_split(view: &View, max: u32, me: &str) -> Option<String> {
+    let mut candidates: Vec<&Instance> = view
+        .instances
+        .iter()
+        .filter(|i| i.accepting && i.id != me)
+        .filter(|i| i.resident_shards.saturating_add(MOVED_SPLIT_TAKES) <= max)
+        .collect();
+    candidates.sort_by_key(|i| (i.resident_shards, i.id.clone()));
+    candidates.first().map(|i| i.id.clone())
 }
 
 /// Whether an instance holding `resident` shards has room for a split's two children beside the
@@ -566,3 +588,6 @@ mod tests;
 
 #[cfg(test)]
 mod merge_tests;
+
+#[cfg(test)]
+mod room_tests;
