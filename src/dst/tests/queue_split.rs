@@ -154,8 +154,12 @@ async fn a_trim_batch_a_split_waits_out_is_redone_by_the_child_exactly_once() {
         .map(|(_, _, e)| e.clone())
         .find(|e| e.prefix != child.prefix)
         .expect("the other child");
+    // A trim pass is the collector's, which runs once its engine's sealer
+    // opened (`gc_loop`): before, the directory it takes candidates from
+    // is empty, and the pass would consume the hints and release nothing.
     for e in [&child, &other] {
         quiet(e);
+        e.seal_ready().await.expect("the child's sealer opens");
     }
     let before = counts(&child).await;
     let report = child.trim_pass().await.unwrap();

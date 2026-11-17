@@ -4473,7 +4473,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5b055547a42501629ee42431146fbdc37a7b3941d228683ffc74ad89190c0f54",
+    "function_sha256": "30f28330aa256e4b6793e3689099d566e9a2856085c315de2914445b12b08474",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_split.rs",
