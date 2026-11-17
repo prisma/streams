@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "80f65b965cc5c9e7ee274e723ae89d47bb654310",
+  "commit": "37042db55fdab0bf942fc847f9c9c89eb3362ad0",
   "measured_on": "2026-11-17",
   "owners": {
     "admission_body": 14,
@@ -56,7 +56,7 @@
     "crypto_page_varint": 24,
     "cursors": 61,
     "durability_frontier_tests": 0,
-    "fleet": 136,
+    "fleet": 117,
     "fleet_colocate": 3,
     "fleet_count_balance": 117,
     "fleet_document_tests": 0,
@@ -65,6 +65,7 @@
     "fleet_heartbeat": 113,
     "fleet_hysteresis": 31,
     "fleet_members": 70,
+    "fleet_moves": 39,
     "fleet_outbox": 9,
     "fleet_planning": 130,
     "fleet_repository": 65,
