@@ -1448,10 +1448,6 @@ impl ShardEngine {
     }
 
     #[expect(
-        clippy::let_underscore_must_use,
-        reason = "ShardEngine::committer_loop; a caller that gave up before its reply has no receiver; a handled send would only restate that the request was abandoned"
-    )]
-    #[expect(
         clippy::excessive_nesting,
         reason = "ShardEngine::committer_loop; the committer nests the batch gather and the pacing wait inside the group loop; flattening them would separate the gather from the group it fills"
     )]
@@ -1460,47 +1456,19 @@ impl ShardEngine {
         // and the engine holds a sender, so `rx` can never report closed.
         loop {
             let first = tokio::select! {
-                _ = self.closed() => {
-                    // Fail everything still queued — their clients would
-                    // otherwise hang into their own timeouts — then exit.
-                    while let Ok(op) = rx.try_recv() {
-                        match op {
-                            CommitOp::Append(r) => {
-                                let _ = r.resp.send(Err(AppendErr::Moved));
-                            }
-                    CommitOp::Close(CloseReq { resp, .. }) | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
-                        let _ = resp.send(Err(AppendErr::Moved));
-                    }
-                            CommitOp::Queue { resp, .. } => {
-                                let _ = resp.send(Err("shard fenced/moved; retry".into()));
-                            }
-                            CommitOp::NativeQueue { resp, .. } => {
-                                let _ = resp.send(Err(crate::native_queue::NqRefusal::Internal("shard fenced/moved; retry".into())));
-                            }
-                            // A billing op dropped here answers its own
-                            // refusal (`BillingReply`), as in `reject_op`.
-                            CommitOp::Seal(_)
-                            | CommitOp::UsageAck { .. }
-                            | CommitOp::BillingClose { .. }
-                            | CommitOp::BillingRetained { .. } => {}
-                        }
-                    }
-                    return;
-                }
+                _ = self.closed() => None,
                 got = rx.recv() => {
                     let Some(op) = got else { return };
-                    op
+                    Some(op)
                 }
             };
-            if self.is_closed() {
-                // Set-before-subscribe race: honor the flag, fail the op we
-                // just took plus the rest of the queue, and exit.
-                transaction::CommitTransaction::reject_op(first, AppendErr::Moved);
-                while let Ok(op) = rx.try_recv() {
-                    transaction::CommitTransaction::reject_op(op, AppendErr::Moved);
-                }
-                return;
-            }
+            // Closed, or the set-before-subscribe race (the flag set before this op was taken):
+            // answer what is still queued, never offered to a group, then exit; its clients
+            // would otherwise hang into their own timeouts (`transaction::drain_closed`).
+            let first = match first {
+                Some(op) if !self.is_closed() => op,
+                queued => return transaction::drain_closed(&self, queued, &mut rx),
+            };
             // Test gate: while held, the committer parks HERE — after
             // taking the first op, before draining the rest — so a test
             // releases it with N ops queued and gets exactly one group
