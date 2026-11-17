@@ -426,12 +426,26 @@ async fn an_open_repairs_an_index_row_whose_tail_is_sealed() {
     );
 }
 
+/// `open` without the log's compactor: four flushed tables are SlateDB's `min_compaction_sources`,
+/// so a compactor would compact them while the test writes or measures (on Linux CI it did, mid
+/// load), and the layout under measurement would depend on its timing.
+async fn open_uncompacted(store: &Arc<dyn ObjectStore>, path: &str) -> slatedb::Db {
+    let settings = slatedb::config::Settings {
+        compactor_options: None,
+        ..Default::default()
+    };
+    crate::native_queue::compaction_guard::shard_log_builder(path, store.clone(), settings)
+        .build()
+        .await
+        .unwrap()
+}
+
 /// A log at `path` over `store` whose unsealed index was put for `streams` streams, then deleted
 /// for all but the first `kept` as their tails sealed, twice, each batch flushed to its own table:
 /// four tables of index versions and tombstones, as a busy shard's prefix holds them until
 /// compaction. The kept members' tails each hold 70 unsealed bytes.
 async fn churned(store: &Arc<dyn ObjectStore>, path: &str, streams: u32, kept: u32) {
-    let db = open(store, path).await.unwrap();
+    let db = open_uncompacted(store, path).await;
     let hash = |n: u32| {
         let mut hash = [0u8; 16];
         hash[..4].copy_from_slice(&n.to_be_bytes());
@@ -464,11 +478,12 @@ async fn flushed(db: &slatedb::Db, batch: slatedb::WriteBatch) {
 }
 
 /// The store GETs of an open's index load of a churned log of `streams` streams at `path`,
-/// reopened so no block is cached; the load finds the ten kept members' bytes.
+/// reopened without its compactor so no block is cached and the four tables stay as written; the
+/// load finds the ten kept members' bytes.
 async fn index_load_gets(path: &str, streams: u32) -> u64 {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     churned(&store, path, streams, 10).await;
-    let db = open(&store, path).await.unwrap();
+    let db = open_uncompacted(&store, path).await;
     let metrics = crate::spill::metrics::for_log(path);
     // Every GET of the database: whole objects (`db.get`) and blocks read by range
     // (`db.get_range`, `db.get_ranges`).
