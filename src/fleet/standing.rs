@@ -58,6 +58,8 @@ pub(crate) struct Standing {
     /// The version of the overrides document this instance last published, and a forwarded
     /// version that still differed after a refresh (F6 D7: one read per distinct value).
     overrides_tag: Mutex<(String, Option<String>)>,
+    /// The last planned move's phases and the instant its hold ended.
+    last_handoff: Mutex<Option<(super::handoff::Phases, tokio::time::Instant)>>,
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
@@ -123,6 +125,7 @@ impl Default for Standing {
             handoffs: std::sync::OnceLock::new(),
             handoffs_fenced: AtomicU64::new(0),
             overrides_tag: Mutex::new((String::new(), None)),
+            last_handoff: Mutex::new(None),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
             cached: Mutex::new((0, Arc::from([]))),
@@ -175,6 +178,19 @@ impl Standing {
         if let Ok(mut held) = self.overrides_tag.lock() {
             held.1 = Some(seen.to_string());
         }
+    }
+
+    /// A planned move ended its hold at `released` after `phases`.
+    pub(super) fn record_handoff(&self, phases: super::handoff::Phases, released: tokio::time::Instant) {
+        if let Ok(mut last) = self.last_handoff.lock() {
+            *last = Some((phases, released));
+        }
+    }
+
+    /// Tests: the last planned move's phases and the instant its hold ended.
+    #[cfg(test)]
+    pub(crate) fn last_handoff(&self) -> Option<(super::handoff::Phases, tokio::time::Instant)> {
+        self.last_handoff.lock().ok().and_then(|last| *last)
     }
 
     /// A planned move's close did not end clean (F6 E5).

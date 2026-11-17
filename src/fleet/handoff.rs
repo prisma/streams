@@ -147,15 +147,18 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     }
     let claim = Claim(Arc::clone(&engine));
     // Step 2: park.
+    let started = Instant::now();
     let Ok(Ok(barrier)) = timeout(PARK, engine.barrier()).await else {
         return missed(request, "park");
     };
-    let until = Instant::now() + HOLD;
+    let parked_at = Instant::now();
+    let until = parked_at + HOLD;
     // Step 3: flush the delta under the park.
     if !matches!(timeout(FLUSH, engine.flush_memtable()).await, Ok(Ok(()))) {
         barrier.resume();
         return missed(request, "flush");
     }
+    let flushed_at = Instant::now();
     // Step 4: the directory's hold, the resident out of the serving map, the queue released.
     let Some((mark, resident)) = state.shards.begin_handoff(prefix, until) else {
         barrier.resume();
@@ -164,8 +167,8 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     barrier.hand_off();
     answered(&engine).await;
     // Step 5: the one owned close, to its verdict (D1).
-    let parked_at = until - HOLD;
-    close(state, prefix, &engine, resident.as_ref()).await;
+    let fenced = !close(state, prefix, &engine, resident.as_ref()).await;
+    let closed_at = Instant::now();
     drop(claim);
     // Steps 6 and 7, or 10.
     let end = if commit(state, prefix, &request.change).await {
@@ -175,10 +178,44 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     };
     mark.end(end);
     state.livefeed.wake_all_sessions();
-    tracing::info!(shard = %prefix, ?end, held_ms = parked_at.elapsed().as_millis(), "handoff ended");
+    let phases = Phases {
+        park: parked_at.duration_since(started),
+        flush: flushed_at.duration_since(parked_at),
+        close: closed_at.duration_since(flushed_at),
+        release: parked_at.elapsed(),
+    };
+    phases.report(state, prefix, fenced, end);
     match end {
         End::Moved => Outcome::Moved,
         End::Kept => Outcome::Kept,
+    }
+}
+
+/// One planned move's phases: to the park, the flush under it, from the flush to the close's
+/// verdict, and from the park to the hold's end (the release, the bound the ruling holds at 0.6 s).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Phases {
+    pub(crate) park: Duration,
+    pub(crate) flush: Duration,
+    pub(crate) close: Duration,
+    pub(crate) release: Duration,
+}
+
+impl Phases {
+    /// One line per planned move, with stable keys the rig and the measurement legs read
+    /// (`handoff shard=<p> fenced=<bool> park_ms= flush_ms= close_ms= release_ms= end=`).
+    fn report(self, state: &AppState, prefix: &str, fenced: bool, end: End) {
+        tracing::info!(
+            shard = %prefix,
+            fenced,
+            park_ms = self.park.as_millis(),
+            flush_ms = self.flush.as_millis(),
+            close_ms = self.close.as_millis(),
+            release_ms = self.release.as_millis(),
+            end = ?end,
+            "handoff"
+        );
+        state.fleet.standing().record_handoff(self, Instant::now());
     }
 }
 
@@ -218,17 +255,24 @@ async fn answered(engine: &ShardEngine) {
 
 /// Step 5: close `engine` (and a different resident the hold took, if any) through its one owned
 /// shutdown and await the verdict. A close that failed or passed its bound leaves the move a
-/// takeover by fence: logged at WARN and counted (`handoff_fenced`, E5).
-async fn close(state: &AppState, prefix: &str, engine: &ShardEngine, resident: Option<&Arc<ShardEngine>>) {
+/// takeover by fence: logged at WARN and counted (`handoff_fenced`, E5). Whether it ended clean.
+async fn close(
+    state: &AppState,
+    prefix: &str,
+    engine: &ShardEngine,
+    resident: Option<&Arc<ShardEngine>>,
+) -> bool {
     if let Some(other) = resident.filter(|r| !std::ptr::eq(r.as_ref(), engine)) {
         other.begin_close();
     }
     engine.begin_close();
     let verdict = engine.shutdown_handle().settle(CLOSE).await;
-    if !matches!(verdict, Some(Ok(()))) {
+    let clean = matches!(verdict, Some(Ok(())));
+    if !clean {
         state.fleet.standing().note_handoff_fenced();
         tracing::warn!(shard = %prefix, ?verdict, "handoff: the close did not end clean; the move is a takeover by fence");
     }
+    clean
 }
 
 /// Steps 6 and 7: write `change` for `prefix` and mirror the document, within [`CAS`]. Each try

@@ -20,6 +20,12 @@ impl ShardDirectory {
         self.inner.ownership.foreign_owner(prefix)
     }
 
+    /// Tests only: whether a planned move holds `prefix` now.
+    #[cfg(test)]
+    pub(crate) fn handing_off(&self, prefix: &str) -> bool {
+        self.inner.handoffs.holds(prefix)
+    }
+
     /// Step 4 of a planned move: hold `prefix` until `until` at the latest, and take its resident
     /// out of the serving map, open, with no holdoff and no strike (`RetirementReason::PlannedMove`;
     /// the gate keeps its shutdown handle, so a reopen here waits for its close). The hold and the

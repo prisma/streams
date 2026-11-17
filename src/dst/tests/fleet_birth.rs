@@ -96,6 +96,8 @@ enum Tick {
 pub(super) struct Pair {
     pub(super) a: HttpRig,
     pub(super) b: HttpRig,
+    /// The cell's fleet store.
+    fleet: Arc<dyn ObjectStore>,
 }
 
 impl Pair {
@@ -126,7 +128,16 @@ impl Pair {
             ..FaultPlan::CLEAN
         };
         let data: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 0xF6, plan);
-        Self::over(Tick::Runs, (&data, loaded_members)).await
+        let pair = Self::over(Tick::Runs, (&data, loaded_members)).await;
+        // Both members' URLs published, as a deploy publishes them, so a member forwards to the
+        // owner instead of answering its client `409` (the ticks replace the peers set by hand).
+        let urls = serde_json::json!({
+            "streams-1": format!("http://{}", pair.a.addr),
+            "streams-2": format!("http://{}", pair.b.addr),
+        });
+        let path = Path::from("fleet/urls.json");
+        pair.fleet.put(&path, PutPayload::from(urls.to_string())).await.unwrap();
+        pair
     }
 
     async fn of(tick: Tick) -> Self {
@@ -195,7 +206,7 @@ impl Pair {
             ["streams-1", "streams-2", "streams-2"].map(str::to_string),
             "the ring of the run's case"
         );
-        Self { a, b }
+        Self { a, b, fleet }
     }
 
     pub(super) async fn shutdown(self) {
