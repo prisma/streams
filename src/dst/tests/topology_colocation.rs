@@ -691,10 +691,12 @@ async fn room_cell() -> (
 }
 
 /// What the room DST saw while it loaded `0` until the stored leaves were `00`, `01`, `1`: the
-/// records acked per stream, whether `0` moved to `streams-2`, the `instance_full` beats after
-/// the move, and each desired count in turn.
+/// records acked per stream, the entries of `0` and `1` when `0` was first seen moved to
+/// `streams-2` (read then: once `0` splits it is no leaf, and a stale prune may drop its entry), the
+/// `instance_full` beats after the move, and each desired count in turn.
 struct Loaded {
     acked: std::collections::BTreeMap<String, u64>,
+    moved_entries: Option<(serde_json::Value, serde_json::Value)>,
     asked_after: usize,
     counts: Vec<Option<u64>>,
 }
@@ -709,6 +711,7 @@ async fn load_until_split(
     let json = [("content-type", "application/json")];
     let mut acked: std::collections::BTreeMap<String, u64> = Default::default();
     let (mut n, mut moved, mut asked_after, mut counts) = (0_u64, false, Vec::new(), Vec::new());
+    let mut moved_entries = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
     while stored_leaves(data).await != ["00", "01", "1"] {
         assert!(
@@ -736,7 +739,10 @@ async fn load_until_split(
             counts.push(count);
         }
         let entries = document(fleet, "overrides").await["entries"].clone();
-        moved |= entries["0"]["to"] == "streams-2";
+        if !moved && entries["0"]["to"] == "streams-2" {
+            moved = true;
+            moved_entries = Some((entries["0"]["to"].clone(), entries["1"]["to"].clone()));
+        }
         let refused = document(fleet, "streams-1").await["split_refused"].clone();
         if moved && refused == "instance_full" {
             asked_after.push(refused);
@@ -745,6 +751,7 @@ async fn load_until_split(
     }
     Loaded {
         acked,
+        moved_entries,
         asked_after: asked_after.len(),
         counts,
     }
@@ -755,8 +762,8 @@ async fn load_until_split(
 /// `streams-1` holds both leaves `0` and `1` by entries older than the move cooldown, `streams-2`
 /// none, and only `0` takes load over the split line. `streams-1`'s split of `0` is refused
 /// `instance_full` (2 + 2 > 3); since `streams-2` has room for `0` and its two children, the policy
-/// moves `0` there by one overrides CAS instead of asking for an instance. Exactly: the entry of
-/// `0` names `streams-2` and `1`'s still names `streams-1`; the desired count stays two throughout;
+/// moves `0` there by one overrides CAS instead of asking for an instance. Exactly: when the move is
+/// first seen, the entry of `0` names `streams-2` and `1`'s still names `streams-1`; the desired count stays two throughout;
 /// no beat of `streams-1` says `instance_full` after the move; once the move's cooldown has passed
 /// `streams-2` splits `0`, so the stored leaves are `00`, `01` and `1` with `00` and `01` on
 /// `streams-2`; and every acked record reads back.
@@ -765,15 +772,16 @@ async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
     let (fleet, data, a, b) = room_cell().await;
     let Loaded {
         acked,
+        moved_entries,
         asked_after,
         counts,
     } = load_until_split(&fleet, &data, &a).await;
-    let entries = document(&fleet, "overrides").await["entries"].clone();
+    let (to_0, to_1) = moved_entries.expect("0 moved to streams-2");
     let owner = |p: &str| b.state.ownership.effective_owner(p).unwrap_or_default();
     assert_eq!(
         (
-            entries["0"]["to"].as_str(),
-            entries["1"]["to"].as_str(),
+            to_0.as_str(),
+            to_1.as_str(),
             counts,
             asked_after,
             [owner("00"), owner("01")]
