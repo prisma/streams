@@ -3963,6 +3963,17 @@
     "scenarios": []
   },
   {
+    "name": "a_split_started_with_a_birth_names_its_actor_for_both_children",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "18367852aae3f12ad7416632ca0b5347499078bd0afbb75f5ef43d2f5deaf861",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_start.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_that_rolls_back_leaves_nothing_of_its_children",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

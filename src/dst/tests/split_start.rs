@@ -86,3 +86,48 @@ async fn a_split_under_a_live_intent_is_refused_busy() {
     drop(first);
     engine_shutdown(&state).await;
 }
+
+/// **A split started with a birth names its actor for both children in the fleet's overrides and
+/// its view** (GATE-DECISION-f2-children-on-actor A2; PR #158's survivor split.rs:292:13, a
+/// `born_by` that drops its birth). Leaf `00` is split by `inst-a` with a birth over a fleet store
+/// of its own: once the split published, the overrides document's entries are exactly `000` and
+/// `001`, each naming `inst-a`, and the birth's ownership view holds the same two overrides. A
+/// split whose birth was dropped leaves the document without an entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_started_with_a_birth_names_its_actor_for_both_children() {
+    let Cell { state, parent, .. } = cell().await;
+    let fleet_store = super::fixture_storage::mem();
+    let fleet = crate::fleet::FleetRepository::new(Some(fleet_store));
+    let ownership = fleet.ownership("inst-a".to_string());
+    let birth =
+        crate::topology::split::Birth::new(fleet.clone(), ownership.clone(), "inst-a".to_string());
+    let started = crate::topology::split::start(&state.shards, &parent, "op-born", "inst-a")
+        .await
+        .map_err(|refused| refused.to_string())
+        .expect("the split starts");
+    let clock = state.runtime.clock.clone();
+    let published = started
+        .born_by(birth)
+        .finish(&*clock)
+        .await
+        .map_err(|refused| refused.to_string())
+        .expect("the split publishes");
+    let children: Vec<String> = published
+        .children
+        .iter()
+        .map(|(p, _, _)| p.clone())
+        .collect();
+    assert_eq!(children, ["000", "001"]);
+    let (doc, _) = fleet.read_overrides().await.unwrap();
+    let mut named: Vec<(String, String)> =
+        doc.entries.into_iter().map(|(p, e)| (p, e.to)).collect();
+    named.sort();
+    let view: Vec<(String, String)> = ownership.view().overrides.into_iter().collect();
+    let born = [("000", "inst-a"), ("001", "inst-a")].map(|(p, o)| (p.to_owned(), o.to_owned()));
+    assert_eq!(
+        (named, view),
+        (born.to_vec(), born.to_vec()),
+        "the children's entries"
+    );
+    engine_shutdown(&state).await;
+}
