@@ -75,10 +75,30 @@ pub(crate) fn dirty_cleared(through: u64, durable: Option<u64>) -> bool {
     durable.is_none_or(|version| version <= through)
 }
 
+/// The options of every scan of the log's sentinel rows (GATE-DECISION-open-cost-2026-11-17): the
+/// open's and the sealer's index scans here, and the split's log reads (`topology::split::reads`,
+/// `gc::trim::intervals_at`). SlateDB's defaults fetch one 4 KiB block per GET, one at a time and
+/// uncached, so a prefix holding thousands of index versions and tombstones cost one round trip
+/// per block: these read 1 MiB ahead, sixteen fetches at once, and keep the blocks cached, so a
+/// second read of the same tables (the sealer's after the open, the pause's after Preparing)
+/// fetches only tables written since. The durability stays Memory, the default: a split's reads
+/// see one snapshot's sequence, never a `Remote` cap recomputed per read
+/// (GATE-DECISION-f1b-trim-race-2026-11-16).
+pub(crate) fn sentinel_scan_opts() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        durability_filter: slatedb::config::DurabilityLevel::Memory,
+        read_ahead_bytes: 1024 * 1024,
+        max_fetch_tasks: 16,
+        cache_blocks: true,
+        ..slatedb::config::ScanOptions::default()
+    }
+}
+
 /// The members of the index `tag`, with their values.
 async fn index_rows(db: &Db, tag: u8) -> Result<Vec<([u8; 16], Vec<u8>)>, slatedb::Error> {
     let prefix = index_key(tag, &[]);
-    let mut rows = db.scan_prefix(&prefix, ..).await?;
+    let options = sentinel_scan_opts();
+    let mut rows = db.scan_prefix_with_options(&prefix, .., &options).await?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().await? {
         if let Some(hash) = row.key.get(prefix.len()..).and_then(|h| h.try_into().ok()) {
