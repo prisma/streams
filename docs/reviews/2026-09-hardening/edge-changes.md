@@ -5754,6 +5754,30 @@ One record has verified=false: its commit did not match the recorded text.
 - **Status:** ratified with amendments R1-R4 (GATE-DECISION-f2-edge-265-2026-11-17.md, Fable 5.2 under the owner's delegation, 2026-11-17).
 - **Check against commit:** written with the change.
 
+### #267 (this record's commit) — An operation still queued when a retired shard closes is answered as held by the split, never as outcome unknown
+
+- **Program item:** prisma/streams#149, F6's H2 (GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H2; GATE-DECISION-f6-h2-shard-drain-2026-11-17, Fable 5.2 under the owner's delegation). A split's or a merge's retired source today, and a planned move's giver once F6 lands (#266), close while requests that resolved them may still be queued.
+- **Surface:** raw and product; and the message of a consumer operation (`CommitOp::Queue`).
+- **Endpoint:** raw `POST /v1/stream/{name}` (an append, and an append that closes the stream) and the product append routes; the internal seal fence (`try_seal_fence`); the stream consumers' operations that reach a shard's committer (`CommitOp::Queue`: a receive, a settle, and a consumer's config writes). Reads, SSE and long polls are not committer operations and are unchanged.
+- **Condition:** an operation enqueued on a split's or a merge's retired source and not yet taken by its committer when that engine closes (`ShardEngine::begin_close`): the race between `try_command`'s closed check and its send, against the close. The engine's gate holds the split's or merge's reroute (`MaintenanceGate::reroute`).
+- **Before:** the committer's close answered every operation still in its queue `AppendErr::Moved`: raw `503 shard_moving`, `retry-after: 1`; product `503 outcome_unknown`, not retryable. The client was told "maybe written" about a request no group ever held.
+- **After:**
+  - Under a retired gate, the close answers each queued operation as the split's hold answers it, `AppendErr::Splitting` (`shard::transaction::drain_closed`, both of the committer's close branches). The append path re-resolves it: the new owner's `409 not_ring_owner` + `Streams-Replay-To`, which the forward takes one hop, or raw `503 shard_splitting` (product `503 temporarily_unavailable`, retryable), `retry-after: 1`. Nothing was written.
+  - A consumer operation (`CommitOp::Queue`) drained under a retired gate was answered with the message `"shard fenced/moved; retry"`; it is now answered `"Splitting"`, as a held consumer operation already is. Its status, code and `retryable` flag are unchanged: only the message text, which reaches the client, differs. Native-queue and billing operations are unchanged.
+  - An engine closed with no reroute (a fence, a failed write, a retirement other than a split's or merge's) answers its queue `Moved` as before.
+  - Groups that may have been written (`begin_close`'s stranded groups, a group a closed `CommitTransaction::run` meets, `finalize`'s and `publish`'s retired attachments) are unchanged: still `Moved`, unknown.
+- **Why it is safe (the ruling's proof):** the close's drain takes only from the committer's queue; nothing in a queue was ever offered to a group (the only send of an existing operation, a split's reroute of a held one to its child, runs before any staging), so nothing of it is written, and a resend cannot duplicate it.
+- **Retry semantics:** a client that got `409` replays to the named owner; one that got `503 shard_splitting` / `temporarily_unavailable` retries after 1 s. An SDK plain append no longer stops on `outcome_unknown` for this class.
+- **Who is affected:** clients whose appends raced a split's, a merge's (or, with #266, a planned move's) close on that instance. Nobody else.
+- **Pinning tests:**
+  - `shard::retirement_tests::an_operation_queued_at_a_retired_engines_close_is_answered_as_held` (new): an append queued behind a parked committer whose gate is retired, with no child for its route, is answered `Err(Splitting)` when the engine closes. Red (the drain unchanged, the test file applied to the base): the test panicked with `Err(Moved)` (`an_operation_queued_at_a_retired_engines_close_is_answered_as_held`, `1 passed; 1 failed`).
+  - `shard::retirement_tests::an_operation_queued_at_a_live_engines_close_stays_moved` (new): the same with no reroute answers `Err(Moved)`, pinning the narrow scope.
+  - Unchanged and green: `shard::retirement_tests` (`retire_then_attach_*` and the rest) and `shard::durability_frontier_tests`.
+- **Formal:** no model change. TLA-006 and TLA-011's close answers the queue as unknown, which contains both answers (abstraction lines in their roadmap rows); TLA-045's row gains that a retired parent's operations queued at its close are answered as its held ones. KANI-047, TLA-002, TLA-005, TLA-006 and TLA-011 are re-recorded (inputs `src/shard.rs`, `src/shard/transaction/mod.rs`).
+- **Risk reason:** low. It turns a "maybe written" answer into a correct "not written, go to the owner" for operations provably never offered to a group, in a window that today is a few microseconds wide and with F6 is every planned move's close.
+- **Status:** design approved (GATE-DECISION-f6-h2-shard-drain-2026-11-17, S1-S8; rows GATE-DECISION-f6-h2-rows-2026-11-17); this record awaits ratification. It lands before #266 (F6's), which inherits this drain.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 - **Risk:** low
