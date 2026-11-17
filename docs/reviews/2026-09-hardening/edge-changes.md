@@ -5789,8 +5789,8 @@ One record has verified=false: its commit did not match the recorded text.
 
     | set | n | park to release p50 / max | release to the target's first ack p50 / max |
     |---|---|---|---|
-    | idle | 10 | 199 / 249 ms | 774 / 818 ms |
-    | 16-process CPU hog | 8 | 200 / 231 ms | 777 / 827 ms |
+    | idle | 20 | 199 / 208 ms | 762 / 850 ms |
+    | 16-process CPU hog | 20 | 203 / 228 ms | 781 / 855 ms |
 
     Release to first ack has one line, 0.9 s, a tripwire and not a suite assertion. It becomes 0.65 s when the fork's 250 ms build item lands (NEXT-WORK). Park to release stays 0.6 s, park to first ack 1.5 s. No target is warmed ahead of a move.
   - **`Streams-Overrides-Version` is fleet-internal (E3, R4).**

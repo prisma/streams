@@ -3033,10 +3033,10 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
 
   | phase | line | measured max | share of the line |
   |---|---|---|---|
-  | park to release | 0.6 s | 249 ms | 42% |
-  | release to first ack, idle and hogged | 0.9 s | 827 ms | 92% |
-  | park to first ack (open-cost condition 2) | 1.5 s | about 1.07 s | 71% |
-  | park to first ack, the suite's assertion | `HOLD`, 2 s | about 1.07 s | 54% |
+  | park to release | 0.6 s | 228 ms | 38% |
+  | release to first ack, idle and hogged | 0.9 s | 855 ms | 95% |
+  | park to first ack (open-cost condition 2) | 1.5 s | about 1.08 s | 72% |
+  | park to first ack, the suite's assertion | `HOLD`, 2 s | about 1.08 s | 54% |
 
   - Release to first ack is the target's open (0.50 s build, the writer fence included) plus
     0.40 s for the rest. Its 0.9 s line is a tripwire for legs and the stress pass, not a suite
