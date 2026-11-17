@@ -44,9 +44,28 @@ async fn flush(engine: &crate::shard::ShardEngine) {
         .expect("the memtable flushes to tables");
 }
 
+/// SlateDB's `min_compaction_sources`: a log holding this many L0 tables compacts them.
+const COMPACTION_SOURCES: usize = 4;
+
+/// Waits, at most 30 s, until `leaf`'s log holds fewer L0 tables than start a compaction: the
+/// split then runs on a settled parent, so these tests count the pause's log reads only. A
+/// compaction running through the pause cost 7.7 s in the checkpoint phase on Linux, its cause
+/// not attributed; `a_split_of_a_compacting_parent_parks_only_after_the_compaction` pins that case.
+async fn compacted(leaf: &crate::shard::ShardEngine) {
+    let started = std::time::Instant::now();
+    while leaf.db.manifest().l0().len() >= COMPACTION_SOURCES {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the leaf's L0 compacts"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Closes every engine of `state` and reopens the leaf `prefix` by appending `body` to `stream`,
-/// as a replacement instance opens it, then evicts every cached block, index, filter and stats
-/// entry of the leaf's tables (its open's own index scan cached some): the leaf, cold.
+/// as a replacement instance opens it, waits for its L0 to compact (`compacted`), then evicts every
+/// cached block, index, filter and stats entry of the leaf's tables (its open's own index scan
+/// cached some): the leaf, settled and cold.
 async fn reopened_cold(
     state: &State,
     addr: std::net::SocketAddr,
@@ -60,6 +79,7 @@ async fn reopened_cold(
     let (status, _, _) = hreq(addr, "POST", &path, &json, body.as_bytes()).await;
     assert_eq!(status, 204, "the leaf reopens");
     let leaf = state.shards.open(prefix).expect("the leaf is open");
+    compacted(&leaf).await;
     let manifest = leaf.db.manifest();
     for view in manifest.all_sst_views() {
         let all = slatedb::CacheTarget::all();
