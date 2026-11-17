@@ -185,6 +185,25 @@ class Bookkeeping(unittest.TestCase):
             finally:
                 ramp.STORE[:], ramp.FAILED[:] = [], []
 
+    def test_settle_restarts_its_clock_when_a_shard_changes_owner(self):
+        # Gate decision meas149-rerun-10000 (g), F7: two shards on streams-1 (2/0), then one moves to
+        # streams-2 (1/1) at the same shard count and topology version; settle's clock restarts there.
+        def view(t, one, two):
+            beats = [{"instance": "streams-1", "ts_ms": t * 1000, "owned_shards": one},
+                     {"instance": "streams-2", "ts_ms": t * 1000, "owned_shards": two}]
+            row = ramp.topology_view({"fleet": {"heartbeats": beats}, "topology": {"version": 7}}, now_ms=t * 1000)
+            row.pop("owned")
+            row["t"] = t
+            return row
+
+        topo = [view(100, ["a", "b"], []), view(105, ["a", "b"], []), view(110, ["a"], ["b"]),
+                view(115, ["a"], ["b"])]
+        self.assertEqual([(v["shards"], v["topology_version"]) for v in topo], [(2, 7)] * 4)
+        self.assertEqual(ramp.last_change(topo, [(50, 2)], 90), 110)
+        # A split still restarts it, and a cell that did not reshape keeps the later of start and resize.
+        self.assertEqual(ramp.last_change(topo[:2] + [dict(topo[1], t=120, shards=3)], [], 90), 120)
+        self.assertEqual(ramp.last_change(topo[:2], [(95, 2)], 90), 95)
+
     def test_servers_log_topology_and_fleet_at_info(self):
         self.assertEqual(ramp.SERVER_LOG, "warn,streams_slate::topology=info,streams_slate::fleet=info")
 

@@ -196,8 +196,8 @@ and the scale-in (`count: "drain"` in `steps.jsonl`). `--set KEY=VALUE` puts
 server settings on top, for the trigger constants scaled to the 60x
 compressed time. Every server's log is kept in the results directory.
 `--settle-secs` touches each step's streams in 60 s chunks before it is
-measured, until the shards, the topology version and the live count have
-held still that long (at most `--settle-max-secs`), since the topology
+measured, until the shards, which instance owns each, the topology
+version and the live count have held still that long (at most `--settle-max-secs`), since the topology
 cooldown and the policy tick are not compressed. `--drain-secs auto` sizes
 the drain from the constants the servers run and prints the arithmetic.
 A step holds by #149's bar over the whole step, its settle chunks included

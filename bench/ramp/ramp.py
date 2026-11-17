@@ -130,13 +130,15 @@ def fleet_compose(n, out_dir):
 
 
 def topology_view(view, now_ms=None):
-    """The shards the live heartbeats own (union) and the topology version, from one /operator/data.json."""
+    """The shards the live heartbeats own (union), which live instance owns which (placement) and the
+    topology version, from one /operator/data.json."""
     now_ms = now_ms or time.time() * 1000
     beats = (view.get("fleet") or {}).get("heartbeats") or []
     live = [h for h in beats if now_ms - (h.get("ts_ms") or 0) < 15000]
     owned = sorted({s for h in live for s in (h.get("owned_shards") or [])})
+    placement = {h.get("instance"): sorted(h.get("owned_shards") or []) for h in live}
     topo = view.get("topology") or (view.get("fleet") or {}).get("topology") or {}
-    return {"shards": len(owned), "owned": owned, "instances": len(live),
+    return {"shards": len(owned), "owned": owned, "placement": placement, "instances": len(live),
             "topology_version": topo.get("version") if isinstance(topo, dict) else None}
 
 
@@ -505,10 +507,23 @@ def verdict(count, period, step_secs, pop, sheds, ooms):
     return all(checks.values()), checks, held
 
 
+def last_change(topo, history, started):
+    """When the cell last reshaped, for settle's clock: the latest of STARTED, the Scaler's resizes
+    (HISTORY) and the sample at which the shard count, the topology version or any live instance's
+    owned shards changed (TOPO, the Watch's topology_view rows): an ownership move at a fixed shard
+    count is reshaping too (gate decision meas149-rerun-10000, 2026-11-17, (g))."""
+    def shape(v):
+        return v["shards"], v["topology_version"], v.get("placement")
+
+    return max([at for at, _ in history] + [v["t"] for v0, v in zip(topo, topo[1:]) if shape(v0) != shape(v)]
+               + [started])
+
+
 def settle(a, count, prev, posture, scaler, out_dir):
     """Before a step is measured: touch its streams in 60 s chunks (the first creates them) until
-    the shards the live heartbeats own, the topology version and the live count have not changed
-    for --settle-secs, at most --settle-max-secs. Returns what the step records."""
+    the shards the live heartbeats own (which instance owns each included), the topology version and
+    the live count have not changed for --settle-secs, at most --settle-max-secs. Returns what the
+    step records."""
     watch = Watch(a.fleet_max, os.path.join(out_dir, f"settle-{count}.jsonl"), posture, live=scaler)
     watch.start()
     budget = settle_budget(a, count, posture)
@@ -536,10 +551,7 @@ def settle(a, count, prev, posture, scaler, out_dir):
             pops.append({"pop": pop})
             if chunks == 1 and pop.get("created") != count:
                 break
-            last_change = max([at for at, _ in scaler.history] + [
-                v["t"] for v0, v in zip(watch.topo, watch.topo[1:])
-                if (v0["shards"], v0["topology_version"]) != (v["shards"], v["topology_version"])] + [started])
-            if time.time() - last_change >= a.settle_secs:
+            if time.time() - last_change(watch.topo, scaler.history, started) >= a.settle_secs:
                 settled = True
                 break
     finally:

@@ -142,7 +142,10 @@ A forwarded wait is held on two instances (`docs/SCALE-VALIDATION.md` §1.6), so
   and one read of it from its start, with auth enforced. Run it twice: once
   with one tenant owning every stream, once with a tenant each. Each step
   adds its streams to the last step's. Hold each step for the hour a touch
-  takes, after the cell has stopped resizing for 10 minutes.
+  takes, after the cell has stopped resizing for 10 minutes. Resizing
+  includes ownership moves: a shard moving between instances restarts the
+  10 minutes, as a split, a merge or a change in the instance count does
+  (gate decision meas149-rerun-10000, 2026-11-17, "The bar" 3).
 - **A step holds** when every stream was created, at least 98% of the
   touches due were served at a p99 of at most 2 s, and no instance shed or
   was OOM-killed (#149's bars). The bar holds over the whole step, the time
@@ -271,10 +274,10 @@ These stay at the binary defaults:
 - the policy's 10 s tick.
 
 Each step first settles. Its streams are touched in 60 s chunks until the
-shards, the topology version and the live count have held still for
-`--settle-secs`, then the step is measured. The bound, `--settle-max-secs
-auto`, is 300 s plus one cooldown and 30 s per leaf the step adds, by the
-table above: 420 s at 100,000 streams with a 10 s cooldown. Every
+shards, which instance owns each, the topology version and the live count
+have held still for `--settle-secs`, then the step is measured. The bound,
+`--settle-max-secs auto`, is 300 s plus one cooldown and 30 s per leaf the
+step adds, by the table above: 420 s at 100,000 streams with a 10 s cooldown. Every
 chunk's served share, p99, errors by code and sheds are kept beside the
 settled figures. The bar applies to the chunks too: the step's served share
 counts every chunk's touches and the measured window's, against the touches
