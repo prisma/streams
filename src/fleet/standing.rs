@@ -55,9 +55,10 @@ pub(crate) struct Standing {
     handoffs: std::sync::OnceLock<super::handoff::Queue>,
     /// Planned moves whose close did not end clean, so the move was a takeover by fence (F6 E5).
     handoffs_fenced: AtomicU64,
-    /// The version of the overrides document this instance last published, and a forwarded
-    /// version that still differed after a refresh (F6 D7: one read per distinct value).
-    overrides_tag: Mutex<(String, Option<String>)>,
+    /// The overrides document's version this instance holds (F6 step 8, `fleet::tags`).
+    tags: super::tags::Tags,
+    /// The last planned move's phases and the instant its hold ended.
+    last_handoff: Mutex<Option<(super::handoff::Phases, tokio::time::Instant)>>,
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
@@ -122,7 +123,8 @@ impl Default for Standing {
             topology_intent: Mutex::new(None),
             handoffs: std::sync::OnceLock::new(),
             handoffs_fenced: AtomicU64::new(0),
-            overrides_tag: Mutex::new((String::new(), None)),
+            tags: super::tags::Tags::default(),
+            last_handoff: Mutex::new(None),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
             cached: Mutex::new((0, Arc::from([]))),
@@ -146,35 +148,22 @@ impl Standing {
         }
     }
 
-    /// This instance published the overrides document at version `tag`.
-    pub(super) fn set_overrides_tag(&self, tag: String) {
-        if let Ok(mut held) = self.overrides_tag.lock() {
-            held.0 = tag;
+    /// The overrides version this instance holds, and its header-triggered reads (F6 step 8).
+    pub(crate) fn tags(&self) -> &super::tags::Tags {
+        &self.tags
+    }
+
+    /// A planned move ended its hold at `released` after `phases`.
+    pub(super) fn record_handoff(&self, phases: super::handoff::Phases, released: tokio::time::Instant) {
+        if let Ok(mut last) = self.last_handoff.lock() {
+            *last = Some((phases, released));
         }
     }
 
-    /// The overrides version this instance last published (F6 step 8: the forward header).
-    pub(crate) fn overrides_tag(&self) -> String {
-        self.overrides_tag
-            .lock()
-            .map(|held| held.0.clone())
-            .unwrap_or_default()
-    }
-
-    /// Whether a forward naming overrides version `seen` should refresh this instance's mirror:
-    /// it differs from what this instance published and from the last value that still differed
-    /// after a refresh (D7).
-    pub(crate) fn refreshes_for(&self, seen: &str) -> bool {
-        self.overrides_tag
-            .lock()
-            .is_ok_and(|held| held.0 != seen && held.1.as_deref() != Some(seen))
-    }
-
-    /// A refresh did not bring `seen`: no later forward naming it refreshes again.
-    pub(crate) fn remember_stale(&self, seen: &str) {
-        if let Ok(mut held) = self.overrides_tag.lock() {
-            held.1 = Some(seen.to_string());
-        }
+    /// Tests: the last planned move's phases and the instant its hold ended.
+    #[cfg(test)]
+    pub(crate) fn last_handoff(&self) -> Option<(super::handoff::Phases, tokio::time::Instant)> {
+        self.last_handoff.lock().ok().and_then(|last| *last)
     }
 
     /// A planned move's close did not end clean (F6 E5).

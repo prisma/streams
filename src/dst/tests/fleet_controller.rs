@@ -288,8 +288,8 @@ fn assert_reason_ends_with_rate_and_live(reason: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unreadable_router_report_defers_only_the_desired_publication() {
     let inner = mem();
-    // Ring of two, shard 00 overridden to streams-2 long enough ago that
-    // return-home may hand it back, and one router report that is not JSON.
+    // Ring of two; 00 aged-overridden to streams-2 (only it hands 00 back, F6) and 01 to a
+    // non-member (void: anyone drops it; its owner, here, opens it eagerly); a non-JSON report.
     let aged = now_ms() - 301_000;
     for (path, body) in [
         (
@@ -298,7 +298,7 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         ),
         (
             "fleet/overrides.json",
-            format!(r#"{{"entries":{{"00":{{"to":"streams-2","ms":{aged}}}}}}}"#),
+            format!(r#"{{"entries":{{"00":{{"to":"streams-2","ms":{aged}}},"01":{{"to":"streams-9","ms":{aged}}}}}}}"#),
         ),
         ("routers/edge-1.json", "not json".to_string()),
     ] {
@@ -337,14 +337,14 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         &rig.tasks
     ));
 
-    // Tick 1 publishes the view, yields 00 and returns the aged override
-    // home (CAS); tick 2 mirrors the emptied override map.
+    // Tick 1 publishes the view, yields 00 and drops the void override (CAS); tick 2 mirrors
+    // the override map left with 00's.
     let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
     settled(Duration::from_secs(12), || {
         rig.state.ownership.ring_active() == ring
-            && rig.state.shards.held_prefixes().is_empty()
+            && rig.state.shards.held_prefixes() == ["01"]
             && rig.state.peer.has_peer("streams-2")
-            && rig.state.ownership.overrides().is_empty()
+            && rig.state.ownership.overrides().len() == 1
     })
     .await;
     assert_eq!(
@@ -352,18 +352,14 @@ async fn an_unreadable_router_report_defers_only_the_desired_publication() {
         ring,
         "an unreadable router report must not freeze ownership publication"
     );
-    assert!(
-        rig.state.shards.held_prefixes().is_empty(),
-        "possession must still yield the moved shard at the tick"
-    );
+    let held = rig.state.shards.held_prefixes();
+    assert_eq!(held, ["01"], "possession must still yield the moved shard at the tick");
     assert!(
         rig.state.peer.has_peer("streams-2"),
         "the peer table must still be published"
     );
-    assert!(
-        rig.state.ownership.overrides().is_empty(),
-        "return-home must still run and commit while a router report is unreadable"
-    );
+    let left: Vec<_> = rig.state.ownership.overrides().into_keys().collect();
+    assert_eq!(left, ["00"], "return-home must still run and commit while a report is unreadable");
     // Tick 1 reached its publication site (its override CAS precedes it)
     // with the report unreadable: the desired document is untouched.
     let desired = desired_doc(&rig.state).await;

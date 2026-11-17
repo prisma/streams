@@ -38,6 +38,8 @@ mod planning;
 pub(crate) mod repository;
 mod stale;
 mod standing;
+// The overrides document's version this instance holds (F6 step 8).
+mod tags;
 pub(crate) mod view;
 pub(crate) use heartbeat::Heartbeat;
 pub(crate) use repository::{FleetDocument, FleetRepository};
