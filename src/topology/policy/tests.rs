@@ -569,7 +569,7 @@ fn congestion_never_blocks_a_split() {
 }
 
 /// The decision at `READY` for a ready split, after `edit` changed the instances.
-fn reserve(edit: impl FnOnce(&mut View)) -> Decision {
+pub(super) fn reserve(edit: impl FnOnce(&mut View)) -> Decision {
     let (mut policy, mut view) = sustained();
     edit(&mut view);
     tick(&mut policy, &mut view, READY)
@@ -581,8 +581,13 @@ fn a_split_needs_room_for_two_children_beside_the_parent_on_the_actor() {
         reserve(|v| v.instances[0].resident_shards = 5),
         split("1", SplitKind::Normal)
     );
+    // The other instance has no room for the shard and its children (5 + 3 > 7), so it asks.
+    let full_pair = |v: &mut View| {
+        v.instances[0].resident_shards = 6;
+        v.instances[1].resident_shards = 5;
+    };
     assert_eq!(
-        reserve(|v| v.instances[0].resident_shards = 6),
+        reserve(full_pair),
         Decision::AskInstance {
             resident: 6,
             max: 7
@@ -632,6 +637,7 @@ fn at_the_fleet_maximum_a_split_without_room_holds_at_the_topologys_maximum() {
     let full = |live| {
         move |v: &mut View| {
             v.instances[0].resident_shards = 6;
+            v.instances[1].resident_shards = 5;
             v.live = live;
         }
     };

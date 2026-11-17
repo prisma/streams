@@ -17,6 +17,7 @@ use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 
 // A rolled-back split's backoff (meas149-reshaping F1d).
 mod backoff;
+mod room;
 
 use backoff::Backoff;
 
@@ -228,10 +229,7 @@ async fn act(cell: &Cell, view: &View, decision: Decision, backoff: &mut Backoff
             tracing::info!(?refused, prefix, "topology split refused");
             backoff.refused(prefix, refused.0, view.now_ms, cell.limits.cooldown_ms);
             match refused.0 {
-                INSTANCE_FULL => Decision::AskInstance {
-                    resident: resident(view, &cell.me),
-                    max: cell.limits.shards_per_instance_max,
-                },
+                INSTANCE_FULL => room::moved_for_room(cell, view, prefix).await,
                 code => Decision::Hold(hold_for(code)),
             }
         }

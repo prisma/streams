@@ -10,15 +10,16 @@
 use super::{FleetDocument, FleetRepository};
 use crate::ownership::OwnershipService;
 
-/// Move `halves` to `to` in one CAS of the overrides document, the entries that name no leaf of
-/// the topology stored in `store` dropped (`stale`), and mirror the move here at once. Whether it
+/// Move `halves` (a merge's two halves, or the one shard a split refused for room takes elsewhere,
+/// `policy_loop::room`) to `to` in one CAS of the overrides document, the entries that name no leaf
+/// of the topology stored in `store` dropped (`stale`), and mirror the move here at once. Whether it
 /// committed: a lost CAS or an unreadable document moves nothing, and the caller asks again on its
 /// next pass.
 pub(crate) async fn colocate(
     fleet: &FleetRepository,
     ownership: &OwnershipService,
     store: &dyn object_store::ObjectStore,
-    halves: &[String; 2],
+    halves: &[String],
     to: &str,
 ) -> bool {
     let Ok((overrides, version)) = fleet.read_overrides().await else {
