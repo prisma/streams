@@ -139,3 +139,37 @@ fn a_call_site_counts_exactly_the_reader_gets_while_it_runs() {
     assert_eq!(db["slatedb.db.sst_count{}"], 3, "{db}");
     assert_eq!(db["prisma_streams.call_site.calls{site=site-b}"], 1, "{db}");
 }
+
+/// **An open's requests are counted per kind, every store type summed** (the open line's
+/// `requests`, GATE-DECISION-open-cost-2026-11-17). The main store's 5 and the WAL's 2 `db.get`
+/// sum to 7; between two counts only the kinds that grew print, as `kind=n` in key order.
+#[test]
+fn an_opens_requests_are_counted_per_kind() {
+    let m = super::metrics::for_log("tests/requests-per-kind");
+    let recorder = m.recorder();
+    let count = |component: &str, store: &str, api: &str, n: u64| {
+        let labels = [
+            ("component", component),
+            ("store_type", store),
+            ("op", "get"),
+            ("api", api),
+        ];
+        recorder
+            .register_counter("slatedb.object_store.request_count", "test", &labels)
+            .increment(n);
+    };
+    count("db", "main", "get", 5);
+    count("db", "wal", "get", 2);
+    count("db", "main", "head", 1);
+    let before = m.requests();
+    assert_eq!(before.get("db.get"), Some(&7), "{before:?}");
+    assert_eq!(before.get("db.head"), Some(&1), "{before:?}");
+    count("db", "main", "get", 3);
+    count("compactor", "main", "put", 2);
+    let after = m.requests();
+    assert_eq!(
+        super::metrics::requests_since(&before, &after),
+        "compactor.put=2 db.get=3"
+    );
+    assert_eq!(super::metrics::requests_since(&after, &after), "");
+}

@@ -140,6 +140,29 @@ impl ShardLogMetrics {
             .sum()
     }
 
+    /// The database's object-store requests so far by `component.api` (`db.get`, `db.head`,
+    /// `compactor.put`, ...), every store type summed: an open's line counts them per kind.
+    pub(crate) fn requests(&self) -> BTreeMap<String, u64> {
+        let mut out = BTreeMap::new();
+        for m in self
+            .recorder
+            .snapshot()
+            .by_name("slatedb.object_store.request_count")
+        {
+            let label = |key: &str| {
+                m.labels
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map_or("", |(_, v)| v.as_str())
+            };
+            if let MetricValue::Counter(v) = m.value {
+                *out.entry(format!("{}.{}", label("component"), label("api")))
+                    .or_default() += v;
+            }
+        }
+        out
+    }
+
     /// A counter's value now (0 before SlateDB registers it).
     pub(crate) fn counter(&self, metric: &str) -> u64 {
         self.recorder
@@ -152,6 +175,19 @@ impl ShardLogMetrics {
             })
             .sum()
     }
+}
+
+/// The requests made between two of `requests`' counts, `kind=n` in key order, kinds that made
+/// none left out.
+pub(crate) fn requests_since(
+    before: &BTreeMap<String, u64>,
+    after: &BTreeMap<String, u64>,
+) -> String {
+    let made = after.iter().filter_map(|(kind, n)| {
+        let since = n.saturating_sub(before.get(kind).copied().unwrap_or(0));
+        (since > 0).then(|| format!("{kind}={since}"))
+    });
+    made.collect::<Vec<_>>().join(" ")
 }
 
 /// The counters `attribution` reports per database: its object-store

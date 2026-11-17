@@ -51,12 +51,20 @@ impl ShardLogBuilder {
     pub(crate) async fn build(self) -> Result<slatedb::Db, slatedb::Error> {
         let metrics = crate::spill::metrics::for_log(&self.path);
         let gets = metrics.reader_gets();
+        let requests = metrics.requests();
         let building = std::time::Instant::now();
         let db = self.builder.build().await?;
         let built = building.elapsed();
         let checking = std::time::Instant::now();
         let identity = crate::shard::check_identity(&db, &self.path).await;
-        log_open(&self.path, &db, &metrics, (gets, built, checking.elapsed()));
+        let before = (gets, &requests);
+        log_open(
+            &self.path,
+            &db,
+            &metrics,
+            before,
+            (built, checking.elapsed()),
+        );
         if let Err(refusal) = identity {
             if let Err(error) = db.close().await {
                 tracing::warn!(path = %self.path, %error, "closing a refused shard log failed");
@@ -75,12 +83,15 @@ impl ShardLogBuilder {
 }
 /// The open's phases at INFO: the build's time, the WAL objects it replayed (the manifest's next WAL
 /// id less one, less the last WAL id its memtables already held) and the memtable bytes after it,
-/// the store GETs it made (manifests, the WAL objects, SST metadata), and the identity check's time.
+/// the store GETs it made (manifests, the WAL objects, SST metadata), its requests of every kind
+/// by component (`requests`: the build's fences, puts, heads and lists, and the compactor's start
+/// within it), and the identity check's time.
 fn log_open(
     path: &str,
     db: &slatedb::Db,
     metrics: &crate::spill::metrics::ShardLogMetrics,
-    (gets_before, built, identity): (u64, std::time::Duration, std::time::Duration),
+    (gets_before, requests_before): (u64, &std::collections::BTreeMap<String, u64>),
+    (built, identity): (std::time::Duration, std::time::Duration),
 ) {
     let manifest = db.manifest();
     let replayed = manifest
@@ -89,12 +100,14 @@ fn log_open(
         .saturating_sub(1);
     let memtable_bytes = metrics.gauge(slatedb::db_stats::TOTAL_MEM_SIZE_BYTES);
     let gets = metrics.reader_gets().saturating_sub(gets_before);
+    let requests = crate::spill::metrics::requests_since(requests_before, &metrics.requests());
     tracing::info!(
         path,
         build_ms = built.as_millis(),
         wal_objects_replayed = replayed,
         memtable_bytes,
         store_gets = gets,
+        requests,
         identity_ms = identity.as_millis(),
         "shard log opened, by phase (build: manifest, fence, WAL replay)"
     );
