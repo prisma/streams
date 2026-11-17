@@ -2,8 +2,8 @@
 //! (GATE-DECISION-f2-convergence-2026-11-17, option 2 amended). S4 refuses a split with
 //! `instance_full` when this instance cannot hold the parent beside both children. An accepting
 //! instance with room for the shard and its two children may still exist: then the shard moves
-//! there by one overrides CAS (`fleet::colocate::colocate` with a one-prefix slice, a
-//! `rebalance_move` among its events) and its new owner splits it once the move's cooldown has
+//! there giver first (`fleet::handoff`: parked, flushed and closed here, then one overrides CAS
+//! with a `rebalance_move` among its events) and its new owner splits it once the move's cooldown has
 //! passed (`override_recent` meanwhile). Only with no such instance does the policy ask the fleet
 //! for one. A born child is never moved within a move cooldown of its birth: its young override
 //! holds the split (`override_recent`) before the split is tried.
@@ -22,22 +22,18 @@ pub(super) async fn moved_for_room(cell: &Cell, view: &View, prefix: &str) -> De
             max,
         };
     };
-    let moved = [prefix.to_string()];
-    let committed = crate::fleet::colocate::colocate(
-        &cell.fleet,
-        &cell.ownership,
-        &*cell.store,
-        &moved,
-        &target,
-    )
-    .await;
-    if committed {
+    // Giver first (F6): this instance holds `prefix` and hands it off before the overrides name
+    // `target`.
+    let change = crate::fleet::handoff::Change::To(target.clone());
+    let outcome = crate::fleet::handoff::hand_off(&cell.fleet, prefix, change, false).await;
+    if outcome == crate::fleet::handoff::Outcome::Moved {
         tracing::info!(prefix, %target, "topology split refused for room: moving the shard to an instance with room");
         return Decision::Hold(Hold::OverrideRecent);
     }
     tracing::info!(
         prefix,
-        "topology split refused for room: the overrides CAS was lost"
+        ?outcome,
+        "topology split refused for room: the move was not made"
     );
     Decision::Hold(Hold::Steady)
 }

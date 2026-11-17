@@ -2990,3 +2990,26 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
   (`Compute-Instance`, where the edge honours it), or the server forwards
   queue routes too. Ask Habanero whether Compute's edge follows
   `Streams-Replay-To` first (meas149-reshaping, (d)).
+
+## 22. Follow-ups from F6, a planned move hands off giver first (2026-11-17)
+
+- **A ring change at scale-out moves served shards with no handoff**
+  (GATE-DECISION-f6-addendum-2026-11-17, item 4; not in F6's first code). A
+  scale-out (the desired count grows) gives the new member the shards the new
+  ring assigns it, with no override: each holder yields at its next tick, once
+  its view names the new member, and the new member's first routed request
+  opens the shard, which can fence the holder's live writer (its in-flight
+  appends answered `outcome_unknown`). The 10,000 rerun did not show it (F2
+  pins both children on the actor, and it had one scale-out), but every
+  scale-out towards 100,000 can.
+  - Direction (Fable, Q2): a ring change becomes handoffs. Each holder pins the
+    shards the new ring would take from it (an override naming itself) before
+    the new member counts as active, and return-home then moves them giver
+    first. Its own addendum states how the pin is ordered against the member's
+    first view, and what a holder that is dark at that moment does.
+  - Red first: `dst::dst_tests::fleet_handoff::a_scale_out_moves_its_shards_without_fencing`.
+    Expected failure today: the holder's engine of a moved shard closes
+    `Fenced`, and its in-flight appends answer raw `503 shard_moving` (product
+    `outcome_unknown`).
+  - The full #149 rerun needs it, unless M's leg and the DST both show no fence
+    at scale-out (Q4).

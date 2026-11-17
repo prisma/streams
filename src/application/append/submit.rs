@@ -91,10 +91,15 @@ pub(super) async fn submit(
         .map_err(|e| e.retry(2));
     }
     if let Err(error) = engine.try_enqueue(req) {
+        // Closed by a planned move after this request resolved it (F6): nothing was written, and
+        // the move's hold decides where it goes.
+        if matches!(error, EnqueueError::Closed) && engine.gc_state().gate.handed_off() {
+            return held_by_a_split(state, seg, &engine).await;
+        }
         return Err(enqueue_refused(&error));
     }
     match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
-        Ok(Ok(Err(AppendErr::Splitting))) => held_by_a_split(state, seg).await,
+        Ok(Ok(Err(AppendErr::Splitting))) => held_by_a_split(state, seg, &engine).await,
         Ok(Ok(o)) => Ok(o),
         _ => fail(
             FailureClass::Timeout,
@@ -104,19 +109,27 @@ pub(super) async fn submit(
     }
 }
 
-/// An append a split held, never written. Once the split published, its route resolves under
-/// the new topology: where another instance owns the child, the answer is that owner's `409`
-/// (with the topology version, which the forward takes one hop); otherwise it stays the hold's
-/// `503 shard_splitting`.
+/// An append a split or a planned move held, never written. Once the split published, or the
+/// move's hold ended, its route resolves again: where another instance owns the shard, the answer
+/// is that owner's `409` (with the topology version, which the forward takes one hop); otherwise
+/// it stays the hold's `503 shard_splitting`, or, for a move that `held` released, the move's
+/// `503 shard_moving` (F6 D9): not written, retried after a second.
 async fn held_by_a_split(
     state: &AppendService,
     seg: &SegRoute,
+    held: &crate::shard::ShardEngine,
 ) -> Result<Result<AppendAck, AppendErr>, AppendFailure> {
     let resolved = state
         .shards
         .resolve(&seg.shard_route, crate::shard_directory::Adoption::External)
         .await;
     match resolved {
+        Ok(_) if held.gc_state().gate.handed_off() => fail(
+            FailureClass::Unavailable,
+            AppendCode::ShardMoving,
+            "shard moving; nothing was written; retry",
+        )
+        .map_err(|e| e.retry(1)),
         Ok(_) => Ok(Err(AppendErr::Splitting)),
         Err(e) => Err(AppendFailure::from_resolve(e)),
     }

@@ -35,6 +35,8 @@ mod latch_calibration;
 
 #[path = "tests/fleet_birth.rs"]
 mod fleet_birth;
+#[path = "tests/fleet_handoff.rs"]
+mod fleet_handoff;
 #[path = "tests/fleet_topology.rs"]
 mod fleet_topology;
 #[path = "tests/l0_watermark.rs"]

@@ -27,10 +27,20 @@ fn two_members(cli: &mut crate::config::CliArgs) {
     cli.scale_in_secs = 3_600;
 }
 
+/// The cell of the meas-149 rerun's planned move: [`two_members`] under the rig's in-flight cap of
+/// 512 (`posture-on-1-1x1.env`, `ADMIT_MAX_INFLIGHT`).
+fn loaded_members(cli: &mut crate::config::CliArgs) {
+    two_members(cli);
+    cli.admit_max_inflight = 512;
+}
+
+/// A cell's data store and its members' configuration.
+type CellOf<'a> = (&'a Arc<dyn ObjectStore>, fn(&mut crate::config::CliArgs));
+
 /// A member `name` of the cell over `data` and `fleet`; its fleet started when `ticks`.
 async fn member(
     fleet: &Arc<dyn ObjectStore>,
-    data: &Arc<dyn ObjectStore>,
+    (data, cli): CellOf<'_>,
     name: &str,
     runtime: RigRuntime,
     ticks: bool,
@@ -41,7 +51,7 @@ async fn member(
         HttpRigOptions {
             fleet_store: Some(fleet.clone()),
             instance: Some(name.to_string()),
-            cli: two_members,
+            cli,
             prefixes: vec![String::new()],
             ..Default::default()
         },
@@ -106,7 +116,24 @@ impl Pair {
         Self::of(Tick::Never).await
     }
 
+    /// Both members with their fleet ticks running, every data-store request 20 ms away and the
+    /// rig's in-flight cap of 512: the meas-149 rerun's planned move (F6).
+    pub(super) async fn loaded() -> Self {
+        use crate::dst::fault_store::{FaultPlan, FaultStore};
+        let plan = FaultPlan {
+            latency_pct: 100,
+            latency_ms: (20, 20),
+            ..FaultPlan::CLEAN
+        };
+        let data: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 0xF6, plan);
+        Self::over(Tick::Runs, (&data, loaded_members)).await
+    }
+
     async fn of(tick: Tick) -> Self {
+        Self::over(tick, (&mem(), two_members)).await
+    }
+
+    async fn over(tick: Tick, cell: CellOf<'_>) -> Self {
         let b_ticks = matches!(tick, Tick::Runs);
         let fleet = mem();
         let desired = r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
@@ -114,10 +141,9 @@ impl Pair {
             .put(&Path::from("fleet/desired.json"), PutPayload::from(desired))
             .await
             .unwrap();
-        let data = mem();
         let b = member(
             &fleet,
-            &data,
+            cell,
             "streams-2",
             RigRuntime::incarnation(1),
             b_ticks,
@@ -130,7 +156,7 @@ impl Pair {
             let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
             b.state.ownership.set_view(both, Default::default());
         }
-        let a = member(&fleet, &data, "streams-1", RigRuntime::first(), true).await;
+        let a = member(&fleet, cell, "streams-1", RigRuntime::first(), true).await;
         store_topology(&a).await;
         b.state
             .peer
@@ -427,12 +453,12 @@ async fn a_member_with_no_view_installs_a_split_and_still_opens_nothing() {
 }
 
 /// The overrides document of the cell at `rig`'s fleet store.
-async fn overrides_of(rig: &HttpRig) -> crate::fleet::Overrides {
+pub(super) async fn overrides_of(rig: &HttpRig) -> crate::fleet::Overrides {
     rig.state.fleet.read_overrides().await.unwrap().0
 }
 
 /// The children's entries, which name the actor, stamped back past the return window, by CAS.
-async fn age_the_children(a: &crate::http::AppState) {
+pub(super) async fn age_the_children(a: &crate::http::AppState) {
     let window_ms = i64::try_from(a.config.fleet.rebalance_return_secs).unwrap() * 1000;
     age_entries(a, &["0", "1"], "streams-1", window_ms + 60_000).await;
 }
@@ -564,7 +590,7 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
     let mut rigs = Vec::new();
     for (n, name) in names.iter().enumerate() {
         let runtime = RigRuntime::incarnation(u64::try_from(n).unwrap());
-        rigs.push(member(&fleet, &data, name, runtime, true).await);
+        rigs.push(member(&fleet, (&data, two_members), name, runtime, true).await);
     }
     store_topology(&rigs[0]).await;
     for rig in &rigs {
