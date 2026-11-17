@@ -219,6 +219,31 @@ impl ShardEngine {
     }
 }
 
+/// Answer every operation still queued when `engine` closed: `first`, taken before the close was
+/// seen, then what remains in `rx`. None was ever offered to a group (an operation is in a queue
+/// or in a group, never both, and nothing staged re-enters a queue), so none is written. Under a
+/// retired gate (a split's or a merge's source, or a planned move's giver) each is answered as the
+/// hold answers it, `Splitting`, which the append path re-resolves to the new owner; otherwise
+/// `Moved`, as a fenced or failed engine has always answered it.
+pub(in crate::shard) fn drain_closed(
+    engine: &ShardEngine,
+    first: Option<CommitOp>,
+    rx: &mut mpsc::Receiver<CommitOp>,
+) {
+    let retired = engine.gc_state().gate.reroute().is_some();
+    let queued = first
+        .into_iter()
+        .chain(std::iter::from_fn(|| rx.try_recv().ok()));
+    for op in queued {
+        let error = if retired {
+            AppendErr::Splitting
+        } else {
+            AppendErr::Moved
+        };
+        CommitTransaction::reject_op(op, error);
+    }
+}
+
 /// An operation a split holds past its pause: an append of a retired parent goes to the child
 /// engine its route names, unchanged (it was never offered to a group, so its child acks it with
 /// the child's offset); every other one is answered `Splitting`.
