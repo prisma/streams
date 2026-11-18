@@ -3024,6 +3024,14 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
     `outcome_unknown`).
   - The full #149 rerun needs it, unless M's leg and the DST both show no fence
     at scale-out (Q4).
+  - Scale-in is the same class (the drain addendum, 2026-11-18, G8): a member a
+    lower desired count removes from the ring is not drained by `fleet::drain`
+    (a planned drain hands off first since F6), so its shards still move by
+    ring and fence until this item lands. The peer-side rule the drain
+    addendum refused for the drain (peers honour a draining or leaving
+    member's own entries until it holds nothing, its direction 3) belongs here.
+    Its DST beside the scale-out one:
+    `dst::dst_tests::fleet_handoff::a_scale_in_moves_its_shards_without_fencing`.
 
 - **A planned move holds an append about 1 s on a 20 ms store, at most `HOLD`; the fork's build
   item is what shortens it** (GATE-DECISION-f6-prep-rows-rev2-2026-11-17, "Addendum: idle
