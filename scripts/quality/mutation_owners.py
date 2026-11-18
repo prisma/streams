@@ -451,7 +451,7 @@ OWNERS = (
     # are reached through the handoff DSTs; the tags' decisions have their own unit tests.
     owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
-    owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain::'),
+    owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
     owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
     owner('fleet_moves', 'src/fleet/moves.rs',

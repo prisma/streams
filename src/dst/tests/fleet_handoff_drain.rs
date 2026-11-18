@@ -79,7 +79,7 @@ async fn drained_under_appends(
     let drained = async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let t0 = Instant::now();
-        let outcome = drain(&a.state, "streams-1", BUDGET).await;
+        let outcome = drained_within(&a.state, BOUND).await;
         let took = t0.elapsed();
         tokio::time::sleep(Duration::from_secs(1)).await;
         stop.store(true, Ordering::SeqCst);
@@ -244,7 +244,7 @@ async fn a_drainer_sealed_against_opens_answers_a_late_request_to_retry() {
 /// park within its bound and ends `NotStarted` on every try; once the handoff phase has passed,
 /// the drain stops opening, gives `10` up (counted once on `streams-1`, as a writer taken ahead of
 /// a move) and announces; `10` is then taken by fence or by the drainer's own yield, and the drain
-/// ends `HandedOff`.
+/// ends `HandedOff`. The drainer's gate is stopped: an open of any leaf there is turned away.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drain_whose_handoff_phase_runs_out_announces_and_counts_the_fence() {
     let (a, b) = balance_cell().await;
@@ -265,15 +265,21 @@ async fn a_drain_whose_handoff_phase_runs_out_announces_and_counts_the_fence() {
     };
     engine.try_close(close).unwrap();
     let standing = a.state.fleet.standing();
+    let ended = AtomicBool::new(false);
+    let drained = async {
+        let outcome = drained_within(&a.state, Duration::from_secs(32) + BOUND / 3).await;
+        ended.store(true, Ordering::SeqCst);
+        outcome
+    };
+    // Held until the drain announces, or ends without announcing.
     let release = async {
-        while !standing.draining() {
+        while !standing.draining() && !ended.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         drop(held);
     };
     let t0 = Instant::now();
-    let (outcome, ()) =
-        futures_util::future::join(drain(&a.state, "streams-1", BUDGET), release).await;
+    let (outcome, ()) = futures_util::future::join(drained, release).await;
     eprintln!("HANDOFF drain took={:?} outcome={outcome:?}", t0.elapsed());
     assert_eq!(outcome, DrainOutcome::HandedOff);
     assert!(
@@ -285,7 +291,31 @@ async fn a_drain_whose_handoff_phase_runs_out_announces_and_counts_the_fence() {
         1,
         "10 given up, counted once"
     );
+    let reopened = a
+        .state
+        .shards
+        .open_or_wait("00", Duration::from_secs(1))
+        .await;
+    assert!(
+        matches!(
+            reopened,
+            crate::sharddir::OpenOutcome::Wait {
+                code: "shard_closing",
+                ..
+            }
+        ),
+        "the drainer opens nothing more"
+    );
     stopped([a, b]).await;
+}
+
+/// `streams-1`'s drain on `state` with the production budget, ending within `within`, the bound of
+/// the test that runs it: a drain still going then fails by assertion.
+async fn drained_within(state: &crate::http::AppState, within: Duration) -> DrainOutcome {
+    let drained = drain(state, "streams-1", BUDGET);
+    tokio::time::timeout(within, drained)
+        .await
+        .expect("the drain ends within the test's bound")
 }
 
 /// Once `successor` holds a leaf the drain handed it, move that leaf back to the unannounced
@@ -463,7 +493,7 @@ async fn a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay() {
     let mut taken = 0;
     let stream = stream_in(&a.state, a.addr, leaf, &mut taken).await;
     assert_eq!(
-        drain(&a.state, "streams-1", BUDGET).await,
+        drained_within(&a.state, BOUND).await,
         DrainOutcome::HandedOff
     );
     aged_past_the_window(&b.state, leaf).await;
@@ -652,7 +682,12 @@ async fn a_drainer_killed_mid_phase_leaves_every_record_exact() {
 /// that said `draining` (the beat it publishes, as its peers read it).
 async fn withdrawn_before_announced(drainer: &crate::http::AppState) -> Option<String> {
     let me = drainer.ownership.instance().to_string();
+    let t0 = Instant::now();
     loop {
+        assert!(
+            t0.elapsed() < BOUND,
+            "a beat of the drainer says draining or withdrawn"
+        );
         let beats = drainer.fleet.peek_heartbeat_set().await.unwrap_or_default();
         if let Some(beat) = beats.iter().find(|beat| beat.instance == me) {
             if beat.draining {
@@ -701,7 +736,9 @@ async fn a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it() 
     let standing = a.state.fleet.standing();
     let announced = async {
         let withdrawn = withdrawn_before_announced(&a.state).await;
+        let t0 = Instant::now();
         while !standing.draining() {
+            assert!(t0.elapsed() < BOUND, "the drain announces");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         stop.store(true, Ordering::SeqCst);

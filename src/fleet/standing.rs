@@ -434,6 +434,26 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
+    /// A drain has begun from its first handoff and once it is announced, each alone; a planned
+    /// move's close that did not end clean is counted, once each.
+    #[test]
+    fn a_drain_begins_with_its_handoffs_and_a_fenced_close_is_counted() {
+        let fresh = Standing::default();
+        assert!(!fresh.drain_begun());
+        let handing_off = Standing::default();
+        handing_off.begin_handing_off_all();
+        let announced = Standing::default();
+        announced.begin_draining();
+        assert_eq!(
+            (handing_off.drain_begun(), announced.drain_begun()),
+            (true, true)
+        );
+        assert_eq!(fresh.handoffs_fenced(), 0);
+        fresh.note_handoff_fenced();
+        fresh.note_handoff_fenced();
+        assert_eq!(fresh.handoffs_fenced(), 2);
+    }
+
     /// The next beat publishes the split demand the latest tick set.
     #[test]
     fn the_latest_split_demand_is_what_the_next_beat_reads() {

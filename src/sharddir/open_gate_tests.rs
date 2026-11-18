@@ -52,7 +52,11 @@ enum Script {
 
 /// A real engine over an in-memory store (`unwind::tests` keeps the same shape).
 pub(super) async fn open_engine(prefix: &str) -> Arc<ShardEngine> {
-    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    engine_over(prefix, Arc::new(object_store::memory::InMemory::new())).await
+}
+
+/// A real engine at `prefix` over `store`.
+async fn engine_over(prefix: &str, store: Arc<dyn object_store::ObjectStore>) -> Arc<ShardEngine> {
     let db = crate::keyspace::db_builder(prefix, store.clone())
         .build()
         .await
@@ -862,4 +866,80 @@ fn a_shard_db_path_reads_back_as_its_prefix() {
         assert_eq!(crate::sharddir::prefix_of_db_path(&path), prefix, "{path}");
     }
     assert_eq!(crate::sharddir::prefix_of_db_path("rigs/a"), "rigs/a");
+}
+
+/// Kills `|| with &&` in `seal_for_drain`'s unsettled check and both constants of
+/// `OpenGate::sealed`: an open in flight, then the resident it installed, keeps a drain's seal
+/// off; a gate that holds nothing seals, reports itself sealed and turns a caller away as a stop
+/// does, starting no open.
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
+async fn a_drain_seals_only_a_gate_that_holds_nothing() {
+    let rig = Rig::new(Script::Held, OPEN_DEADLINE);
+    let patience = Duration::from_millis(20);
+    assert_eq!(
+        verdict(rig.gate.get_or_open(PREFIX, patience).await),
+        Verdict::Wait("shard_opening", 3)
+    );
+    let seal = |gate: &OpenGate| (gate.seal_for_drain(), gate.sealed());
+    assert_eq!(seal(&rig.gate), (false, false), "an open in flight");
+    rig.release.send_replace(true);
+    let engine = ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
+    assert_eq!(seal(&rig.gate), (false, false), "a resident");
+
+    let empty = Rig::new(Script::Open, OPEN_DEADLINE);
+    assert_eq!(seal(&empty.gate), (true, true), "a gate that holds nothing");
+    assert_eq!(
+        verdict(empty.gate.get_or_open(PREFIX, patience).await),
+        Verdict::Wait("shard_closing", 1)
+    );
+    assert_eq!(empty.attempts(), 0, "a sealed gate starts no open");
+    assert_eq!(engine.await_terminated(OPEN_WAIT).await, Ok(()));
+}
+
+/// Kills `OpenGate::resident_fenced -> bool with false`, and `&& with ||` and `== with !=` in its
+/// judgement: a live resident is not fenced; once a newer writer opened its shard and the
+/// resident's next write closed its storage fenced, it is fenced for its own incarnation only,
+/// and no other prefix is.
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
+async fn a_drain_reads_a_resident_as_fenced_only_for_its_own_incarnation() {
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let shared = store.clone();
+    let opener: OpenFn = Box::new(move |prefix: String, _incarnation: EngineIncarnation| {
+        let store = shared.clone();
+        Box::pin(async move { Ok(engine_over(&prefix, store).await) })
+    });
+    let gate = OpenGate::new(Arc::new(RwLock::new(HashMap::new())), opener, OPEN_DEADLINE);
+    let engine = ready(gate.get_or_open(PREFIX, OPEN_WAIT).await);
+    let incarnation = gate.resident_incarnation(PREFIX).expect("installed");
+    assert!(
+        !gate.resident_fenced(PREFIX, incarnation),
+        "a live resident"
+    );
+
+    let newer = crate::keyspace::db_builder(PREFIX, store)
+        .build()
+        .await
+        .expect("a newer writer");
+    let probe = engine.db.put(b"fence-probe", b"x").await;
+    assert!(
+        probe.is_err(),
+        "the resident's write meets the newer writer"
+    );
+    let fenced = || {
+        let status = engine.db.subscribe();
+        matches!(
+            status.borrow().close_reason,
+            Some(slatedb::CloseReason::Fenced)
+        )
+    };
+    eventually("the resident's storage closes fenced", fenced).await;
+    let other = EngineIncarnation(incarnation.0 + 1);
+    let judged = [
+        gate.resident_fenced(PREFIX, incarnation),
+        gate.resident_fenced(PREFIX, other),
+        gate.resident_fenced("1", incarnation),
+    ];
+    assert_eq!(judged, [true, false, false]);
+    drop(engine.await_terminated(OPEN_WAIT).await);
+    newer.close().await.expect("the newer writer closes");
 }

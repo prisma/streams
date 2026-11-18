@@ -508,6 +508,7 @@ fn assert_handed(acks: &[Ack], giver: &crate::http::AppState) {
         phases.park, phases.flush, phases.close, phases.release
     );
     assert!(gap < HOLD, "giver's last ack to target's first: {gap:?}");
+    assert!(!phases.fenced, "the giver's close ended clean");
 }
 
 /// The returned child's cell after the move, with the target's mirror stale: `streams-2`'s fleet

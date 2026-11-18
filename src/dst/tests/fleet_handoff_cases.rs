@@ -97,6 +97,86 @@ async fn a_park_past_its_bound_moves_nothing_and_evacuates_a_lag_victim() {
     stop(rig).await;
 }
 
+/// **A lag victim that cannot park is evacuated by the lag move's own CAS** (D4, H4,
+/// `Overrides::evacuate`). With `00`'s committer held, the lag move's handoff answers `Evacuate`;
+/// the lag move then writes `00` to the target by its CAS, mirrors it and retires `00` here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_lag_victim_that_cannot_park_is_evacuated_by_the_lag_moves_cas() {
+    let rig = giver(true).await;
+    let engine = rig.state.shards.open("00").expect("00 is open");
+    let held = engine.test_hold_commit().await;
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    let close = crate::shard::CloseReq {
+        hash: [3; 16],
+        generation: Some(1),
+        resp: tx,
+    };
+    engine.try_close(close).unwrap();
+    let (doc, version) = rig
+        .state
+        .fleet
+        .read_overrides()
+        .await
+        .expect("the overrides");
+    let plan = ("00".to_string(), "streams-2".to_string());
+    let moved = doc.lag_move(&plan, &rig.state, version).await;
+    drop(held);
+    assert!(moved, "the lag move evacuated 00");
+    assert_eq!(entry(&rig, "00").await.as_deref(), Some("streams-2"));
+    let owner = rig.state.ownership.effective_owner("00");
+    assert_eq!(
+        (owner.as_deref(), rig.state.shards.is_open("00")),
+        (Some("streams-2"), false)
+    );
+    stop(rig).await;
+}
+
+/// **Return-home hands back by a move only an entry naming this instance away from its home**
+/// (F6, `Overrides::hands_back`). `streams-2` holds two entries naming itself: one for the prefix
+/// whose ring home is `streams-1`, one for its own home. Return-home drops the second by its plain
+/// CAS and hands the first back by a move: the document the CAS wrote still names the first, and
+/// once the move is done neither entry is left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn return_home_hands_back_by_a_move_only_an_entry_away_from_its_home() {
+    use object_store::{ObjectStoreExt, PutPayload, path::Path};
+    let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
+    let homed = |home: &str| {
+        ["00", "01", "10", "11"]
+            .into_iter()
+            .find(|key| ring[crate::ownership::ring_pick(key, &ring)] == home)
+            .expect("each member is a home")
+    };
+    let (away, at_home) = (homed("streams-1"), homed("streams-2"));
+    let fleet = mem();
+    let doc = format!(
+        r#"{{"entries":{{"{away}":{{"to":"streams-2","ms":0}},"{at_home}":{{"to":"streams-2","ms":0}}}}}}"#
+    );
+    let path = Path::from("fleet/overrides.json");
+    fleet.put(&path, PutPayload::from(doc)).await.unwrap();
+    let rig = member(&mem(), fleet, "streams-2", RigRuntime::first(), false).await;
+    let (doc, version) = rig
+        .state
+        .fleet
+        .read_overrides()
+        .await
+        .expect("the overrides");
+    let keys = [away.to_string(), at_home.to_string()];
+    let replaced = doc.return_home(&keys, &rig.state, version).await;
+    let written = replaced.expect("the plain drop committed");
+    let kept: Vec<&String> = written.entries.keys().collect();
+    assert_eq!(
+        kept,
+        vec![away],
+        "the plain CAS dropped only the entry at home"
+    );
+    assert_eq!(
+        (entry(&rig, away).await, entry(&rig, at_home).await),
+        (None, None),
+        "the move handed the other back"
+    );
+    stop(rig).await;
+}
+
 /// **A holder with no engine moves its entry under the hold** (D6). `00` was never opened here:
 /// the move writes the entry naming the target and mirrors it, and opens nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
@@ -181,6 +261,183 @@ async fn an_append_resolved_before_the_hold_is_answered_by_the_hold() {
     let body = String::from_utf8_lossy(&body);
     assert_eq!(answer, (409, Some("streams-2".to_string())), "{body}");
     stop(rig).await;
+}
+
+/// **An append a dropped move held is answered as the move's, never written** (E6, D9). The append
+/// is parked between its resolve and its enqueue; the move parks, closes `00` and releases the
+/// barrier, but its write of the overrides is held past the CAS bound, so the move ends `Kept` and
+/// the document still names no owner. Released, the append meets the closed engine, resolves `00`
+/// here again (no holdoff after a kept move) and is answered the move's `503 shard_moving`,
+/// `Retry-After: 1`, not a split's. Nothing of it is stored: the next append is the only record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn an_append_a_dropped_move_held_is_answered_as_the_moves() {
+    use super::fixture_livefeed::wait_parked;
+    use crate::dst::fault_store::{FaultPlan, FaultStore};
+    use crate::dst::{ObjClass, StoreOp};
+    let fleet = FaultStore::uniform(mem(), 0xF6D9, FaultPlan::CLEAN);
+    let rig = member(
+        &mem(),
+        fleet.clone(),
+        "streams-1",
+        RigRuntime::first(),
+        true,
+    )
+    .await;
+    let name = stream_in_00(&rig).await;
+    crate::failpoints::park_append_after_resolve(&name);
+    let path = format!("/v1/stream/{name}");
+    let append = hreq(rig.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#);
+    let kept = async {
+        wait_parked(crate::failpoints::Fp::AppendAfterResolve, &name, 1).await;
+        let _held = fleet.hold_class_under(StoreOp::Put, ObjClass::Fleet, "fleet/overrides", 1);
+        let to = Change::To("streams-2".to_string());
+        let kept = hand_off(&rig.state.fleet, "00", to, false).await;
+        fleet.release_hold_failing();
+        crate::failpoints::release_append_after_resolve(&name);
+        kept
+    };
+    let ((status, headers, body), kept) = futures_util::future::join(append, kept).await;
+    assert_eq!(kept, Outcome::Kept);
+    assert_eq!(entry(&rig, "00").await, None, "the document is unchanged");
+    let moving =
+        r#"{"error":{"code":"shard_moving","message":"shard moving; nothing was written; retry"}}"#;
+    let answer = (
+        status,
+        headers.get("retry-after").cloned(),
+        String::from_utf8_lossy(&body),
+    );
+    assert_eq!(answer, (503, Some("1".to_string()), moving.into()));
+    appended(&rig, &name, 2..3).await;
+    assert_eq!(
+        super::fleet_handoff::stored_ns(rig.addr, &name).await,
+        vec![2]
+    );
+    stop(rig).await;
+}
+
+/// **A CAS that fails is tried again** (steps 6 and 7). The giver's first write of the overrides
+/// fails before it reaches the store; the next try reads the document again, writes it, and the
+/// move is done: `Moved`, the entry naming the target, one write failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_cas_that_fails_is_tried_again() {
+    use crate::dst::fault_store::{FaultPlan, FaultStore};
+    use crate::dst::{ObjClass, StoreOp};
+    let fleet = FaultStore::uniform(mem(), 0xF6C7, FaultPlan::CLEAN);
+    let rig = member(
+        &mem(),
+        fleet.clone(),
+        "streams-1",
+        RigRuntime::first(),
+        true,
+    )
+    .await;
+    let hold = fleet.hold_class_under(StoreOp::Put, ObjClass::Fleet, "fleet/overrides", 1);
+    let fail = async {
+        engaged(&hold).await;
+        fleet.release_hold_failing();
+    };
+    let to = Change::To("streams-2".to_string());
+    let (moved, ()) =
+        futures_util::future::join(hand_off(&rig.state.fleet, "00", to, false), fail).await;
+    assert_eq!((moved, fleet.injected_errors()), (Outcome::Moved, 1));
+    assert_eq!(entry(&rig, "00").await.as_deref(), Some("streams-2"));
+    stop(rig).await;
+}
+
+/// **A request for a shard with no engine waits out the move's hold** (D6, `HOLD`). `00` holds a
+/// stream written by an earlier incarnation and is not open here; the move holds it and its write
+/// of the overrides is held. An append that resolves `00` meanwhile waits for the hold; the write
+/// released, the move ends and the append is answered the new owner's `409`, not `503`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_request_for_a_shard_with_no_engine_waits_out_the_moves_hold() {
+    use crate::dst::fault_store::{FaultPlan, FaultStore};
+    use crate::dst::{ObjClass, StoreOp};
+    let (data, inner) = (mem(), mem());
+    let first = member(&data, inner.clone(), "streams-1", RigRuntime::first(), true).await;
+    let name = stream_in_00(&first).await;
+    stop(first).await;
+    let fleet = FaultStore::uniform(inner, 0xF6D6, FaultPlan::CLEAN);
+    let rig = member(
+        &data,
+        fleet.clone(),
+        "streams-1",
+        RigRuntime::incarnation(1),
+        false,
+    )
+    .await;
+    assert!(!rig.state.shards.is_open("00"), "00 has no engine here");
+    let hold = fleet.hold_class_under(StoreOp::Put, ObjClass::Fleet, "fleet/overrides", 1);
+    let to = Change::To("streams-2".to_string());
+    let path = format!("/v1/stream/{name}");
+    let held = async {
+        engaged(&hold).await;
+        let append = hreq(rig.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#);
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            fleet.release_hold();
+        };
+        futures_util::future::join(append, release).await.0
+    };
+    let (moved, (status, headers, body)) =
+        futures_util::future::join(hand_off(&rig.state.fleet, "00", to, false), held).await;
+    assert_eq!(moved, Outcome::Moved);
+    let answer = (status, headers.get("streams-replay-to").cloned());
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(answer, (409, Some("streams-2".to_string())), "{body}");
+    stop(rig).await;
+}
+
+/// **A parked engine is not claimed for a move** (step 1, `MaintenanceGate::claim_move`). While a
+/// barrier parks `00` (no split holds it) its claim is refused; resumed, it is claimed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_parked_engine_is_not_claimed_for_a_move() {
+    let rig = giver(true).await;
+    let engine = rig.state.shards.open("00").expect("00 is open");
+    let gate = &engine.gc_state().gate;
+    let barrier = engine.barrier().await.expect("00 parks");
+    let parked = (gate.parked(), gate.splitting(), gate.claim_move());
+    barrier.resume();
+    let resumed = gate.claim_move();
+    gate.release_move();
+    assert_eq!((parked, resumed), ((true, false, false), true));
+    stop(rig).await;
+}
+
+/// **A writer fenced ahead of a planned move is counted once, where it was fenced** (G6,
+/// `shard_directory::handoff::judge_fence`). `streams-2` opens `00` under `streams-1`, whose view
+/// still names itself the owner and whose gate is not sealed: `streams-1`'s next append meets the
+/// fence, its engine closes fenced, and its directory counts one writer fenced ahead of a move;
+/// `streams-2`, whose view names `streams-1`, counts none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_writer_fenced_ahead_of_a_move_is_counted_where_it_was_fenced() {
+    let (data, fleet) = (mem(), mem());
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first(), true).await;
+    let name = stream_in_00(&a).await;
+    appended(&a, &name, 0..1).await;
+    let b = member(&data, fleet, "streams-2", RigRuntime::incarnation(1), false).await;
+    let opened = b
+        .state
+        .shards
+        .open_or_wait("00", Duration::from_secs(5))
+        .await;
+    assert!(
+        matches!(opened, crate::sharddir::OpenOutcome::Ready(_)),
+        "streams-2 opens 00"
+    );
+    let path = format!("/v1/stream/{name}");
+    let t0 = tokio::time::Instant::now();
+    while a.state.shards.fenced_ahead() == 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "streams-1 meets the fence"
+        );
+        let (_status, _, _) = hreq(a.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let counted = (a.state.shards.fenced_ahead(), b.state.shards.fenced_ahead());
+    assert_eq!(counted, (1, 0));
+    stop(a).await;
+    stop(b).await;
 }
 
 /// A stream created through `rig` whose route lands in `00` (a name the ring gives `streams-2` is
@@ -526,15 +783,17 @@ async fn the_released_queue_is_waited_for_until_it_drains_or_its_bound() {
         assert!(t0.elapsed() < Duration::from_secs(5), "an operation queues");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+    let wait = || tokio::time::timeout(QUEUE * 5, answered(&engine));
     let t0 = tokio::time::Instant::now();
-    answered(&engine).await;
+    assert!(wait().await.is_ok(), "the held queue's wait ends");
     let bounded = t0.elapsed();
     let release = async {
         tokio::time::sleep(Duration::from_millis(30)).await;
         drop(held);
     };
     let t0 = tokio::time::Instant::now();
-    futures_util::future::join(answered(&engine), release).await;
+    let (waited, ()) = futures_util::future::join(wait(), release).await;
+    assert!(waited.is_ok(), "the drained queue's wait ends");
     let drained = t0.elapsed();
     eprintln!("HANDOFF answered bounded={bounded:?} drained={drained:?}");
     assert!(

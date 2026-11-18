@@ -246,6 +246,19 @@
     "scenarios": []
   },
   {
+    "name": "a_cas_that_fails_is_tried_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9889b73597a9b530fe4ce3490d1e7a24f594a88a2c787b18364ee19923233f77",
+    "mechanisms": [],
+    "configuration": [
+      "let fleet = FaultStore::uniform(mem(), 0xF6C7, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_cas_whose_answer_is_lost_is_the_move_done_written_once",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -958,7 +971,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "39d9b15547734ae8167663b094e3be9148a5bbf2543ffa7e680f51a59485ac82",
+    "function_sha256": "57a39df0f3e31679110d607e4753c85f2c888861637c00d55bb87615c99929a3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_drain.rs",
@@ -1703,6 +1716,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_moves.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_lag_victim_that_cannot_park_is_evacuated_by_the_lag_moves_cas",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "29fb9700c37113f5b6939845de51eb9d9e98ac0e6674b34ac92a43cd56c284dd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
     "scenarios": []
   },
   {
@@ -2551,6 +2575,17 @@
     "scenarios": []
   },
   {
+    "name": "a_parked_engine_is_not_claimed_for_a_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e686e6f91dc4b4bbda94bbd255f8b6f20e9a16da5d80c4fadd2d453ca8340312",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_parked_pull_cannot_lease_after_its_generation_was_deleted",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2638,7 +2673,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "75e64a6d68212f8754aff03ceea167a2b4f1e36cce71e4941dca89519f53607a",
+    "function_sha256": "502060a02b4d1d2ff97acac799a5dfe973cdef99c0d47f37f5e50369abf541c4",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_drain.rs",
@@ -3569,6 +3604,19 @@
     "scenarios": []
   },
   {
+    "name": "a_request_for_a_shard_with_no_engine_waits_out_the_moves_hold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ceab5a4653a94fcff195bf8293fd621f02ba72c8dbbd28c90618bf9d69b3f71c",
+    "mechanisms": [],
+    "configuration": [
+      "let fleet = FaultStore::uniform(inner, 0xF6D6, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_request_naming_no_operation_authenticates_before_its_404_or_405",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4035,7 +4083,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "02a11720ed0ddb46826e1c575c5036305f5c750e1bee10c6f5b6108cffeda31d",
+    "function_sha256": "cd52d7aad757e5dcf7dcf56268d0b4496a1a4c8529209b44de18b6a5f513847c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_drain.rs",
@@ -5256,6 +5304,17 @@
     "scenarios": []
   },
   {
+    "name": "a_writer_fenced_ahead_of_a_move_is_counted_where_it_was_fenced",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9726f2b1293b002790efaf419cc434173e34f72b449f21edfcb1087a6e946520",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -5464,6 +5523,22 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/shared_cell_hostile.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_append_a_dropped_move_held_is_answered_as_the_moves",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "cae3bde70998eb72f4597f70edef26c8d943f06feb4687702d1063060eb447ec",
+    "mechanisms": [],
+    "configuration": [
+      "let fleet = FaultStore::uniform(mem(), 0xF6D9, FaultPlan::CLEAN);",
+      "crate::failpoints::park_append_after_resolve(&name);",
+      "wait_parked(crate::failpoints::Fp::AppendAfterResolve, &name, 1).await;",
+      "crate::failpoints::release_append_after_resolve(&name);"
+    ],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
     "scenarios": []
   },
   {
@@ -10687,6 +10762,17 @@
     "scenarios": []
   },
   {
+    "name": "return_home_hands_back_by_a_move_only_an_entry_away_from_its_home",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f29d803585a522d8c5ccea1e6dc8d6c2e46fec7c4187a25cc72b0f4b1302fc30",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "return_home_skips_a_live_intents_sources",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -12053,7 +12139,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ccb354e1bd38b2fd8bbd547c9669c09c4091723f15118509c5bcadac539ab00e",
+    "function_sha256": "307846b5340eb1f4188f1eca05379b7674683b179ebaac714276f13c1175b716",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_cases.rs",
