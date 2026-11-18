@@ -5763,8 +5763,9 @@ One record has verified=false: its commit did not match the recorded text.
 - **Endpoint:**
   - every stream route that resolves a shard on the instance giving a shard up in a planned move: appends, reads, waiting reads, live sessions and consumer pulls;
   - `POST /operator/topology/split` and `POST /operator/topology/merge`;
-  - the fleet-internal forward (`Streams-Forwarded`) and its answers.
-- **Condition:** a planned move of a served shard (return-home, count balance, the lag move, the room move, the planned drain), from the giver's park of the shard until the overrides document names the new owner and the giver's mirror follows it. Under a 20 ms store that is about 0.2 s (measured: park to release p50 199 ms, max 249 ms).
+  - the fleet-internal forward (`Streams-Forwarded`) and its answers;
+  - the fleet-internal peer pages, `GET /v1/internal/segment-read` and `GET /v1/internal/segment-scan`, and their answers.
+- **Condition:** a planned move of a served shard (return-home, count balance, the lag move, the room move, the planned drain), from the giver's park of the shard until the overrides document names the new owner and the giver's mirror follows it. Under a 20 ms store that is about 0.2 s (measured on the final tree: park to release p50 199 ms, max 228 ms).
 - **Before:**
   - The overrides document changed while the giver's engine was open. The giver served until its next tick yielded the shard. The target's first routed request opened the shard and fenced the giver's live writer.
   - In-flight appends were answered `503 shard_moving`, product `503 outcome_unknown`. The rerun at 10,000 streams saw 5 of them and a 7.9 s stall.
@@ -5792,14 +5793,14 @@ One record has verified=false: its commit did not match the recorded text.
     | idle | 20 | 199 / 208 ms | 762 / 850 ms |
     | 16-process CPU hog | 20 | 203 / 228 ms | 781 / 855 ms |
 
-    Release to first ack has one line, 0.9 s, a tripwire and not a suite assertion. It becomes 0.65 s when the fork's 250 ms build item lands (NEXT-WORK). Park to release stays 0.6 s, park to first ack 1.5 s. No target is warmed ahead of a move.
+    Release to first ack has one line, 0.9 s, a tripwire and not a suite assertion. It becomes 0.65 s when the fork's 250 ms build item lands (NEXT-WORK). Park to release keeps its 0.6 s line and park to first ack its 1.5 s line (lines, not measurements). No target is warmed ahead of a move.
   - **`Streams-Overrides-Version` is fleet-internal (E3, R4).**
-    - It is sent only peer to peer. An instance strips it from its answer to any request that was not a forward.
+    - It is sent only peer to peer. An instance strips it from its answer to any request that was neither a forward nor a fleet-authorized peer page (`/v1/internal/segment-read`, `/v1/internal/segment-scan`); a client's own copy on a peer page has no effect without fleet credentials, which the route demands before anything else.
     - A mixed-build fleet, or a client that sends `Streams-Forwarded` itself, can still see it. It carries no meaning for a client.
     - A client's own copy on a request has no effect unless the request is a forward, and then only a bounded read: one per distinct version (R1), none for an empty version (R3), and none within 100 ms after a read that learnt nothing (R2).
   - **Operator routes (E4).** While a planned move holds a shard, a split of it is refused `409 topology_busy {reason: "move"}`, and a split that claimed the shard first makes the move back off.
   - **Return-home's writer.** Return-home of a served shard is written only by the instance the override names, through the handoff. Any member may still drop a void entry (naming a non-member) or a no-op entry.
-- **The planned drain (the drain addendum, G1-G10).** A drain is a sequence of planned moves, then an announcement: the drainer hands every shard it holds off giver first while its peers still count it (each append held up to `HOLD` and acked by the successor, each entry naming a live member both rings honour), seals its open gate once it holds nothing, and only then publishes `draining`. From its first handoff it starts no split, merge, co-location or move but the drain's own; a shard a peer moves to it meanwhile is handed off again. A request that resolves a shard on a sealed drainer is answered `503 shard_closing`, `Retry-After: 1`, as a stop answers it. The handoff phase has its own bound inside the drain's budget (32 s; the budget is 176 s): past it the drainer stops opening, announces anyway, and the shards it still holds are evacuated (below).
+- **The planned drain (the drain addendum, G1-G10).** A drain is a sequence of planned moves, then an announcement: the drainer hands every shard it holds off giver first while its peers still count it (each append held up to `HOLD` and acked by the successor, each entry naming a live member both rings honour), seals its open gate once it holds nothing, and only then publishes `draining`. From its first handoff it starts no split, merge, co-location or move but the drain's own; a shard a peer moves to it meanwhile is handed off again. Until the drain is announced, the drainer's beat does not say `withdrawn` either (only a cell failure does), though its `/health` answers 503 `runtime draining` from the signal on. A request that resolves a shard on a sealed drainer is answered raw `503 shard_closing`, product `503 temporarily_unavailable`, `Retry-After: 1`, as a stop answers it. The handoff phase has its own bound inside the drain's budget (32 s; the budget is 176 s): past it the drainer stops opening, announces anyway, and the shards it still holds are evacuated (below). The process stop is bounded at 207 s (was 175 s), and the deploy wrapper kills at 212 s (was 180 s).
 - **Where `outcome_unknown` remains by design (E5):**
   - a crash takeover;
   - the lag move's evacuation of a wedged shard whose park or flush misses its bound (D4, H4), which keeps today's CAS and retirement, so its in-flight groups may answer `outcome_unknown`;
@@ -5810,8 +5811,9 @@ One record has verified=false: its commit did not match the recorded text.
 - **Retry semantics (E7):**
   - `409 not_ring_owner`: replay to `Streams-Replay-To` (#264).
   - `503 shard_moving` / `temporarily_unavailable`: retry after 1 s.
+  - A sealed drainer's `503 shard_closing` / `temporarily_unavailable`: retry after 1 s; the replay meets the successor.
   - A held request counts against `ADMIT_MAX_INFLIGHT` on the giver, then as a forward. The cap is not raised.
-- **Who is affected:** clients of a shard in a planned move, and operators who split a shard while a planned move holds it.
+- **Who is affected:** clients of a shard in a planned move; clients of an instance being drained (a deploy, a stop); operators who split a shard while a planned move holds it; and operators, for the stop bound (207 s; the wrapper's 212 s).
 - **Pinning tests:**
   - `dst::dst_tests::fleet_handoff::a_returned_child_moves_without_fencing_its_writer`:
     - setup: loaded, 20 ms store, in-flight cap 512, appends to both children at both members;
@@ -5841,9 +5843,9 @@ One record has verified=false: its commit did not match the recorded text.
   - `dst::dst_tests::fleet_handoff_cases::a_cas_whose_answer_is_lost_is_the_move_done_written_once` (D5).
   - `dst::dst_tests::fleet_handoff_cases::a_giver_that_dies_before_its_write_leaves_the_shard_to_its_restart` and `…_after_its_write_leaves_the_shard_to_its_target` (the failure table): exactly the acked records, and the next one.
   - `dst::dst_tests::fleet_handoff_cases::a_month_final_the_giver_left_is_written_by_the_next_owner` (H6): a closed-month final the giver stored and did not drain reaches `_usage` once, from the shard's next owner, equal to the stored final.
-- **Formal:** TLA-011 (`ServingOwnership`) gains the giver's handoff, `HandOff(n)`: start, abort, close, flip, keep and release, the flip gated on a closed engine. `HandOffFencesNothing` (no flipped move ends in a failed CAS or answers `moved` or `internal`) holds in the small, single and expanded configurations; the negative control `nc_handoff_flips_before_close` (the flip allowed on a parked engine) breaks it, and the witnesses `Witness_GiverDiesParked` and `Witness_GiverDiesAfterFlip` reach both giver deaths. TLA-011's receipt is recorded with the model; TLA-048, TLA-002, TLA-003 and TLA-045 are re-recorded as their inputs require.
+- **Formal:** TLA-011 (`ServingOwnership`) gains the giver's handoff, `HandOff(n)`: start, abort, close, flip, keep and release, the flip gated on a closed engine. `HandOffFencesNothing` (no flipped move ends in a failed CAS or answers `moved` or `internal`) holds in the small, single and expanded configurations; the negative control `nc_handoff_flips_before_close` (the flip allowed on a parked engine) breaks it, and the witnesses `Witness_GiverDiesParked` and `Witness_GiverDiesAfterFlip` reach both giver deaths. TLA-011's receipt is recorded with the model, and its recorded scope says a planned drain's moves are `HandOff` and only its evacuation is `Move`; TLA-048, TLA-002, TLA-003, TLA-045 and TLA-047 are re-recorded as their inputs require.
 - **Risk reason:** medium. It changes the order of every planned move and adds a hold on the request path for up to 2 s. In exchange it removes a fence of a live writer on every planned move, and with it the `outcome_unknown` answers and the multi-second stall the rerun measured.
-- **Status:** design approved (rev 2 and the rulings above, with the idle-bound addendum I1-I4: the 0.45 s idle line is withdrawn; the peer read hop addendum A1-A9, 2026-11-18; and the drain addendum G1-G10, 2026-11-18). This record awaits ratification.
+- **Status:** design approved (rev 2 and the rulings above, with the idle-bound addendum I1-I4: the 0.45 s idle line is withdrawn; the peer read hop addendum A1-A9, 2026-11-18; and the drain addendum G1-G10, 2026-11-18). Ratified 2026-11-18 by Fable 5.2 under the owner's delegation on #149 (GATE-DECISION-f6-edge-266-ratification-2026-11-18), for the owner's review.
 - **Check against commit:** written with the change.
 
 ### #267 (this record's commit) — An operation still queued when a retired shard closes is answered as held by the split, never as outcome unknown
