@@ -17,7 +17,7 @@ use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 
 // A rolled-back split's backoff (meas149-reshaping F1d).
 mod backoff;
-mod room;
+pub(crate) mod room;
 
 use backoff::Backoff;
 

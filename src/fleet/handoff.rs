@@ -34,7 +34,7 @@ const PARK: Duration = Duration::from_millis(200);
 /// Step 3: the flush of the delta under the park (D4).
 const FLUSH: Duration = Duration::from_millis(300);
 /// Step 4: the released queue answered (H2).
-const QUEUE: Duration = Duration::from_millis(100);
+pub(crate) const QUEUE: Duration = Duration::from_millis(100);
 /// Step 5: the engine's close, to its verdict (D1).
 const CLOSE: Duration = Duration::from_millis(300);
 /// Step 6: the overrides CAS, its three tries together (D4).
@@ -286,8 +286,9 @@ fn missed(request: &Request, step: &str) -> Outcome {
     }
 }
 
-/// H2: the released committer answers every queued operation before the close begins.
-async fn answered(engine: &ShardEngine) {
+/// H2: the released committer answers every queued operation before the close begins: wait
+/// while any is queued, at most `QUEUE`.
+pub(crate) async fn answered(engine: &ShardEngine) {
     let deadline = Instant::now() + QUEUE;
     while engine.queued_ops() > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(1)).await;

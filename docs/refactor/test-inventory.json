@@ -399,6 +399,17 @@
     "scenarios": []
   },
   {
+    "name": "a_claimed_engine_or_a_live_intents_source_does_not_start_a_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b033defda7f17f49a1450f230510084277c1761a2b16e1bbd74a3195ba3aabcd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_clean_pass_copies_every_live_chunk_its_shard_serves",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3753,6 +3764,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/never_leaf_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_room_move_holds_override_recent_only_when_it_moved",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c42f02a690232aeed7ff2d70fbb6321142369ef76b532b137155c5a8037eac3a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
     "scenarios": []
   },
   {
@@ -12002,6 +12024,17 @@
       "crate::failpoints::release_fork_after_source_ref(\"frk20kid\");"
     ],
     "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_released_queue_is_waited_for_until_it_drains_or_its_bound",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ccb354e1bd38b2fd8bbd547c9669c09c4091723f15118509c5bcadac539ab00e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
     "scenarios": []
   },
   {

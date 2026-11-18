@@ -477,6 +477,139 @@ async fn september_rows(rig: &HttpRig, stream: &str) -> Vec<serde_json::Value> {
     envelopes.iter().filter_map(september).collect()
 }
 
+/// **A move of a claimed engine does not start, and nor does a move of a live intent's source**
+/// (step 1). Each of the two refusals alone is `NotStarted` and writes nothing: `00`'s gate
+/// claimed by another move; then, the claim released, a live split intent naming `00`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_claimed_engine_or_a_live_intents_source_does_not_start_a_move() {
+    let rig = giver(true).await;
+    let state = &rig.state;
+    let engine = state.shards.open("00").expect("00 is open");
+    let gate = &engine.gc_state().gate;
+    let to = || Change::To("streams-2".to_string());
+    assert!(gate.claim_move(), "another move claims 00");
+    let claimed = hand_off(&state.fleet, "00", to(), false).await;
+    gate.release_move();
+    state
+        .fleet
+        .standing()
+        .set_topology_sources(vec!["00".to_string()]);
+    let named = hand_off(&state.fleet, "00", to(), false).await;
+    assert_eq!((claimed, named), (Outcome::NotStarted, Outcome::NotStarted));
+    assert_eq!(entry(&rig, "00").await, None, "nothing is written");
+    assert!(state.shards.is_open("00"), "00 is still served here");
+    stop(rig).await;
+}
+
+/// **The released queue is waited for until it drains, and no longer than `QUEUE`** (H2,
+/// `handoff::answered`). With `00`'s committer held behind an operation it took and one more
+/// queued, the wait lasts its bound; released 30 ms in, it ends with the queue, before the bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn the_released_queue_is_waited_for_until_it_drains_or_its_bound() {
+    use crate::fleet::handoff::{QUEUE, answered};
+    let rig = giver(true).await;
+    let engine = rig.state.shards.open("00").expect("00 is open");
+    let held = engine.test_hold_commit().await;
+    let mut answers = Vec::new();
+    for generation in 1..=2 {
+        let (resp, answer) = tokio::sync::oneshot::channel();
+        let close = crate::shard::CloseReq {
+            hash: [3; 16],
+            generation: Some(generation),
+            resp,
+        };
+        engine.try_close(close).unwrap();
+        answers.push(answer);
+    }
+    let t0 = tokio::time::Instant::now();
+    while engine.queued_ops() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(5), "an operation queues");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let t0 = tokio::time::Instant::now();
+    answered(&engine).await;
+    let bounded = t0.elapsed();
+    let release = async {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(held);
+    };
+    let t0 = tokio::time::Instant::now();
+    futures_util::future::join(answered(&engine), release).await;
+    let drained = t0.elapsed();
+    eprintln!("HANDOFF answered bounded={bounded:?} drained={drained:?}");
+    assert!(
+        bounded >= QUEUE && bounded < QUEUE * 5,
+        "the held queue: {bounded:?}"
+    );
+    let queued = engine.queued_ops();
+    assert!(
+        drained >= Duration::from_millis(30) && drained < QUEUE,
+        "the drain: {drained:?}"
+    );
+    assert_eq!(queued, 0, "the queue drained");
+    drop(answers);
+    stop(rig).await;
+}
+
+/// **A split refused for room holds `override_recent` when its shard moved, and holds steady when
+/// it did not** (`policy_loop::room::moved_for_room`). Two instances, `streams-2` with room for
+/// `00` and its two children: with `00` claimed by another move the move is not made (steady);
+/// released, the move is made (`override_recent`) and the entry names `streams-2`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_room_move_holds_override_recent_only_when_it_moved() {
+    use crate::topology::policy::{Decision, Hold, Instance, View};
+    use crate::topology::policy_loop;
+    let rig = giver(true).await;
+    let state = &rig.state;
+    let cell = policy_loop::Cell {
+        me: "streams-1".to_string(),
+        fleet: state.fleet.clone(),
+        shards: state.shards.clone(),
+        ownership: state.ownership.clone(),
+        store: state.data_store.clone(),
+        limits: policy_loop::limits(&state.config),
+        appends_ceiling: state.config.cli.shard_appends_ceiling,
+        rss_shed_mb: 0,
+        split: policy_loop::split_entry(state.shards.clone()),
+        merge: policy_loop::merge_entry(state.shards.clone()),
+    };
+    let instance = |id: &str, resident_shards| Instance {
+        id: id.to_string(),
+        resident_shards,
+        accepting: true,
+    };
+    let view = View {
+        now_ms: 0,
+        me: "streams-1".to_string(),
+        leaves: Vec::new(),
+        instances: vec![instance("streams-1", 2), instance("streams-2", 0)],
+        split_demand: 0,
+        live: 0,
+        beats_fresh: true,
+        intent_live: false,
+        last_op_end_ms: None,
+        desired_computed_ms: None,
+        youngest_override_ms: None,
+        congested: false,
+    };
+    let engine = state.shards.open("00").expect("00 is open");
+    assert!(
+        engine.gc_state().gate.claim_move(),
+        "another move claims 00"
+    );
+    let kept = policy_loop::room::moved_for_room(&cell, &view, "00").await;
+    engine.gc_state().gate.release_move();
+    drop(engine);
+    let moved = policy_loop::room::moved_for_room(&cell, &view, "00").await;
+    let steady = Decision::Hold(Hold::Steady);
+    assert_eq!(
+        (kept, moved),
+        (steady, Decision::Hold(Hold::OverrideRecent))
+    );
+    assert_eq!(entry(&rig, "00").await.as_deref(), Some("streams-2"));
+    stop(rig).await;
+}
+
 /// ERROR events logged while a loaded handoff DST ran (H8, I3: no ERROR line on either member).
 /// The counter is the process's default subscriber, installed by the first test that asks; any
 /// later test of the process counts nothing (`None`), and the first one counts the events of every

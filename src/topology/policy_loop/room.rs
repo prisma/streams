@@ -14,7 +14,7 @@ use super::{Cell, resident};
 /// The split of `prefix` was refused `instance_full`: move `prefix` onto the instance with room
 /// (`policy::room_for_split`) and hold `override_recent`; a lost CAS holds steady; with no instance that
 /// has room, ask the fleet for one.
-pub(super) async fn moved_for_room(cell: &Cell, view: &View, prefix: &str) -> Decision {
+pub(crate) async fn moved_for_room(cell: &Cell, view: &View, prefix: &str) -> Decision {
     let max = cell.limits.shards_per_instance_max;
     let Some(target) = room_for_split(view, max, &cell.me) else {
         return Decision::AskInstance {
