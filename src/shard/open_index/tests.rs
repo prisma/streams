@@ -604,3 +604,118 @@ async fn the_ranged_tail_reads_find_what_the_point_gets_find() {
     );
     db.close().await.unwrap();
 }
+
+/// The hash `n` stands for in the `scanned` tests: its first four bytes.
+fn member(n: u32) -> [u8; 16] {
+    let mut hash = [0u8; 16];
+    hash[..4].copy_from_slice(&n.to_be_bytes());
+    hash
+}
+
+/// A key that sorts after `member(n)`'s and before `member(n + 1)`'s: `member(n)` and `i` after it.
+fn between(n: u32, i: u32) -> Vec<u8> {
+    [member(n).as_slice(), &i.to_be_bytes()].concat()
+}
+
+/// `scanned` over a log holding exactly `rows`, each member's row at its hash itself.
+async fn scanned_over(
+    path: &str,
+    rows: &[(Vec<u8>, Vec<u8>)],
+    hashes: &[[u8; 16]],
+) -> (Vec<Option<bytes::Bytes>>, usize) {
+    let db = seeded(path, rows).await;
+    let found = super::scanned(&db, hashes, |hash| hash.to_vec())
+        .await
+        .unwrap();
+    db.close().await.unwrap();
+    found
+}
+
+/// The tails `scanned` returns for `values`, `None` where a member was not read.
+fn tails(values: &[Option<&[u8]>]) -> Vec<Option<bytes::Bytes>> {
+    values
+        .iter()
+        .map(|value| value.map(bytes::Bytes::copy_from_slice))
+        .collect()
+}
+
+/// **A tail scan reads each member's row among absent members and neighbours' rows** (fix 2,
+/// #163's survivors): members 1 to 5 with 1 and 4 absent, rows before the first, between members
+/// and after the last, and none of them read as a member's. Each member present returns its own
+/// row, and the scan reached all five; no members scan nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_tail_scan_reads_each_members_row_among_absent_members_and_neighbours() {
+    let hashes: Vec<[u8; 16]> = (1..=5).map(member).collect();
+    let rows = vec![
+        (between(0, 7), b"before".to_vec()),
+        (member(2).to_vec(), b"two".to_vec()),
+        (between(2, 1), b"after two".to_vec()),
+        (between(3, 0), b"before three's".to_vec()),
+        (member(3).to_vec(), b"three".to_vec()),
+        (between(3, 1), b"after three".to_vec()),
+        (between(4, 1), b"in four's place".to_vec()),
+        (member(5).to_vec(), b"five".to_vec()),
+        (between(5, 1), b"past the last".to_vec()),
+    ];
+    let found = scanned_over("shards/0111100", &rows, &hashes).await;
+    let expected = tails(&[None, Some(b"two"), Some(b"three"), None, Some(b"five")]);
+    assert_eq!(
+        found,
+        (expected, 5),
+        "each member's own row, all five reached"
+    );
+    let none = scanned_over("shards/0111101", &rows, &[]).await;
+    assert_eq!(none, (Vec::new(), 0), "no members");
+}
+
+/// The rows of the row-budget tests: member 1's row, `neighbours` rows after it, then member 2's.
+fn crowded(neighbours: u32) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rows = vec![(member(1).to_vec(), b"one".to_vec())];
+    rows.extend((0..neighbours).map(|i| (between(1, i), b"x".to_vec())));
+    rows.push((member(2).to_vec(), b"two".to_vec()));
+    rows
+}
+
+/// **A tail scan stops after sixteen rows per member it reached, plus one** (fix 2, #163's
+/// survivors), the budget written as literals so a mutated constant moves only the code. With
+/// member 1 reached the budget is 32 rows: 31 neighbours after its row reach member 2, 32 stop the
+/// scan at member 1. With member 1 absent and member 2 reached on the 33rd row the budget is 48, so
+/// member 3 after it is reached too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_tail_scan_stops_after_sixteen_rows_per_member_reached() {
+    let pair = [member(1), member(2)];
+    let within = scanned_over("shards/0111110", &crowded(31), &pair).await;
+    assert_eq!(within, (tails(&[Some(b"one"), Some(b"two")]), 2), "32 rows");
+    let over = scanned_over("shards/0111111", &crowded(32), &pair).await;
+    assert_eq!(over, (tails(&[Some(b"one"), None]), 1), "33 rows");
+    let mut rows: Vec<(Vec<u8>, Vec<u8>)> =
+        (0..32).map(|i| (between(1, i), b"x".to_vec())).collect();
+    rows.push((member(2).to_vec(), b"two".to_vec()));
+    rows.push((member(3).to_vec(), b"three".to_vec()));
+    let three = [member(1), member(2), member(3)];
+    let reached = scanned_over("shards/1000000", &rows, &three).await;
+    let expected = tails(&[None, Some(b"two"), Some(b"three")]);
+    assert_eq!(reached, (expected, 3), "member 2 on the 33rd row");
+}
+
+/// **A tail scan stops once it passed more than 1 MiB of keys and values** (fix 2, #163's
+/// survivors), written as the literal 1,048,576: member 1's row and a neighbour's of exactly
+/// 1,048,576 bytes together reach member 2; one byte more stops the scan at member 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_tail_scan_stops_after_one_mib_of_keys_and_values() {
+    let pair = [member(1), member(2)];
+    let neighbour = between(1, 0);
+    // Member 1's 16-byte key and 3-byte value, then the neighbour's 20-byte key and its value.
+    let fill = 1_048_576 - 16 - 3 - neighbour.len();
+    let rows = |value: usize| {
+        vec![
+            (member(1).to_vec(), b"one".to_vec()),
+            (neighbour.clone(), vec![0u8; value]),
+            (member(2).to_vec(), b"two".to_vec()),
+        ]
+    };
+    let exact = scanned_over("shards/1000001", &rows(fill), &pair).await;
+    assert_eq!(exact, (tails(&[Some(b"one"), Some(b"two")]), 2), "1 MiB");
+    let over = scanned_over("shards/1000010", &rows(fill + 1), &pair).await;
+    assert_eq!(over, (tails(&[Some(b"one"), None]), 1), "1 MiB and a byte");
+}
