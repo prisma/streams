@@ -37,6 +37,23 @@ impl Drop for Held {
     }
 }
 
+/// How long test 1 and the re-settle test hold the compaction once Preparing waits for it, so its
+/// wait is at least this long (`settle_ms`).
+const HELD_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `HELD_FOR` as the phase line's milliseconds, less what Preparing may start after the test saw
+/// the split's intent.
+const HELD_MS: u64 = 900;
+
+/// A published split's phase-line count `name`.
+fn note(published: &crate::topology::split::Published, name: &str) -> u64 {
+    published
+        .notes
+        .iter()
+        .find_map(|(note, value)| (note == name).then_some(*value))
+        .unwrap_or_else(|| panic!("the phase line's {name}"))
+}
+
 /// SlateDB's `l0_max_ssts`, its default (the rig does not set it): a memtable upload waits while
 /// the log holds this many L0 tables, until a compaction frees one.
 const L0_MAX_SSTS: usize = 8;
@@ -375,6 +392,7 @@ async fn a_split_of_a_compacting_parent_parks_only_after_the_compaction() {
             all_acked(&answers),
             "appends acked while the compaction is held: {answers:?}"
         );
+        tokio::time::sleep(HELD_FOR).await;
         assert!(
             park_rx.try_recv().is_err(),
             "parked while the compaction is held"
@@ -412,6 +430,11 @@ async fn a_split_of_a_compacting_parent_parks_only_after_the_compaction() {
         seen.shown()
     );
     assert_compacting_window(&seen, l0_at_park, &phases);
+    let settle_ms = note(&published, "settle_ms");
+    assert!(
+        settle_ms >= HELD_MS,
+        "Preparing waited {settle_ms} ms, the compaction held {HELD_MS} ms ({phases})"
+    );
     tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
         .await
         .expect("the cell shuts down within 30 s");
@@ -806,6 +829,82 @@ async fn a_compaction_landing_after_preparings_read_is_read_again_before_the_par
         let writes = seen.compactor_writes.len();
         println!("COMPACTION_OVERLAP {writes} compactor writes in the window: {window}");
     }
+    tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
+        .await
+        .expect("the cell shuts down within 30 s");
+}
+
+/// The parent's line in the re-settle test: low 6 and high 9, so `ROOM_L0` (5) settles at once
+/// and a flush to 7 (under SlateDB's 8, the shed off) brings it back to its line.
+const RESETTLE_LINE: usize = 12;
+
+/// **A flush that brings the parent to its line after Preparing's read is settled again before
+/// the park** (F5 part 1b, the warm check's L0 re-check). The 400-queue parent at line
+/// `RESETTLE_LINE` with L0 at `ROOM_L0` and a compaction held: Preparing settles at once and reads
+/// the log; then records flushed to L0 bring it to 7, at its line. The warm check waits again: the
+/// barrier does not park while the compaction is held (`HELD_FOR`), parks once it lands, and the
+/// phase line's `settle_ms` covers the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_flush_that_brings_the_parent_to_its_line_after_preparings_read_is_settled_again_before_the_park()
+ {
+    use crate::topology::gate::PausePoint;
+    let ready = compacting(Some(RESETTLE_LINE), ROOM_L0);
+    let (cell, held, _trace, parent) = tokio::time::timeout(6 * HELD_WAIT, ready)
+        .await
+        .expect("the compacting parent is ready within 180 s");
+    let (reads, reads_rx) = tokio::sync::oneshot::channel();
+    let (reads_go, reads_wait) = tokio::sync::oneshot::channel();
+    let (park, mut park_rx) = tokio::sync::oneshot::channel();
+    let (park_go, park_wait) = tokio::sync::oneshot::channel();
+    let gate = &parent.gc_state().gate;
+    gate.pause_after_reads(PausePoint {
+        reached: reads,
+        go: reads_wait,
+    });
+    gate.pause_at_park(PausePoint {
+        reached: park,
+        go: park_wait,
+    });
+    let clock = cell.state.runtime.clock.clone();
+    let split = crate::topology::split::split(
+        &cell.state.shards,
+        &parent,
+        "op-resettle",
+        "inst-a",
+        &*clock,
+    );
+    let control = async {
+        reads_rx.await.expect("Preparing reads the log");
+        topped_up((cell.addr, &cell.low), &parent, 7, &mut 600).await;
+        assert!(reads_go.send(()).is_ok(), "Preparing waits for go");
+        tokio::time::sleep(HELD_FOR).await;
+        let parked = park_rx.try_recv().is_ok();
+        held.release();
+        assert!(!parked, "parked at its line while the compaction is held");
+        let Ok(Ok(())) = tokio::time::timeout(HELD_WAIT, park_rx).await else {
+            panic!("the split did not park within 30 s of the release");
+        };
+        assert!(park_go.send(()).is_ok(), "the split waits for go");
+    };
+    let both = futures_util::future::join(split, control);
+    let (published, ()) = tokio::time::timeout(3 * HELD_WAIT, both)
+        .await
+        .expect("the split publishes within 90 s of the start");
+    let published = published
+        .map_err(|refused| refused.to_string())
+        .expect("the split publishes");
+    let phases = crate::topology::split::shown_phases(&published);
+    println!("RESETTLE [{phases}]");
+    let settle_ms = note(&published, "settle_ms");
+    assert!(
+        settle_ms >= HELD_MS,
+        "Preparing waited {settle_ms} ms, the compaction held {HELD_MS} ms ({phases})"
+    );
+    let l0 = note(&published, "l0");
+    assert!(
+        l0 < 6,
+        "L0 at the park, under the line's low 6: {l0} ({phases})"
+    );
     tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
         .await
         .expect("the cell shuts down within 30 s");

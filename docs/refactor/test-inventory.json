@@ -1210,6 +1210,17 @@
     "scenarios": []
   },
   {
+    "name": "a_flush_that_brings_the_parent_to_its_line_after_preparings_read_is_settled_again_before_the_park",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f347191367fdeba43ff2d9326c91b7e4ceca1469fb48894dbbf4654e14fdd390",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_compacting.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fork_anchored_before_the_expiry_tombstone_retains_its_source",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3934,7 +3945,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c75748d5727614351be007f4560188ac2396312d9a2257c9349df682b80ef47a",
+    "function_sha256": "5ad317264cf68e36844f1070d1e3ec4eddd38d0d1460983da67bcd8b1b98b3ba",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
