@@ -5756,7 +5756,7 @@ One record has verified=false: its commit did not match the recorded text.
 
 ### #266 (this record's commit) — A planned move hands its shard off giver first: appends and reads on the moving shard are held up to 2 s and answered by the new owner, never `outcome_unknown`
 
-- **Program item:** prisma/streams#149, meas149-rerun F6 (GATE-DECISION-meas149-rerun-10000-2026-11-17 §(f) and "F6"; the S5 addendum F6 rev 2; GATE-DECISION-f6-addendum-2026-11-17 D1-D9 and E1-E7; GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H1-H8 and its addendum "relayed 409 refresh" R1-R6; Fable 5.2 under the owner's delegation).
+- **Program item:** prisma/streams#149, meas149-rerun F6 (GATE-DECISION-meas149-rerun-10000-2026-11-17 §(f) and "F6"; the S5 addendum F6 rev 2; GATE-DECISION-f6-addendum-2026-11-17 D1-D9 and E1-E7; GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H1-H8 and its addendum "relayed 409 refresh" R1-R6; Fable 5.2 under the owner's delegation; its addenda "peer read hop" A1-A9 and "drain fences ahead of the handoff" G1-G10, 2026-11-18).
 - **Lands after:**
   - #267, the retired close's drain. A move's giver closes with a retired gate, so it inherits that drain, and no operation queued at a planned move's close is answered `outcome_unknown`.
 - **Surface:** raw and product, and fleet-internal.
@@ -5843,7 +5843,7 @@ One record has verified=false: its commit did not match the recorded text.
   - `dst::dst_tests::fleet_handoff_cases::a_month_final_the_giver_left_is_written_by_the_next_owner` (H6): a closed-month final the giver stored and did not drain reaches `_usage` once, from the shard's next owner, equal to the stored final.
 - **Formal:** TLA-011 (`ServingOwnership`) gains the giver's handoff, `HandOff(n)`: start, abort, close, flip, keep and release, the flip gated on a closed engine. `HandOffFencesNothing` (no flipped move ends in a failed CAS or answers `moved` or `internal`) holds in the small, single and expanded configurations; the negative control `nc_handoff_flips_before_close` (the flip allowed on a parked engine) breaks it, and the witnesses `Witness_GiverDiesParked` and `Witness_GiverDiesAfterFlip` reach both giver deaths. TLA-011's receipt is recorded with the model; TLA-048, TLA-002, TLA-003 and TLA-045 are re-recorded as their inputs require.
 - **Risk reason:** medium. It changes the order of every planned move and adds a hold on the request path for up to 2 s. In exchange it removes a fence of a live writer on every planned move, and with it the `outcome_unknown` answers and the multi-second stall the rerun measured.
-- **Status:** design approved (rev 2 and the rulings above, with the idle-bound addendum I1-I4: the 0.45 s idle line is withdrawn). This record awaits ratification.
+- **Status:** design approved (rev 2 and the rulings above, with the idle-bound addendum I1-I4: the 0.45 s idle line is withdrawn; the peer read hop addendum A1-A9, 2026-11-18; and the drain addendum G1-G10, 2026-11-18). This record awaits ratification.
 - **Check against commit:** written with the change.
 
 ### #267 (this record's commit) — An operation still queued when a retired shard closes is answered as held by the split, never as outcome unknown
