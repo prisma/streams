@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "82f07d5794f70ad616398868341b941910c5951d",
+  "commit": "6fc62bf45ead15bde3e1585f085712bf17800dd2",
   "measured_on": "2026-11-18",
   "owners": {
     "admission_body": 14,
@@ -196,7 +196,7 @@
     "shard_l0_watermark": 45,
     "shard_layout": 22,
     "shard_lifecycle": 25,
-    "shard_open_index": 157,
+    "shard_open_index": 148,
     "shard_queue_gauges": 145,
     "shard_resident": 15,
     "shard_rows": 66,
