@@ -329,27 +329,102 @@ async fn the_pause_of_a_parent_with_trimmed_queues_reads_its_intervals_at_once()
     engine_shutdown(&cell.state).await;
 }
 
-/// Appends `[{"n": k}]` to `stream` for k = 1, 2, ... until `done`: each answer's status and the
-/// next offset it reports, in order.
-async fn appending(
+/// One closed-loop append's answer: when it was acked, its status and the offset it returned.
+struct Ack {
+    at: std::time::Instant,
+    status: u16,
+    offset: Option<String>,
+}
+
+/// Appends to `stream` at `addr`, one record at a time, until `done`: each answer as it came.
+async fn acked(
     addr: std::net::SocketAddr,
     stream: &str,
     done: &std::sync::atomic::AtomicBool,
-) -> Vec<(u16, Option<String>)> {
+) -> Vec<Ack> {
     let (path, json) = (
         format!("/v1/stream/{stream}"),
         [("content-type", "application/json")],
     );
-    let mut answers = Vec::new();
+    let mut acks = Vec::new();
     for k in 1u32.. {
         if done.load(Ordering::Relaxed) {
             break;
         }
         let body = format!(r#"[{{"n":{k}}}]"#);
         let (status, headers, _) = hreq(addr, "POST", &path, &json, body.as_bytes()).await;
-        answers.push((status, headers.get("stream-next-offset").cloned()));
+        let offset = headers.get("stream-next-offset").cloned();
+        acks.push(Ack {
+            at: std::time::Instant::now(),
+            status,
+            offset,
+        });
     }
-    answers
+    acks
+}
+
+/// A stream of the 10,000-stream parent whose route the split gives to the child `half` (the
+/// route's first bit), other than `load-0` (the compaction's top-up).
+async fn stream_of_child(state: &State, half: u8) -> String {
+    for n in 1..100 {
+        let name = format!("load-{n}");
+        let sref = state.deployment.raw_adapter_sref(&name);
+        let desc = state.registry.get(&sref).await.unwrap().unwrap();
+        let route = desc.resolve_segment("").shard_route;
+        if route[0] >> 7 == half {
+            return name;
+        }
+    }
+    panic!("no stream of child {half} among load-1 to load-99")
+}
+
+/// Each ack of `acks` came once, in order, at its exact offset: `stream` reads its first record
+/// (the load's) and then one per ack, and serves next the last ack's offset. The longest gap
+/// between two consecutive acks, and the time from `parked` to the ack of the first append sent
+/// after it (re-routed to the child).
+async fn checked(
+    addr: std::net::SocketAddr,
+    stream: &str,
+    acks: &[Ack],
+    parked: std::time::Instant,
+) -> (std::time::Duration, std::time::Duration) {
+    let refused: Vec<(u16, Option<String>)> = acks
+        .iter()
+        .filter(|ack| ack.status != 204)
+        .map(|ack| (ack.status, ack.offset.clone()))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "{stream}: every append acked: {refused:?}"
+    );
+    let (records, next) = super::fixture_split::records_and_next(addr, stream).await;
+    let read: Vec<u64> = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|record| record["n"].as_u64())
+        .collect();
+    let count = u64::try_from(acks.len()).unwrap();
+    assert_eq!(
+        read,
+        (0..=count).collect::<Vec<_>>(),
+        "{stream}: each ack once, in order"
+    );
+    let last = acks.last().and_then(|ack| ack.offset.clone());
+    assert_eq!(last, next, "{stream}: the last ack's offset");
+    let gap = acks
+        .windows(2)
+        .map(|pair| pair[1].at.duration_since(pair[0].at))
+        .max()
+        .unwrap_or_default();
+    // The first re-routed append: the first sent after the park (each is sent once the previous
+    // one is acked); the append in flight at the park may be acked from the parent.
+    let first = acks
+        .windows(2)
+        .find(|pair| pair[0].at >= parked)
+        .map(|pair| pair[1].at.duration_since(parked))
+        .expect("an append sent after the park");
+    (gap, first)
 }
 
 /// **The pause of a parent of 10,000 streams on a store 20 ms away stays within the hold** (F5's
@@ -357,8 +432,11 @@ async fn appending(
 /// parent's L0 at `min_compaction_sources`, below its settle line, the compaction scheduled and
 /// held until the park, so it runs through the pause (GATE-DECISION-f5-checkpoint-compaction
 /// addendum "test 1 GET bound"): the pause stays under 1,000 ms and its checkpoint at most 100 ms.
-/// Appends arrive through the split: none is answered 503, and the stream then reads every acked
-/// record once, in order, the last ack's offset being the one the stream serves next.
+/// One closed-loop appender on a stream of each child appends through the split
+/// (GATE-DECISION-f5-pause-log-reads-2026-11-17, "Order and the bar", step 3): on each, the
+/// longest gap between two consecutive acks stays under `HOLD`, none is answered 503, and the
+/// stream reads every acked record once, in order, the last ack's offset being the one it serves
+/// next.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 #[ignore = "a timing measurement, run under the machine's lock"]
 async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold() {
@@ -385,6 +463,10 @@ async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold(
         },
     )
     .await;
+    let streams = [
+        stream_of_child(&rig.state, 0).await,
+        stream_of_child(&rig.state, 1).await,
+    ];
     let (reached, reached_rx) = tokio::sync::oneshot::channel();
     let (go_tx, go) = tokio::sync::oneshot::channel();
     parent
@@ -402,13 +484,16 @@ async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold(
     };
     let at_park = async {
         reached_rx.await.expect("the split parks");
-        let parked = (last_seq(&trace), parent.l0_now());
+        let parked = (last_seq(&trace), parent.l0_now(), std::time::Instant::now());
         held.release();
         assert!(go_tx.send(()).is_ok(), "the split waits for go");
         parked
     };
-    let appended = appending(rig.addr, "load-1", &done);
-    let (published, answers, (parked_at, l0_at_park)) =
+    let appended = futures_util::future::join(
+        acked(rig.addr, &streams[0], &done),
+        acked(rig.addr, &streams[1], &done),
+    );
+    let (published, answers, (parked_at, l0_at_park, parked)) =
         futures_util::future::join3(split, appended, at_park).await;
     let published = published
         .map_err(|refused| refused.to_string())
@@ -425,29 +510,18 @@ async fn the_pause_of_ten_thousand_streams_twenty_ms_away_stays_within_the_hold(
         published.pause.as_millis(),
         seen.shown()
     );
-    let refused: Vec<_> = answers
-        .iter()
-        .filter(|(status, _)| *status != 204)
-        .collect();
-    assert!(refused.is_empty(), "every append acked: {refused:?}");
-    let (records, next) = super::fixture_split::records_and_next(rig.addr, "load-1").await;
-    let read: Vec<u64> = records
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|record| record["n"].as_u64())
-        .collect();
-    let acked = u64::try_from(answers.len()).unwrap();
-    assert_eq!(
-        read,
-        (0..=acked).collect::<Vec<_>>(),
-        "each ack once, in order"
-    );
-    assert_eq!(
-        answers.last().and_then(|a| a.1.clone()),
-        next,
-        "the last ack's offset"
-    );
+    const HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+    for (stream, acks) in streams.iter().zip([&answers.0, &answers.1]) {
+        let (gap, first) = checked(rig.addr, stream, acks, parked).await;
+        eprintln!(
+            "CHILD_ACKS {stream}: {} acks, longest gap {gap:?}, park to first ack {first:?}",
+            acks.len()
+        );
+        assert!(
+            gap < HOLD,
+            "{stream}: the longest gap between acks {gap:?} ({phases})"
+        );
+    }
     let checkpoint = published
         .phases
         .iter()
