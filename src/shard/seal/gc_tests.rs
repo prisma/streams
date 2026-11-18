@@ -949,15 +949,21 @@ async fn a_purge_racing_a_seal_in_flight_counts_nothing_the_seal_never_committed
     rig.engine.begin_close();
 }
 
-/// **An engine placed by the directory keeps its log path and its topology's homes.** Before a
-/// place, `log_path` is the static path and no home has a root; once placed at `shards/10-2` under
-/// a split of `1`, `log_path` is that path and `home_root` gives each home the topology names its
-/// path (home 1's `shards/1`, home 2's `shards/10-2`), and none for a home it does not name.
+/// **An engine built placed keeps its log path and its topology's homes.** Built outside a placement,
+/// `log_path` is the static path and no home has a root; built placed at `shards/10-2` under a split
+/// of `1` (`ShardEngine::placed`), `log_path` is that path and `home_root` gives each home the
+/// topology names its path (home 1's `shards/1`, home 2's `shards/10-2`), and none for a home it
+/// does not name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
 async fn a_placed_engine_keeps_its_log_path_and_its_topologys_home_roots() {
-    let rig = gc_rig("placed").await;
-    let static_path = rig.engine.log_path();
-    assert_eq!(rig.engine.home_root(1), None, "unplaced: no topology");
+    let unplaced = gc_rig("unplaced").await;
+    assert_eq!(
+        unplaced.engine.log_path(),
+        unplaced.path,
+        "unplaced: static"
+    );
+    assert_eq!(unplaced.engine.home_root(1), None, "unplaced: no topology");
+    unplaced.engine.begin_close();
     let topology = crate::config::validation::InitialShards::new(2)
         .unwrap()
         .topology(1 << 20);
@@ -968,11 +974,8 @@ async fn a_placed_engine_keeps_its_log_path_and_its_topologys_home_roots() {
         etag: None,
         installed_at: None,
     });
-    rig.engine.place(
-        "shards/10-2".to_string(),
-        Arc::new(move || Some(snapshot.clone())),
-    );
-    assert_ne!(static_path, "shards/10-2");
+    let topology: crate::topology::fence::SnapshotFn = Arc::new(move || Some(snapshot.clone()));
+    let rig = ShardEngine::placed("shards/10-2".to_string(), topology, gc_rig("placed")).await;
     assert_eq!(rig.engine.log_path(), "shards/10-2");
     assert_eq!(rig.engine.home_root(1).as_deref(), Some("shards/1"));
     assert_eq!(rig.engine.home_root(2).as_deref(), Some("shards/10-2"));

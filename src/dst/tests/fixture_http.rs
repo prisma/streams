@@ -43,7 +43,14 @@ pub(super) struct HttpRigOptions {
     /// The scenario's own command line over the hermetic fixture: a flag
     /// given on argv, which clap resolves ahead of its variable.
     pub(super) cli: fn(&mut crate::config::CliArgs),
+    /// What the directory's opener is wrapped in; none by default
+    /// (`split_born_root`'s early seal wraps it).
+    pub(super) open_wrap: OpenWrap,
 }
+
+/// A wrapper around the rig's shard opener ([`HttpRigOptions::open_wrap`]).
+pub(super) type OpenWrap =
+    Box<dyn FnOnce(crate::sharddir::OpenAt) -> crate::sharddir::OpenAt + Send>;
 
 impl Default for HttpRigOptions {
     fn default() -> Self {
@@ -62,6 +69,7 @@ impl Default for HttpRigOptions {
             auth_service: None,
             fleet_auth: None,
             cli: |_| {},
+            open_wrap: Box::new(|open| open),
         }
     }
 }
@@ -364,6 +372,23 @@ pub(super) fn rig_opener(
     )
 }
 
+/// The rig's shard directory over `prefixes`: its open timing from `config`, and the opener
+/// `opener` makes wrapped in `wrap` ([`HttpRigOptions::open_wrap`]).
+fn rig_directory(
+    prefixes: Vec<String>,
+    ownership: &crate::ownership::OwnershipService,
+    config: &crate::config::ServerConfig,
+    wrap: OpenWrap,
+    opener: impl FnOnce(crate::shard_directory::ShardCloseNotifier) -> crate::sharddir::OpenAt,
+) -> crate::shard_directory::ShardDirectory {
+    let timing = crate::shard_directory::OpenTiming {
+        open_deadline: config.shard.open_deadline,
+        open_wait: std::time::Duration::from_millis(config.shard.open_wait_ms),
+    };
+    let opener = |notifier| wrap(opener(notifier));
+    crate::shard_directory::ShardDirectory::new_at(prefixes, ownership.clone(), timing, opener)
+}
+
 /// Resolve the fixture's hermetic CLI and admission inputs before any runtime
 /// owner is constructed, so its configured limits agree with the HTTP surface.
 fn fixture_config(
@@ -440,6 +465,7 @@ pub(super) async fn http_rig_build(
         auth_service,
         fleet_auth,
         cli,
+        open_wrap: wrap,
     } = opts;
     let registry = crate::registry::Registry::new(
         store.clone(),
@@ -532,15 +558,9 @@ pub(super) async fn http_rig_build(
             crate::tenant::CellId::new("cell_test").unwrap(),
             "test".to_string(),
         ),
-        shards: crate::shard_directory::ShardDirectory::new_at(
-            prefixes,
-            ownership.clone(),
-            crate::shard_directory::OpenTiming {
-                open_deadline: rig_config.shard.open_deadline,
-                open_wait: std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
-            },
-            |notifier| rig_opener(opener_store, opener_shard_cfg, open_park, seal, notifier),
-        ),
+        shards: rig_directory(prefixes, &ownership, &rig_config, wrap, |notifier| {
+            rig_opener(opener_store, opener_shard_cfg, open_park, seal, notifier)
+        }),
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,
             per_stream_cap: per_segment_slots,

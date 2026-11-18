@@ -1427,6 +1427,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_born_root",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A split child's objects under its born home's root from the first instant (GATE-DECISION-born-home-seal-root-2026-11-19, test 1): the rig's opener wrapped to seal an engine opened at a born path before it returns, so a seal before the fenced open's checks is certain; the children's early seals, reads, and object roots are asserted exactly; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/split_born_root.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::purge_lifecycle",
       "path": "src/dst/dst_tests.rs",
       "reason": "Physical reclamation of dead incarnations end to end (layout 6A package 6): the production sweep asks the owning shard to purge a hard-deleted or replaced incarnation, never one merely expired, and the shard reclaims its chunks and objects; compiler and the full DST suite exercise the module.",
@@ -4238,6 +4246,14 @@
       "owner": "crate::macro(tokio::task_local)",
       "path": "src/admission/park.rs",
       "reason": "The served request's own in-flight ticket, scoped to its handler future by the transport (InflightTicket::serve), so a wait deep inside a read long-poll, a consumer pull or a watch wait parks exactly that request without every layer carrying the ticket (shared cells M1); one value per request future, dropped with it; no process-wide state.",
+      "syntax": "tokio::task_local"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(tokio::task_local)",
+      "path": "src/shard/layout.rs",
+      "reason": "The placement of the engine a fenced open builds (log path and topology), scoped to the opener's future by ShardEngine::placed, so ShardEngine::start's one LayoutState::default() line builds the engine knowing where it lives before any of its tasks can write (GATE-DECISION-born-home-seal-root-2026-11-19, fix D) without touching the frozen start or bootstrap::run; one value per open future, dropped with it; outside a fenced open it is absent and the engine keeps S3a's static layout; the open refuses an engine not built at its path, so a lost scope fails loudly; no process-wide state.",
       "syntax": "tokio::task_local"
     },
     {

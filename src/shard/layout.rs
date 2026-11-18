@@ -73,21 +73,44 @@ pub(crate) struct LayoutState {
 }
 
 /// Where an engine's log lives (its home's path in the cell's topology) and the topology it was
-/// opened under, for the roots of its ancestors' objects: set once, by the directory's fenced open
-/// (`topology::fence::fenced`). An engine opened outside the directory (a test's) has neither, and
-/// keeps S3a's static layout.
-#[derive(Default)]
+/// opened under, for the roots of its ancestors' objects: part of the engine's construction, so no
+/// task of the engine ever sees it unset. The directory's fenced open (`topology::fence::fenced`)
+/// builds its engine inside [`super::ShardEngine::placed`], which gives it both; an engine built
+/// outside one (a test's) has neither, and keeps S3a's static layout.
+#[derive(Clone)]
 struct Place {
-    log: std::sync::OnceLock<String>,
-    topology: std::sync::OnceLock<crate::topology::fence::SnapshotFn>,
+    log: Option<String>,
+    topology: Option<crate::topology::fence::SnapshotFn>,
+}
+
+tokio::task_local! {
+    /// The placement of the engine the current fenced open builds (`ShardEngine::placed`).
+    static PLACEMENT: Place;
+}
+
+impl Default for Place {
+    /// The placement of the fenced open building this engine, if one is; else none.
+    fn default() -> Self {
+        PLACEMENT.try_with(Self::clone).unwrap_or(Self {
+            log: None,
+            topology: None,
+        })
+    }
 }
 
 impl super::ShardEngine {
-    /// Record where this engine's log lives and the topology it was opened under (once).
-    pub(crate) fn place(&self, log: String, topology: crate::topology::fence::SnapshotFn) {
-        let place = &self.layout.place;
-        place.log.get_or_init(|| log);
-        place.topology.get_or_init(|| topology);
+    /// Run `open` with every engine it builds placed at `log` under `topology`: the one way to
+    /// place an engine (the fenced open's). The placement holds on whatever task polls `open`.
+    pub(crate) async fn placed<T>(
+        log: String,
+        topology: crate::topology::fence::SnapshotFn,
+        open: impl std::future::Future<Output = T>,
+    ) -> T {
+        let place = Place {
+            log: Some(log),
+            topology: Some(topology),
+        };
+        PLACEMENT.scope(place, open).await
     }
 
     /// This engine's log path: its home's in the topology, else S3a's static path of its prefix.
@@ -95,14 +118,13 @@ impl super::ShardEngine {
         self.layout
             .place
             .log
-            .get()
-            .cloned()
+            .clone()
             .unwrap_or_else(|| crate::sharddir::shard_db_path(&self.prefix))
     }
 
     /// `home`'s root in the topology this engine was opened under, if it names that home.
     pub(crate) fn home_root(&self, home: u32) -> Option<String> {
-        let snapshot = (self.layout.place.topology.get()?)()?;
+        let snapshot = (self.layout.place.topology.as_ref()?)()?;
         Some(snapshot.shards.homes.get(&home)?.path.clone())
     }
 }

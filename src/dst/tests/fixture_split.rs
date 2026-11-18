@@ -12,17 +12,23 @@ use std::sync::Arc;
 type State = Arc<crate::http::AppState>;
 type Addr = std::net::SocketAddr;
 
-/// A stream created in the half `half` of the leaf `00` (its route's third bit): its name.
-async fn stream_in_half(state: &State, addr: Addr, half: char, taken: &mut usize) -> String {
+/// A stream created in the half `half` of the two-bit leaf `leaf` (its route's third bit): its name.
+async fn stream_in_half(
+    state: &State,
+    addr: Addr,
+    leaf: &str,
+    half: char,
+    n: &mut usize,
+) -> String {
     loop {
-        *taken += 1;
-        assert!(*taken < 400, "no stream lands in 00{half}");
-        let name = format!("k-{taken}");
+        *n += 1;
+        assert!(*n < 400, "no stream lands in {leaf}{half}");
+        let name = format!("k-{n}");
         raw_put(addr, &name, &[JSON], b"").await;
         let desc = stored(state, &state.deployment.raw_adapter_sref(&name)).await;
         let route = desc.resolve_segment("").shard_route;
         let third = (route[0] >> 5) & 1;
-        if state.shards.prefix_for(&route) == "00" && third == u8::from(half == '1') {
+        if state.shards.prefix_for(&route) == leaf && third == u8::from(half == '1') {
             return name;
         }
     }
@@ -35,8 +41,8 @@ pub(super) async fn records(addr: Addr, name: &str) -> serde_json::Value {
     serde_json::from_slice(&body).unwrap_or_default()
 }
 
-/// A rig whose stored topology is its own, with a stream in each half of the leaf `00` holding two
-/// records each, and the leaf's engine.
+/// A rig whose stored topology is its own, with a stream in each half of the leaf `00` (or the one
+/// `leaf_cell` names) holding two records each, and the leaf's engine.
 pub(super) struct Cell {
     pub(super) state: State,
     pub(super) addr: Addr,
@@ -75,7 +81,7 @@ pub(super) async fn cold_cell() -> Cell {
 pub(super) async fn cold_cell_over(store: Arc<dyn object_store::ObjectStore>) -> Cell {
     let runtime = super::fixture_runtime::RigRuntime::first();
     let rigged = http_rig_two_bit_cold(store.clone(), None, runtime).await;
-    cell_of(store, rigged).await
+    cell_of(store, rigged, "00").await
 }
 
 /// `cell_over`, on `runtime` (whose manual clock the test may drive).
@@ -84,11 +90,33 @@ pub(super) async fn cell_at(
     runtime: super::fixture_runtime::RigRuntime,
 ) -> Cell {
     let rigged = http_rig_two_bit(store.clone(), None, runtime).await;
-    cell_of(store, rigged).await
+    cell_of(store, rigged, "00").await
 }
 
-/// The cell `rigged` over `store`: its topology stored, a stream in each half of `00`.
-async fn cell_of(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr)) -> Cell {
+/// A cell over `store` around the two-bit leaf `leaf`, its sealers sealing only when asked
+/// ([`cold_sealer`]) and its directory's opener wrapped in `open_wrap`.
+pub(super) async fn leaf_cell(
+    store: Arc<dyn object_store::ObjectStore>,
+    leaf: &str,
+    open_wrap: super::fixture_http::OpenWrap,
+) -> Cell {
+    let options = super::fixture_http::HttpRigOptions {
+        prefixes: super::fixture_http::two_bit(),
+        seal: Some(super::fixture_http::cold_sealer),
+        open_wrap,
+        ..Default::default()
+    };
+    let runtime = super::fixture_runtime::RigRuntime::first();
+    let rig = super::fixture_http::http_rig_build(store.clone(), runtime, options).await;
+    cell_of(store, rig.parts(), leaf).await
+}
+
+/// The cell `rigged` over `store`: its topology stored, a stream in each half of `leaf`.
+async fn cell_of(
+    store: Arc<dyn object_store::ObjectStore>,
+    rigged: (State, Addr),
+    leaf: &str,
+) -> Cell {
     let (state, addr) = rigged;
     // The cell's stored topology, as boot leaves it: the rig's own.
     let topology = crate::topology::model::Topology {
@@ -102,14 +130,14 @@ async fn cell_of(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr
         .await
         .unwrap();
     let mut taken = 0;
-    let low = stream_in_half(&state, addr, '0', &mut taken).await;
-    let high = stream_in_half(&state, addr, '1', &mut taken).await;
+    let low = stream_in_half(&state, addr, leaf, '0', &mut taken).await;
+    let high = stream_in_half(&state, addr, leaf, '1', &mut taken).await;
     for (name, n) in [(&low, 1), (&high, 2), (&low, 3), (&high, 4)] {
         assert_eq!(append(addr, name, n).await.0, 204, "append to {name}");
     }
     let desc = stored(&state, &state.deployment.raw_adapter_sref(&low)).await;
     let parent = engine_of(&state, &desc, 0).await;
-    assert_eq!(parent.prefix, "00");
+    assert_eq!(parent.prefix, leaf);
     Cell {
         state,
         addr,

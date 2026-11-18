@@ -130,3 +130,62 @@ async fn a_read_of_a_closed_log_is_a_store_error_not_a_fence() {
 fn a_held_open_is_bounded_by_twice_the_fence_wait() {
     assert_eq!(super::HELD_OPEN_BOUND, super::FENCE_WAIT * 2);
 }
+
+/// **An engine not built at the path its fenced open asked for never serves.** The opener hands back
+/// an engine started before its future ran, outside any placement, for `101`, whose home 5 the first
+/// split of `10` in a four-shard cell gave birth to (`shards/101-5`): the open fails naming both
+/// paths, the engine is closed and its tasks terminated, and no object was written under either
+/// root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_fenced_open_refuses_an_engine_built_outside_its_placement() {
+    let topology = crate::config::validation::InitialShards::new(4)
+        .unwrap()
+        .topology(1 << 20);
+    let (reserved, homes) = topology.reserve_homes();
+    let shards = reserved.split("10", homes, "op").unwrap().shards;
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = crate::keyspace::db_builder("shards/101-5", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .unwrap();
+    let config = crate::shard::ShardConfig::default();
+    let engine = crate::shard::ShardEngine::start(
+        "101".to_string(),
+        Arc::new(db),
+        store.clone(),
+        config,
+        None,
+        maintenance,
+    );
+    let handed = engine.clone();
+    let opener: crate::sharddir::OpenAt =
+        Box::new(move |_: String, _: String, _: EngineIncarnation| {
+            Box::pin(std::future::ready(Ok(handed.clone())))
+        });
+    let timing = crate::shard_directory::OpenTiming {
+        open_deadline: Duration::from_secs(60),
+        open_wait: Duration::from_millis(500),
+    };
+    let ownership = crate::ownership::OwnershipService::new("");
+    let dir = crate::shard_directory::ShardDirectory::new_at(shards, ownership, timing, |_| opener);
+    let outcome = dir
+        .gate_for_tests()
+        .get_or_open("101", Duration::from_secs(5))
+        .await;
+    let OpenOutcome::Failed(error) = outcome else {
+        panic!("the open of an engine built outside its placement fails, not serves");
+    };
+    let want = "misplaced: the engine of 101 was built at shards/101, not at shards/101-5";
+    assert!(error.contains(want), "{error}");
+    assert!(engine.is_closed(), "the refused engine is closed");
+    assert!(engine.shutdown_handle().terminated(), "its tasks ended");
+    for root in ["shards/101", "shards/101-5/hseg", "shards/101-5/ridx"] {
+        use futures_util::TryStreamExt;
+        let at = object_store::path::Path::from(root);
+        let objects: Vec<_> = store.list(Some(&at)).try_collect().await.unwrap();
+        assert!(objects.is_empty(), "{root}: {objects:?}");
+    }
+}

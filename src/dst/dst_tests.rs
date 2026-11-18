@@ -61,6 +61,8 @@ mod queue_segments;
 mod queue_split;
 #[path = "tests/split_barrier.rs"]
 mod split_barrier;
+#[path = "tests/split_born_root.rs"]
+mod split_born_root;
 #[path = "tests/split_compacting.rs"]
 mod split_compacting;
 #[path = "tests/split_k.rs"]

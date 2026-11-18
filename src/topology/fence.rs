@@ -182,8 +182,9 @@ pub(crate) fn fenced(
     })
 }
 
-/// The fenced open of `prefix` (see [`fenced`]): the hold before the open, the open, the hold after
-/// it. An engine a newer writer fenced while it was held (the lead's option (a), 2026-11-10: a
+/// The fenced open of `prefix` (see [`fenced`]): the hold before the open, the open (its engine built
+/// placed at the log's path, `ShardEngine::placed`, and refused if it is not), the hold after it.
+/// An engine a newer writer fenced while it was held (the lead's option (a), 2026-11-10: a
 /// claimant's maintenance open of a sibling mid-open) is closed, its termination awaited (so its
 /// close notification, carrying this incarnation, lands before any replacement is published), and
 /// the open re-enters the hold before the open, which waits on the claimant's fresh claim and
@@ -211,9 +212,10 @@ async fn open_held(
             anyhow::bail!("not_a_leaf: {prefix}");
         }
         let path = log_path(held.as_deref(), &prefix);
-        let engine = open(prefix.clone(), path.clone(), incarnation).await?;
+        let opened = open(prefix.clone(), path.clone(), incarnation);
+        let engine = ShardEngine::placed(path.clone(), snapshot.clone(), opened).await?;
+        refuse_misplaced(&engine, &path).await?;
         intents.get_or_init(|| engine.data_store().clone());
-        engine.place(path, snapshot.clone());
         match hold_until_served(&engine, snapshot, lapse).await? {
             HoldEnd::Served => return Ok(engine),
             HoldEnd::Fenced => {
@@ -225,6 +227,21 @@ async fn open_held(
             }
         }
     }
+}
+
+/// An engine a fenced open got that was not built at `path`, the placement the open built it under
+/// (`ShardEngine::placed`: an opener that built it outside its future, or on another task), is
+/// closed, its termination awaited, and the open fails naming both paths: it never serves, and no
+/// task of it outlives the failed open.
+async fn refuse_misplaced(engine: &ShardEngine, path: &str) -> anyhow::Result<()> {
+    let built = engine.log_path();
+    if built == path {
+        return Ok(());
+    }
+    engine.begin_close();
+    drop(engine.shutdown_handle().wait(FENCE_WAIT).await);
+    let prefix = &engine.prefix;
+    anyhow::bail!("misplaced: the engine of {prefix} was built at {built}, not at {path}")
 }
 
 /// The hold before the open (TLA-048 option (b), change 1): while a live intent names `prefix` as

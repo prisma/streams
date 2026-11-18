@@ -548,8 +548,7 @@ impl ShardEngine {
     }
 
     /// The log's SlateDB metrics, once its builder registered them under the log's path: looked
-    /// up until found (a split's child learns its path from the directory right after its open),
-    /// then kept, and the sealer follows its freeze size.
+    /// up until found, then kept, and the sealer follows its freeze size.
     fn find_log_metrics(&self) {
         let sp = self.seal_state();
         if sp.metrics.get().is_some() {

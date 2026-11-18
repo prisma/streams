@@ -3884,6 +3884,28 @@
     "scenarios": []
   },
   {
+    "name": "a_split_childs_first_seal_lands_under_its_born_root",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b3f2b0f88102a8c6fba17f7ab33ecd8a876d9bfc921bc4dbcbfe39be267c2a1c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_born_root.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_childs_first_seal_lands_under_its_born_root_when_its_home_is_its_prefixs_number",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8c797c8d783e31561df5c30a5bc93915086e3c4dee7e7e9391c3cb4dfab6f133",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_born_root.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
