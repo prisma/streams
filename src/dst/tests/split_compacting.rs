@@ -346,6 +346,78 @@ async fn parked_after(
     }
 }
 
+/// `split` and the test's `control`, both run to their end; a split that ends while the control
+/// still waits (refused before the point the control waits for) fails the test at once, with the
+/// split's outcome, instead of the control waiting out its bounds.
+async fn joined<C: std::future::Future>(
+    split: impl std::future::Future<
+        Output = Result<crate::topology::split::Published, crate::topology::split::Refused>,
+    >,
+    control: C,
+) -> (
+    Result<crate::topology::split::Published, crate::topology::split::Refused>,
+    C::Output,
+) {
+    let (split, control) = (Box::pin(split), Box::pin(control));
+    match futures_util::future::select(split, control).await {
+        futures_util::future::Either::Left((ended, _)) => {
+            let ended = ended.map(|published| published.version);
+            let ended = ended.map_err(|refused| refused.to_string());
+            panic!("the split ended while the test still waited: {ended:?}")
+        }
+        futures_util::future::Either::Right((done, split)) => (split.await, done),
+    }
+}
+
+/// How long the bound test waits for its refusal: Preparing's bound under test (`settle::SETTLE`,
+/// 12 s) and 8 s for the rollback; it moves with that bound.
+const REFUSED_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A compaction worker of the test's own on `parent`'s log, over `store` (the fault store under
+/// the trace, so its polls and reads are in no traced window), polling every 50 ms
+/// (GATE-DECISION-f5-resettle-margin-2026-11-18): the log's embedded worker claims a released job on
+/// a poll jittered over 2.5 to 7.5 s, which a test landing a compaction inside Preparing's bound
+/// must not wait for. Claims are exclusive; the coordinator, its commit tick and the writer's
+/// manifest poll stay the product's.
+async fn fast_worker(
+    parent: &Engine,
+    store: Arc<dyn object_store::ObjectStore>,
+) -> slatedb::CompactionWorker {
+    let options = slatedb::config::CompactionWorkerOptions {
+        compactions_poll_interval: std::time::Duration::from_millis(50),
+        ..Default::default()
+    };
+    slatedb::CompactionWorkerBuilder::new(parent.log_path(), store)
+        .with_options(options)
+        .with_merge_operator(crate::spill::pending::merge_operator())
+        .build()
+        .await
+        .expect("a compaction worker")
+}
+
+/// `wait`, with `worker` running beside it (driven here, not spawned); once `wait` ends the worker
+/// is stopped, within `HELD_WAIT`.
+async fn while_running<T>(
+    worker: &slatedb::CompactionWorker,
+    wait: impl std::future::Future<Output = T>,
+) -> T {
+    let (run, wait) = (Box::pin(worker.run()), Box::pin(wait));
+    match futures_util::future::select(run, wait).await {
+        futures_util::future::Either::Left((ended, _)) => {
+            panic!("the test's compaction worker ended while the test waited: {ended:?}")
+        }
+        futures_util::future::Either::Right((out, run)) => {
+            let stopped = futures_util::future::join(worker.stop(), run);
+            let (stop, ran) = tokio::time::timeout(HELD_WAIT, stopped)
+                .await
+                .expect("the worker stops within 30 s");
+            stop.expect("the worker stops");
+            ran.expect("the worker's run");
+            out
+        }
+    }
+}
+
 /// The trace's last event id now.
 pub(super) fn last_seq(trace: &TraceStore) -> u64 {
     trace.events().last().map_or(0, |event| event.seq)
@@ -397,12 +469,16 @@ async fn a_split_of_a_compacting_parent_parks_only_after_the_compaction() {
             park_rx.try_recv().is_err(),
             "parked while the compaction is held"
         );
+        let worker = fast_worker(&parent, held.0.clone()).await;
+        let released = std::time::Instant::now();
         held.release();
-        let Some(before) = parked_after(&trace, park_rx).await else {
+        let parked = while_running(&worker, parked_after(&trace, park_rx)).await;
+        let Some(before) = parked else {
             let intent = crate::topology::intent::read(&**parent.data_store()).await;
             let state = intent.map(|read| read.map(|ended| ended.intent.state));
             panic!("the split did not park within 30 s of the release: its intent {state:?}");
         };
+        println!("COMPACTING_AT release to park {:?}", released.elapsed());
         let (parked, l0_at_park) = (last_seq(&trace), parent.l0_now());
         assert!(park_go.send(()).is_ok(), "the split waits for go");
         checkpoint_rx.await.expect("the pause checkpoints");
@@ -415,7 +491,7 @@ async fn a_split_of_a_compacting_parent_parks_only_after_the_compaction() {
         };
         (at, l0_at_park)
     };
-    let both = futures_util::future::join(split, control);
+    let both = joined(split, control);
     let (published, (at, l0_at_park)) = tokio::time::timeout(3 * HELD_WAIT, both)
         .await
         .expect("the split publishes within 90 s of the start");
@@ -460,12 +536,13 @@ async fn a_split_of_a_parent_compacting_past_the_bound_is_refused_before_the_par
         crate::topology::split::split(&cell.state.shards, &parent, "op-bound", "inst-a", &*clock);
     let appending = appended(&cell, 300, 20);
     let both = futures_util::future::join(split, appending);
-    let ended = tokio::time::timeout(HELD_WAIT, both).await;
+    let ended = tokio::time::timeout(REFUSED_WITHIN, both).await;
     let parked = reached_rx.try_recv().is_ok();
     drop(go_tx);
     held.release();
     assert!(!parked, "the split parked the shard");
-    let (refused, answers) = ended.expect("the split ends within 30 s");
+    let (refused, answers) =
+        ended.unwrap_or_else(|_| panic!("the split ends within {REFUSED_WITHIN:?}"));
     match refused {
         Err(crate::topology::split::Refused::RolledBack(why)) => {
             println!("REFUSED {why}");
@@ -541,8 +618,8 @@ async fn a_split_of_a_compacting_parent_with_l0_room_parks_at_once() {
         (at_park, parked_at, checkpointed)
     };
     let appending = appended(&cell, 500, 5);
-    let all = futures_util::future::join3(split, control, appending);
-    let (published, (at_park, parked_at, checkpointed), answers) =
+    let all = futures_util::future::join(joined(split, control), appending);
+    let ((published, (at_park, parked_at, checkpointed)), answers) =
         tokio::time::timeout(3 * HELD_WAIT, all)
             .await
             .expect("the split publishes within 90 s of the start");
@@ -800,7 +877,7 @@ async fn a_compaction_landing_after_preparings_read_is_read_again_before_the_par
         };
         (at, at_park, landed)
     };
-    let both = futures_util::future::join(split, control);
+    let both = joined(split, control);
     let (published, (at, at_park, landed)) = tokio::time::timeout(3 * HELD_WAIT, both)
         .await
         .expect("the split publishes within 90 s of the start");
@@ -873,20 +950,29 @@ async fn a_flush_that_brings_the_parent_to_its_line_after_preparings_read_is_set
         "inst-a",
         &*clock,
     );
+    let begun = std::time::Instant::now();
     let control = async {
+        let at = |step: &str| println!("RESETTLE_AT {step} {:?}", begun.elapsed());
         reads_rx.await.expect("Preparing reads the log");
+        at("read");
         topped_up((cell.addr, &cell.low), &parent, 7, &mut 600).await;
+        at("topped up");
         assert!(reads_go.send(()).is_ok(), "Preparing waits for go");
         tokio::time::sleep(HELD_FOR).await;
         let parked = park_rx.try_recv().is_ok();
+        let worker = fast_worker(&parent, held.0.clone()).await;
+        at("released");
         held.release();
         assert!(!parked, "parked at its line while the compaction is held");
-        let Ok(Ok(())) = tokio::time::timeout(HELD_WAIT, park_rx).await else {
-            panic!("the split did not park within 30 s of the release");
+        let landed = while_running(&worker, tokio::time::timeout(HELD_WAIT, park_rx)).await;
+        let Ok(Ok(())) = landed else {
+            let l0 = parent.l0_now();
+            panic!("the split did not park within 30 s of the release (l0 {l0})");
         };
+        at("parked");
         assert!(park_go.send(()).is_ok(), "the split waits for go");
     };
-    let both = futures_util::future::join(split, control);
+    let both = joined(split, control);
     let (published, ()) = tokio::time::timeout(3 * HELD_WAIT, both)
         .await
         .expect("the split publishes within 90 s of the start");

@@ -23,8 +23,10 @@ mod tests;
 /// How long Preparing waits for the parent's log to settle before it refuses the split.
 #[cfg(not(test))]
 const SETTLE: Duration = Duration::from_secs(30);
-/// Tests: the bound, short enough for a test to pass it, and long enough for the compactor's 5 s
-/// polls to land a compaction (inferred from a 6 s wait, not traced).
+/// Tests: the bound, short enough for a test to pass it. Read from code: a released compaction
+/// waits for the embedded worker's claim poll, jittered over 2.5 to 7.5 s, then lands on the
+/// coordinator's 1 s commit tick; the tests that land a compaction inside the bound run a worker
+/// of their own polling every 50 ms (GATE-DECISION-f5-resettle-margin-2026-11-18).
 #[cfg(test)]
 const SETTLE: Duration = Duration::from_secs(12);
 

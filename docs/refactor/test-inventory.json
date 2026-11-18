@@ -459,7 +459,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c4975991ef946f30fed89c953d02479755c30b8eb4f3180bda92d2514d552735",
+    "function_sha256": "e70e5b3323cdb168477a6c5914728670d47d7ea99032adbaa52f0a92e108face",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
@@ -1214,7 +1214,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "f347191367fdeba43ff2d9326c91b7e4ceca1469fb48894dbbf4654e14fdd390",
+    "function_sha256": "695e3d7e53d00df24a1408284f761eda2e8e57d4cf262a083ae57f604d9a07b1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
@@ -3945,7 +3945,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5ad317264cf68e36844f1070d1e3ec4eddd38d0d1460983da67bcd8b1b98b3ba",
+    "function_sha256": "b2d7b7e56ba30f831b049c26b7be45be2b9926e4209ff46c4b9e4d28356b2afe",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
@@ -3956,7 +3956,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7d251a76c0e5ec69a62377ac468ad8a9581078b80116155a2c539577b12c8cc7",
+    "function_sha256": "b6680d72268e21cae83e87f8b9a7c9ce767f900bc0885ce42a7f9c4c8b92d245",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
@@ -3989,7 +3989,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a02ecc4f5fde2f880d6ab578b0ce1bc112a10f87b77897fa31859cdbe00b3c6f",
+    "function_sha256": "4f305c523dc3c09b2e003acf302c3414ae7cf96fbb20049a4ee20fadf5a1ab60",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_compacting.rs",
