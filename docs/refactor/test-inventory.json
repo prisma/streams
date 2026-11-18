@@ -11512,7 +11512,7 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
       "#[ignore = \"a timing measurement, run under the machine's lock\"]"
     ],
-    "function_sha256": "70a0f7a0485f765b9dd8b90fe4bd49baa9c2c8985a870b1ca64b3fc58f850939",
+    "function_sha256": "98c6c04aeb24c28bf3ff1f5b9e72acd3f7f73ef551314b9172c7abe99bf7c27a",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN"
