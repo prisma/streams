@@ -164,10 +164,12 @@ pub(crate) type SnapshotFn = Arc<dyn Fn() -> Option<Arc<Snapshot>> + Send + Sync
 /// `open`, fenced: it opens the log at the path the topology gives the prefix's home (its static
 /// path before any topology is known), and the engine it opens is returned only once the fence
 /// lets it serve (see the module). A prefix that is no leaf of the topology is refused
-/// `not_a_leaf` without opening anything (#251 amendment R3-d).
+/// `not_a_leaf` without opening anything (#251 amendment R3-d), unless a split registered it in
+/// `ahead` (F5 shape C, `topology::ahead`).
 pub(crate) fn fenced(
     open: crate::sharddir::LogOpener,
     snapshot: SnapshotFn,
+    ahead: Arc<super::ahead::Ahead>,
 ) -> crate::sharddir::OpenFn {
     let open = Arc::new(open.0);
     // The cell's data store, which holds the intent: every engine this opener opens carries it, so
@@ -178,7 +180,15 @@ pub(crate) fn fenced(
     let intents: Arc<OnceLock<Arc<dyn ObjectStore>>> = Arc::default();
     Box::new(move |prefix, incarnation| {
         let (open, snapshot, intents) = (open.clone(), snapshot.clone(), intents.clone());
-        Box::pin(async move { open_held(&open, prefix, incarnation, &snapshot, &intents).await })
+        let ahead = ahead.clone();
+        Box::pin(async move {
+            let held = Held {
+                snapshot: &snapshot,
+                intents: &intents,
+                ahead: &ahead,
+            };
+            open_held(&open, prefix, incarnation, &held).await
+        })
     })
 }
 
@@ -192,9 +202,9 @@ async fn open_held(
     open: &crate::sharddir::OpenAt,
     prefix: String,
     incarnation: crate::sharddir::EngineIncarnation,
-    snapshot: &SnapshotFn,
-    intents: &OnceLock<Arc<dyn ObjectStore>>,
+    held_by: &Held<'_>,
 ) -> anyhow::Result<Arc<ShardEngine>> {
+    let (snapshot, intents) = (held_by.snapshot, held_by.intents);
     let started = Instant::now();
     loop {
         let lapse = match intents.get() {
@@ -202,18 +212,28 @@ async fn open_held(
             None => None,
         };
         // A prefix that is no leaf has no log of its own to open: its static path would be a new,
-        // empty one (#251 amendment R3-d).
+        // empty one (#251 amendment R3-d), unless a split registered it ahead of its publish.
         let held = snapshot();
-        if held
+        let ahead = if held
             .as_deref()
             .is_some_and(|held| !held.shards.leaves.contains_key(&prefix))
         {
-            anyhow::bail!("not_a_leaf: {prefix}");
-        }
-        let path = log_path(held.as_deref(), &prefix);
+            let Some(path) = held_by.ahead.path(&prefix) else {
+                anyhow::bail!("not_a_leaf: {prefix}");
+            };
+            Some(path)
+        } else {
+            None
+        };
+        let path = ahead
+            .clone()
+            .unwrap_or_else(|| log_path(held.as_deref(), &prefix));
         let engine = open(prefix.clone(), path.clone(), incarnation).await?;
         intents.get_or_init(|| engine.data_store().clone());
         engine.place(path, snapshot.clone());
+        if ahead.is_some() {
+            until_leaf(&engine, &prefix, held_by).await?;
+        }
         match hold_until_served(&engine, snapshot, lapse).await? {
             HoldEnd::Served => return Ok(engine),
             HoldEnd::Fenced => {
@@ -225,6 +245,41 @@ async fn open_held(
             }
         }
     }
+}
+
+/// What an open is held by: the directory's topology, the cell's data store once known, and the
+/// children registered ahead of their publish.
+struct Held<'a> {
+    snapshot: &'a SnapshotFn,
+    intents: &'a OnceLock<Arc<dyn ObjectStore>>,
+    ahead: &'a super::ahead::Ahead,
+}
+
+/// A child opened ahead of its publish waits, signalled by the install or by its withdrawal (never
+/// by `RECHECK`), until the installed topology names it a leaf; within `HELD_OPEN_BOUND`. A child
+/// withdrawn first (its split ended without the install, or the ring gave it away) is closed, its
+/// termination awaited as the `Fenced` arm awaits it, and its open fails.
+async fn until_leaf(engine: &ShardEngine, prefix: &str, held_by: &Held<'_>) -> anyhow::Result<()> {
+    let waited = async {
+        loop {
+            let mut changed = Box::pin(held_by.ahead.changed());
+            changed.as_mut().enable();
+            let leaf =
+                (held_by.snapshot)().is_some_and(|held| held.shards.leaves.contains_key(prefix));
+            match held_by.ahead.standing(prefix, leaf) {
+                super::ahead::Standing::Leaf => return true,
+                super::ahead::Standing::Withdrawn => return false,
+                super::ahead::Standing::Waiting => changed.await,
+            }
+        }
+    };
+    let leaf = tokio::time::timeout(HELD_OPEN_BOUND, waited).await;
+    if leaf == Ok(true) {
+        return Ok(());
+    }
+    engine.begin_close();
+    drop(engine.shutdown_handle().wait(FENCE_WAIT).await);
+    anyhow::bail!("withdrawn: {prefix} was opened ahead of a publish that did not name it ours")
 }
 
 /// The hold before the open (TLA-048 option (b), change 1): while a live intent names `prefix` as

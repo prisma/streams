@@ -143,6 +143,8 @@ struct DirInner {
     open_wait: Duration,
     /// The way to this instance's topology loop (`topology::ops`).
     topology_ops: crate::topology::ops::Handle,
+    /// A split's children registered ahead of their publish (`ahead`, F5 shape C).
+    ahead: Arc<crate::topology::ahead::Ahead>,
 }
 
 /// The two open timings the directory's gate applies: the ceiling on
@@ -237,7 +239,9 @@ impl ShardDirectory {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 Some(snapshot.clone())
             });
-            let opener = crate::topology::fence::fenced(opener(notifier).into(), snapshot);
+            let ahead = Arc::new(crate::topology::ahead::Ahead::default());
+            let opener =
+                crate::topology::fence::fenced(opener(notifier).into(), snapshot, ahead.clone());
             let gate = OpenGate::new(shards.clone(), opener, timing.open_deadline);
             DirInner {
                 topology,
@@ -248,6 +252,7 @@ impl ShardDirectory {
                 ownership,
                 open_wait: timing.open_wait,
                 topology_ops: crate::topology::ops::Handle::default(),
+                ahead,
             }
         });
         Self { inner }
@@ -347,6 +352,7 @@ impl ShardDirectory {
             });
             gone
         };
+        self.inner.ahead.installed();
         // A parent its split holds parked is retired by the split, after its release re-routes the
         // operations it holds.
         let unparked = |engine: &Arc<ShardEngine>, _| !engine.gc_state().gate.parked();
@@ -664,6 +670,7 @@ async fn settle_engines(
     (pending, failures.collect())
 }
 
+mod ahead;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]

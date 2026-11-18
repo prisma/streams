@@ -2,6 +2,7 @@
 //! changes it, and the policy that decides when (S5).
 // The actor of a split or a merge: its lease, its ownership checks, its terminal write.
 pub(crate) mod actor;
+pub(crate) mod ahead;
 // A split's or merge's seeded clone, built again past a clock skew.
 pub(crate) mod clone;
 pub(crate) mod fence;

@@ -420,6 +420,9 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
             return Err(roll_back(op.dir, parent, &actor.held(), why).await);
         }
     };
+    // From a durable `'T'` the split only rolls forward: its children's opens start now, ahead of the
+    // publish (shape C), and their registrations are withdrawn once the publish returns.
+    let ahead = opened_ahead(op).await;
     let released = std::sync::OnceLock::new();
     let retire = |reroute| {
         released.get_or_init(|| paused_at.elapsed());
@@ -431,6 +434,7 @@ async fn run(op: &Op<'_>, actor: &Actor<'_>) -> Result<Published, Refused> {
             published.pause = released.get().copied().unwrap_or_default();
             published
         });
+    drop(ahead);
     drop(hold);
     published.map_err(Refused::Unfinished)
 }
@@ -595,6 +599,22 @@ async fn prepare(
         runs,
         settled,
     })
+}
+
+/// Shape C (GATE-DECISION-f5-pause-log-reads-2026-11-17, addendum "part 2 shape"): each child's open
+/// starts through the directory's ahead door, registered with the log its home names, so the build
+/// and the index load overlap the births and the CAS. Held until the topology names the child a
+/// leaf; withdrawn when the returned registrations drop.
+async fn opened_ahead(op: &Op<'_>) -> Vec<crate::topology::ahead::Registered> {
+    let mut registered = Vec::with_capacity(op.children.len());
+    for child in op.children {
+        let path = crate::topology::model::born_home_path(&child.prefix, child.home);
+        let born_here = op.birth.is_some();
+        if let Some(entry) = op.dir.open_ahead(&child.prefix, path, born_here).await {
+            registered.push(entry);
+        }
+    }
+    registered
 }
 
 /// What Preparing leaves the pause: each child's lists as it PUT them, and the run-index objects
