@@ -290,26 +290,26 @@ async fn scanned(
     key_of: fn(&[u8; 16]) -> Vec<u8>,
 ) -> Result<(Vec<Option<bytes::Bytes>>, usize), slatedb::Error> {
     let mut tails = vec![None; hashes.len()];
-    let (Some(first), Some(last)) = (hashes.first(), hashes.last()) else {
+    let keys: Vec<Vec<u8>> = hashes.iter().map(key_of).collect();
+    let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
         return Ok((tails, 0));
     };
     let options = sentinel_scan_opts();
     let mut rows = db
-        .scan_with_options(key_of(first)..=key_of(last), &options)
+        .scan_with_options(first.clone()..=last.clone(), &options)
         .await?;
     let (mut at, mut passed, mut bytes) = (0, 0usize, 0usize);
     while let Some(row) = rows.next().await? {
         passed += 1;
         bytes += row.key.len() + row.value.len();
-        while at < hashes.len() && key_of(&hashes[at]).as_slice() < &row.key[..] {
-            at += 1;
-        }
-        if at < hashes.len() && key_of(&hashes[at]).as_slice() == &row.key[..] {
+        // The members whose keys the scan passed without a row: their tails are gone.
+        at += keys[at..].partition_point(|key| key.as_slice() < &row.key[..]);
+        if keys
+            .get(at)
+            .is_some_and(|key| key.as_slice() == &row.key[..])
+        {
             tails[at] = Some(row.value);
             at += 1;
-        }
-        if at == hashes.len() {
-            return Ok((tails, at));
         }
         if passed > ROWS_PER_MEMBER * (at + 1) || bytes > RUN_BYTES {
             return Ok((tails, at));
