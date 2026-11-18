@@ -1,5 +1,16 @@
 [
   {
+    "name": "a_409_naming_this_instance_that_its_refreshed_view_confirms_is_served_here",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d1e45b3ae440355e4396b9631d1a98c4db9576628ca70c395b8d062cc2bc5ade",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_reads.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_409_naming_this_instance_that_its_refreshed_view_denies_answers_as_before",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -3220,6 +3231,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_closure_debts.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_re_resolved_read_ends_its_page_at_a_segment_another_instance_owns",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "9ba1108c7f2abcb3ef97cb7e3fe9b6f49c7caaa70f0ccb69fe24016e5a3fe63f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_reads.rs",
     "scenarios": []
   },
   {

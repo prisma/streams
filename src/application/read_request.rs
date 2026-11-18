@@ -250,6 +250,12 @@ impl ReadService {
     /// A `409` naming this instance (its view was stale; the peer client refreshed it from that
     /// answer) resolves the read once more from the top, here, when the refreshed view gives this
     /// instance the segment. Otherwise the page's answer stands: no third hop.
+    ///
+    /// The re-resolve runs with no peer hop (`allow_remote: false`,
+    /// GATE-DECISION-f6-reresolve-bound-2026-11-18), so a read enters this function at most once
+    /// and re-resolves at most once. A re-resolved page that reaches a segment another instance
+    /// owns ends there (empty, its cursor at that segment, not up to date); one whose entry
+    /// segment is no longer here is answered as a read with no peer hop (`NotOwner`).
     async fn remote_page(
         &self,
         owner: &str,
@@ -266,7 +272,11 @@ impl ReadService {
         let named_here =
             matches!(&page, Err(ReadFailure::Remote(RedirectLoop { second, .. })) if second == me);
         if named_here && self.owns_here(command, segment) {
-            return Box::pin(self.execute_read(command.clone())).await;
+            let here = ReadCommand {
+                allow_remote: false,
+                ..command.clone()
+            };
+            return Box::pin(self.execute_read(here)).await;
         }
         page
     }
