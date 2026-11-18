@@ -3987,6 +3987,17 @@
     "scenarios": []
   },
   {
+    "name": "a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "02a11720ed0ddb46826e1c575c5036305f5c750e1bee10c6f5b6108cffeda31d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_signed_month_is_refused_on_both_usage_routes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

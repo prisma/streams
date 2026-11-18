@@ -505,13 +505,18 @@ fn left_out(state: &AppState) -> standing::Viewed {
 impl AppState {
     /// Why this runtime takes no new ownership, instance-wide; `None` while
     /// it may. It is the readiness verdict: a supervisor that is stopping
-    /// or lost a Critical loop, or a shard directory that reports a cell
-    /// failure, never opened a shard, or could not close one.
+    /// (a planned drain's only once it is announced) or lost a Critical loop,
+    /// or a shard directory that reports a cell failure, never opened a
+    /// shard, or could not close one.
     fn withdrawal(&self) -> Option<String> {
         let tasks = self.tasks.readiness_reason();
         if tasks.as_deref() == Some(crate::tasks::DRAINING) {
-            // A cell failure says more than the drain that is under way.
-            return self.shards.unready_reason().or(tasks);
+            // A cell failure says more than the drain that is under way. Until the drain is
+            // announced it withdraws nothing itself: it is handing its shards off, giver first,
+            // and its peers must keep counting it until it holds none (F6's drain addendum, the
+            // ratification's X1). `/health` answers `runtime draining` from the signal on.
+            let announced = self.fleet.standing().draining().then_some(tasks).flatten();
+            return self.shards.unready_reason().or(announced);
         }
         tasks.or_else(|| self.shards.unready_reason())
     }

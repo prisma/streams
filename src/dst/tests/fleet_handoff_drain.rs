@@ -647,3 +647,104 @@ async fn a_drainer_killed_mid_phase_leaves_every_record_exact() {
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&b.state).await;
 }
+
+/// Until `drainer` announces its drain: whether a beat of its said `withdrawn` before the first
+/// that said `draining` (the beat it publishes, as its peers read it).
+async fn withdrawn_before_announced(drainer: &crate::http::AppState) -> Option<String> {
+    let me = drainer.ownership.instance().to_string();
+    loop {
+        let beats = drainer.fleet.peek_heartbeat_set().await.unwrap_or_default();
+        if let Some(beat) = beats.iter().find(|beat| beat.instance == me) {
+            if beat.draining {
+                return None;
+            }
+            if let Some(withdrawn) = &beat.withdrawn {
+                return Some(withdrawn.clone());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// **A drain a signal starts hands every shard off before its beat withdraws it** (the
+/// ratification's X1, D1). Production's shape: a signal loop requests the stop, and the stop runs
+/// the drain before any loop is cancelled. [`balance_cell`]'s `streams-1` holds four leaves under
+/// appends at `streams-2`, with `10`'s committer held 6 s so the handoff phase outlasts a beat
+/// and a tick. No beat of `streams-1` says `withdrawn` before its first beat says `draining`;
+/// no leaf leaves it but through a hold (none yields at its own tick); no writer is fenced; no
+/// append ends refused; and the drain the stop ran is recorded `HandedOff`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it() {
+    let errors = ErrorLines::install();
+    let (a, b) = balance_cell().await;
+    let mut taken = 0;
+    let mut streams = Vec::new();
+    for leaf in LEAVES {
+        streams.push(stream_in(&a.state, a.addr, leaf, &mut taken).await);
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let tally = Arc::new(Mutex::new(Tally::default()));
+    let next = Arc::new(AtomicU32::new(0));
+    // Appends enter at streams-2 only, so none meets streams-1's listener as its stop closes it.
+    let members: Members = [("streams-2", b.addr), ("streams-1", a.addr)];
+    let appenders = streams.iter().map(|stream| {
+        appender(
+            members,
+            stream.clone(),
+            0,
+            next.clone(),
+            (stop.clone(), tally.clone()),
+        )
+    });
+    let held = held_for(&a, "10", Duration::from_secs(6));
+    super::fleet_drain::signal_loop(&a);
+    let standing = a.state.fleet.standing();
+    let announced = async {
+        let withdrawn = withdrawn_before_announced(&a.state).await;
+        while !standing.draining() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        stop.store(true, Ordering::SeqCst);
+        withdrawn
+    };
+    let watched = watch_leaves(&a, &stop);
+    let appended = futures_util::future::join_all(appenders);
+    let (_, withdrawn, (departed, _), ()) =
+        futures_util::future::join4(appended, announced, watched, held).await;
+    let t0 = Instant::now();
+    while standing.drain_outcome().is_none() {
+        assert!(t0.elapsed() < BOUND, "the stop's drain ends");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let tally = std::mem::take(&mut *tally.lock().unwrap());
+    eprintln!(
+        "HANDOFF signalled drain withdrawn={withdrawn:?} departed={departed:?} refused={:?}",
+        tally.refused
+    );
+    errors.report();
+    assert_eq!(
+        withdrawn, None,
+        "streams-1 withdrew before it announced its drain"
+    );
+    assert!(
+        departed.is_empty(),
+        "a leaf left the drainer without a hold: {departed:?}"
+    );
+    assert_no_fence([&a, &b]);
+    assert_eq!(
+        tally.refused,
+        BTreeMap::new(),
+        "no append is refused across the drain"
+    );
+    assert_eq!(standing.drain_outcome(), Some(DrainOutcome::HandedOff));
+    for stream in &streams {
+        let mut acked: Vec<u32> = tally.acked[stream].iter().map(|ack| ack.n).collect();
+        acked.sort_unstable();
+        assert_eq!(
+            stored_ns(b.addr, stream).await,
+            acked,
+            "{stream}: stored = acked"
+        );
+    }
+    stopped([a, b]).await;
+}

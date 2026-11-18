@@ -364,7 +364,7 @@ async fn watch(
 
 /// The signal loop's shape (`bootstrap::run`): it requests the stop and
 /// ends.
-fn signal_loop(rig: &HttpRig) {
+pub(super) fn signal_loop(rig: &HttpRig) {
     let request = rig.tasks.shutdown_request();
     let spawned = rig.tasks.spawn(
         "signal",

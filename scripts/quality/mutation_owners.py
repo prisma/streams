@@ -475,7 +475,8 @@ OWNERS = (
     # (each wait <= 10 s) is the sole killer of prune_stale_overrides' heartbeat.rs:349:5 (body
     # -> ()) and heartbeat.rs:354:23 (delete !).
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
-          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology::'),
+          'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology:: '
+          'dst_tests::fleet_handoff_drain::a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it'),
     # Each shard's load in the beat: the rates and each engine's load are unit tests; the
     # busiest stream's measure from live tails is the hot-entity DST (30 s wait).
     owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',
