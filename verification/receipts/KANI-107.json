@@ -4,18 +4,18 @@
       "check": "KANI-107/unsealed",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d788e6064bcd79551413f158672c4c4bcd3a06645494683134ded23332894c51",
+      "log_sha256": "cb049a5a512153f035a44822b61f0141fadda86909d1300393e3eb6814cad47f",
       "role": "baseline",
-      "seconds": 2.7,
+      "seconds": 83.3,
       "verdict": "pass"
     },
     {
       "check": "KANI-107/dirty",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "238ca907ce593d2421c9182d812e9f0bee34546ceeb10b2fa30c9d752867c2a0",
+      "log_sha256": "cb3550405dce58d2ec15a5bad8ee3bea6196f377cb00beca368783e02cc0ca36",
       "role": "baseline",
-      "seconds": 43.8,
+      "seconds": 38.9,
       "verdict": "pass"
     },
     {
@@ -24,15 +24,15 @@
       "failed_checks": [
         "\"the unsealed row follows the staged tail\""
       ],
-      "log_sha256": "3eb53f642cb8c958afa5aeaa863fb0722a2f8cf8ce666b887bd25dac3378b75f",
+      "log_sha256": "d6538a25747a3e0e07e1c2e5db1e2e29461c8c95d04444deeda3a9197bfd4da9",
       "mutated": {
         "src/shard/open_index.rs": {
-          "baseline": "ad3de9983bed216845acc3fd48a70dc4d139be6c9d4d11b96b7f7e84a93a5552",
-          "control": "19db130940e1da1d0ff9e55e3cef2a7d0ac362fbb356f41a0d9f29db6ff1a971"
+          "baseline": "d3ed75413a2a25b0d9b03228e90f73f57bea33f17ac4d2dc7c594154b77599d8",
+          "control": "65a08187361d417253e177a534c3d05e3aed00167c1e4e473743fb19993c4c7b"
         }
       },
       "role": "negative-control",
-      "seconds": 90.0,
+      "seconds": 85.2,
       "verdict": "fail"
     },
     {
@@ -41,15 +41,15 @@
       "failed_checks": [
         "\"a cleared dirty row was acknowledged through the durable version\""
       ],
-      "log_sha256": "ed53066d11ae8128d8c51621c4120b75f148805bdb28ef97163a11ee0f3adddb",
+      "log_sha256": "54fa112b598f594bd3baee31dfb5abd2a97a758089cfb1f005d09d69f287e16d",
       "mutated": {
         "src/shard/open_index.rs": {
-          "baseline": "ad3de9983bed216845acc3fd48a70dc4d139be6c9d4d11b96b7f7e84a93a5552",
-          "control": "09a46e608ad0d37573b893099ffe829d1f3965d3992d8a1d1b4652ac72a8f2b9"
+          "baseline": "d3ed75413a2a25b0d9b03228e90f73f57bea33f17ac4d2dc7c594154b77599d8",
+          "control": "9d21e66a993c9891cf143c887c6fc3a800fee83fadca47080a676792f078faac"
         }
       },
       "role": "negative-control",
-      "seconds": 39.2,
+      "seconds": 36.9,
       "verdict": "fail"
     }
   ],
@@ -66,7 +66,7 @@
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
       "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
-      "src/shard/open_index.rs": "ad3de9983bed216845acc3fd48a70dc4d139be6c9d4d11b96b7f7e84a93a5552",
+      "src/shard/open_index.rs": "d3ed75413a2a25b0d9b03228e90f73f57bea33f17ac4d2dc7c594154b77599d8",
       "src/shard/open_index/proofs.rs": "06b48f265c78a3d2768738b9b8aa178bf58e6de823d0c3ac38382675834d1f62",
       "verification/kani/controls/KANI-107-clear-one-version-early.patch": "34da974c618f85642bf074481802dfaa8a49b013dfdc584d55383acef9fe8fa9",
       "verification/kani/controls/KANI-107-trigger-reads-only-the-base.patch": "43ca0acc24d0a6408d37a6ca6b32f4b799d758e3ca5dabed3bbeaab8971b4047"
@@ -159,10 +159,10 @@
       }
     }
   },
-  "inputs_sha256": "0be787073e8659d6b06f47061c7c5ecf4e66033cc9cb114ee6fd6ba724df3953",
+  "inputs_sha256": "ccdcbe9aaae0568e3cee662b7a70b77159d9e87d884ef8753650486e686f9747",
   "run_on": {
     "dirty_tree": false,
-    "revision": "06adb8f93c216fe41c27cfe30195da3da33d99e3"
+    "revision": "b54791a944be066a1a1fa71dd3f1441be299162a"
   },
   "schema": 2,
   "tools": {
