@@ -212,6 +212,112 @@ async fn member_tail(db: &Db, hash: &[u8; 16]) -> Result<Option<bytes::Bytes>, s
     }
 }
 
+/// The members' stored tails (`member_tail`), in `members`' order. Up to `TAIL_GETS` members they
+/// are read by point gets, `TAIL_GETS` at once; above it by ranged scans (GATE-DECISION-f5-pause-
+/// log-reads-2026-11-17, fix 2): the sorted members cut into at most `TAIL_RUNS` contiguous runs,
+/// each run's span scanned with the sentinel's scan options, so the store requests do not grow with
+/// the member count (one point get per member on a cold cache cost 1.7 s at 5,000 members on a
+/// store 20 ms away). A run's scan is bounded (`run_tails`); what it does not reach falls back to
+/// gets.
+async fn member_tails(
+    db: &Db,
+    members: &[[u8; 16]],
+) -> Result<Vec<Option<bytes::Bytes>>, slatedb::Error> {
+    if members.len() <= TAIL_GETS {
+        return tails_by_gets(db, members, false).await;
+    }
+    let run = members.len().div_ceil(TAIL_RUNS);
+    let runs: Vec<Vec<[u8; 16]>> = members.chunks(run).map(<[_]>::to_vec).collect();
+    let runs: Vec<Vec<Option<bytes::Bytes>>> = futures_util::stream::iter(runs)
+        .map(|run| async move { run_tails(db, &run).await })
+        .buffered(TAIL_RUNS)
+        .try_collect()
+        .await?;
+    Ok(runs.concat())
+}
+
+/// Each of `members`' tails by a point get, `TAIL_GETS` at once, in `members`' order: its stored
+/// tail (`member_tail`), or with `queues` its queue tail only.
+async fn tails_by_gets(
+    db: &Db,
+    members: &[[u8; 16]],
+    queues: bool,
+) -> Result<Vec<Option<bytes::Bytes>>, slatedb::Error> {
+    futures_util::stream::iter(members.iter().copied())
+        .map(|hash| async move {
+            if queues {
+                db.get(&super::queue_tail_key(&hash)).await
+            } else {
+                member_tail(db, &hash).await
+            }
+        })
+        .buffered(TAIL_GETS)
+        .try_collect()
+        .await
+}
+
+/// The tails of one sorted run of members: a scan of their stream tails' span, then of the queue
+/// tails' span for the members it found no stream tail for; the members a scan did not reach (its
+/// bound) are read by gets, as `member_tail` reads them.
+async fn run_tails(db: &Db, run: &[[u8; 16]]) -> Result<Vec<Option<bytes::Bytes>>, slatedb::Error> {
+    let (mut tails, reached) = scanned(db, run, super::tail_key).await?;
+    let rest = tails_by_gets(db, &run[reached..], false).await?;
+    tails.truncate(reached);
+    tails.extend(rest);
+    let queued: Vec<usize> = (0..reached).filter(|&i| tails[i].is_none()).collect();
+    if queued.is_empty() {
+        return Ok(tails);
+    }
+    let hashes: Vec<[u8; 16]> = queued.iter().map(|&i| run[i]).collect();
+    let (mut found, reached) = scanned(db, &hashes, super::queue_tail_key).await?;
+    let rest = tails_by_gets(db, &hashes[reached..], true).await?;
+    found.truncate(reached);
+    found.extend(rest);
+    for (i, tail) in queued.into_iter().zip(found) {
+        tails[i] = tail;
+    }
+    Ok(tails)
+}
+
+/// One scan of the span from `key_of` the first of the sorted `hashes` to `key_of` the last, with
+/// the sentinel's scan options: each hash's row at `key_of` it, if any, and how many of `hashes`
+/// the scan reached. It stops once it passed more than `ROWS_PER_MEMBER` rows per hash reached (plus
+/// one) or more than `RUN_BYTES` of keys and values, so sparse members in a large log do not turn
+/// the open into a full read: at most `TAIL_RUNS` × 2 × `RUN_BYTES` (8 MiB) per open, then gets.
+async fn scanned(
+    db: &Db,
+    hashes: &[[u8; 16]],
+    key_of: fn(&[u8; 16]) -> Vec<u8>,
+) -> Result<(Vec<Option<bytes::Bytes>>, usize), slatedb::Error> {
+    let mut tails = vec![None; hashes.len()];
+    let (Some(first), Some(last)) = (hashes.first(), hashes.last()) else {
+        return Ok((tails, 0));
+    };
+    let options = sentinel_scan_opts();
+    let mut rows = db
+        .scan_with_options(key_of(first)..=key_of(last), &options)
+        .await?;
+    let (mut at, mut passed, mut bytes) = (0, 0usize, 0usize);
+    while let Some(row) = rows.next().await? {
+        passed += 1;
+        bytes += row.key.len() + row.value.len();
+        while at < hashes.len() && key_of(&hashes[at]).as_slice() < &row.key[..] {
+            at += 1;
+        }
+        if at < hashes.len() && key_of(&hashes[at]).as_slice() == &row.key[..] {
+            tails[at] = Some(row.value);
+            at += 1;
+        }
+        if at == hashes.len() {
+            return Ok((tails, at));
+        }
+        if passed > ROWS_PER_MEMBER * (at + 1) || bytes > RUN_BYTES {
+            return Ok((tails, at));
+        }
+    }
+    Ok((tails, hashes.len()))
+}
+
 /// What the open read of the unsealed index: the unabsorbed bytes over its members' tails, whether
 /// a member's tail is gone or sealed (a stale index row, which only a repair fixes), and the open
 /// line's counts: its members, the index scan's time and the tail reads' time.
@@ -229,21 +335,18 @@ async fn unsealed_bytes(db: &Db) -> anyhow::Result<Unsealed> {
     let members = unsealed_members(db).await?;
     let (scan, count) = (scanning.elapsed(), members.len());
     let reading = std::time::Instant::now();
-    let bytes: Vec<Option<u64>> = futures_util::stream::iter(members)
-        .map(|hash| async move {
-            let raw = member_tail(db, &hash).await?;
-            Ok::<_, slatedb::Error>(match raw.as_deref().map(stored_tail) {
-                Some(Ok(tail)) if tail.absorbed < tail.next => Some(tail.unabsorbed_bytes),
-                Some(Err(e)) => {
-                    tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
-                    Some(0)
-                }
-                Some(Ok(_)) | None => None,
-            })
+    let tails = member_tails(db, &members).await?;
+    let bytes: Vec<Option<u64>> = tails
+        .iter()
+        .map(|raw| match raw.as_deref().map(stored_tail) {
+            Some(Ok(tail)) if tail.absorbed < tail.next => Some(tail.unabsorbed_bytes),
+            Some(Err(e)) => {
+                tracing::error!("maintenance rebuild skipped a tail it cannot decode: {e}");
+                Some(0)
+            }
+            Some(Ok(_)) | None => None,
         })
-        .buffer_unordered(TAIL_GETS)
-        .try_collect()
-        .await?;
+        .collect();
     let stale = bytes.iter().any(Option::is_none);
     let total = bytes
         .iter()
@@ -296,6 +399,18 @@ impl super::ShardEngine {
 /// The tail gets the open runs at once (S4-REVIEW #11): a busy shard's thousands of `'W'` members
 /// at a cold store's 25-40 ms each would take minutes one by one.
 const TAIL_GETS: usize = 64;
+
+/// Above `TAIL_GETS` members, the contiguous runs the tails are scanned in, all at once. Each run's
+/// scan costs about one GET per table it overlaps, so four keep the open's requests near the index
+/// scan's (fix 2's bound: at most 64 for the whole index load).
+const TAIL_RUNS: usize = 4;
+
+/// The rows a run's scan may pass per member it reached (plus one) before the rest of the run
+/// falls back to gets: a stream's own rows and its neighbours' between members.
+const ROWS_PER_MEMBER: usize = 16;
+
+/// The keys and values a run's scan may pass before the rest of the run falls back to gets.
+const RUN_BYTES: usize = 1024 * 1024;
 
 /// The identity row of a log of this binary's layout at `home` (a split's child is seeded with its
 /// own, S4 step 11).

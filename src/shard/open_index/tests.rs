@@ -441,7 +441,8 @@ async fn open_uncompacted(store: &Arc<dyn ObjectStore>, path: &str) -> slatedb::
 }
 
 /// A log at `path` over `store` whose unsealed index was put for `streams` streams, then deleted
-/// for all but the first `kept` as their tails sealed, twice, each batch flushed to its own table:
+/// for all but the first `kept` as their tails sealed (when any were), twice, each batch flushed to
+/// its own table:
 /// four tables of index versions and tombstones, as a busy shard's prefix holds them until
 /// compaction. The kept members' tails each hold 70 unsealed bytes.
 async fn churned(store: &Arc<dyn ObjectStore>, path: &str, streams: u32, kept: u32) {
@@ -463,7 +464,10 @@ async fn churned(store: &Arc<dyn ObjectStore>, path: &str, streams: u32, kept: u
             deleted.delete(super::unsealed_key(&hash(n)));
             deleted.put(crate::shard::tail_key(&hash(n)), tail(3, 3, 0, None));
         }
-        flushed(&db, deleted).await;
+        // Every stream kept: nothing sealed, so no batch of deletions (SlateDB refuses an empty one).
+        if kept < streams {
+            flushed(&db, deleted).await;
+        }
     }
     db.close().await.unwrap();
 }
@@ -481,8 +485,13 @@ async fn flushed(db: &slatedb::Db, batch: slatedb::WriteBatch) {
 /// reopened without its compactor so no block is cached and the four tables stay as written; the
 /// load finds the ten kept members' bytes.
 async fn index_load_gets(path: &str, streams: u32) -> u64 {
+    load_gets(path, streams, 10).await
+}
+
+/// `index_load_gets` with `kept` members left: the load finds their bytes.
+async fn load_gets(path: &str, streams: u32, kept: u32) -> u64 {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-    churned(&store, path, streams, 10).await;
+    churned(&store, path, streams, kept).await;
     let db = open_uncompacted(&store, path).await;
     let metrics = crate::spill::metrics::for_log(path);
     // Every GET of the database: whole objects (`db.get`) and blocks read by range
@@ -498,7 +507,11 @@ async fn index_load_gets(path: &str, streams: u32) -> u64 {
     let before = reads();
     let ledger = super::load_or_rebuild_maintenance(&db).await.unwrap();
     let gets = reads().saturating_sub(before);
-    assert_eq!(ledger.unabsorbed_frame_bytes, 10 * 70, "the kept members");
+    assert_eq!(
+        ledger.unabsorbed_frame_bytes,
+        u64::from(kept) * 70,
+        "the kept members"
+    );
     db.close().await.unwrap();
     gets
 }
@@ -532,4 +545,62 @@ fn the_sentinel_scan_options_are_pinned() {
     assert_eq!(options.read_ahead_bytes, 1_048_576);
     assert_eq!(options.max_fetch_tasks, 16);
     assert!(options.cache_blocks);
+}
+
+/// **A flushed shard's open reads its members' tails in bounded round trips**
+/// (GATE-DECISION-f5-pause-log-reads-2026-11-17, fix 2). Every one of 1,000 and then 4,000
+/// streams a member of the unsealed index, over four flushed tables, reopened cold: the open's
+/// index load makes at most 64 store requests (`get`, `get_range`, `get_ranges`), the same bound at
+/// both sizes, and 32 members among 4,000 streams stay within it too. Red before fix 2: one point
+/// get per member's tail, so the count grows with the members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_flushed_shards_open_reads_its_members_tails_in_bounded_round_trips() {
+    let one = load_gets("shards/0111000", 1_000, 1_000).await;
+    let four = load_gets("shards/0111001", 4_000, 4_000).await;
+    let sparse = load_gets("shards/0111010", 4_000, 32).await;
+    println!("TAIL_GETS 1000={one} 4000={four} sparse={sparse}");
+    assert!(
+        one <= 64 && four <= 64 && sparse <= 64,
+        "requests of the open's index load: {one} at 1,000 members, {four} at 4,000, {sparse} at 32 of 4,000"
+    );
+}
+
+/// **The ranged tail reads find what the point gets find** (fix 2): on one log of stream
+/// members, queue members, a member whose tail is sealed, one whose tail is gone and one whose
+/// tail cannot be decoded, among streams that are not members, the scans of `run_tails` and the
+/// gets of `member_tail` return the same tail for every member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn the_ranged_tail_reads_find_what_the_point_gets_find() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let db = open_uncompacted(&store, "shards/0111011").await;
+    let hash = |n: u32| {
+        let mut hash = [0u8; 16];
+        hash[..4].copy_from_slice(&n.to_be_bytes());
+        hash
+    };
+    let mut batch = slatedb::WriteBatch::new();
+    for n in 0..200u32 {
+        let key = match n % 5 {
+            0 => crate::shard::queue_tail_key(&hash(n)),
+            _ => crate::shard::tail_key(&hash(n)),
+        };
+        let value = match n % 7 {
+            0 => tail(3, 3, 0, None),
+            1 => b"not a tail".to_vec(),
+            _ => tail(0, 3, u64::from(n), None),
+        };
+        if n % 11 != 0 {
+            batch.put(key, value);
+        }
+    }
+    flushed(&db, batch).await;
+    let members: Vec<[u8; 16]> = (0..200u32).filter(|n| n % 3 != 0).map(hash).collect();
+    let gets = super::tails_by_gets(&db, &members, false).await.unwrap();
+    let scans = super::run_tails(&db, &members).await.unwrap();
+    assert_eq!(scans, gets, "the same tail for every member");
+    assert!(
+        gets.iter().any(Option::is_none),
+        "a member whose tail is gone"
+    );
+    db.close().await.unwrap();
 }
