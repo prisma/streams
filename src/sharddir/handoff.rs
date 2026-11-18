@@ -12,23 +12,16 @@
 //!   waiter, or a request that arrives after it while the mark still stands, is answered at once
 //!   (`503 shard_moving`, `Retry-After: 1`; H3).
 //!
-//! A `Mark` is a guard: dropped before it ended (its handoff was cancelled or its task died),
-//! it ends the hold as kept, so no prefix is left marked.
+//! A `Mark` is a guard: the hold ends when it is dropped, by its move once the overrides and the
+//! mirror say how the move ended, or early, when its handoff was cancelled or its task died (as
+//! kept), so no prefix is left marked. The hold records only that it ended: a waiter reads how
+//! from the view.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::watch;
 use tokio::time::Instant;
-
-/// How a planned move ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum End {
-    /// The new owner is named: a waiter's ownership check answers it.
-    Moved,
-    /// The move was dropped: a waiter resolves as it would have.
-    Kept,
-}
 
 /// What a resolve found for its prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,18 +49,18 @@ pub(crate) struct Handoffs {
 /// One prefix's hold: its deadline and its end, once known.
 struct Hold {
     until: Instant,
-    end: watch::Receiver<Option<End>>,
+    end: watch::Receiver<Option<()>>,
     /// Distinguishes this hold from a later one of the same prefix, so a late drop removes only
     /// its own.
     serial: u64,
 }
 
-/// A planned move's hold on one prefix; it ends when [`Mark::end`] is called or it is dropped.
+/// A planned move's hold on one prefix; it ends when the mark is dropped.
 pub(crate) struct Mark {
     handoffs: Arc<Handoffs>,
     prefix: String,
     serial: u64,
-    end: watch::Sender<Option<End>>,
+    end: watch::Sender<Option<()>>,
 }
 
 impl Handoffs {
@@ -125,7 +118,7 @@ impl Handoffs {
     }
 
     /// The unended hold of `prefix`: its deadline and its end.
-    fn hold(&self, prefix: &str) -> Option<(Instant, watch::Receiver<Option<End>>)> {
+    fn hold(&self, prefix: &str) -> Option<(Instant, watch::Receiver<Option<()>>)> {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let hold = held.get(prefix)?;
         hold.end
@@ -136,12 +129,8 @@ impl Handoffs {
 }
 
 impl Mark {
-    /// End the hold as `how`, waking every waiter.
-    pub(crate) fn end(self, how: End) {
-        self.finish(how);
-    }
-
-    fn finish(&self, how: End) {
+    /// End the hold: forget it and wake every waiter.
+    fn finish(&self) {
         let mut held = self
             .handoffs
             .held
@@ -157,7 +146,7 @@ impl Mark {
         self.end.send_if_modified(|end| {
             let first = end.is_none();
             if first {
-                *end = Some(how);
+                *end = Some(());
             }
             first
         });
@@ -165,15 +154,15 @@ impl Mark {
 }
 
 impl Drop for Mark {
-    /// A hold whose move never ended it ends as kept (H1).
+    /// A dropped mark ends its hold, whether its move ended it or was cancelled first (H1).
     fn drop(&mut self) {
-        self.finish(End::Kept);
+        self.finish();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{End, Handoffs, Waited};
+    use super::{Handoffs, Waited};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::Instant;
@@ -193,7 +182,7 @@ mod tests {
         let ended = Instant::now();
         let (waited, ()) = futures_util::future::join(handoffs.wait("0"), async {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            mark.end(End::Moved);
+            drop(mark);
         })
         .await;
         assert_eq!(waited, Waited::Free, "the end releases the waiter");
@@ -203,6 +192,10 @@ mod tests {
             ended.elapsed()
         );
         assert!(!handoffs.holds("0"), "an ended hold is gone");
+        assert!(
+            handoffs.held.lock().unwrap().is_empty(),
+            "an ended hold is forgotten"
+        );
         let dropped = handoffs.begin("0", Instant::now() + Duration::from_secs(5));
         drop(dropped);
         assert!(!handoffs.holds("0"), "a dropped mark ends its hold");

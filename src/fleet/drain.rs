@@ -261,7 +261,8 @@ async fn handed_off_all(state: &AppState, instance: &str, handed_by: tokio::time
     if state.shards.seal_for_drain() {
         return true;
     }
-    if tokio::time::Instant::now() < handed_by {
+    let left = handed_by.saturating_duration_since(tokio::time::Instant::now());
+    if left > Duration::ZERO {
         return false;
     }
     state.shards.stop_opens();

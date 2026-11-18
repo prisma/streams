@@ -21,7 +21,6 @@ use tokio::time::{Instant, timeout};
 
 use super::{AppState, FleetDocument, Overrides};
 use crate::shard::ShardEngine;
-use crate::sharddir::handoff::End;
 use crate::tasks::{Policy, TaskResult, TaskSupervisor};
 
 /// How long a planned move holds a request: the barrier's own hold
@@ -169,13 +168,13 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     let Some(engine) = state.shards.open(prefix) else {
         return without_engine(state, request).await;
     };
-    // Step 0: flush unparked, so the flush under the park carries only the delta (D3).
-    if !matches!(
+    // Step 0: flush unparked, so the flush under the park carries only the delta (D3). One that
+    // does not finish within its bound leaves more to the flush under the park, nothing else.
+    let pre_flushed = matches!(
         timeout(PRE_FLUSH, engine.flush_memtable()).await,
         Ok(Ok(()))
-    ) {
-        tracing::debug!(shard = %prefix, "handoff: the unparked flush did not finish; going on");
-    }
+    );
+    tracing::debug!(shard = %prefix, pre_flushed, "handoff: the unparked flush");
     // Step 1: claim the engine; no split starts on it while the move holds it.
     let gate = &engine.gc_state().gate;
     if state
@@ -212,24 +211,22 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     let closed_at = Instant::now();
     drop(claim);
     // Steps 6 and 7, or 10.
-    let end = if commit(state, prefix, &request.change).await {
-        End::Moved
+    let outcome = if commit(state, prefix, &request.change).await {
+        Outcome::Moved
     } else {
-        End::Kept
+        Outcome::Kept
     };
-    mark.end(end);
+    drop(mark);
     state.livefeed.wake_all_sessions();
     let phases = Phases {
         park: parked_at.duration_since(started),
         flush: flushed_at.duration_since(parked_at),
         close: closed_at.duration_since(flushed_at),
         release: parked_at.elapsed(),
+        fenced,
     };
-    phases.report(state, prefix, fenced, end);
-    match end {
-        End::Moved => Outcome::Moved,
-        End::Kept => Outcome::Kept,
-    }
+    phases.report(state, prefix, outcome);
+    outcome
 }
 
 /// One planned move's phases: to the park, the flush under it, from the flush to the close's
@@ -240,15 +237,17 @@ pub(crate) struct Phases {
     pub(crate) flush: Duration,
     pub(crate) close: Duration,
     pub(crate) release: Duration,
+    /// Whether the close did not end clean, so the move was a takeover by fence (E5).
+    pub(crate) fenced: bool,
 }
 
 impl Phases {
     /// One line per planned move, with stable keys the rig and the measurement legs read
     /// (`handoff shard=<p> fenced=<bool> park_ms= flush_ms= close_ms= release_ms= end=`).
-    fn report(self, state: &AppState, prefix: &str, fenced: bool, end: End) {
+    fn report(self, state: &AppState, prefix: &str, end: Outcome) {
         tracing::info!(
             shard = %prefix,
-            fenced,
+            fenced = self.fenced,
             park_ms = self.park.as_millis(),
             flush_ms = self.flush.as_millis(),
             close_ms = self.close.as_millis(),
@@ -272,7 +271,7 @@ async fn without_engine(state: &AppState, request: &Request) -> Outcome {
         raced.begin_close();
     }
     let moved = commit(state, prefix, &request.change).await;
-    mark.end(if moved { End::Moved } else { End::Kept });
+    drop(mark);
     if moved { Outcome::Moved } else { Outcome::Kept }
 }
 
@@ -289,9 +288,13 @@ fn missed(request: &Request, step: &str) -> Outcome {
 /// H2: the released committer answers every queued operation before the close begins: wait
 /// while any is queued, at most `QUEUE`.
 pub(crate) async fn answered(engine: &ShardEngine) {
-    let deadline = Instant::now() + QUEUE;
-    while engine.queued_ops() > 0 && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+    let drained = async {
+        while engine.queued_ops() > 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    if timeout(QUEUE, drained).await.is_err() {
+        tracing::debug!(shard = %engine.prefix, "handoff: the released queue outlived its bound");
     }
 }
 
@@ -304,8 +307,10 @@ async fn close(
     engine: &ShardEngine,
     resident: Option<&Arc<ShardEngine>>,
 ) -> bool {
-    if let Some(other) = resident.filter(|r| !std::ptr::eq(r.as_ref(), engine)) {
-        other.begin_close();
+    // The hold's resident is the move's engine unless an open raced it; a second `begin_close`
+    // of one engine only wakes its parked readers again.
+    if let Some(resident) = resident {
+        resident.begin_close();
     }
     engine.begin_close();
     let verdict = engine.shutdown_handle().settle(CLOSE).await;
