@@ -179,9 +179,9 @@ curl -s https://<domain>/
 
 A SIGTERM or SIGINT to the wrapper is forwarded to the binary, and the
 wrapper exits with the binary's code whatever its policy (the platform is
-stopping the instance). A binary still running 180 s after the first
-forwarded signal (streams-slate bounds its own stop at 175 s: a fleet
-instance's planned drain, at most 145 s, then its 30 s ordered stop, plus
+stopping the instance). A binary still running 212 s after the first
+forwarded signal (streams-slate bounds its own stop at 207 s: a fleet
+instance's planned drain, at most 177 s, then its 30 s ordered stop, plus
 up to 250 ms for its last stderr line) is killed, and the wrapper exits 137.
 Whether Compute itself waits that long between its stop signal and a kill
 is not verified (D10): a platform kill ends the process at once, with no

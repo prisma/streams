@@ -315,8 +315,9 @@ class Scaler(threading.Thread):
             for k in range(self.live + 1, n + 1):
                 rig.wait_healthy(8200 + k, f"streams-{k}")
         else:
-            # SIGTERM: the server drains its shards within its drain budget (144 s)
-            rig.compose("stop", "-t", "180", *[f"streams-{k}" for k in range(n + 1, self.live + 1)], env=self.env)
+            # SIGTERM: the server drains its shards within its drain budget (176 s) and stops
+            # within 207 s in all; docker kills at 212 s, as the deploy wrapper does
+            rig.compose("stop", "-t", "212", *[f"streams-{k}" for k in range(n + 1, self.live + 1)], env=self.env)
         self.live = n
         self.history.append((time.time(), n))
         open(self.conf, "w").write(router_conf(n))

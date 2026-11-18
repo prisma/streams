@@ -443,26 +443,40 @@ was death (§3.6).
   is `draining`. Each beat also carries its per-boot `seq` and, in
   `viewed`, which draining beat of each live draining peer its current view
   read and left out.
-- **Planned drain** (item 40): SIGTERM/SIGINT to a fleet instance first
-  drains it, before any loop is cancelled. It publishes `draining` at once
-  and names its boot in `fleet/drains.json`, keeps beating and serving (the
-  listener stays open; `/health` answers 503 `runtime draining`, or a
-  critical loop's failure; the draining beat's `withdrawn` says the same or
-  names a cell failure), yields its shards as every ring drops it, and
-  waits until it holds nothing (no shard, open or unsettled close) and every
+- **Planned drain** (item 40; F6, edge #266): SIGTERM/SIGINT to a fleet
+  instance first drains it, before any loop is cancelled. It first hands
+  every shard it holds off, one at a time and giver first, to the member
+  the ring gives it without this instance, while its peers still count it:
+  each append on a moving shard is held at most 2 s and acked by the
+  successor, and the beat says neither `draining` nor `withdrawn` (unless
+  the cell failed), though `/health` answers 503 `runtime draining` from the
+  signal on. A shard a peer moves to it meanwhile is handed off again. Only
+  when it holds nothing (no shard, open or unsettled close) does it seal its
+  open gate (a request that resolves a shard on it then gets raw 503
+  `shard_closing`, product 503 `temporarily_unavailable`, `Retry-After: 1`,
+  and its replay meets the successor), publish `draining` and name its boot
+  in `fleet/drains.json`. The handoff phase is bounded at 32 s: past it the
+  instance stops opening, announces anyway, and each shard it still holds
+  is taken by fence or by its own yield, warned `planned drain: evacuated,
+  not handed off`. It then keeps beating and serving (the listener stays
+  open; the draining beat's `withdrawn` says `runtime draining` or a
+  critical loop's failure, or names a cell failure) and waits until every
   peer whose views keep being published has published one that read its
   drain and left it out (`viewed`); peers read other members one tick in
   three (item 8) but a member the marker names at every tick, so that wait
-  is one tick, as before. The log names the outcome: `planned drain
-  complete`; `no peer can take ownership through a drain` (no other ring
-  member within the desired count, or a peer of an earlier version, which
-  would keep routing here: then nothing is announced; or every peer went
-  away during the drain); `planned drain failed` (a shard close failed);
-  or `planned drain timed out` with what was pending. The drain is bounded
-  at 144 s, derived from what it waits for, and the process stop at 175 s
-  in all (armed when the drain begins, even for a drain that ends at once);
-  the wrapper kills at 180 s. A second signal during the drain is not
-  observed (the signal loop ends after the first); SIGKILL stops at once.
+  is one tick, as before. The log counts the writers fenced, `planned
+  drain: writers fenced late=<n> ahead=<n>` (a move's late close, a fence
+  ahead of a move or an evacuation; both 0 on a clean drain), and names the
+  outcome: `planned drain complete`; `no peer can take ownership through a
+  drain` (no other ring member within the desired count, or a peer of an
+  earlier version, which would keep routing here: then nothing is
+  announced; or every peer went away during the drain); `planned drain
+  failed` (a shard close failed); or `planned drain timed out` with what
+  was pending. The drain is bounded at 176 s (its 32 s handoff phase and
+  what it then waits for), and the process stop at 207 s in all (armed when
+  the drain begins, even for a drain that ends at once); the wrapper kills
+  at 212 s. A second signal during the drain is not observed (the signal
+  loop ends after the first); SIGKILL stops at once.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across
