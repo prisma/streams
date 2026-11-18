@@ -3054,3 +3054,22 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
     reopens only on evidence that identity plus index exceed 0.4 s on a flushed shard with fix 1.
   - A leg that sees any move over 0.9 / 0.6 / 1.5 s, `handoff_fenced` above 0, or a shed in a
     move's seconds brings the numbers back to the owner.
+
+## 23. Follow-ups from fix D, a split child's first seal lands under its born home's root (2026-11-19)
+
+- **The post-open check compares the placement, not the path**
+  (GATE-DECISION-bornhome-review-2026-11-19, "Follow-up (ordered, not blocking)").
+  `refuse_misplaced` (`src/topology/fence.rs`) should require that the engine was built placed at
+  `path` (a private accessor in `src/shard/layout.rs`, for example `placed_at(&str) -> bool` over
+  `place.log`), so a lost scope fails every open, initial homes included, and the e2e run then
+  proves the production opener. The two pre-built openers in `src/shard/task_lifecycle_tests.rs`
+  must then build inside their futures.
+  - Why it matters (the ruling's correction to its condition 8): the check today is
+    `engine.log_path() == path`, and an engine built outside the scope answers the static path,
+    which is the path asked for when the home is an initial one. So the e2e run, which opens only
+    initial homes and does no split, does not prove that `bootstrap::run`'s opener builds its
+    engine inside the scope; that rests on reading `bootstrap.rs` alone. If the production opener
+    ever lost the scope, initial homes would keep serving and the first split's children would be
+    refused at open, after the split published: loud but late.
+  - Cost: it edits `fence.rs`, which stales TLA-045 and TLA-048 (about 36 min), so it rides with
+    the next change that already touches `fence.rs`.
