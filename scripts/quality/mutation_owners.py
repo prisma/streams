@@ -177,7 +177,8 @@ OWNERS = (
     owner('topology_store', 'src/topology/store.rs', 'topology::store'),
     owner('topology_split', 'src/topology/split.rs', 'topology::split dst_tests::split_k:: dst_tests::split_lists:: dst_tests::split_generations::a_quiesced_ dst_tests::split_t_outcome:: dst_tests::split_start::'),
     # The merge (S6): its unit tests, its pause, publish and tail DSTs, the merge route's, and the
-    # final flag it sets at 'T' (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 7). Narrowed
+    # final flag it sets at 'T' (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 7), and its
+    # product born on its actor (§22 C19: fleet_birth's merge DST, which kills a dropped birth). Narrowed
     # to tests whose waits are 30 s or less (GATE-DECISION-mutation-timeout §5): the claimant's and
     # the policy's lapse DSTs (23-56 s) are topology_recover_merge's, topology_fence's and the
     # policy's.
@@ -185,7 +186,8 @@ OWNERS = (
           'topology::merge::tests:: dst_tests::merge_finish_k:: dst_tests::merge_k::a_merge_of '
           'dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts '
           'dst_tests::merge_k::a_merge_waits dst_tests::merge_k::a_merge_past '
-          'dst_tests::merge_k::a_merge_serves dst_tests::split_generations::a_quiesced_'),
+          'dst_tests::merge_k::a_merge_serves dst_tests::split_generations::a_quiesced_ '
+          'dst_tests::fleet_birth::a_merges_child'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
     # A split's children born on its actor (GATE-DECISION-f2-children-on-actor A2): its unit test and
     # the two-member birth DSTs, each a few seconds.

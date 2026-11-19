@@ -249,16 +249,20 @@ impl Live {
 
 impl Live {
     /// Whether this live intent keeps the fleet's override on `prefix` although it is no leaf yet
-    /// (GATE-DECISION-f2-children-on-actor-2026-11-16 A4): a split's two children, whose entries its
-    /// actor writes before its topology CAS. The stale prune and return-home both spare them while
-    /// the intent is live.
+    /// (GATE-DECISION-f2-children-on-actor-2026-11-16 A4): a split's two children, and a merge's
+    /// product (§22 C19), whose entries its actor writes before its topology CAS. The stale prune
+    /// and return-home both spare them while the intent is live.
     pub(crate) fn keeps(&self, prefix: &str) -> bool {
-        self.kind == "split"
-            && self.sources.iter().any(|source| {
-                prefix
-                    .strip_prefix(source.as_str())
-                    .is_some_and(|bit| bit == "0" || bit == "1")
-            })
+        let child_of = |parent: &str, child: &str| {
+            child
+                .strip_prefix(parent)
+                .is_some_and(|bit| bit == "0" || bit == "1")
+        };
+        match self.kind.as_str() {
+            "split" => self.sources.iter().any(|source| child_of(source, prefix)),
+            "merge" => self.sources.iter().any(|source| child_of(prefix, source)),
+            _ => false,
+        }
     }
 }
 

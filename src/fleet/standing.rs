@@ -495,8 +495,9 @@ mod tests {
 
     /// **Return-home skips a live split's children** (GATE-DECISION-f2-children-on-actor A4), by
     /// the predicate the stale prune uses: while the split of `0` is live, `00` and `01` are
-    /// skipped at any age, `1` and `000` are not; a merge's sources keep their own entries but name
-    /// no children; with no live intent none is skipped.
+    /// skipped at any age, `1` and `000` are not; a live merge's sources keep their own entries and
+    /// its product `0` is skipped too (§22 C19: the actor's entry for it); with no live intent none
+    /// is skipped.
     #[test]
     fn return_home_skips_a_live_splits_children() {
         let standing = Standing::default();
@@ -513,7 +514,7 @@ mod tests {
         assert_eq!(skipped, [true, true, true, false, false]);
         standing.set_topology_intent(Some(live("merge", &["00", "01"])));
         let skipped = ["00", "01", "000", "0"].map(|p| standing.return_home_skips(p, old, 300));
-        assert_eq!(skipped, [true, true, false, false]);
+        assert_eq!(skipped, [true, true, false, true]);
         standing.set_topology_intent(None);
         assert!(!standing.return_home_skips("00", old, 300));
     }

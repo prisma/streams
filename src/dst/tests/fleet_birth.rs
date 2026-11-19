@@ -37,11 +37,12 @@ fn loaded_members(cli: &mut crate::config::CliArgs) {
 /// A cell's data store and its members' configuration.
 type CellOf<'a> = (&'a Arc<dyn ObjectStore>, fn(&mut crate::config::CliArgs));
 
-/// A member `name` of the cell over `data` and `fleet`; its fleet started when `ticks`.
+/// A member `name` of the cell over `data` and `fleet`, whose leaves are `leaves`; its fleet
+/// started when `ticks`.
 async fn member(
     fleet: &Arc<dyn ObjectStore>,
     (data, cli): CellOf<'_>,
-    name: &str,
+    (name, leaves): (&str, &[&str]),
     runtime: RigRuntime,
     ticks: bool,
 ) -> HttpRig {
@@ -52,7 +53,7 @@ async fn member(
             fleet_store: Some(fleet.clone()),
             instance: Some(name.to_string()),
             cli,
-            prefixes: vec![String::new()],
+            prefixes: leaves.iter().map(|leaf| (*leaf).to_string()).collect(),
             ..Default::default()
         },
     )
@@ -147,7 +148,17 @@ impl Pair {
         Self::over(tick, (&mem(), two_members)).await
     }
 
+    /// Both members with their fleet ticks running over a cell of the two leaves `0` and `1`,
+    /// both the ring's for `streams-2`, whose parent `""` the ring gives to `streams-1`.
+    async fn halves() -> Self {
+        Self::over_leaves(Tick::Runs, (&mem(), two_members), &["0", "1"]).await
+    }
+
     async fn over(tick: Tick, cell: CellOf<'_>) -> Self {
+        Self::over_leaves(tick, cell, &[""]).await
+    }
+
+    async fn over_leaves(tick: Tick, cell: CellOf<'_>, leaves: &[&str]) -> Self {
         let b_ticks = matches!(tick, Tick::Runs);
         let fleet = mem();
         let desired = r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
@@ -158,7 +169,7 @@ impl Pair {
         let b = member(
             &fleet,
             cell,
-            "streams-2",
+            ("streams-2", leaves),
             RigRuntime::incarnation(1),
             b_ticks,
         )
@@ -170,7 +181,14 @@ impl Pair {
             let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
             b.state.ownership.set_view(both, Default::default());
         }
-        let a = member(&fleet, cell, "streams-1", RigRuntime::first(), true).await;
+        let a = member(
+            &fleet,
+            cell,
+            ("streams-1", leaves),
+            RigRuntime::first(),
+            true,
+        )
+        .await;
         store_topology(&a).await;
         b.state
             .peer
@@ -322,6 +340,93 @@ async fn a_splits_children_are_served_by_the_actor_at_publish() {
         serde_json::json!([{"n": 1}, {"n": 2}]),
         "both records, at the actor"
     );
+    pair.shutdown().await;
+}
+
+/// A stream whose route lands in the leaf `0` of `rig`'s cell, created there: its path.
+async fn stream_in_0(rig: &HttpRig) -> String {
+    use super::billing_closure_debts::{JSON, raw_put, stored};
+    for taken in 0..200 {
+        let name = format!("product-{taken}");
+        raw_put(rig.addr, &name, &[JSON], b"").await;
+        let desc = stored(&rig.state, &rig.state.deployment.raw_adapter_sref(&name)).await;
+        let route = desc.resolve_segment("").shard_route;
+        if rig.state.shards.prefix_for(&route) == "0" {
+            return format!("/v1/stream/{name}");
+        }
+    }
+    panic!("no stream lands in 0");
+}
+
+/// **A merge's product is served by its actor at publish** (§22 C19, GATE-DECISION-s22-addendum-
+/// 2026-11-19; NEXT-WORK "A merge's child is born on the ring"). The ring gives the halves `0` and
+/// `1` to `streams-2` and their parent `""` to `streams-1`. `streams-2` merges them with an append
+/// held at the merge's park: the append is acked `204` by the actor's product, the actor holds
+/// `""` open, `streams-1` opens nothing, the overrides document names the actor for `""`, and the
+/// stream reads back both records at the actor. Red before C19: the product has no entry, the
+/// actor's open of it is refused `NotOwner`, and `streams-1` opens it cold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_merges_child_is_served_by_the_actor_at_publish() {
+    let pair = Pair::halves().await;
+    let (a, b) = (&pair.a, &pair.b);
+    let path = stream_in_0(b).await;
+    let json = [("content-type", "application/json")];
+    let append = |n: u32| {
+        let path = path.clone();
+        async move {
+            let body = format!(r#"[{{"n":{n}}}]"#);
+            hreq(b.addr, "POST", &path, &json, body.as_bytes()).await
+        }
+    };
+    assert_eq!(append(1).await.0, 204, "record 1");
+    let left = b.state.shards.open("0").expect("the actor holds `0`");
+    let (reached, at_park) = tokio::sync::oneshot::channel();
+    let (release, go) = tokio::sync::oneshot::channel();
+    left.gc_state()
+        .gate
+        .pause_at_park(PausePoint { reached, go });
+    let started = b.state.shards.topology_ops().merge(String::new()).await;
+    assert!(started.is_ok(), "the merge starts: {started:?}");
+    tokio::time::timeout(BOUND, at_park)
+        .await
+        .expect("the merge parks")
+        .unwrap();
+    let released = async {
+        let t0 = tokio::time::Instant::now();
+        while left.queued_ops() == 0 {
+            assert!(t0.elapsed() < BOUND, "the append is held at the park");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        release.send(()).unwrap();
+    };
+    let held = async { futures_util::future::join(append(2), released).await.0 };
+    let (status, headers, _) = tokio::time::timeout(BOUND, held)
+        .await
+        .expect("the held append is answered");
+    let t0 = tokio::time::Instant::now();
+    while b.state.shards.prefixes().shards.shards != [""] {
+        assert!(t0.elapsed() < BOUND, "the merge publishes");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let entry = overrides_of(b).await.entries.get("").map(|e| e.to.clone());
+    assert_eq!(
+        (
+            status,
+            b.state.shards.is_open(""),
+            a.state.shards.open_count(),
+            entry
+        ),
+        (204, true, 0, Some("streams-2".to_string())),
+        "the held append's answer, who opened the product, and its entry; headers {headers:?}"
+    );
+    let (status, _, body) = hreq(b.addr, "GET", &path, &[], b"").await;
+    let read: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    assert_eq!(
+        (status, read),
+        (200, serde_json::json!([{"n": 1}, {"n": 2}])),
+        "both records, at the actor"
+    );
+    intent_ended(&b.state).await;
     pair.shutdown().await;
 }
 
@@ -604,7 +709,8 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
     let mut rigs = Vec::new();
     for (n, name) in names.iter().enumerate() {
         let runtime = RigRuntime::incarnation(u64::try_from(n).unwrap());
-        rigs.push(member(&fleet, (&data, two_members), name, runtime, true).await);
+        let cell = (&data, two_members as fn(&mut crate::config::CliArgs));
+        rigs.push(member(&fleet, cell, (*name, &[""]), runtime, true).await);
     }
     store_topology(&rigs[0]).await;
     for rig in &rigs {
