@@ -684,25 +684,42 @@ async fn room_cell() -> (
 /// What the room DST saw while it loaded `0` until the stored leaves were `00`, `01`, `1`: the
 /// records acked per stream, the entries of `0` and `1` when `0` was first seen moved to
 /// `streams-2` (read then: once `0` splits it is no leaf, and a stale prune may drop its entry), the
-/// `instance_full` beats after the move, and each desired count in turn.
+/// `instance_full` beats after the move, each desired count in turn, and the appends acked once the
+/// move was seen.
 struct Loaded {
     acked: std::collections::BTreeMap<String, u64>,
     moved_entries: Option<(serde_json::Value, serde_json::Value)>,
     asked_after: usize,
     counts: Vec<Option<u64>>,
+    acked_after: u64,
 }
 
-/// Append to `0`'s streams at `a` 20 a second until the split of `0` published (see `Loaded`).
+/// One append of `body` to `name` as a client sends it: to `a`, and once more to `b` when `a`
+/// answers `409` naming `streams-2` as the owner to replay to (the rigs' fleet ticks publish no
+/// peer URLs, so `a` does not forward it itself). Its last status.
+async fn appended(a: std::net::SocketAddr, b: std::net::SocketAddr, name: &str, body: &str) -> u16 {
+    let json = [("content-type", "application/json")];
+    let path = format!("/v1/stream/{name}");
+    let (status, headers, _) = hreq(a, "POST", &path, &json, body.as_bytes()).await;
+    let replay = headers.get("streams-replay-to").map(String::as_str);
+    if status == 409 && replay == Some("streams-2") {
+        return hreq(b, "POST", &path, &json, body.as_bytes()).await.0;
+    }
+    status
+}
+
+/// Append to `0`'s streams 20 a second, through `a` and replayed to `b` once `0` moved there
+/// ([`appended`]), until the split of `0` published (see `Loaded`).
 async fn load_until_split(
     fleet: &Arc<dyn ObjectStore>,
     data: &Arc<dyn ObjectStore>,
     a: &super::fixture_http::HttpRig,
+    b: &super::fixture_http::HttpRig,
 ) -> Loaded {
     let names = streams_in_0(a, 8).await;
-    let json = [("content-type", "application/json")];
     let mut acked: std::collections::BTreeMap<String, u64> = Default::default();
     let (mut n, mut moved, mut asked_after, mut counts) = (0_u64, false, Vec::new(), Vec::new());
-    let mut moved_entries = None;
+    let (mut moved_entries, mut acked_after) = (None, 0_u64);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
     while stored_leaves(data).await != ["00", "01", "1"] {
         assert!(
@@ -713,16 +730,9 @@ async fn load_until_split(
         );
         let name = &names[usize::try_from(n).unwrap() % names.len()];
         let body = format!(r#"[{{"n":{n}}}]"#);
-        let (status, _, _) = hreq(
-            a.addr,
-            "POST",
-            &format!("/v1/stream/{name}"),
-            &json,
-            body.as_bytes(),
-        )
-        .await;
-        if status == 204 {
+        if appended(a.addr, b.addr, name, &body).await == 204 {
             *acked.entry(name.clone()).or_default() += 1;
+            acked_after += u64::from(moved);
         }
         n += 1;
         let count = document(fleet, "desired").await["count"].as_u64();
@@ -745,6 +755,7 @@ async fn load_until_split(
         moved_entries,
         asked_after: asked_after.len(),
         counts,
+        acked_after,
     }
 }
 
@@ -755,9 +766,11 @@ async fn load_until_split(
 /// `instance_full` (2 + 2 > 3); since `streams-2` has room for `0` and its two children, the policy
 /// moves `0` there by one overrides CAS instead of asking for an instance. Exactly: when the move is
 /// first seen, the entry of `0` names `streams-2` and `1`'s still names `streams-1`; the desired count stays two throughout;
-/// no beat of `streams-1` says `instance_full` after the move; once the move's cooldown has passed
-/// `streams-2` splits `0`, so the stored leaves are `00`, `01` and `1` with `00` and `01` on
-/// `streams-2`; and every acked record reads back.
+/// no beat of `streams-1` says `instance_full` after the move; the load follows `0` to `streams-2`
+/// (an append `streams-1` refuses for it is replayed there, as a client does), so appends are acked
+/// after the move; once the move's cooldown has passed `streams-2` splits `0` on that load, so the
+/// stored leaves are `00`, `01` and `1` with `00` and `01` on `streams-2`; and every acked record
+/// reads back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
     let (fleet, data, a, b) = room_cell().await;
@@ -766,7 +779,8 @@ async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
         moved_entries,
         asked_after,
         counts,
-    } = load_until_split(&fleet, &data, &a).await;
+        acked_after,
+    } = load_until_split(&fleet, &data, &a, &b).await;
     let (to_0, to_1) = moved_entries.expect("0 moved to streams-2");
     let owner = |p: &str| b.state.ownership.effective_owner(p).unwrap_or_default();
     assert_eq!(
@@ -775,6 +789,7 @@ async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
             to_1.as_str(),
             counts,
             asked_after,
+            acked_after > 0,
             [owner("00"), owner("01")]
         ),
         (
@@ -782,9 +797,10 @@ async fn a_split_refused_for_room_moves_its_shard_to_an_instance_with_room() {
             Some("streams-1"),
             vec![Some(2)],
             0,
+            true,
             ["streams-2", "streams-2"].map(str::to_string)
         ),
-        "the move, the count, no ask after it, and the children's owner"
+        "the move, the count, no ask after it, the load acked after it, and the children's owner"
     );
     for (name, count) in &acked {
         let read = served(b.addr, name).await;
