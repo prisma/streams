@@ -585,10 +585,11 @@ def first_attempt(windows, target):
 
 def keep_seconds(out_dir, label, pop, held):
     """A window's per-second counts (served, refusals and failures by code, by Unix second, the
-    bench's `per_second`) go to seconds-LABEL.json when the window failed; a held window's are
-    dropped. Either way they leave POP, which steps.jsonl records."""
+    bench's `per_second`) go to seconds-LABEL.json when the window failed, or for every window with
+    RAMP_KEEP_SECONDS=1 (a measurement leg reads a held split's stall from them); otherwise a held
+    window's are dropped. Either way they leave POP, which steps.jsonl records."""
     seconds = pop.pop("per_second", None)
-    if seconds and not held:
+    if seconds and (not held or os.environ.get("RAMP_KEEP_SECONDS") == "1"):
         json.dump(seconds, open(os.path.join(out_dir, f"seconds-{label}.json"), "w"), indent=0, sort_keys=True)
 
 

@@ -154,6 +154,19 @@ class Bookkeeping(unittest.TestCase):
             self.assertNotIn("per_second", failed)
             self.assertNotIn("per_second", held)
 
+    def test_a_measurement_leg_keeps_every_windows_seconds(self):
+        held = {"per_second": {"1794839800": {"served": 167}}}
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["RAMP_KEEP_SECONDS"] = "1"
+            try:
+                ramp.keep_seconds(d, "10000-settle-2", held, True)
+            finally:
+                del os.environ["RAMP_KEEP_SECONDS"]
+            self.assertEqual(os.listdir(d), ["seconds-10000-settle-2.json"])
+            self.assertEqual(json.loads(read(os.path.join(d, "seconds-10000-settle-2.json"))),
+                             {"1794839800": {"served": 167}})
+            self.assertNotIn("per_second", held)
+
     def test_sheds_by_kind_are_summed_over_servers(self):
         first = {"streams-1": {"inflight": 0, "rss": 2, "survival": 0}}
         last = {"streams-1": {"inflight": 618, "rss": 2, "survival": 0},
