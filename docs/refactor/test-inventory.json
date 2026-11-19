@@ -5315,6 +5315,17 @@
     "scenarios": []
   },
   {
+    "name": "a_writer_fenced_once_its_gate_stopped_is_not_counted_ahead_of_a_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c343622e3fb49361b09cdbc5f74e9db217a8f913efdd268a1f870b6f6e6ae57d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

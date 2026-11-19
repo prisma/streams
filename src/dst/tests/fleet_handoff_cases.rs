@@ -440,6 +440,44 @@ async fn a_writer_fenced_ahead_of_a_move_is_counted_where_it_was_fenced() {
     stop(b).await;
 }
 
+/// **A writer fenced once its gate stopped opens is not counted ahead of a move here** (G6,
+/// `shard_directory::handoff::judge_fence`): a stopped gate's fences are counted by the drain
+/// that gave its shards up (`ShardDirectory::note_evacuated`). As above, but `streams-1` stops
+/// opens before `streams-2` opens `00`: `streams-1`'s next append meets the fence and its engine
+/// closes fenced and is evicted, and neither directory counts a writer fenced ahead of a move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_writer_fenced_once_its_gate_stopped_is_not_counted_ahead_of_a_move() {
+    let (data, fleet) = (mem(), mem());
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first(), true).await;
+    let name = stream_in_00(&a).await;
+    appended(&a, &name, 0..1).await;
+    a.state.shards.stop_opens();
+    let b = member(&data, fleet, "streams-2", RigRuntime::incarnation(1), false).await;
+    let opened = b
+        .state
+        .shards
+        .open_or_wait("00", Duration::from_secs(5))
+        .await;
+    assert!(
+        matches!(opened, crate::sharddir::OpenOutcome::Ready(_)),
+        "streams-2 opens 00"
+    );
+    let path = format!("/v1/stream/{name}");
+    let t0 = tokio::time::Instant::now();
+    while a.state.shards.is_open("00") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "streams-1 meets the fence"
+        );
+        let (_status, _, _) = hreq(a.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let counted = (a.state.shards.fenced_ahead(), b.state.shards.fenced_ahead());
+    assert_eq!(counted, (0, 0));
+    stop(a).await;
+    stop(b).await;
+}
+
 /// A stream created through `rig` whose route lands in `00` (a name the ring gives `streams-2` is
 /// refused `409` and skipped).
 pub(super) async fn stream_in_00(rig: &HttpRig) -> String {
