@@ -12866,6 +12866,17 @@
     "scenarios": []
   },
   {
+    "name": "writes_served_by_an_open_shard_still_count_in_the_write_gate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "78632f722de00f234144206206b35379137de8d0be58bd556fd5808a89e9088f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
     "name": "writes_waiting_on_an_open_leave_the_write_gate_up_to_the_cap",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

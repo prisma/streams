@@ -561,6 +561,26 @@ async fn writes_waiting_on_an_open_leave_the_write_gate_up_to_the_cap() {
     engine_shutdown(&state).await;
 }
 
+/// **Writes served by an open shard still count in the write gate** (§22 rev 2, K1-K2c; the control
+/// of the two DSTs around it). The rig's one shard stays open and its first WAL write is held, so
+/// its appends stay in flight on an open shard of this instance: no move holds it and no open is
+/// waited on, so none takes a waiting place. At an in-flight cap of 8 the first eight are admitted
+/// and the second eight shed; the first eight are acked once the write lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn writes_served_by_an_open_shard_still_count_in_the_write_gate() {
+    use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
+    let store = FaultStore::new(mem(), 2612, FaultProfile::clean());
+    let (state, addr) = http_rig(store.clone()).await;
+    let prefix = one_record(&state, addr, "served").await;
+    assert!(state.shards.is_open(&prefix), "the shard stays open");
+    let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, 1);
+    let held = || engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1;
+    let counted = two_waves(&state, addr, "served", held, || store.release_hold()).await;
+    assert_eq!(counted, (8, 8), "(appends acked, writes shed)");
+    assert_eq!(state.admission.waiting(), 0, "no waiting place is held");
+    engine_shutdown(&state).await;
+}
+
 /// **Writes held by a planned move leave the write gate, up to the cap** (§22 rev 2, K1-K2c). A move
 /// holds the rig's one shard (the directory's handoff mark, its resident closed), as a giver holds
 /// a moving leaf while its target builds. At an in-flight cap of 8, eight appends wait on the hold
