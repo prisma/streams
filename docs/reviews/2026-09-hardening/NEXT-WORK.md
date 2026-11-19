@@ -3073,3 +3073,31 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
     refused at open, after the split published: loud but late.
   - Cost: it edits `fence.rs`, which stales TLA-045 and TLA-048 (about 36 min), so it rides with
     the next change that already touches `fence.rs`.
+
+## 24. Follow-ups from the convergence DST's grow budget (2026-11-19)
+
+GATE-DECISION-convergence-grow-budget-2026-11-19 (Fable, under the owner's delegation): the
+convergence DST's grow deadline is derived from its waits (340 s). Its follow-ups:
+
+- **A per-leaf override cooldown (option (c), a product and edge candidate, outside F6).**
+  - S4's settle (`topology::ops::settled`) and the policy's `override_recent` (`policy.rs`,
+    `gate`) both hold on the fleet's youngest override, not on the leaf's own. So every override
+    any instance stamps (a born child's, a room move's) holds every split in the cell for the move
+    cooldown (60 s), and a cell grows one topology step a minute.
+  - In the convergence DST, 1 -> 4 leaves takes three serial 60 s cooldowns: 290-296 s idle.
+  - A cooldown per leaf (an override holds only its own prefix's operations, and its parent's
+    or children's where they overlap) would let independent leaves split in parallel.
+  - It changes who may split when, so it is an edge change for the owner.
+  - Every DST budget derived from the serial chain (`grow_budget`, `converge_budget`) is
+    re-derived with it.
+- **The handoff's flush bounds are missed on an idle host (measure, then decide).**
+  - In the room rig (`topology_colocation::a_split_refused_for_room_*`), the giver-first
+    handoff's unparked flush (`PRE_FLUSH`, 2 s) ran out at exactly 2.0 s, and then the flush
+    under the park (`FLUSH`, 300 ms) missed: `handoff: missed its bound; nothing held`. That
+    happened 2 and 3 times in `room-new-idle-{1,2}.log` (`~/.streams-k2/analysis/f6/or`), at
+    both 735a638bb and 9cd0f2dc3.
+  - Each miss returns `NotStarted`, and the policy retries on its next pass (edge #266), which
+    costs 10 s in production.
+  - Measure the miss rate and the memtable flush's time on the rig's store and in the field,
+    then decide whether the 2 s / 300 ms bounds fit (and why a memtable flush on an in-memory
+    store takes over 2 s), before any bound changes.
