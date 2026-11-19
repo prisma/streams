@@ -192,15 +192,50 @@ async fn preload(addr: std::net::SocketAddr, streams: &[String]) {
     }
 }
 
-/// The `n`s stored in `stream`, read through `addr`.
+/// The `n`s stored in `stream`, read through `addr` page after page (`stream-next-offset`) until a
+/// page says `stream-up-to-date`: a stream the handoff DSTs load holds more than one read page.
 pub(super) async fn stored_ns(addr: std::net::SocketAddr, stream: &str) -> Vec<u32> {
-    let (status, _, body) = hreq(addr, "GET", &format!("/v1/stream/{stream}"), &[], b"").await;
-    assert_eq!(status, 200, "{stream}: {}", String::from_utf8_lossy(&body));
-    let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap_or_default();
     let n = |r: &serde_json::Value| r["n"].as_u64().and_then(|n| u32::try_from(n).ok());
-    let mut ns: Vec<u32> = records.iter().filter_map(n).collect();
-    ns.sort_unstable();
-    ns
+    let (mut ns, mut offset) = (Vec::new(), None::<String>);
+    for _ in 0..256 {
+        let path = offset.as_ref().map_or_else(
+            || format!("/v1/stream/{stream}"),
+            |at| format!("/v1/stream/{stream}?offset={at}"),
+        );
+        let (status, headers, body) = hreq(addr, "GET", &path, &[], b"").await;
+        assert_eq!(status, 200, "{stream}: {}", String::from_utf8_lossy(&body));
+        let records: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap_or_default();
+        ns.extend(records.iter().filter_map(n));
+        let next = headers.get("stream-next-offset").cloned();
+        if headers.contains_key("stream-up-to-date") || next.is_none() || next == offset {
+            ns.sort_unstable();
+            return ns;
+        }
+        offset = next;
+    }
+    panic!("{stream}: no page said stream-up-to-date within 256 pages");
+}
+
+/// **The handoff DSTs' read of what a stream stored reads all of it** (`stored_ns`). A stream
+/// holding 8,000 records, appended 500 a request, reads back exactly `0..8000`: more than one
+/// byte-bounded page of the raw read (one held 4,096 of these; one held 3,072 of
+/// `a_returned_child_moves_without_fencing_its_writer`'s when it compared that page with 3,620 acked).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn stored_ns_reads_every_page_of_a_stream() {
+    let (_state, addr) = super::fixture_http::http_rig(mem()).await;
+    super::billing_closure_debts::raw_put(addr, "pages", &[JSON], b"").await;
+    for batch in 0..16_u32 {
+        let records: Vec<String> = (batch * 500..(batch + 1) * 500)
+            .map(|n| format!(r#"{{"n":{n}}}"#))
+            .collect();
+        let body = format!("[{}]", records.join(","));
+        let (status, _, _) = hreq(addr, "POST", "/v1/stream/pages", &[JSON], body.as_bytes()).await;
+        assert_eq!(status, 204, "batch {batch}");
+    }
+    assert_eq!(
+        stored_ns(addr, "pages").await,
+        (0..8_000).collect::<Vec<u32>>()
+    );
 }
 
 /// **A returned child moves without fencing its writer** (F6, red first). T5's cell, loaded and

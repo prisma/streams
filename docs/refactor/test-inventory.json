@@ -11454,6 +11454,17 @@
     ]
   },
   {
+    "name": "stored_ns_reads_every_page_of_a_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c624e26a47201614c8843a9b28a49ee07c9047198fc6fdcc943967841fd33be0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff.rs",
+    "scenarios": []
+  },
+  {
     "name": "stored_references_bind_inside_the_referring_project",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
