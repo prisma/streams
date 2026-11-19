@@ -481,3 +481,108 @@ async fn parked_pulls_never_reach_the_heartbeat() {
     assert!(report.aborted.is_empty(), "{report:?}");
     engine_shutdown(&rig.state).await;
 }
+
+/// Two waves of eight appends to `name` at an in-flight cap of 8: the first while `waiting`, the
+/// second once the first is in flight (and `waiting` holds), then `release`, a moment after the
+/// second is in flight or shed. The appends acked and the writes shed meanwhile.
+async fn two_waves(
+    state: &State,
+    addr: SocketAddr,
+    name: &str,
+    waiting: impl Fn() -> bool,
+    release: impl FnOnce(),
+) -> (usize, u64) {
+    state.admission.set_max_inflight(8);
+    let shed = || state.admission.snapshot().shed.inflight;
+    let before = shed();
+    let path = format!("/v1/streams/{name}/records");
+    let send = |n: u64| {
+        let path = path.clone();
+        async move {
+            let body = format!(r#"{{"n":{n}}}"#);
+            call(addr, "POST", &path, body.as_bytes()).await.0
+        }
+    };
+    let rest = async {
+        settled(|| state.admission.snapshot().inflight == 8 && waiting()).await;
+        assert!(waiting(), "the first wave waits");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let released = async {
+            settled(|| state.admission.snapshot().inflight == 16 || shed() > before).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            release();
+        };
+        let second = futures_util::future::join_all((9..=16).map(send));
+        futures_util::future::join(second, released).await.0
+    };
+    let first = futures_util::future::join_all((1..=8).map(send));
+    let (mut answers, second) = futures_util::future::join(first, rest).await;
+    answers.extend(second);
+    let acked = answers.iter().filter(|status| **status == 200).count();
+    (acked, shed() - before)
+}
+
+/// A JSON stream `name` holding one record, and the prefix of the rig's one shard, open.
+async fn one_record(state: &State, addr: SocketAddr, name: &str) -> String {
+    let stream = format!("/v1/streams/{name}");
+    let made = call(addr, "PUT", &stream, br#"{"format":{"kind":"json"}}"#).await;
+    assert_eq!(made.0, 201);
+    let path = format!("{stream}/records");
+    assert_eq!(call(addr, "POST", &path, br#"{"n":0}"#).await.0, 200);
+    state.shards.held_prefixes().remove(0)
+}
+
+/// **Writes waiting on a shard's open leave the write gate, up to the cap** (§22 rev 2, K1-K2c,
+/// GATE-DECISION-s22-addendum-rev2-2026-11-20). The rig's one shard is closed and its reopen held
+/// at its first manifest read, as a target's open builds while a cell's writes arrive. At an
+/// in-flight cap of 8, eight appends reach the open and wait; eight more are then sent. Each of the
+/// sixteen is admitted, none is shed, and every one is acked once the open lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn writes_waiting_on_an_open_leave_the_write_gate_up_to_the_cap() {
+    use crate::dst::{FaultProfile, FaultStore, ObjClass, StoreOp};
+    let store = FaultStore::new(mem(), 2611, FaultProfile::clean());
+    let (state, addr) = http_rig(store.clone()).await;
+    let prefix = one_record(&state, addr, "moving").await;
+    let reason = crate::shard_directory::RetirementReason::PlannedMove;
+    if let crate::shard_directory::RetireOutcome::Retired(engine) =
+        state.shards.retire(&prefix, reason, |_, _| true)
+    {
+        engine
+            .shutdown_handle()
+            .wait(Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    state.shards.clear_holdoff(&prefix);
+    let engaged = store.hold_class(StoreOp::Get, ObjClass::Manifest, 1);
+    let held = || engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1;
+    let counted = two_waves(&state, addr, "moving", held, || store.release_hold()).await;
+    assert_eq!(counted, (16, 0), "(appends acked, writes shed)");
+    engine_shutdown(&state).await;
+}
+
+/// **Writes held by a planned move leave the write gate, up to the cap** (§22 rev 2, K1-K2c). A move
+/// holds the rig's one shard (the directory's handoff mark, its resident closed), as a giver holds
+/// a moving leaf while its target builds. At an in-flight cap of 8, eight appends wait on the hold
+/// and eight more are then sent. When the hold ends, the shard reopens here: each of the sixteen
+/// is admitted, none is shed, and every one is acked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn writes_held_by_a_move_leave_the_write_gate_up_to_the_cap() {
+    let (state, addr) = http_rig(mem()).await;
+    let prefix = one_record(&state, addr, "held").await;
+    let until = tokio::time::Instant::now() + Duration::from_secs(9);
+    let (mark, resident) = state.shards.begin_handoff(&prefix, until).unwrap();
+    if let Some(engine) = resident {
+        engine.begin_close();
+        engine
+            .shutdown_handle()
+            .wait(Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    let mark = std::sync::Mutex::new(Some(mark));
+    let release = || drop(mark.lock().unwrap().take());
+    let counted = two_waves(&state, addr, "held", || true, release).await;
+    assert_eq!(counted, (16, 0), "(appends acked, writes shed)");
+    engine_shutdown(&state).await;
+}

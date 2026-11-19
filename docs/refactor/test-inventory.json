@@ -12853,5 +12853,27 @@
     "configuration": [],
     "file": "src/dst/tests/security_workload.rs",
     "scenarios": []
+  },
+  {
+    "name": "writes_held_by_a_move_leave_the_write_gate_up_to_the_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e2dd9a8473e412a23cac6444a2fc8a87808e3a155addc25265c3ec530aa3e73e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
+    "name": "writes_waiting_on_an_open_leave_the_write_gate_up_to_the_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "dbf9385d7ba117c87017abcd43a1126797a4399684fea2eb1c248958575e10ad",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
   }
 ]

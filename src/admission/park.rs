@@ -68,6 +68,8 @@ struct Request {
     coverage: AtomicU64,
     /// What fair shedding made of it (`judge_load`).
     verdict: OnceLock<Verdict>,
+    /// Its place among the requests waiting on a move or an open (`waits_on_owner`).
+    waiting: OnceLock<super::waiting::WaitingPlace>,
 }
 
 impl Drop for Request {
@@ -94,6 +96,7 @@ impl InflightTicket {
             weight: AtomicU64::new(0),
             coverage: AtomicU64::new(0),
             verdict: OnceLock::new(),
+            waiting: OnceLock::new(),
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -131,6 +134,20 @@ pub(crate) fn judge_load(share_k: u64) {
                 .verdict
                 .get_or_init(|| share.judge(share_k, crate::shard::now_ms())),
         )
+    });
+}
+
+/// The served request waits on a planned move or on a shard's open (§22 rev 2, K1-K2c): it takes
+/// a place among such requests, if one is free, and keeps it until it is answered, so it leaves
+/// the write gate while it waits and a release that answers every waiter at once sheds nothing.
+/// A second wait of the same request takes no second place; outside a served request, nothing.
+pub(crate) fn waits_on_owner() {
+    let _placed = REQUEST.try_with(|request| {
+        if request.waiting.get().is_none()
+            && let Some(place) = request.ticket.ctl.enter_waiting()
+        {
+            drop(request.waiting.set(place));
+        }
     });
 }
 

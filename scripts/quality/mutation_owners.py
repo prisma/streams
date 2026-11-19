@@ -128,6 +128,10 @@ OWNERS = (
     # The cap on forwards waiting for their owners (edge change #235): the
     # places a cap gives, and the leg where a silent owner's forwards leave
     # the non-owner's own streams served.
+    # The requests waiting on a move or an open, out of the write gate up to the cap (§22 rev 2,
+    # K1-K2c): the places a cap gives, and the two legs where they keep writes from being shed.
+    owner('admission_waiting', 'src/admission/waiting.rs',
+          'admission::waiting:: dst_tests::parked_waits::writes_'),
     owner('admission_forwards', 'src/admission/forwards.rs',
           'admission::forwards:: '
           'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
@@ -453,7 +457,7 @@ OWNERS = (
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
-    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
+    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::parked_waits::writes_'),
     owner('fleet_moves', 'src/fleet/moves.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '

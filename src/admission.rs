@@ -30,6 +30,7 @@ pub(crate) mod live_units;
 pub(crate) mod park;
 pub(crate) mod read_memory;
 mod survival;
+pub(crate) mod waiting;
 
 /// Bound on distinct streams tracked by the per-stream admission map:
 /// the map stays proportional to concurrently-active streams and can
@@ -131,6 +132,8 @@ struct Inner {
     parked: AtomicI64,
     /// Forwards to a stream's owner waiting for its answer (`forwards`).
     forwards: AtomicI64,
+    /// Requests waiting on a move or a shard's open, out of the write gate (`waiting`).
+    waiting: AtomicI64,
     /// The peak of active requests (in flight minus parked) since the
     /// heartbeat last swapped it.
     active_peak: AtomicI64,
@@ -274,6 +277,7 @@ impl AdmissionController {
                 inflight_peak: AtomicI64::new(0),
                 parked: AtomicI64::new(0),
                 forwards: AtomicI64::new(0),
+                waiting: AtomicI64::new(0),
                 active_peak: AtomicI64::new(0),
                 live_pool: AtomicU64::new(knobs.subscriptions.effective),
                 max_inflight: AtomicI64::new(knobs.max_inflight),
@@ -441,11 +445,11 @@ impl AdmissionController {
         Some(WriteRefusal::Overloaded)
     }
 
-    /// The active requests (in flight minus parked) and the cap, when an
-    /// in-flight cap is set and they are over it.
+    /// The active requests (in flight minus parked, less `waiting`) and the
+    /// cap, when an in-flight cap is set and they are over it.
     fn over_inflight_cap(&self) -> Option<(u64, u64)> {
         let cap = u64::try_from(self.max_inflight()).unwrap_or(0);
-        let active = u64::try_from(self.active()).unwrap_or(0);
+        let active = u64::try_from(self.active() - self.waiting()).unwrap_or(0);
         (cap > 0 && active > cap).then_some((active, cap))
     }
 

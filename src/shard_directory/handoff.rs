@@ -2,6 +2,10 @@
 //! GATE-DECISION-f6-prep-rows-rev2-2026-11-17 H5): a resolve waits on the move holding its prefix
 //! (`sharddir::handoff`) before it reads the owner, and the move takes its resident out of the
 //! serving map without the anti-flap holdoff, so a dropped move can reopen the shard at once.
+//!
+//! A served request that waits here, on a move holding its prefix or on an open this instance
+//! must make or join, takes a place among the requests waiting on an owner and leaves the write
+//! gate while it does (`admission::park::waits_on_owner`; §22 rev 2, K1-K2c).
 
 use std::sync::Arc;
 
@@ -14,10 +18,18 @@ use crate::sharddir::handoff::Mark;
 
 impl ShardDirectory {
     /// The owner `resolve` routes `prefix` to (`None`: this instance), read once the planned move
-    /// holding `prefix`, if one does, ended or passed its hold.
+    /// holding `prefix`, if one does, ended or passed its hold. A served request that waits on that
+    /// move, or that `resolve` then has to open `prefix` for, waits on its owner (module comment).
     pub(super) async fn owner_after_handoff(&self, prefix: &str) -> Option<String> {
+        if self.inner.handoffs.holds(prefix) {
+            crate::admission::park::waits_on_owner();
+        }
         self.inner.handoffs.wait(prefix).await;
-        self.inner.ownership.foreign_owner(prefix)
+        let owner = self.inner.ownership.foreign_owner(prefix);
+        if owner.is_none() && !self.is_open(prefix) {
+            crate::admission::park::waits_on_owner();
+        }
+        owner
     }
 
     /// Tests only: whether a planned move holds `prefix` now.
