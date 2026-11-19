@@ -4044,6 +4044,19 @@
     "scenarios": []
   },
   {
+    "name": "a_seed_walk_outlives_the_create_that_started_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "09009c51213f263998c47d2651f91eb6b211d45bb125d62a59f7f6ac55c57b83",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_seed_walk_that_fails_its_page_stays_charged",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

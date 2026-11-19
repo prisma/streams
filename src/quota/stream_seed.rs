@@ -12,31 +12,59 @@
 //! The first count lists the catalog's keys alone, tombstones included: an
 //! upper bound, read without a descriptor (S2 of the forward-wedge ruling of
 //! 2026-11-19; a walk of every descriptor outlasted every caller at 33,000
-//! streams). A bound under the cap seeds the count. The exact walk runs only
-//! where the bound cannot prove room: at the seed when the bound is at or
-//! over the cap, and before a project seeded by its bound would be refused
-//! `stream_limit`. That recount runs with this instance's reservations
+//! streams), which seeds the count. The exact walk runs only where the bound
+//! cannot prove room: before a project seeded by its bound would be refused
+//! `stream_limit`, which is its first create when the bound is at or over
+//! the cap. That recount runs with this instance's reservations
 //! quiesced (each holds the project's gate until it decides), so a project
 //! is never refused on its bound and never admits what its exact count
 //! refuses.
+//!
+//! A count belongs to the project's admission entry, not to the create that
+//! starts it (S1 of the same ruling). The create drives its pass in its own
+//! request, so a pass that fails is charged to it; a create that leaves
+//! before its pass ends hands the rest, with the pass's locks, to the
+//! runtime's request work (`SeedCounts::orphan`), where it runs to its end
+//! charged to no one. A pass the runner refuses seeds nothing and releases
+//! its locks, as a dropped walk did before.
 
 use super::{ProjectAdmission, QuotaRefusal, QuotaRegistry, StreamReservation};
 use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
+use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{Mutex, OwnedRwLockReadGuard, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::task::{Context, Poll};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
-/// How a project's stream count was seeded, and the lock its count takes.
+/// How a project's stream count was seeded, and the locks its counts take.
 #[derive(Default)]
 pub(super) struct StreamSeed {
-    /// Held while one create counts the catalog for the seed or a recount.
-    walk: Mutex<()>,
+    /// Held by one pass at a time: the seed's count or a recount.
+    walk: Arc<Mutex<()>>,
     /// The count was seeded by the catalog's key count, an upper bound.
     bounded: AtomicBool,
     /// Each reservation of a bound-seeded project holds this to share until
     /// it decides; the exact recount holds it alone.
     gate: Arc<RwLock<()>>,
+    /// Passes handed off by a create that left before they ended.
+    orphaned: AtomicU64,
+    /// Of those, the ones the runner refused, which seeded nothing.
+    refused: AtomicU64,
+}
+
+/// What a create gives the seed: the counts, as futures of their own, and
+/// the runner a pass it leaves unfinished goes to.
+pub(crate) trait SeedCounts<E>: Send + Sync + 'static {
+    /// The catalog's key count, an upper bound.
+    fn bound(&self) -> BoxFuture<'static, Result<u64, E>>;
+    /// The exact count, a walk of the catalog.
+    fn exact(&self) -> BoxFuture<'static, Result<u64, E>>;
+    /// Run `rest`, the project's `pass`-th unfinished pass, to its end;
+    /// false when the runner refused it.
+    fn orphan(&self, pass: u64, rest: BoxFuture<'static, ()>) -> bool;
 }
 
 /// A stream slot reserved under a seeded count (`StreamReservation`), and
@@ -55,41 +83,38 @@ impl SeededReservation {
 
 impl QuotaRegistry {
     /// Reserve one stream slot under `max_streams`, the count seeded first
-    /// when this project has none since boot: from `bound`, the catalog's
-    /// key count, when it is under the cap, else from `exact`, the walk.
-    /// A refusal of a project seeded by its bound walks `exact` and reserves
-    /// again on that count. `bound` and `exact` are each polled at most
-    /// once, and not at all when the count is seeded already. The outer
-    /// error is a count's; the inner, the reservation's refusal.
-    pub(crate) async fn reserve_seeded_stream<E>(
+    /// when this project has none since boot, from the catalog's key count.
+    /// A refusal of a project seeded by that bound recounts exactly and
+    /// reserves again on that count. The outer error is a count's; the
+    /// inner, the reservation's refusal.
+    pub(crate) async fn reserve_seeded_stream<E: Send + 'static>(
         &self,
         project: &ProjectId,
         quotas: &ProjectQuotas,
-        bound: impl Future<Output = Result<u64, E>>,
-        exact: impl Future<Output = Result<u64, E>>,
+        counts: Arc<dyn SeedCounts<E>>,
     ) -> Result<Result<Option<SeededReservation>, QuotaRefusal>, E> {
         let Some(admission) = self.tracked(project) else {
             return Ok(Ok(None));
         };
-        let mut exact = Box::pin(exact);
         if self.needs_stream_seed(project) {
-            admission
-                .seed_from_bound(quotas.max_streams, bound, exact.as_mut())
-                .await?;
+            let walking = admission.seed.walk.clone().lock_owned().await;
+            if admission.needs_seed() {
+                let pass = admission.clone().seed_pass(counts.clone(), walking);
+                Driven::new(&admission, &counts, pass).await?;
+            }
         }
         let seed = &admission.seed;
         match self.reserve_gated(project, quotas, &admission).await {
-            Err(QuotaRefusal::StreamLimit) if seed.bounded.load(Ordering::Acquire) => {}
+            Err(QuotaRefusal::StreamLimit) => {}
             reserved => return Ok(reserved),
         }
-        {
-            let _walking = seed.walk.lock().await;
-            if seed.bounded.load(Ordering::Acquire) {
-                let _quiet = seed.gate.write().await;
-                let count = exact.await?;
-                admission.recount_streams(count);
-                seed.bounded.store(false, Ordering::Release);
-            }
+        let walking = seed.walk.clone().lock_owned().await;
+        if seed.bounded.load(Ordering::Acquire) {
+            let quiet = seed.gate.clone().write_owned().await;
+            let pass = admission
+                .clone()
+                .recount_pass(counts.clone(), walking, quiet);
+            Driven::new(&admission, &counts, pass).await?;
         }
         Ok(self.reserve_gated(project, quotas, &admission).await)
     }
@@ -114,31 +139,48 @@ impl QuotaRegistry {
             _gate: gate,
         }))
     }
+
+    /// The passes a create handed off for `project`, and of those the ones
+    /// the runner refused.
+    #[cfg(test)]
+    pub(crate) fn orphaned_seed_passes(&self, project: &ProjectId) -> (u64, u64) {
+        self.tracked(project).map_or((0, 0), |a| {
+            let seed = &a.seed;
+            (
+                seed.orphaned.load(Ordering::Relaxed),
+                seed.refused.load(Ordering::Relaxed),
+            )
+        })
+    }
 }
 
 impl ProjectAdmission {
-    /// Seed the count under the project's seed lock unless another create
-    /// seeded it while this one waited: from `bound` when it is under `cap`,
-    /// else from `exact`, which a count seeded from `bound` never polls
-    /// again. A poisoned count is not seeded.
-    async fn seed_from_bound<E>(
-        &self,
-        cap: u64,
-        bound: impl Future<Output = Result<u64, E>>,
-        exact: std::pin::Pin<&mut impl Future<Output = Result<u64, E>>>,
+    /// The seed's pass, under its walk lock: the count seeded from the
+    /// catalog's key count, an upper bound. A bound at or over the cap proves
+    /// no room, so the first reservation it refuses walks the exact count
+    /// (`recount_pass`) before it answers.
+    async fn seed_pass<E: Send + 'static>(
+        self: Arc<Self>,
+        counts: Arc<dyn SeedCounts<E>>,
+        _walking: OwnedMutexGuard<()>,
     ) -> Result<(), E> {
-        let _walking = self.seed.walk.lock().await;
-        if !self.needs_seed() {
-            return Ok(());
-        }
-        let count = bound.await?;
-        if count < cap {
-            self.seed.bounded.store(true, Ordering::Release);
-            self.seed_streams(count);
-            return Ok(());
-        }
-        let count = exact.await?;
+        let count = counts.bound().await?;
+        self.seed.bounded.store(true, Ordering::Release);
         self.seed_streams(count);
+        Ok(())
+    }
+
+    /// A bound-seeded count's exact recount, under its walk lock and with
+    /// its reservations quiesced (`quiet`, the gate held alone).
+    async fn recount_pass<E: Send + 'static>(
+        self: Arc<Self>,
+        counts: Arc<dyn SeedCounts<E>>,
+        _walking: OwnedMutexGuard<()>,
+        _quiet: OwnedRwLockWriteGuard<()>,
+    ) -> Result<(), E> {
+        let count = counts.exact().await?;
+        self.recount_streams(count);
+        self.seed.bounded.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -168,15 +210,117 @@ impl ProjectAdmission {
     }
 }
 
+/// A pass its create drives in its own request. Dropped before the pass
+/// ends, it hands the rest to the counts' runner.
+struct Driven<E: Send + 'static> {
+    pass: Option<BoxFuture<'static, Result<(), E>>>,
+    admission: Arc<ProjectAdmission>,
+    counts: Arc<dyn SeedCounts<E>>,
+}
+
+impl<E: Send + 'static> Driven<E> {
+    fn new(
+        admission: &Arc<ProjectAdmission>,
+        counts: &Arc<dyn SeedCounts<E>>,
+        pass: impl Future<Output = Result<(), E>> + Send + 'static,
+    ) -> Self {
+        Self {
+            pass: Some(pass.boxed()),
+            admission: admission.clone(),
+            counts: counts.clone(),
+        }
+    }
+}
+
+impl<E: Send + 'static> Future for Driven<E> {
+    type Output = Result<(), E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let Some(pass) = self.pass.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let ended = pass.as_mut().poll(cx);
+        if ended.is_ready() {
+            self.pass = None;
+        }
+        ended
+    }
+}
+
+impl<E: Send + 'static> Drop for Driven<E> {
+    fn drop(&mut self) {
+        let Some(pass) = self.pass.take() else {
+            return;
+        };
+        let seed = &self.admission.seed;
+        let number = seed.orphaned.fetch_add(1, Ordering::Relaxed);
+        let rest = async move {
+            if pass.await.is_err() {
+                tracing::debug!(
+                    "a stream-count seed pass its create left failed; it seeds nothing"
+                );
+            }
+        };
+        if !self.counts.orphan(number, rest.boxed()) {
+            seed.refused.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{QuotaRefusal, QuotaRegistry};
-    use super::SeededReservation;
+    use super::SeedCounts;
     use crate::project_policy::ProjectQuotas;
     use crate::tenant::ProjectId;
+    use futures_util::FutureExt;
+    use futures_util::future::BoxFuture;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::oneshot;
 
     type Count = Result<u64, &'static str>;
-    type Reserved = Result<Result<Option<SeededReservation>, QuotaRefusal>, &'static str>;
+
+    /// Counts that answer what they were given, and a runner that runs
+    /// nothing.
+    struct Fixed(Count, Count);
+
+    impl SeedCounts<&'static str> for Fixed {
+        fn bound(&self) -> BoxFuture<'static, Count> {
+            std::future::ready(self.0).boxed()
+        }
+        fn exact(&self) -> BoxFuture<'static, Count> {
+            std::future::ready(self.1).boxed()
+        }
+        fn orphan(&self, _: u64, _: BoxFuture<'static, ()>) -> bool {
+            false
+        }
+    }
+
+    fn fixed(bound: Count, exact: Count) -> Arc<dyn SeedCounts<&'static str>> {
+        Arc::new(Fixed(bound, exact))
+    }
+
+    /// A key count that answers once its sender sends, and a runner that
+    /// keeps what it is handed (when `takes`) without running it.
+    struct Held {
+        bound: Mutex<Option<oneshot::Receiver<u64>>>,
+        takes: bool,
+        handed: Mutex<Vec<(u64, BoxFuture<'static, ()>)>>,
+    }
+
+    impl SeedCounts<&'static str> for Held {
+        fn bound(&self) -> BoxFuture<'static, Count> {
+            let sent = self.bound.lock().unwrap().take();
+            async move { sent.ok_or("counted twice")?.await.map_err(|_| "unsent") }.boxed()
+        }
+        fn exact(&self) -> BoxFuture<'static, Count> {
+            std::future::ready(Err("walked")).boxed()
+        }
+        fn orphan(&self, pass: u64, rest: BoxFuture<'static, ()>) -> bool {
+            self.handed.lock().unwrap().push((pass, rest));
+            self.takes
+        }
+    }
 
     fn registry(max_streams: u64) -> (QuotaRegistry, ProjectId, ProjectQuotas) {
         let r = QuotaRegistry::default();
@@ -192,36 +336,30 @@ mod tests {
         (r, project, quotas)
     }
 
-    /// One create's reservation, with counts that answer `bound` and `exact`.
-    async fn reserve(
-        r: &QuotaRegistry,
-        project: &ProjectId,
-        quotas: &ProjectQuotas,
-        bound: Count,
-        exact: Count,
-    ) -> Reserved {
-        let (bound, exact) = (std::future::ready(bound), std::future::ready(exact));
-        r.reserve_seeded_stream(project, quotas, bound, exact).await
-    }
-
     /// A failed count seeds nothing, the next count seeds what it returns, a
-    /// later create finds it seeded and polls neither count, and the
+    /// later create finds it seeded and runs neither count, and the
     /// reservations count from the seed: at `max_streams` 6 an exact five
     /// (its bound, 7, at the cap) takes one more and refuses the next.
     #[tokio::test(crate = "crate::test_rt")]
     async fn one_completed_count_seeds_the_count_for_every_later_create() {
         let (r, project, quotas) = registry(6);
-        let failed = reserve(&r, &project, &quotas, Err("list"), Ok(0)).await;
+        let failed = r
+            .reserve_seeded_stream(&project, &quotas, fixed(Err("list"), Ok(0)))
+            .await;
         assert!(matches!(failed, Err("list")), "a failed count");
         assert!(
             r.needs_stream_seed(&project),
             "a failed count seeds nothing"
         );
-        match reserve(&r, &project, &quotas, Ok(7), Ok(5)).await {
+        let sixth = r
+            .reserve_seeded_stream(&project, &quotas, fixed(Ok(7), Ok(5)))
+            .await;
+        match sixth {
             Ok(Ok(Some(sixth))) => sixth.commit(),
             _ => panic!("the sixth stream of an exact five"),
         }
-        let seventh = reserve(&r, &project, &quotas, Err("listed"), Err("walked")).await;
+        let again = fixed(Err("listed again"), Err("walked again"));
+        let seventh = r.reserve_seeded_stream(&project, &quotas, again).await;
         assert!(
             matches!(seventh, Ok(Err(QuotaRefusal::StreamLimit))),
             "the seventh"
@@ -242,15 +380,84 @@ mod tests {
             (Err("not listed"), Err("walked again")),
         ];
         for (n, (bound, exact)) in admitted.into_iter().enumerate() {
-            match reserve(&r, &project, &quotas, bound, exact).await {
+            let counts = fixed(bound, exact);
+            match r.reserve_seeded_stream(&project, &quotas, counts).await {
                 Ok(Ok(Some(slot))) => slot.commit(),
                 _ => panic!("create {n} is admitted"),
             }
         }
-        let refused = reserve(&r, &project, &quotas, Err("listed"), Err("walked")).await;
+        let again = fixed(Err("not listed"), Err("walked again"));
+        let refused = r.reserve_seeded_stream(&project, &quotas, again).await;
         assert!(
             matches!(refused, Ok(Err(QuotaRefusal::StreamLimit))),
             "the third"
+        );
+    }
+
+    /// A create that leaves while its key count is parked hands the rest of
+    /// its pass, once, to the runner; the rest seeds the count with no create
+    /// waiting, and the next create counts nothing (S1 of the forward-wedge
+    /// ruling of 2026-11-19).
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_pass_its_create_left_seeds_the_count_from_the_runner() {
+        let (r, project, quotas) = registry(7);
+        let (send, parked) = oneshot::channel();
+        let held = Arc::new(Held {
+            bound: Mutex::new(Some(parked)),
+            takes: true,
+            handed: Mutex::new(Vec::new()),
+        });
+        let create = r.reserve_seeded_stream(&project, &quotas, held.clone());
+        let left = tokio::time::timeout(std::time::Duration::from_millis(50), create).await;
+        assert!(left.is_err(), "the create left while its count was parked");
+        let mut handed = std::mem::take(&mut *held.handed.lock().unwrap());
+        assert_eq!(
+            (handed.len(), r.needs_stream_seed(&project)),
+            (1, true),
+            "the pass handed off, the count not yet seeded"
+        );
+        let (pass, rest) = handed.remove(0);
+        send.send(3).unwrap();
+        rest.await;
+        assert_eq!(
+            (
+                pass,
+                r.needs_stream_seed(&project),
+                r.orphaned_seed_passes(&project)
+            ),
+            (0, false, (1, 0)),
+            "the handed-off pass seeded the count"
+        );
+        let next = fixed(Err("listed again"), Err("walked again"));
+        let next = r.reserve_seeded_stream(&project, &quotas, next).await;
+        assert!(matches!(next, Ok(Ok(Some(_)))), "the next create on 3 of 7");
+    }
+
+    /// A pass the runner refuses seeds nothing and releases the seed's lock,
+    /// so the next create counts again.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_pass_the_runner_refuses_seeds_nothing_and_frees_the_count() {
+        let (r, project, quotas) = registry(7);
+        let (_send, parked) = oneshot::channel();
+        let held = Arc::new(Held {
+            bound: Mutex::new(Some(parked)),
+            takes: false,
+            handed: Mutex::new(Vec::new()),
+        });
+        let create = r.reserve_seeded_stream(&project, &quotas, held.clone());
+        let left = tokio::time::timeout(std::time::Duration::from_millis(50), create).await;
+        assert!(left.is_err(), "the create left while its count was parked");
+        drop(std::mem::take(&mut *held.handed.lock().unwrap()));
+        let next = r
+            .reserve_seeded_stream(&project, &quotas, fixed(Ok(2), Err("not walked")))
+            .await;
+        assert_eq!(
+            (
+                matches!(next, Ok(Ok(Some(_)))),
+                r.orphaned_seed_passes(&project)
+            ),
+            (true, (1, 1)),
+            "the next create seeds from its own count; one pass refused"
         );
     }
 }

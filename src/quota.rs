@@ -71,7 +71,7 @@ pub(crate) mod parked;
 mod pin;
 pub(crate) mod read_reservation;
 pub(crate) mod stored;
-mod stream_seed;
+pub(crate) mod stream_seed;
 mod tracker;
 use pin::AdmissionCounters;
 

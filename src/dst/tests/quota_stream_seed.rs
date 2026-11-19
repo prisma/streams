@@ -18,6 +18,7 @@ use crate::store_timing::{StoreResources, TimingStore};
 use crate::tenant::ProjectId;
 use object_store::ObjectStoreExt;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 /// A rate whose budget a create's weight leaves far from debt, so each
 /// create's weight reads off the level it leaves a full budget at.
@@ -449,4 +450,77 @@ async fn a_retained_sources_hard_delete_frees_exactly_its_slot() {
         assert_eq!(answers, room, "after the release, restart {restart}");
         engine_shutdown(&cell.state).await;
     }
+}
+
+/// Wait, at most 10 s, until `holds`; `what` names it if it never does.
+async fn until(holds: impl Fn() -> bool, what: &str) {
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !holds() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    });
+    assert!(waited.await.is_ok(), "{what}");
+}
+
+/// A seed pass outlives the create that started it (S1 of the forward-wedge
+/// ruling of 2026-11-19): a create whose key count is parked leaves, its
+/// connection closed as a forward that gave up closes it. Once nothing is in
+/// flight the count is released, and the pass seeds the count with no create
+/// waiting. The next create is `201` with the catalog listed once since the
+/// cell opened (the project is under its cap, so its seed lists once), and
+/// the create that left made no stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_seed_walk_outlives_the_create_that_started_it() {
+    // A LIST plan routes the catalog's LISTs through the store's gate, where
+    // the hold parks them; 1 ms of latency changes nothing else.
+    let listed = FaultPlan {
+        latency_pct: 100,
+        latency_ms: (1, 1),
+        ..FaultPlan::CLEAN
+    };
+    let profile = FaultProfile::clean().with_op_class(StoreOp::List, ObjClass::Other, listed);
+    let fault = FaultStore::new(mem(), 11, profile);
+    let trace = TraceStore::verbatim(fault.clone());
+    let cell = open_cell(CellSpec {
+        store: trace.clone(),
+        ..measured()
+    })
+    .await;
+    let catalog = catalog_prefix();
+    let held = fault.hold_class_under(StoreOp::List, ObjClass::Other, &catalog, 1);
+    let create = Box::pin(cell.call(0, "PUT", "/v1/streams/left", CREATE));
+    let parks = Box::pin(until(
+        || held.load(Ordering::SeqCst) > 0,
+        "the key count's LIST parks",
+    ));
+    match futures_util::future::select(create, parks).await {
+        futures_util::future::Either::Left((answer, _)) => {
+            panic!("the create answered {} while its count was held", answer.0)
+        }
+        futures_util::future::Either::Right(((), create)) => drop(create),
+    }
+    let in_flight = || cell.state.quotas.stats().1;
+    until(|| in_flight() == 0, "the create that left is out of flight").await;
+    fault.release_hold();
+    let id = ProjectId::new(&project(0)).unwrap();
+    let seeded = || !cell.state.quotas.needs_stream_seed(&id);
+    until(seeded, "the pass seeds the count with no create waiting").await;
+    let next = cell.call(0, "PUT", "/v1/streams/next", CREATE).await.0;
+    let listed = trace
+        .events()
+        .iter()
+        .filter(|e| e.op == StoreOp::List && e.path.starts_with(&catalog))
+        .count();
+    let left = cell
+        .state
+        .registry
+        .get(&id.stream_ref("left"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (next, listed, left.is_none()),
+        (201, 1, true),
+        "the next create, the catalog's LISTs since the cell opened, and no stream named left"
+    );
+    engine_shutdown(&cell.state).await;
 }

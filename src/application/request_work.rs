@@ -12,12 +12,19 @@ use tokio::sync::{Notify, watch};
 pub(crate) const MAX_ACTIVE: usize = 8;
 pub(crate) const MAX_QUEUED: usize = 64;
 const JOB_TIMEOUT: Duration = Duration::from_secs(10);
+/// The active slots orphaned stream-count seeds may hold at once; the rest
+/// wait queued with their walk locks (Addendum 1 of the forward-wedge
+/// ruling, 2026-11-19).
+pub(crate) const SEED_SHARE: usize = 2;
+/// A seed has no total deadline: each of its store steps has its own.
+const SEED_TIMEOUT: Duration = Duration::from_secs(30 * 365 * 86_400);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     Topology,
     Ttl,
     QueueDelete,
+    StreamSeed,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
@@ -79,6 +86,8 @@ pub(crate) enum Action {
     },
     /// A deleting queue's cleanup (`queues::QueueDeletion`).
     QueueDelete(Box<super::queues::QueueDeletion>),
+    /// A stream-count seed pass its create left unfinished (`quota::stream_seed`).
+    StreamSeed(futures_util::future::BoxFuture<'static, ()>),
     #[cfg(test)]
     Held(futures_util::future::BoxFuture<'static, Result<(), WorkError>>),
 }
@@ -97,6 +106,10 @@ impl Action {
                 Ok(())
             }
             Self::QueueDelete(deletion) => deletion.run().await,
+            Self::StreamSeed(pass) => {
+                pass.await;
+                Ok(())
+            }
             #[cfg(test)]
             Self::Held(future) => future.await,
         }
@@ -115,7 +128,23 @@ struct State {
     pending: VecDeque<Job>,
     admitted: HashMap<Key, (ResultWatch, tokio::time::Instant)>,
     active: usize,
+    /// Active stream-count seeds, at most `SEED_SHARE`.
+    seeds: usize,
     rejected: u64,
+}
+impl State {
+    /// The first pending job a slot may run: a seed only while seeds hold
+    /// fewer than `SEED_SHARE` slots.
+    fn next_job(&mut self) -> Option<Job> {
+        let seeds_full = self.seeds >= SEED_SHARE;
+        let at = self
+            .pending
+            .iter()
+            .position(|job| !(seeds_full && job.key.kind == Kind::StreamSeed))?;
+        let job = self.pending.remove(at)?;
+        self.seeds += usize::from(job.key.kind == Kind::StreamSeed);
+        Some(job)
+    }
 }
 #[derive(Default)]
 pub(crate) struct RequestWork {
@@ -159,6 +188,31 @@ impl RequestWork {
     pub(crate) fn submit(&self, key: Key, action: Action) -> Result<Ticket, WorkError> {
         self.admit(key, action, tokio::time::Instant::now() + JOB_TIMEOUT)
     }
+
+    /// Run `pass`, a stream-count seed its create left unfinished, under the
+    /// seeds' share and with no total deadline; the share's slot is given up
+    /// when the running pass ends or is dropped. Never panics: a poisoned state
+    /// refuses it `Stopped`.
+    pub(crate) fn submit_seed(
+        self: &Arc<Self>,
+        key: Key,
+        pass: futures_util::future::BoxFuture<'static, ()>,
+    ) -> Result<Ticket, WorkError> {
+        let work = self.clone();
+        // The slot exists once the pass runs: a pass refused or dropped while
+        // queued never held one.
+        let pass = async move {
+            let _slot = SeedSlot(work);
+            pass.await;
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return Err(WorkError::Stopped);
+        };
+        let deadline = tokio::time::Instant::now() + SEED_TIMEOUT;
+        let action = Action::StreamSeed(Box::pin(pass));
+        self.admit_into(&mut state, key, action, deadline)
+    }
+
     #[expect(
         clippy::unwrap_used,
         reason = "RequestWork::admit; a poisoned work state may hold a half-admitted ticket; recovering it could run a request twice or never"
@@ -170,6 +224,17 @@ impl RequestWork {
         deadline: tokio::time::Instant,
     ) -> Result<Ticket, WorkError> {
         let mut state = self.state.lock().unwrap();
+        self.admit_into(&mut state, key, action, deadline)
+    }
+
+    /// `admit` under the state lock it holds.
+    fn admit_into(
+        &self,
+        state: &mut State,
+        key: Key,
+        action: Action,
+        deadline: tokio::time::Instant,
+    ) -> Result<Ticket, WorkError> {
         if !state.started || state.stopped {
             return Err(WorkError::Stopped);
         }
@@ -212,7 +277,7 @@ impl RequestWork {
             {
                 let mut state = self.state.lock().unwrap();
                 while active.len() < MAX_ACTIVE {
-                    let Some(job) = state.pending.pop_front() else {
+                    let Some(job) = state.next_job() else {
                         break;
                     };
                     state.active += 1;
@@ -281,6 +346,16 @@ impl RequestWork {
             .collect()
     }
 }
+/// A running seed's slot in the seeds' share (`State::next_job` takes it),
+/// given up when the seed's pass ends or is dropped.
+struct SeedSlot(Arc<RequestWork>);
+impl Drop for SeedSlot {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.0.state.lock() {
+            state.seeds = state.seeds.saturating_sub(1);
+        }
+    }
+}
 struct StopGuard(Arc<RequestWork>);
 impl Drop for StopGuard {
     fn drop(&mut self) {
@@ -295,5 +370,90 @@ impl Drop for StopGuard {
         state.active = 0;
         state.pending.clear();
         state.admitted.clear();
+    }
+}
+
+/// Addendum 1 of the forward-wedge ruling (2026-11-19): a stream-count seed
+/// has no total deadline and holds at most `SEED_SHARE` of the runner's
+/// slots; the three earlier kinds keep their 10 s.
+#[cfg(test)]
+mod seed_tests {
+    use super::{Action, Key, Kind, RequestWork, WorkError};
+    use futures_util::FutureExt;
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::oneshot;
+
+    fn key(kind: Kind, name: &str) -> Key {
+        let project = crate::tenant::ProjectId::new("seed-share").unwrap();
+        Key {
+            stream: project.stream_ref(name),
+            epoch: "first".into(),
+            kind,
+        }
+    }
+
+    fn started() -> (Arc<RequestWork>, crate::tasks::TaskSupervisor) {
+        let work = Arc::new(RequestWork::default());
+        let tasks = crate::tasks::TaskSupervisor::new();
+        work.start(&tasks).unwrap();
+        (work, tasks)
+    }
+
+    /// A pass that ends once its sender sends.
+    fn parked() -> (
+        oneshot::Sender<()>,
+        futures_util::future::BoxFuture<'static, ()>,
+    ) {
+        let (send, sent) = oneshot::channel::<()>();
+        (send, async move { sent.await.unwrap_or(()) }.boxed())
+    }
+
+    /// Each earlier kind's job is cut, and its ticket answered, at 10 s;
+    /// a seed that takes a minute runs to its end.
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
+    async fn the_earlier_kinds_keep_10_s_and_a_seed_has_no_total_deadline() {
+        let (work, tasks) = started();
+        for kind in [Kind::Topology, Kind::Ttl, Kind::QueueDelete] {
+            let at = tokio::time::Instant::now();
+            let held = Action::Held(Box::pin(std::future::pending()));
+            let waited = work.submit(key(kind, "held"), held).unwrap().wait().await;
+            assert_eq!(
+                (waited, at.elapsed()),
+                (Err(WorkError::TimedOut), Duration::from_secs(10)),
+                "{kind:?}"
+            );
+        }
+        let minute = tokio::time::sleep(Duration::from_secs(60)).boxed();
+        let ticket = work.submit_seed(key(Kind::StreamSeed, "slow"), minute);
+        assert_eq!(ticket.unwrap().wait().await, Ok(()), "a seed of a minute");
+        tasks.shutdown(Duration::from_secs(1)).await;
+    }
+
+    /// Two parked seeds hold two slots and a third waits queued; a TTL job
+    /// still runs beside them, and the third seed starts when one ends.
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
+    async fn seeds_hold_at_most_two_slots_and_the_rest_wait_their_turn() {
+        let (work, tasks) = started();
+        let mut sends = Vec::new();
+        for n in 0..3 {
+            let (send, pass) = parked();
+            sends.push(send);
+            drop(
+                work.submit_seed(key(Kind::StreamSeed, &format!("s{n}")), pass)
+                    .unwrap(),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let ttl = Action::Held(Box::pin(async { Ok(()) }));
+        let ttl = work.submit(key(Kind::Ttl, "renew"), ttl).unwrap();
+        assert_eq!(ttl.wait().await, Ok(()), "a TTL job beside two seeds");
+        let (active, pending, _, _) = work.counts();
+        assert_eq!((active, pending), (2, 1), "two seeds run, one waits");
+        sends.remove(0).send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let (active, pending, _, _) = work.counts();
+        assert_eq!((active, pending), (2, 0), "the third seed started");
+        drop(sends);
+        tasks.shutdown(Duration::from_secs(1)).await;
     }
 }

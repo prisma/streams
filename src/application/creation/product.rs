@@ -75,6 +75,8 @@ pub(super) fn kind_mismatch(message: &str) -> CreationError {
 }
 
 use crate::project_policy::ContainerKind;
+use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
 
 impl CreationService {
     /// A stream's create (`PUT /v1/streams/{name}`).
@@ -129,10 +131,10 @@ impl CreationService {
         if let Some(quotas) = principal.map(|p| &p.quotas).filter(|q| q.max_streams > 0)
             && !existing.as_ref().is_some_and(|d| desc_alive(d))
         {
-            let bound = self.count_project_keys(project);
+            let counts = SeedSource::of(self, &sref);
             reservation = self
                 .quotas
-                .reserve_seeded_stream(project, quotas, bound, self.count_project_streams(project))
+                .reserve_seeded_stream(project, quotas, counts)
                 .await?
                 .map_err(ProductCreateError::Quota)?;
         }
@@ -275,4 +277,49 @@ fn catalog_unavailable() -> CreationError {
         "catalog_unavailable",
         "stream count unavailable; retry",
     )
+}
+
+/// A create's stream counts for its project's seed, and the runtime's request
+/// work, which runs a pass the create leaves unfinished to its end.
+struct SeedSource {
+    service: Arc<CreationService>,
+    sref: crate::tenant::TenantStreamRef,
+}
+
+impl SeedSource {
+    fn of(service: &Arc<CreationService>, sref: &crate::tenant::TenantStreamRef) -> Arc<Self> {
+        Arc::new(Self {
+            service: service.clone(),
+            sref: sref.clone(),
+        })
+    }
+}
+
+impl crate::quota::stream_seed::SeedCounts<CreationError> for SeedSource {
+    fn bound(&self) -> BoxFuture<'static, Result<u64, CreationError>> {
+        let (service, project) = (self.service.clone(), self.sref.project_id().clone());
+        async move { service.count_project_keys(&project).await }.boxed()
+    }
+
+    fn exact(&self) -> BoxFuture<'static, Result<u64, CreationError>> {
+        let (service, project) = (self.service.clone(), self.sref.project_id().clone());
+        async move { service.count_project_streams(&project).await }.boxed()
+    }
+
+    fn orphan(&self, pass: u64, rest: BoxFuture<'static, ()>) -> bool {
+        use crate::application::request_work::{Key, Kind};
+        let key = Key {
+            stream: self.sref.clone(),
+            epoch: format!("stream-seed-{pass}"),
+            kind: Kind::StreamSeed,
+        };
+        match self.service.runtime.request_work.submit_seed(key, rest) {
+            Ok(_ticket) => true,
+            Err(refused) => {
+                let stream = &self.sref;
+                tracing::warn!(%stream, "a stream-count seed pass its create left was refused: {refused}");
+                false
+            }
+        }
+    }
 }
