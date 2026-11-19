@@ -175,6 +175,12 @@ impl Standing {
         self.last_handoff.lock().ok().and_then(|last| *last)
     }
 
+    /// Tests: whether this runtime's fleet started its planned-move runner.
+    #[cfg(test)]
+    pub(crate) fn runs_handoffs(&self) -> bool {
+        self.handoffs.get().is_some()
+    }
+
     /// A planned move's close did not end clean (F6 E5).
     pub(super) fn note_handoff_fenced(&self) {
         self.handoffs_fenced.fetch_add(1, Ordering::Relaxed);

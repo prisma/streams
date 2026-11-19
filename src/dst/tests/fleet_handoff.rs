@@ -24,6 +24,49 @@ use tokio::time::Instant;
 
 pub(super) const BOUND: Duration = Duration::from_secs(30);
 
+/// A wait for one of `giver`'s planned moves, which fails as soon as the move cannot land
+/// rather than at [`BOUND`]: a giver whose fleet runs no handoff runner moves nothing, and a
+/// giver that has ended three planned moves since the wait began, without the waited state,
+/// hands off but lands nothing (a CAS lost to another writer ends one move `Kept`; three in a row
+/// do not happen in these rigs). Without it, every handoff DST waited out its 30 s bound under a
+/// runner or a commit that never lands, and together they outlasted the mutation leg's limit.
+struct MoveWait {
+    t0: Instant,
+    seen: Option<Instant>,
+    ended: u32,
+}
+
+impl MoveWait {
+    fn begin(giver: &crate::http::AppState) -> Self {
+        let seen = giver.fleet.standing().last_handoff().map(|(_, at)| at);
+        Self {
+            t0: Instant::now(),
+            seen,
+            ended: 0,
+        }
+    }
+
+    /// One poll of the wait for `what`, which has not happened yet.
+    fn pending(&mut self, giver: &crate::http::AppState, what: &str) {
+        let standing = giver.fleet.standing();
+        assert!(
+            standing.runs_handoffs(),
+            "{what}: the giver runs no handoff runner"
+        );
+        let last = standing.last_handoff().map(|(_, at)| at);
+        if last.is_some() && last != self.seen {
+            self.seen = last;
+            self.ended += 1;
+        }
+        assert!(
+            self.ended < 3,
+            "{what}: {} planned moves ended, none landed",
+            self.ended
+        );
+        assert!(self.t0.elapsed() < BOUND, "{what}");
+    }
+}
+
 /// How long a planned move may hold an append (`shard::transaction::barrier::HOLD`).
 pub(super) const HOLD: Duration = Duration::from_secs(2);
 
@@ -276,14 +319,14 @@ async fn a_returned_child_moves_without_fencing_its_writer() {
                 .iter()
                 .any(|e| e.event_type == "rebalance_return")
         };
-        let t0 = Instant::now();
+        let mut wait = MoveWait::begin(&pair.a.state);
         while !returned(&overrides_of(&pair.a).await) {
-            assert!(t0.elapsed() < BOUND, "a child returns home");
+            wait.pending(&pair.a.state, "a child returns home");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let t0 = Instant::now();
+        let mut wait = MoveWait::begin(&pair.a.state);
         while !["0", "1"].iter().any(|c| pair.b.state.shards.is_open(c)) {
-            assert!(t0.elapsed() < BOUND, "the target opens the returned child");
+            wait.pending(&pair.a.state, "the target opens the returned child");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -471,9 +514,9 @@ async fn a_count_balance_move_does_not_fence_its_writer() {
     let scenario = async {
         // Count balance waits its own move cooldown from its boot.
         a.clock.advance_monotonic(Duration::from_secs(61));
-        let t0 = Instant::now();
+        let mut wait = MoveWait::begin(&a.state);
         while !b.state.shards.is_open("00") {
-            assert!(t0.elapsed() < BOUND, "count balance moves 00 to streams-2");
+            wait.pending(&a.state, "count balance moves 00 to streams-2");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -573,9 +616,9 @@ pub(super) async fn moved_with_a_stale_target(pair: &Pair) -> (usize, String) {
             .iter()
             .position(|c| a.ownership.effective_owner(c).as_deref() == Some("streams-2"))
     };
-    let t0 = Instant::now();
+    let mut wait = MoveWait::begin(a);
     while moved().is_none() {
-        assert!(t0.elapsed() < BOUND, "streams-1 hands a child off");
+        wait.pending(a, "streams-1 hands a child off");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let gone = moved().unwrap_or_default();
@@ -717,9 +760,9 @@ async fn alternating_stale_versions_read_at_most_once_per_floor() {
 /// and `streams-2` serves it, then 2 s more; then raise `stop`. The child moved.
 async fn return_a_child(pair: &Pair, stop: &AtomicBool) -> usize {
     age_the_children(&pair.a.state).await;
-    let t0 = Instant::now();
+    let mut wait = MoveWait::begin(&pair.a.state);
     while !["0", "1"].iter().any(|c| pair.b.state.shards.is_open(c)) {
-        assert!(t0.elapsed() < BOUND, "the target opens the returned child");
+        wait.pending(&pair.a.state, "the target opens the returned child");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
