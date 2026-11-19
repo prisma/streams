@@ -167,6 +167,28 @@
     "scenarios": []
   },
   {
+    "name": "a_bound_at_the_cap_walks_the_exact_count_before_the_first_create",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3ab2b251a839b34576d134ec88ef6d8511ef541f6cdd42f4ac67dc4f02dc18e1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_bound_seeded_project_walks_the_exact_count_before_it_refuses",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ad5f19526c496edb9a9b6c9a78a1cd60e43c013f13b0836d56ca628771bdb7f3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2941,6 +2963,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_stored_cap.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_project_under_its_cap_seeds_its_count_without_reading_a_descriptor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5d72e38bfc9a5ccb46bbc940931fb2e3b89cbc23b15e35dcc70626d32649300e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
     "scenarios": []
   },
   {

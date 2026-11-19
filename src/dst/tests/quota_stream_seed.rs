@@ -63,6 +63,65 @@ fn catalog_prefix() -> String {
     format!("registry/v5/containers/{hex}/streams")
 }
 
+/// One project with at most 1,000 streams, at `MEASURE` requests a second.
+fn wide(_: usize) -> ProjectQuotas {
+    ProjectQuotas {
+        max_streams: 1_000,
+        ..quotas(MEASURE)
+    }
+}
+
+/// Project 0's catalog over `store` holds `gone` deleted streams and then
+/// `live` streams, and the server restarts over it, so the next create
+/// seeds the count. The restarted cell, at `quotas`.
+async fn restarted(
+    store: Arc<dyn object_store::ObjectStore>,
+    quotas: fn(usize) -> ProjectQuotas,
+    live: usize,
+    gone: usize,
+) -> Cell {
+    let cell = open_cell(CellSpec {
+        store: store.clone(),
+        quotas,
+        ..CellSpec::open(1)
+    })
+    .await;
+    for n in 0..gone {
+        let path = format!("/v1/streams/gone{n}");
+        assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201, "{path}");
+        assert_eq!(cell.call(0, "DELETE", &path, b"").await.0, 204, "{path}");
+    }
+    for n in 0..live {
+        let path = format!("/v1/streams/live{n}");
+        assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201, "{path}");
+    }
+    engine_shutdown(&cell.state).await;
+    cell.state.rollup.get().unwrap().db.close().await.unwrap();
+    open_cell(CellSpec {
+        store,
+        incarnation: 1,
+        quotas,
+        ..CellSpec::open(1)
+    })
+    .await
+}
+
+/// Project 0 creates `over0`, `over1`, ... until a create is refused, at
+/// most `most`: each create's status and error code.
+async fn creates_until_refused(cell: &Cell, most: usize) -> Vec<(u16, Option<String>)> {
+    let mut answers = Vec::new();
+    for n in 0..most {
+        let (status, _, body) = cell
+            .call(0, "PUT", &format!("/v1/streams/over{n}"), CREATE)
+            .await;
+        answers.push((status, error_code(&body)));
+        if status != 201 {
+            break;
+        }
+    }
+    answers
+}
+
 /// Project 0 creates `name` once its budget has refilled whole: the status,
 /// the error code and the weight the create was debited.
 async fn weighed_create(cell: &Cell, name: &str) -> (u16, Option<String>, f64) {
@@ -205,6 +264,67 @@ async fn concurrent_first_creates_walk_the_catalog_once() {
     engine_shutdown(&cell.state).await;
 }
 
+/// A project under its cap seeds its count from a listing of its catalog's
+/// keys, an upper bound, and reads no descriptor to do it (S2 of the
+/// forward-wedge ruling of 2026-11-19): after a restart over twenty streams
+/// at a cap of 1,000, the first create lists the catalog once and reads no
+/// other name's descriptor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_project_under_its_cap_seeds_its_count_without_reading_a_descriptor() {
+    let trace = TraceStore::verbatim(mem());
+    let cell = restarted(trace.clone(), wide, 20, 0).await;
+    let before = trace.events().len();
+    let status = cell.call(0, "PUT", "/v1/streams/fresh", CREATE).await.0;
+    let catalog = catalog_prefix();
+    let own: String = "fresh".bytes().map(|b| format!("{b:02x}")).collect();
+    let own = format!("{catalog}/{own}.json");
+    let events = trace.events();
+    let under = |op: StoreOp| {
+        events[before..]
+            .iter()
+            .filter(|e| e.op == op && e.path.starts_with(&catalog) && e.path != own)
+            .count()
+    };
+    assert_eq!(
+        (status, under(StoreOp::List), under(StoreOp::Get)),
+        (201, 1, 0),
+        "the first create since the restart: its status, catalog LISTs and other names' GETs"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// A bound at or over the cap proves nothing, so the first create walks the
+/// exact count before it admits: 14 live and 6 deleted streams at a cap of
+/// 16 (a bound of 20) admit exactly two more creates, and the third is
+/// refused `stream_limit`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_bound_at_the_cap_walks_the_exact_count_before_the_first_create() {
+    let cell = restarted(mem(), |_| quotas(MEASURE), 14, 6).await;
+    let limit = (429, Some("stream_limit".to_string()));
+    assert_eq!(
+        creates_until_refused(&cell, 4).await,
+        [(201, None), (201, None), limit],
+        "creates after a restart over 14 live and 6 deleted streams at a cap of 16"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// A project seeded by its bound is never refused on the bound: 10 live and
+/// 5 deleted streams at a cap of 16 (a bound of 15) admit exactly six more
+/// creates, the exact count's room, and refuse the seventh `stream_limit`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_bound_seeded_project_walks_the_exact_count_before_it_refuses() {
+    let cell = restarted(mem(), |_| quotas(MEASURE), 10, 5).await;
+    let mut admitted = vec![(201, None); 6];
+    admitted.push((429, Some("stream_limit".to_string())));
+    assert_eq!(
+        creates_until_refused(&cell, 8).await,
+        admitted,
+        "creates after a restart over 10 live and 5 deleted streams at a cap of 16"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
 /// Project 0 with at most `max_streams` 2 or 3, at `MEASURE` requests a second.
 fn two(_: usize) -> ProjectQuotas {
     ProjectQuotas {
@@ -276,22 +396,6 @@ async fn release_src(cell: &Cell) {
         "the last fork reference is released"
     );
     cell.state.registry.invalidate(&src);
-}
-
-/// Project 0 creates `more0`, `more1`, ... until a create is refused, at
-/// most `most`: each create's status and error code.
-async fn creates_until_refused(cell: &Cell, most: usize) -> Vec<(u16, Option<String>)> {
-    let mut answers = Vec::new();
-    for n in 0..most {
-        let (status, _, body) = cell
-            .call(0, "PUT", &format!("/v1/streams/more{n}"), CREATE)
-            .await;
-        answers.push((status, error_code(&body)));
-        if status != 201 {
-            break;
-        }
-    }
-    answers
 }
 
 /// A soft-deleted source a fork still holds keeps its stream slot across a

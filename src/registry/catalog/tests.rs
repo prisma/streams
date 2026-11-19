@@ -326,3 +326,31 @@ async fn the_held_page_is_every_descriptor_not_tombstoned() {
         "the held page and the customer catalog of proj-a"
     );
 }
+
+/// S2 of the forward-wedge ruling (2026-11-19): a project's key count is
+/// every descriptor key under its own prefix, tombstones included and no
+/// other project's, read from the listing alone; a key under its prefix that
+/// no descriptor has fails it closed.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_projects_key_count_is_its_own_keys_tombstones_included() {
+    let (store, reg) = registry();
+    for (project, name, deleted) in [
+        ("proj-a", "x", false),
+        ("proj-a", "y", true),
+        ("proj-a", "z", false),
+        ("proj-b", "x", false),
+    ] {
+        assert!(reg.create(filed(project, name, deleted)).await.unwrap().0);
+    }
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    let c = crate::tenant::ProjectId::new("proj-c").unwrap();
+    let counts = (
+        reg.project_key_count(&a).await.unwrap(),
+        reg.project_key_count(&c).await.unwrap(),
+    );
+    assert_eq!(counts, (3, 0), "proj-a's keys and an empty project's");
+    let hex: String = "proj-a".bytes().map(|b| format!("{b:02x}")).collect();
+    let stray = ObjPath::from(format!("{CONTAINERS_ROOT}{hex}/streams/stray"));
+    store.put(&stray, b"{}".to_vec().into()).await.unwrap();
+    assert!(reg.project_key_count(&a).await.is_err(), "a stray key");
+}

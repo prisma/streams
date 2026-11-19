@@ -129,13 +129,11 @@ impl CreationService {
         if let Some(quotas) = principal.map(|p| &p.quotas).filter(|q| q.max_streams > 0)
             && !existing.as_ref().is_some_and(|d| desc_alive(d))
         {
-            let seed = self
-                .quotas
-                .seed_streams_once(project, self.count_project_streams(project))
-                .await?;
+            let bound = self.count_project_keys(project);
             reservation = self
                 .quotas
-                .reserve_stream(project, quotas, seed)
+                .reserve_seeded_stream(project, quotas, bound, self.count_project_streams(project))
+                .await?
                 .map_err(ProductCreateError::Quota)?;
         }
         let validate_live = |d: StreamDesc| -> Result<StreamDesc, CreationError> {
@@ -222,13 +220,26 @@ impl CreationService {
         }
         Ok((created, desc))
     }
-    /// The project's stream count, which seeds its `max_streams` count once
-    /// per boot, from a walk of its catalog: every stream that holds a slot,
-    /// that is every descriptor not tombstoned (`project_held_page`). A walk that completes is
-    /// charged to no project (the owner's round-5 call 2), so a create pays
-    /// only its own registry work; one that fails a page stays charged to
-    /// the request, so a client that retries a walk that cannot finish
-    /// still pays for each attempt.
+    /// An upper bound on the project's stream count, which seeds its
+    /// `max_streams` count once per boot while it is under the cap: its
+    /// catalog's keys, from listing alone. Charged as the walk is.
+    async fn count_project_keys(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Result<u64, CreationError> {
+        let keys = self.registry.project_key_count(project);
+        let keys = async { keys.await.map_err(|_| catalog_unavailable()) };
+        crate::admission::park::uncharged_when_complete(keys).await
+    }
+
+    /// The project's exact stream count, which seeds its `max_streams` count
+    /// when its key count cannot prove room, from a walk of its catalog:
+    /// every stream that holds a slot, that is every descriptor not
+    /// tombstoned (`project_held_page`). A walk that completes is charged
+    /// to no project (the owner's round-5 call 2), so a create pays only its
+    /// own registry work; one that fails a page stays charged to the
+    /// request, so a client that retries a walk that cannot finish still
+    /// pays for each attempt.
     async fn count_project_streams(
         &self,
         project: &crate::tenant::ProjectId,
@@ -247,13 +258,7 @@ impl CreationService {
                 .registry
                 .project_held_page(project, after.as_deref(), 512)
                 .await
-                .map_err(|_| {
-                    CreationError::new(
-                        CreationFailure::Opening,
-                        "catalog_unavailable",
-                        "stream count unavailable; retry",
-                    )
-                })?;
+                .map_err(|_| catalog_unavailable())?;
             count += page.streams.len() as u64;
             if page.exhausted || page.next_after.is_none() {
                 return Ok(count);
@@ -261,4 +266,13 @@ impl CreationService {
             after = page.next_after;
         }
     }
+}
+
+/// A stream count that could not read the catalog: a retryable `503`.
+fn catalog_unavailable() -> CreationError {
+    CreationError::new(
+        CreationFailure::Opening,
+        "catalog_unavailable",
+        "stream count unavailable; retry",
+    )
 }

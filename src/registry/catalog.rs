@@ -13,6 +13,10 @@ const MAX_DESCRIPTOR_BYTES: usize = 128 * 1024;
 const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 /// The descriptors a page fetches ahead of the one it consumes.
 const PREFETCH: usize = 8;
+/// The longest a key count waits for its listing's next key, a page's own
+/// deadline: a count of any length ends at its first listing request that
+/// makes no progress (Addendum 1 of the forward-wedge ruling, 2026-11-19).
+const LIST_STEP_DEADLINE: Duration = Duration::from_secs(10);
 /// What decoding adds to a stored descriptor a customer can make, at most:
 /// the decoded descriptor's own size, and for the most watch definitions a
 /// creation document allows (64 of 16 pointers) each definition's inline
@@ -133,6 +137,38 @@ impl Registry {
             next_after: last.map(|(_, sref)| sref.name().as_str().to_owned()),
             exhausted,
         })
+    }
+
+    /// An upper bound on one project's stream count from its catalog's
+    /// listing alone: every descriptor key under its prefix, tombstoned,
+    /// expired and half-built included, with no descriptor read (S2 of the
+    /// forward-wedge ruling of 2026-11-19). A key no descriptor has fails the
+    /// count closed, as it fails a page.
+    pub(crate) async fn project_key_count(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Result<u64, object_store::Error> {
+        use futures_util::TryStreamExt;
+        #[cfg(test)]
+        if self.take_fail_next_list(project) {
+            return Err(catalog_error("armed list failpoint"));
+        }
+        let root = project_streams_prefix(project);
+        let prefix = ObjPath::from(root.trim_end_matches('/'));
+        let mut keys = self.store.list(Some(&prefix));
+        let mut count = 0;
+        loop {
+            let next = tokio::time::timeout(LIST_STEP_DEADLINE, keys.try_next())
+                .await
+                .map_err(|_| catalog_error("catalog listing deadline exceeded"))??;
+            let Some(meta) = next else {
+                return Ok(count);
+            };
+            if sref_of_key(&self.cell, &meta.location).is_none() {
+                return Err(catalog_error("non-canonical catalog key"));
+            }
+            count += 1;
+        }
     }
 
     /// Terminal-closure reconciliation: EVERY descriptor of EVERY project in
