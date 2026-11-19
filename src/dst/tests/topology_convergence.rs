@@ -72,6 +72,30 @@ fn converge_budget(instances: usize) -> Duration {
     Duration::from_secs(MERGES * PER_MERGE_SECS + changes * PER_COUNT_CHANGE_SECS + STOP_SECS)
 }
 
+/// How long the loaded half may take to reach four leaves, derived from the waits it is made of
+/// (GATE-DECISION-convergence-grow-budget-2026-11-19). The chain is serial: S4's settle and the
+/// policy's `override_recent` both hold on the fleet's youngest override, not the leaf's own.
+/// - fixed waits: the count's 30 s grow floor (`fleet::hysteresis::GROW_FLOOR_MS`), S4's settle
+///   after the count change (`topology::ops::FLEET_SETTLE_MS`, 60 s), and three move cooldowns
+///   (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, which `compressed` does not set): the born
+///   children's before the room move of `0`, the move's before `0` splits, and `00`'s and `01`'s
+///   before `1` splits: 270 s;
+/// - four operations (the root split, the room move, the splits of `0` and of `1`), each waiting
+///   for its actor's next policy pass (`policy_loop::PERIOD`, 10 s): 40 s;
+/// - three lost passes: an attempt that comes back not made and is retried on the next pass (a
+///   room move's handoff `NotStarted` on its 2 s / 300 ms bounds, a split lost to the 5 s quiesce
+///   deadline): 30 s.
+///
+/// 340 s. One more serial cooldown in the chain (the fastest measured chain is 282 s) reaches the
+/// fourth leaf no sooner than 342 s, so it fails here.
+fn grow_budget() -> Duration {
+    const FIXED_WAITS_SECS: u64 = 30 + 60 + 3 * 60;
+    const OPERATIONS: u64 = 4;
+    const LOST_PASSES: u64 = 3;
+    const PASS_SECS: u64 = 10;
+    Duration::from_secs(FIXED_WAITS_SECS + (OPERATIONS + LOST_PASSES) * PASS_SECS)
+}
+
 /// The cell: its shared data and fleet stores, and the instances running, by ordinal.
 struct Cell {
     data: Arc<dyn ObjectStore>,
@@ -439,7 +463,7 @@ async fn a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_ba
     let mut written: BTreeMap<String, u64> = BTreeMap::new();
     let began = tokio::time::Instant::now();
     cell.began = began;
-    let grow = began + Duration::from_secs(300);
+    let grow = began + grow_budget();
     let (mut n, mut trace, mut next, mut tick) = (0_u64, Vec::new(), began, began);
     while cell.leaves().await.len() < 4 && tokio::time::Instant::now() < grow {
         if tokio::time::Instant::now() >= next {
