@@ -27,15 +27,13 @@ impl Drop for WaitingPlace {
 }
 
 impl AdmissionController {
-    /// A place for one more request waiting on a move or an open: `None` with no in-flight cap
-    /// (no write gate to leave) or when the cap's worth already wait.
+    /// A place for one more request waiting on a move or an open: `None` when the cap's worth
+    /// already wait, and so always with no in-flight cap (no write gate to leave: the count before
+    /// the add is never below 0).
     pub(crate) fn enter_waiting(&self) -> Option<WaitingPlace> {
-        let cap = self.max_inflight();
         let waiting = &self.inner.waiting;
-        if cap <= 0 || waiting.fetch_add(1, Ordering::Relaxed) >= cap {
-            if cap > 0 {
-                waiting.fetch_sub(1, Ordering::Relaxed);
-            }
+        if waiting.fetch_add(1, Ordering::Relaxed) >= self.max_inflight() {
+            waiting.fetch_sub(1, Ordering::Relaxed);
             return None;
         }
         Some(WaitingPlace { ctl: self.clone() })
@@ -68,7 +66,8 @@ mod tests {
 
     /// At a cap of 4, four waiters take places and a fifth does not; with the cap's worth waiting,
     /// the write gate admits at 8 in flight (4 active) and refuses at 9 (5 active), and a dropped
-    /// place is taken again. With no cap there is no place: no gate to leave.
+    /// place is taken again. With no cap there is no place (no gate to leave), and asking leaves
+    /// the count at zero.
     #[test]
     fn waiters_leave_the_write_gate_up_to_the_cap() {
         let c = controller(4);
@@ -90,7 +89,13 @@ mod tests {
             "a dropped place is taken again"
         );
         drop(tickets);
-        assert!(controller(0).enter_waiting().is_none(), "no cap, no place");
+        let uncapped = controller(0);
+        let none: Vec<_> = (0..3).filter_map(|_| uncapped.enter_waiting()).collect();
+        assert_eq!(
+            (none.len(), uncapped.waiting()),
+            (0, 0),
+            "no cap, no place, and the count left at zero"
+        );
     }
 
     /// A waiter stays in the survival bound and in the heartbeat's in-flight count: with nine in
