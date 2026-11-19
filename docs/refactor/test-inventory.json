@@ -158,7 +158,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "90caeb4ce90dc933b33461444f3b682e8dcc523adc2dba441abd075b682d718d",
+    "function_sha256": "b9c315c5f0f7fdfa7e0ad53974a7e4ddb2459f20d03129426f4b04c045fcaffe",
     "mechanisms": [],
     "configuration": [
       "let desired = r#\"{\"count\":6,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#;"
@@ -2301,6 +2301,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merges_child_is_served_by_the_actor_at_publish",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "74d53a450582cdeb47c810c55776696bf8eeecd6eaaae7556780a069b927ef7f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_birth.rs",
     "scenarios": []
   },
   {

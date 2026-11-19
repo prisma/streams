@@ -7,6 +7,10 @@
 //! every member's install refreshes the overrides under the same lock before it installs the new
 //! leaves, so no member serves a child by the ring.
 //!
+//! A merge's product is born on its actor the same way (§22 C19, GATE-DECISION-s22-addendum-
+//! 2026-11-19): its prefix's ring home need not be the actor, which holds both halves and opens
+//! the product at the publish.
+//!
 //! The entries carry no `rebalance_move` event: a birth is not a move, and the split's own event
 //! names the children. A lost CAS is read again, three tries in all; after the third the split
 //! publishes anyway (ring-born, as before F2) and says so at WARN. The step never fails the split.
@@ -48,7 +52,7 @@ impl Birth {
             tracing::warn!(
                 op_id,
                 ?children,
-                "a split's children are born on the ring: the overrides CAS was lost {TRIES} times"
+                "a topology operation's new leaves are born on the ring: the overrides CAS was lost {TRIES} times"
             );
             return false;
         }
@@ -56,6 +60,27 @@ impl Birth {
             self.ownership.set_override(child, &self.me);
         }
         true
+    }
+
+    /// Name this instance the owner of those of `leaves` that its own view gives another instance
+    /// ([`born`](Self::born)): a merge's product, whose entry is written only when its prefix's
+    /// owner is not already the actor (§22 C19). A leaf that needs no entry gets none, so it adds
+    /// no override younger than the move cooldown for the cell's next operation to wait on.
+    /// Whether every such leaf is born here (`true` when none needed an entry).
+    pub(crate) async fn born_off_ring(
+        &self,
+        dir: &ShardDirectory,
+        leaves: &[&str],
+        op_id: &str,
+    ) -> bool {
+        let elsewhere: Vec<&str> = leaves
+            .iter()
+            .copied()
+            .filter(|leaf| {
+                self.ownership.effective_owner(leaf).as_deref() != Some(self.me.as_str())
+            })
+            .collect();
+        elsewhere.is_empty() || self.born(dir, &elsewhere, op_id).await
     }
 
     /// Up to [`TRIES`] reads and CASes of the overrides document with `children`'s entries: whether

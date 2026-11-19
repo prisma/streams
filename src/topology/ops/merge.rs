@@ -56,8 +56,14 @@ impl Parts {
             snapshot.shards.version,
             self.clock.now().ms()
         );
-        let started =
-            merge::start(&self.dir, [&engines[0], &engines[1]], &op_id, &self.owner).await?;
+        let birth = split::Birth::new(
+            self.fleet.clone(),
+            self.ownership.clone(),
+            self.owner.clone(),
+        );
+        let started = merge::start(&self.dir, [&engines[0], &engines[1]], &op_id, &self.owner)
+            .await?
+            .born_by(birth);
         let accepted = Accepted {
             op_id: started.op_id().to_string(),
             version: started.version(),

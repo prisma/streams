@@ -97,6 +97,8 @@ struct Op<'a> {
     store: &'a dyn ObjectStore,
     pair: &'a Pair,
     op_id: &'a str,
+    /// How its product is born on this instance, if it is (`birth`).
+    birth: Option<&'a super::split::Birth>,
 }
 
 /// Merge the sibling leaves `sources` (`…0`, then `…1`) into their parent prefix (S6 §7.2), as
@@ -119,6 +121,7 @@ pub(crate) struct Started {
     op_id: String,
     version: u64,
     held: intent::Held,
+    birth: Option<super::split::Birth>,
 }
 
 /// Start the merge of `sources` (S6 §7.2 step 0): the refusals, `M`'s home reserved and the intent
@@ -143,6 +146,7 @@ pub(crate) async fn start(
         op_id: op_id.to_string(),
         version,
         held,
+        birth: None,
     })
 }
 
@@ -155,6 +159,15 @@ impl Started {
     /// The topology version the merge started from.
     pub(crate) fn version(&self) -> u64 {
         self.version
+    }
+
+    /// The merge, its product born on this instance at publish (§22 C19, as a split's children
+    /// are: [`super::split::Birth`]).
+    pub(crate) fn born_by(self, birth: super::split::Birth) -> Self {
+        Self {
+            birth: Some(birth),
+            ..self
+        }
     }
 
     /// The rest of the merge (S6 §7.2 from Preparing), under the actor's lease: renewed while the
@@ -171,6 +184,7 @@ impl Started {
             store: &*store,
             pair: &self.pair,
             op_id: &self.op_id,
+            birth: self.birth.as_ref(),
         };
         let steps = std::pin::pin!(run(&op, &actor, self.version));
         let renewals = std::pin::pin!(actor.renew());
@@ -200,6 +214,7 @@ async fn run(
         store,
         pair,
         op_id,
+        ..
     } = *op;
     let [(left, _), (right, _)] = &pair.sources;
     let prepared = prepare(dir, store, pair).await;
@@ -556,7 +571,8 @@ async fn retire_sources(pair: &Pair, version: u64, op_id: &str) -> Result<(), Re
     Ok(())
 }
 
-/// Published: the topology CAS and its install, `M` opened here, both barriers retired to it, and
+/// Published: the product born on this instance (`birth`, when the merge carries one), the
+/// topology CAS and its install, `M` opened here, both barriers retired to it, and
 /// once the sources' held operations drained, the sources retired (after the release, so a held
 /// operation is re-routed, never drained as `shard_moving`).
 async fn publish(
@@ -569,7 +585,15 @@ async fn publish(
         store,
         pair,
         op_id,
+        birth,
     } = *op;
+    // The product is born on this instance, as a split's children are (§22 C19): its prefix's
+    // ring home need not be the actor, and with no entry the ring's pick would open it elsewhere.
+    if let Some(birth) = birth {
+        birth
+            .born_off_ring(dir, &[pair.prefix.as_str()], op_id)
+            .await;
+    }
     let failed = |e: store::WriteError| format!("{e:?}");
     let (topology, etag) = store::read(store).await.map_err(failed)?;
     let next = topology.merged(&pair.prefix, pair.home, op_id)?;
