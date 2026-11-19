@@ -239,7 +239,7 @@ async fn an_append_resolved_before_the_hold_is_answered_by_the_hold() {
     use super::fixture_livefeed::wait_parked;
     let rig = giver(true).await;
     let state = &rig.state;
-    let name = stream_in_00(&rig).await;
+    let name = stream_in_00_as(&rig, "held").await;
     crate::failpoints::park_append_after_resolve(&name);
     let path = format!("/v1/stream/{name}");
     let append = hreq(rig.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#);
@@ -283,7 +283,7 @@ async fn an_append_a_dropped_move_held_is_answered_as_the_moves() {
         true,
     )
     .await;
-    let name = stream_in_00(&rig).await;
+    let name = stream_in_00_as(&rig, "dropped").await;
     crate::failpoints::park_append_after_resolve(&name);
     let path = format!("/v1/stream/{name}");
     let append = hreq(rig.addr, "POST", &path, &[JSON], br#"[{"n":1}]"#);
@@ -443,8 +443,15 @@ async fn a_writer_fenced_ahead_of_a_move_is_counted_where_it_was_fenced() {
 /// A stream created through `rig` whose route lands in `00` (a name the ring gives `streams-2` is
 /// refused `409` and skipped).
 pub(super) async fn stream_in_00(rig: &HttpRig) -> String {
+    stream_in_00_as(rig, "c").await
+}
+
+/// [`stream_in_00`] under names `<stem>-<n>`. A test that arms a failpoint by stream name takes a
+/// stem of its own: the failpoints are process-wide, and every rig's first name in `00` is the
+/// same, so a second test parking that name would release this one's.
+async fn stream_in_00_as(rig: &HttpRig, stem: &str) -> String {
     for n in 0..400 {
-        let name = format!("c-{n}");
+        let name = format!("{stem}-{n}");
         let (status, _, body) =
             hreq(rig.addr, "PUT", &format!("/v1/stream/{name}"), &[JSON], b"").await;
         if status == 409 {

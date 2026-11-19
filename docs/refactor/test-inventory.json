@@ -5530,7 +5530,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "cae3bde70998eb72f4597f70edef26c8d943f06feb4687702d1063060eb447ec",
+    "function_sha256": "949fb0698ad7da2ea30743fa9536bf3038e8b652a5bcf405dcc6e3d5d8c3f7ed",
     "mechanisms": [],
     "configuration": [
       "let fleet = FaultStore::uniform(mem(), 0xF6D9, FaultPlan::CLEAN);",
@@ -5614,7 +5614,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "14826c94850e81494dae39f91adcff9dd30def36cf65c7c7f25bda2469c39e34",
+    "function_sha256": "ae7d7c0c8d33fac25940c74c3bdeb3137865a586049751987fe4194fd3ea0340",
     "mechanisms": [],
     "configuration": [
       "crate::failpoints::park_append_after_resolve(&name);",
