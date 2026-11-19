@@ -15,14 +15,16 @@ use std::sync::{Arc, Mutex};
 /// its answer.
 type Get = (String, bool, u16);
 
-/// An in-memory store that records each GET and each listing's prefix, and
-/// whose GETs never answer while `hang` is set.
+/// An in-memory store that records each GET and each listing's prefix, whose
+/// GETs never answer while `hang` is set, and whose listings leave out the
+/// documents `unlisted` names (a listing that misses an existing beat).
 #[derive(Debug, Default)]
 struct Recording {
     inner: InMemory,
     gets: Mutex<Vec<Get>>,
     lists: Mutex<Vec<String>>,
     hang: AtomicBool,
+    unlisted: Mutex<Vec<String>>,
 }
 
 impl std::fmt::Display for Recording {
@@ -83,7 +85,17 @@ impl ObjectStore for Recording {
     {
         let listed = prefix.map(ToString::to_string).unwrap_or_default();
         self.lists.lock().unwrap().push(listed);
-        self.inner.list(prefix)
+        let unlisted = self.unlisted.lock().unwrap().clone();
+        let kept = move |meta: &object_store::Result<object_store::ObjectMeta>| {
+            let missed = meta
+                .as_ref()
+                .is_ok_and(|meta| unlisted.contains(&meta.location.to_string()));
+            std::future::ready(!missed)
+        };
+        futures_util::StreamExt::boxed(futures_util::StreamExt::filter(
+            self.inner.list(prefix),
+            kept,
+        ))
     }
     async fn list_with_delimiter(
         &self,
@@ -487,6 +499,57 @@ async fn a_member_no_count_names_is_found_by_the_next_listing() {
         get(&hb("streams"), true, 304),
     ];
     assert_eq!(store.asked(), (held, vec![]));
+}
+
+/// A listing never drops a held beat (§22 C15, GATE-DECISION-s22-addendum-2026-11-19): a member
+/// a listing found is read by name at every read after it, and a later listing that misses its
+/// existing beat (a LIST is not a complete snapshot) leaves it read and held. It is gone only
+/// when its own GET answers that it is absent.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_listing_that_misses_a_held_beat_never_drops_it() {
+    let store = Recording::default();
+    let members = Members::reading_every_member();
+    members.join("streams-1");
+    store.desired(1).await;
+    store.beat("streams-1", 1).await;
+    store.beat("streams-7", 1).await;
+    let both = [("streams-1", 1), ("streams-7", 1)];
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(names(&beats), both);
+    assert_eq!(store.asked().1, ["fleet"]);
+
+    store.unlisted.lock().unwrap().push(hb("streams-7"));
+    for _ in 1..LIST_EVERY {
+        let beats = members.heartbeats(&store).await.unwrap();
+        assert_eq!(names(&beats), both);
+    }
+    store.asked();
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(
+        names(&beats),
+        both,
+        "a listing that missed streams-7 dropped it"
+    );
+    let listed = vec![
+        get(DESIRED, true, 304),
+        get(&hb("streams-1"), true, 304),
+        get(&hb("streams-7"), true, 304),
+    ];
+    assert_eq!(store.asked(), (listed, vec!["fleet".to_string()]));
+
+    store
+        .inner
+        .delete(&Path::from(hb("streams-7")))
+        .await
+        .unwrap();
+    let beats = members.heartbeats(&store).await.unwrap();
+    assert_eq!(names(&beats), [("streams-1", 1)]);
+    let gone = vec![
+        get(DESIRED, true, 304),
+        get(&hb("streams-1"), true, 304),
+        get(&hb("streams-7"), true, 404),
+    ];
+    assert_eq!(store.asked(), (gone, vec![]));
 }
 
 /// The router reports are listed on the first read and on every

@@ -11,7 +11,9 @@
 //! names, in the pass that reads the rise. A member no count names (above the
 //! count, or not an ordinal) is found by a listing of `fleet/` on the first
 //! read and on every `LIST_EVERY`th read after it, and is read at every read
-//! from then on. An absent ordinal within the count answers a billed 404 at
+//! from then on, a later listing that misses it included (§22 C15: a listing
+//! adds members, and a held beat goes only when its own GET answers that it is
+//! absent). An absent ordinal within the count answers a billed 404 at
 //! every read; when more than `MAX_PROBES` of them are absent the read lists
 //! instead, so the members that do not exist never cost more than the
 //! listing the tick made before. A read that would name more documents than
@@ -198,8 +200,8 @@ impl Members {
             };
             let read = match pass {
                 Pass::Listed => {
-                    let paths = list(store, "fleet", MAX_OBJECTS, is_heartbeat).await?;
-                    read_each(store, paths, &held).await?
+                    let listed = list(store, "fleet", MAX_OBJECTS, is_heartbeat).await?;
+                    read_each(store, listed_and_held(listed, &held), &held).await?
                 }
                 Pass::Every => read_each(store, by_name, &held).await?,
                 Pass::Between => {
@@ -297,6 +299,13 @@ fn between(
         .chain(own)
         .chain(draining)
         .collect()
+}
+
+/// What a listing's read names: every document `listed`, and every one `held` by name (§22
+/// C15). A listing adds members and never removes one: a held beat it missed is read again,
+/// and goes only when its own GET answers that it is absent.
+fn listed_and_held(listed: BTreeSet<ObjPath>, held: &Copies) -> BTreeSet<ObjPath> {
+    listed.into_iter().chain(held.keys().cloned()).collect()
 }
 
 /// `held` with each of `asked` replaced by what `read` found of it: one the
