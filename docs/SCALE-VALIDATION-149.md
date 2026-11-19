@@ -391,6 +391,80 @@ ack. It is reported in the step (`queue`), and with `--queue-gate` its
 verdict is the step's too, as in the confirmation run after S3b part 2. Run both tenancies under the machine lock, one at a
 time.
 
+### 6.2 The 10,000 leg (2026-11-19)
+
+The leg of GATE-DECISION-shapec-sequencing-2026-11-18 §2: `--counts 10000`
+with the flags above (`--tenancy one`, the drain), on slate b2e549910
+(F5, fix 2, F6, F7) built in release, under the machine lock on an idle
+host. `bench/ramp/split_report.py` reads its results with the three
+conditions of GATE-DECISION-meas10k-rig-limits-2026-11-19. Rule row 1:
+the step passes, every split's pause is under 1,000 ms and every child
+serves within 2,000 ms of the park, so shape C stays in `NEXT-WORK.md`
+and the full ramp proceeds.
+
+**The split** (one published; five earlier attempts refused
+`fleet_settling`, 10 s apart, while the second instance joined):
+
+| phase | ms |
+|---|---:|
+| flush | 22 |
+| checkpoint | 64 |
+| sentinel | 32 |
+| plan | 7 |
+| clones | 370 |
+| `'T'` | 22 |
+| births | 43 |
+| CAS | 42 |
+| **pause** | **605** |
+| open, child 0 / child 1 | 761 / 761 |
+| drain / settle | 0 / 72 |
+
+Rows 9,400; L0 3 (max 4). The children's open lines: `index_ms` 73 / 95,
+`scan_ms` 0 / 22, `tails_ms` 73 / 72, `unsealed_members` 95 / 88.
+
+| condition (split's park to) | measured | bound | |
+|---|---:|---:|---|
+| (1) the later child's open end, server log | 1,366 ms | 2,000 ms | met |
+| (2) the first served second's start, bench, 1 s grain | 1,239 ms | 2,000 ms | met |
+| (3) touches served in the 3 whole seconds after the later open's second | 486 | 423 (90% of 3 × 156.6/s) | met |
+
+The births and CAS are 85 ms, the third reading owed by §2 (earlier
+legs: 326 and 86). Park to both children open is 1,366 ms against the
+ruling's fleet estimate of about 1,620 ms without shape C. In the split's
+window the bench saw 13 `409 not_stream_owner`, each retried, no
+`503 shard_splitting`, no `429` and no shed on either instance.
+
+**The planned move** (F6; one, a split child returned to its rendezvous
+owner): not fenced, ended `Moved`; the giver's park to release 290 ms
+(flush 111, close 93). The bench's first served second after it starts
+247 ms after the release (1 s grain). The target's open: `index_ms` 116,
+`scan_ms` 43, `tails_ms` 72, `unsealed_members` 355. No shed. The drain's
+planned handoff fenced its writers with none late and none ahead.
+
+**The step:** every check passed (created, touched, p99, no shed, no OOM).
+Served 1.000, first attempt 0.9999, settled p99 215 ms. Reshaping took
+5 chunks over 305 s (bound 340 s): p99 164, 196, 1,176, 210 and 194 ms,
+the third holding the split. First-attempt refusals: 13
+`409 not_stream_owner` and one append transport error at the scale-out
+before the split. RSS peak 254 MB and 170 MB. The largest
+`unsealed_members` on any open line is 355. The drain merged back in 300 s,
+and the readback of 200 streams matched (1,703 records before and after).
+
+**Come-backs checked, none met:** pause at or over 1,000 ms; any
+`503 shard_splitting`; a child first served over 2,000 ms after the park;
+condition 3 failing while 1 and 2 hold; a pre-park rate under 20 a
+second; children other than two; any open over 1,000 `unsealed_members`.
+
+**Noted, not judged:**
+- 1,522 `duplicate metric registration` warnings across the servers.
+- The move's target logged no `moved-in shard opened` line; its plain
+  open line is read instead.
+- Around the split and the move, one `no_ring_view` or `503` each on the
+  ops streams: an `_ops_metrics` create and append, an `_ops_metrics`
+  rollup read, and an `_ops_events` append.
+- Four WAL and memtable backpressure warnings, and two
+  `in-memory cache capacity(0) < shards(20)`.
+
 ## 7. What to report
 
 Add to `docs/SCALE-VALIDATION.md` §7's report:
