@@ -223,7 +223,8 @@ impl CreationService {
         Ok((created, desc))
     }
     /// The project's stream count, which seeds its `max_streams` count once
-    /// per boot, from a walk of its catalog. A walk that completes is
+    /// per boot, from a walk of its catalog: every stream that holds a slot,
+    /// that is every descriptor not tombstoned (`project_held_page`). A walk that completes is
     /// charged to no project (the owner's round-5 call 2), so a create pays
     /// only its own registry work; one that fails a page stays charged to
     /// the request, so a client that retries a walk that cannot finish
@@ -244,7 +245,7 @@ impl CreationService {
         loop {
             let page = self
                 .registry
-                .list_page(project, after.as_deref(), 512)
+                .project_held_page(project, after.as_deref(), 512)
                 .await
                 .map_err(|_| {
                     CreationError::new(
@@ -253,11 +254,7 @@ impl CreationService {
                         "stream count unavailable; retry",
                     )
                 })?;
-            count += page
-                .streams
-                .iter()
-                .filter(|d| desc_alive(d) || d.soft_deleted)
-                .count() as u64;
+            count += page.streams.len() as u64;
             if page.exhausted || page.next_after.is_none() {
                 return Ok(count);
             }

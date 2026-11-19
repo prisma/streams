@@ -287,3 +287,42 @@ proptest::proptest! {
         }
     }
 }
+
+/// Addendum 2 of the forward-wedge ruling (2026-11-19): the stream count's
+/// page holds every descriptor of the project that is not tombstoned,
+/// soft-deleted and expired included, and no other project's; the customer
+/// catalog of the same project still lists its active streams only.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_held_page_is_every_descriptor_not_tombstoned() {
+    let (_store, reg) = registry();
+    let mut retained = filed("proj-a", "retained", false);
+    retained.soft_deleted = true;
+    let mut expired = filed("proj-a", "expired", false);
+    expired.expires_at_ms = Some(1);
+    for d in [
+        filed("proj-a", "gone", true),
+        filed("proj-a", "live", false),
+        retained,
+        expired,
+        filed("proj-b", "other", false),
+    ] {
+        assert!(reg.create(d).await.unwrap().0);
+    }
+    let a = crate::tenant::ProjectId::new("proj-a").unwrap();
+    let names = |page: crate::registry::CatalogPage| {
+        page.streams
+            .into_iter()
+            .map(|d| d.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let held = names(reg.project_held_page(&a, None, 10).await.unwrap());
+    let listed = names(reg.list_page(&a, None, 10).await.unwrap());
+    assert_eq!(
+        (held, listed),
+        (
+            vec!["expired".to_string(), "live".into(), "retained".into()],
+            vec!["live".to_string()]
+        ),
+        "the held page and the customer catalog of proj-a"
+    );
+}

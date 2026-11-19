@@ -106,6 +106,35 @@ impl Registry {
         })
     }
 
+    /// One project's descriptors that hold a stream slot, continued by stream
+    /// name: every descriptor not tombstoned, soft-deleted, expired and
+    /// half-built included, as `release_stream` frees a slot only at a
+    /// tombstone (Addendum 2 of the forward-wedge ruling, 2026-11-19). The
+    /// stream count's walk, never a customer surface: the customer catalog
+    /// stays `project_page`'s active streams.
+    pub(crate) async fn project_held_page(
+        &self,
+        project: &crate::tenant::ProjectId,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CatalogPage, object_store::Error> {
+        #[cfg(test)]
+        if self.take_fail_next_list(project) {
+            return Err(catalog_error("armed list failpoint"));
+        }
+        let root = project_streams_prefix(project);
+        let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
+        let (mut streams, last, exhausted) = self
+            .catalog_page(&root, offset.as_ref(), limit, true)
+            .await?;
+        streams.retain(|d| !d.deleted);
+        Ok(CatalogPage {
+            streams,
+            next_after: last.map(|(_, sref)| sref.name().as_str().to_owned()),
+            exhausted,
+        })
+    }
+
     /// Terminal-closure reconciliation: EVERY descriptor of EVERY project in
     /// this cell — tombstoned, expired and half-built included — continued by
     /// the last consumed object key. Billing closes are owed per segment, not

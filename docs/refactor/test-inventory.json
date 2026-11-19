@@ -3701,6 +3701,28 @@
     ]
   },
   {
+    "name": "a_retained_source_holds_its_slot_across_a_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ed3b2da655634ce10ab3c61fb225697f3572473a0cfb1f3a381861befff8e1d9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_retained_sources_hard_delete_frees_exactly_its_slot",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ee44bb47b770dd04bebc0bb28b6bda88b3e8ad14f1db857cae40e9328b98e1bd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/quota_stream_seed.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_retention_flag_the_walk_submits_on_a_shard_it_opened_is_applied_before_the_shard_is_handed_back",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

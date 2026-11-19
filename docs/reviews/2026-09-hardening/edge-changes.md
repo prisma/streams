@@ -3806,6 +3806,26 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Risk reason:** No wire change. Production sources are files that go through the refresher. The only observable shift is a stamp earlier by the read duration against a 300 s window with at most a 100 s cadence. The fail-closed-on-bypass path has no production caller. I found no other caller of parse\_\* or publish\_\* outside tests.
 - **Check against commit:** None material. Precision: the stamp is the time the refresher asked, not the time the answer arrived, so freshness is slightly more conservative than before. 'Fails closed' for a bypassing snapshot also means /health readiness answers 503 'auth feeds not yet published'. No end-to-end test pins that path; only the parse-returns-0 assertion does.
 
+### #268 (this record's commit) — A project's streams retained by a fork or past their expiry keep their `max_streams` slots across a restart
+
+- **Program item:** prisma/streams#149, the forward-wedge ruling's Addendum 2 (GATE-DECISION-meas-full-forward-wedge-2026-11-19, Fable 5.2 under the owner's delegation). It lands before S2 (the stream-count seed from a key count), whose recount would otherwise replace a right count with a wrong one inside one boot.
+- **Surface:** product.
+- **Endpoint:** `PUT /v1/streams/{name}` and `PUT /v1/queues/{name}` (`CreationService::create_product`), for a project with a `max_streams` quota, on its first create since the instance booted (the stream-count seed).
+- **Condition:** the project holds streams that are not tombstoned but are not active: a soft-deleted source a fork still holds (`soft_deleted`, `fork_children` not empty), a stream past its expiry that the lifecycle has not yet tombstoned, or a half-built stream (`init` set, raw surface only).
+- **Before:** the seed's walk read the customer catalog (`project_page`), which lists active descriptors only, so those streams were not counted, though each still holds a slot until its terminal hard delete calls `release_stream`. After a restart such a project was admitted past its cap, and the later hard delete of each such stream freed a slot it had not been counted for, so the count drifted further below the catalog.
+- **After:** the walk reads `project_held_page`: every descriptor of the project that is not tombstoned. The seed counts what `release_stream` frees, so a project whose retained or expired streams fill its cap is refused `429 stream_limit` (not retryable) after a restart, as it was before the restart. The customer catalog (`GET /v1/streams`, §10.3) still lists active streams only.
+- **Also recorded (S2, accepted by the same ruling):** a project whose catalog holds, under a canonical key, a descriptor over 128 KiB or one that does not decode answered its first create since boot `503 catalog_unavailable` (the walk read every descriptor); with S2 the seed counts keys and reads none, so that create is `201`. The key still counts toward the bound, and the exact walk still fails closed when the bound reaches the cap. A key no descriptor can have (not canonical) still fails the count closed, `503 catalog_unavailable`.
+- **Retry semantics:** `stream_limit` is not retryable; a client frees a slot by deleting a stream (a retained source frees its slot when its last fork is deleted).
+- **Who is affected:** projects at or near their `max_streams` whose retained (forked) or expired-but-not-yet-tombstoned streams fill the cap, on an instance's first create for them after a boot. Nobody else.
+- **Pinning tests:**
+  - `dst::dst_tests::quota_stream_seed::a_retained_source_holds_its_slot_across_a_restart` (new): at a cap of 2 with one live stream and one retained source, a create after a restart. Red on the unfixed tree: `assertion left == right failed: a create after a restart over one live stream and one retained source at a cap of 2`, `left: (201, None)`, `right: (429, Some("stream_limit"))`.
+  - `dst::dst_tests::quota_stream_seed::a_retained_sources_hard_delete_frees_exactly_its_slot` (new, green before and after): the retained source's terminal hard delete frees exactly one slot, before and after a restart.
+  - `registry::catalog::tests::the_held_page_is_every_descriptor_not_tombstoned` (new): the held page holds live, soft-deleted and expired descriptors of its project and no tombstone or other project's; the customer catalog of the same project lists the live one only.
+- **Formal:** none; no receipt is staled.
+- **Risk reason:** low. It turns an admission past the cap after a restart into the refusal the same project already got before the restart, and only for projects whose non-active streams fill the cap.
+- **Status:** ratified under the delegation (Addendum 2); does not block.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 > **Flagged:** the commit does not match the recorded text. See [Discrepancies](#discrepancies).

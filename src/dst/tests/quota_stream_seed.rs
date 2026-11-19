@@ -204,3 +204,145 @@ async fn concurrent_first_creates_walk_the_catalog_once() {
     );
     engine_shutdown(&cell.state).await;
 }
+
+/// Project 0 with at most `max_streams` 2 or 3, at `MEASURE` requests a second.
+fn two(_: usize) -> ProjectQuotas {
+    ProjectQuotas {
+        max_streams: 2,
+        ..quotas(MEASURE)
+    }
+}
+
+fn three(_: usize) -> ProjectQuotas {
+    ProjectQuotas {
+        max_streams: 3,
+        ..quotas(MEASURE)
+    }
+}
+
+/// `cell`'s server stops and a new one opens over `store`, at `quotas`.
+async fn reopen(
+    cell: Cell,
+    store: Arc<dyn object_store::ObjectStore>,
+    quotas: fn(usize) -> ProjectQuotas,
+) -> Cell {
+    engine_shutdown(&cell.state).await;
+    cell.state.rollup.get().unwrap().db.close().await.unwrap();
+    open_cell(CellSpec {
+        store,
+        incarnation: 1,
+        quotas,
+        ..CellSpec::open(1)
+    })
+    .await
+}
+
+/// Project 0 creates `names`, then `src` becomes a soft-deleted source a
+/// fork still holds (its `fork_children` names `child`), as a delete of a
+/// forked source leaves it.
+async fn retained_beside(cell: &Cell, names: &[&str]) {
+    for name in names {
+        let path = format!("/v1/streams/{name}");
+        assert_eq!(cell.call(0, "PUT", &path, CREATE).await.0, 201, "{path}");
+    }
+    let src = ProjectId::new(&project(0)).unwrap().stream_ref("src");
+    let retained = cell.state.registry.cas_update(&src, |d| {
+        d.soft_deleted = true;
+        d.fork_children = vec!["child".into()];
+        true
+    });
+    assert!(retained.await.unwrap(), "src is retained");
+    cell.state.registry.invalidate(&src);
+}
+
+/// The fork's reference to `src`, its last, is released: the retained
+/// source's terminal hard delete.
+async fn release_src(cell: &Cell) {
+    let src = ProjectId::new(&project(0)).unwrap().stream_ref("src");
+    let epoch = cell
+        .state
+        .registry
+        .get(&src)
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch
+        .clone();
+    let released =
+        crate::http::release_fork_ref_for_test(&cell.state, src.clone(), "child", &epoch);
+    assert_eq!(
+        released.await,
+        Ok(true),
+        "the last fork reference is released"
+    );
+    cell.state.registry.invalidate(&src);
+}
+
+/// Project 0 creates `more0`, `more1`, ... until a create is refused, at
+/// most `most`: each create's status and error code.
+async fn creates_until_refused(cell: &Cell, most: usize) -> Vec<(u16, Option<String>)> {
+    let mut answers = Vec::new();
+    for n in 0..most {
+        let (status, _, body) = cell
+            .call(0, "PUT", &format!("/v1/streams/more{n}"), CREATE)
+            .await;
+        answers.push((status, error_code(&body)));
+        if status != 201 {
+            break;
+        }
+    }
+    answers
+}
+
+/// A soft-deleted source a fork still holds keeps its stream slot across a
+/// restart (Addendum 2 of the forward-wedge ruling, 2026-11-19): at a cap of
+/// 2, a project with one live stream and one retained source is full, so
+/// after a restart its next create is refused `stream_limit`. The seed's
+/// walk counts every descriptor not tombstoned, as `release_stream` frees a
+/// slot only at a tombstone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_retained_source_holds_its_slot_across_a_restart() {
+    let store = mem();
+    let cell = open_cell(CellSpec {
+        store: store.clone(),
+        quotas: two,
+        ..CellSpec::open(1)
+    })
+    .await;
+    retained_beside(&cell, &["src", "live"]).await;
+    let cell = reopen(cell, store, two).await;
+    let (status, _, body) = cell.call(0, "PUT", "/v1/streams/next", CREATE).await;
+    assert_eq!(
+        (status, error_code(&body)),
+        (429, Some("stream_limit".to_string())),
+        "a create after a restart over one live stream and one retained source at a cap of 2"
+    );
+    engine_shutdown(&cell.state).await;
+}
+
+/// The retained source's terminal hard delete frees exactly its one slot,
+/// before a restart (the count seeded at boot held it) and after one (the
+/// seed then finds it tombstoned): at a cap of 3 beside one live stream,
+/// exactly two more creates are admitted and the third is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_retained_sources_hard_delete_frees_exactly_its_slot() {
+    let full = (429, Some("stream_limit".to_string()));
+    let room = [(201, None), (201, None), full];
+    for restart in [false, true] {
+        let store = mem();
+        let mut cell = open_cell(CellSpec {
+            store: store.clone(),
+            quotas: three,
+            ..CellSpec::open(1)
+        })
+        .await;
+        retained_beside(&cell, &["src", "live"]).await;
+        if restart {
+            cell = reopen(cell, store, three).await;
+        }
+        release_src(&cell).await;
+        let answers = creates_until_refused(&cell, 4).await;
+        assert_eq!(answers, room, "after the release, restart {restart}");
+        engine_shutdown(&cell.state).await;
+    }
+}

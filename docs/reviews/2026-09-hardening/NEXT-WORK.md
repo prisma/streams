@@ -3101,3 +3101,20 @@ convergence DST's grow deadline is derived from its waits (340 s). Its follow-up
   - Measure the miss rate and the memtable flush's time on the rig's store and in the field,
     then decide whether the 2 s / 300 ms bounds fit (and why a memtable flush on an in-memory
     store takes over 2 s), before any bound changes.
+
+## 25. Follow-ups from the stream-count seed (2026-11-19)
+
+GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addenda 2 and 5 (Fable, under the owner's
+delegation): the seed counts every descriptor not tombstoned (edge change #268), which is what
+`release_stream` frees. Its follow-up:
+
+- **A raw create in a seeded project does not count (fix: a raw create in a seeded project
+  counts).**
+  - Only a product create reserves a `max_streams` slot (`creation/product.rs`); the raw
+    create path (`creation/raw.rs`, `claim.rs`, half-built descriptors included) never does.
+  - Every terminal hard delete calls `release_stream` (`creation/deletion.rs`), whatever made
+    the stream. So a raw stream created after the project's count was seeded lowers the count
+    by one when it is deleted, and the count drifts below the catalog until the next restart.
+  - The raw surface is an operator's (the deployment tenant), so customer projects rarely meet
+    it; the boot seed already counts raw streams.
+
