@@ -322,7 +322,7 @@ pub(crate) async fn data(
         "l0_write_sheds": state.shards.engines().iter().map(|e| e.l0_gauge().sheds).sum::<u64>(),
         "l0_collector_yields": state.shards.engines().iter().map(|e| e.l0_gauge().yields).sum::<u64>(),
         // per-op-class store latency, sentinels, steal — non-destructive read
-        "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io, &shard_opens),
+        "store": crate::store_timing::debug_snapshot(60, false, &state.runtime.store_io, &shard_opens),
     });
 
     // The boot's origin (the cell watch's row 4): the boot id it replaced and

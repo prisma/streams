@@ -3826,6 +3826,28 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Status:** ratified under the delegation (Addendum 2); does not block.
 - **Check against commit:** written with the change.
 
+### #270 (this record's commit) — GET /v1/debug/store and the operator dashboard report the store count bound's two pools: each one's permits, permits out, most out at once and waits
+
+- **Program item:** prisma/streams#149, the forward-wedge ruling's Addendum 25 (GATE-DECISION-meas-full-forward-wedge-2026-11-19, Fable 5.2 under the owner's delegation), NEXT-WORK §26's missing observability. The count bound (`store_timing::count_gate`, 9878a11c2) kept each pool's peak and waits and nothing exposed them, so the combined scouting leg read "the general pool full" only by inference from the in-flight gauge.
+- **Surface:** operator-debug
+- **Endpoint:** `GET /v1/debug/store[?window=][&swap=]` (behind the one `/v1/debug` gate, #39; the 401 path is unchanged) and `GET /operator/data.json`, whose `local.store` is the same snapshot. No product, raw or fleet-internal route, and no object-store request, changes.
+- **Condition:** Every answer.
+- **Before:** Neither answer carried the count bound's pools. The outbound gauge (`out_inflight_now`, `out_inflight_peak`) counts a listing from its creation, before its permit, so it did not show whether a pool was full.
+- **After:**
+  - The snapshot gains `count_gate`: `{"general": {"permits": 256, "out": <n>, "peak": <n>, "waits": <n>}, "commit": {"permits": 64, "out": <n>, "peak": <n>, "waits": <n>}}`. `general` is the pool of classes 2 and 4 (SST transfers; descriptors, the catalog, topology, gc and compactions), `commit` the pool of classes 0, 1 and 3 (the WAL, the manifest, the fleet and routers). `permits` is the pool's size, `out` the permits held now, `peak` the most held at once, and `waits` the requests that found the pool full since the process began.
+  - `?swap=1` lowers each pool's `peak` to its `out`, as it does `out_inflight_peak`, so each sample a sampler takes reads the most since its last; `waits` is never reset. The operator dashboard reads without a swap.
+  - Every existing member keeps its name, value and type. serde_json's map is sorted, so `count_gate` sorts among the old members.
+- **Retry semantics:** None.
+- **Who is affected:** Operators and the scouting rigs, which sample the member each second. A reader that rejects unknown members fails; in the repository the bench scripts save the snapshot whole, and the DSTs read their members by name.
+- **Given up:** Nothing. The snapshot reads four atomics more; the store path is unchanged.
+- **Deployment comparison:** Not applicable: no setting changes.
+- **Pinning tests:**
+  - src/dst/tests/runtime_open_gate.rs::debug_store_reports_the_count_bounds_pools (new: with the general pool held and one wait, `count_gate` is the full general pool with one wait beside an idle commit pool; once the pool frees, its peak and its wait stay; the operator dashboard carries the same member). Red on the unfixed tree: `left: Null` against the expected pools, "every general permit out, one wait: null".
+  - src/store_timing/count_gate.rs::tests::a_pools_stats_read_its_peak_since_the_last_swap_and_every_wait (new: a read without the swap keeps the peak, the swap reads the peak since the last swap and lowers it to what is out, and no read resets the waits). The DST reads without `?swap=1`, which would also lower the process's outbound peak that `debug_store_reports_this_runtimes_shard_opens` holds at a sentinel.
+  - unchanged and green: src/dst/tests/runtime_open_gate.rs::debug_store_reports_this_runtimes_shard_opens and the `store_timing::` tests.
+- **Risk reason:** low: one member is added to two operator-debug answers and every existing member keeps its value; nothing on a request path changes. The risk is a tool outside the repository that requires the exact member set. WIRE-MATRIX: the line of `GET /v1/debug/store` names the member.
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 > **Flagged:** the commit does not match the recorded text. See [Discrepancies](#discrepancies).

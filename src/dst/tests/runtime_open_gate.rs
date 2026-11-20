@@ -774,3 +774,56 @@ async fn debug_store_reports_this_runtimes_shard_opens() {
         "the operator dashboard carries the same counters"
     );
 }
+
+/// **GET /v1/debug/store reports the count bound's pools** (edge change #270; Addendum 25 of the
+/// forward-wedge ruling, 2026-11-20). `count_gate`'s `general` and `commit` each give the pool's
+/// permits, the permits out now, the most out at once and the requests that waited for one since
+/// the process began, and the operator dashboard carries the same member. It reads without
+/// `?swap=1`: the swap also lowers the process's outbound peak, which
+/// `debug_store_reports_this_runtimes_shard_opens` holds at a sentinel; the swap of a pool's peak
+/// is `count_gate`'s own test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn debug_store_reports_the_count_bounds_pools() {
+    use crate::store_timing::{COMMIT_PERMITS, GENERAL_PERMITS};
+    let (state, rig) = http_rig(mem()).await;
+    let io = state.runtime.store_io.clone();
+    let held = io.hold_general().await;
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut waiting = Box::pin(io.hold_general());
+    assert!(
+        waiting.as_mut().poll(&mut cx).is_pending(),
+        "a full general pool waits"
+    );
+    drop(waiting);
+    let pools = |general: [usize; 3], waits: u64| {
+        let [out, peak, permits] = general;
+        serde_json::json!({
+            "general": {"permits": permits, "out": out, "peak": peak, "waits": waits},
+            "commit": {"permits": COMMIT_PERMITS, "out": 0, "peak": 0, "waits": 0},
+        })
+    };
+    let read = |path: &'static str| async move {
+        let (st, _, body) = hreq(rig, "GET", path, &[], b"").await;
+        assert_eq!(st, 200, "{path}");
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+    };
+    let full = read("/v1/debug/store").await;
+    assert_eq!(
+        full["count_gate"],
+        pools([GENERAL_PERMITS, GENERAL_PERMITS, GENERAL_PERMITS], 1),
+        "every general permit out, one wait: {}",
+        full["count_gate"]
+    );
+    drop(held);
+    let after = read("/v1/debug/store").await;
+    assert_eq!(
+        after["count_gate"],
+        pools([0, GENERAL_PERMITS, GENERAL_PERMITS], 1),
+        "the pool freed; its peak and its wait stay"
+    );
+    let operator = read("/operator/data.json").await;
+    assert_eq!(
+        operator["local"]["store"]["count_gate"], after["count_gate"],
+        "the operator dashboard carries the same pools"
+    );
+}

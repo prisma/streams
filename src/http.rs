@@ -905,7 +905,7 @@ async fn debug_store(
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     let opens = state.shards.open_stats();
-    let snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io, &opens);
+    let snap = crate::store_timing::debug_snapshot(window, swap, &state.runtime.store_io, &opens);
     axum::Json(snap).into_response()
 }
 

@@ -29,7 +29,7 @@ mod observations;
 mod sentinels;
 use observations::{OpGuard, Outcome};
 pub(crate) use observations::{
-    SniffConnector, classify, heartbeat_summary, snapshot, stats, store_read_summary,
+    SniffConnector, classify, debug_snapshot, heartbeat_summary, stats, store_read_summary,
 };
 pub(crate) use sentinels::spawn_sentinels;
 

@@ -71,6 +71,25 @@ impl Pool {
         })
     }
 
+    /// `GET /v1/debug/store`'s view of the pool (edge change #270): its permits, the permits out
+    /// now, the most out at once and the requests that waited for one since the process began.
+    /// The sampler's swap (`swap_peak`) lowers the peak to what is out, as it does the outbound
+    /// gauge's, so each sample's peak is the most since the last.
+    pub(super) fn stats_json(&self, swap_peak: bool) -> serde_json::Value {
+        let out = self.size - self.sem.available_permits();
+        let peak = if swap_peak {
+            self.peak.swap(out, Ordering::Relaxed)
+        } else {
+            self.peak.load(Ordering::Relaxed)
+        };
+        serde_json::json!({
+            "permits": self.size,
+            "out": out,
+            "peak": peak,
+            "waits": self.waits.load(Ordering::Relaxed),
+        })
+    }
+
     /// The most permits held at once, and how many requests waited for one.
     #[cfg(test)]
     pub(super) fn seen(&self) -> (usize, u64) {
@@ -182,5 +201,35 @@ mod tests {
         assert_eq!(empty.poll_next_unpin(&mut cx), Poll::Ready(None));
         assert_eq!(pool.sem.available_permits(), 1, "released at the end");
         assert_eq!(gated.poll_next_unpin(&mut cx), Poll::Ready(Some(2)));
+    }
+
+    /// `GET /v1/debug/store`'s view of a pool (edge change #270): a read without the swap leaves
+    /// the peak; the sampler's swap reads the most out since its last swap and lowers it to what
+    /// is out now; waits count since the pool began and no read resets them.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_pools_stats_read_its_peak_since_the_last_swap_and_every_wait() {
+        let pool = Pool::new(2);
+        let first = pool.acquire().await;
+        let second = pool.acquire().await;
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut third = pool.acquire();
+        assert!(third.as_mut().poll(&mut cx).is_pending());
+        drop(third);
+        let stats = |swap| pool.stats_json(swap);
+        let at =
+            |out, peak| serde_json::json!({"permits": 2, "out": out, "peak": peak, "waits": 1});
+        assert_eq!(stats(false), at(2, 2), "both out, one wait");
+        drop((first, second));
+        assert_eq!(
+            stats(false),
+            at(0, 2),
+            "a read without the swap keeps the peak"
+        );
+        assert_eq!(
+            stats(true),
+            at(0, 2),
+            "the swap reads the peak since the last swap"
+        );
+        assert_eq!(stats(false), at(0, 0), "and lowers it to what is out");
     }
 }

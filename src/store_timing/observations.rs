@@ -497,6 +497,21 @@ pub(crate) fn snapshot(
     })
 }
 
+/// What `GET /v1/debug/store` answers: `snapshot` and the count bound's pools (`count_gate`, edge
+/// change #270), each pool's permits, permits out, most out at once and waits.
+pub(crate) fn debug_snapshot(
+    window_secs: u64,
+    swap_peak: bool,
+    resources: &StoreResources,
+    shard_opens: &serde_json::Value,
+) -> serde_json::Value {
+    let mut snap = snapshot(window_secs, swap_peak, resources, shard_opens);
+    if let Some(members) = snap.as_object_mut() {
+        members.insert("count_gate".into(), resources.count_stats(swap_peak));
+    }
+    snap
+}
+
 // ---- Server-Timing sniffer -------------------------------------------------
 // The rings above time the whole request from our side; Tigris also reports
 // its *internal* processing time per response (`Server-Timing: total;dur=N`)

@@ -73,6 +73,15 @@ impl StoreResources {
         self.nominal_get_bytes
     }
 
+    /// The count bound's two pools as `GET /v1/debug/store` reports them (`count_gate`, edge
+    /// change #270): the general pool's, then the commit path's.
+    pub(super) fn count_stats(&self, swap_peak: bool) -> serde_json::Value {
+        serde_json::json!({
+            "general": self.general.stats_json(swap_peak),
+            "commit": self.commit.stats_json(swap_peak),
+        })
+    }
+
     pub(crate) fn bulk_stats(&self) -> serde_json::Value {
         match &self.bulk {
             Some(gate) => gate.stats_json(),

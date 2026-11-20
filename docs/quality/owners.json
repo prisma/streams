@@ -27,6 +27,38 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::Pool::stats_json",
+      "path": "src/store_timing/count_gate.rs",
+      "reason": "A count pool's view in GET /v1/debug/store's `count_gate` (edge #270): permits, out, peak and waits as one JSON object; the compiler checks the expansion and the pools DST asserts the answer.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::a_pools_stats_read_its_peak_since_the_last_swap_and_every_wait",
+      "path": "src/store_timing/count_gate.rs",
+      "reason": "The expected view of a pool of two permits after each read (edge #270), compared with `Pool::stats_json`'s answer; serde macro output is compiled and asserted by the test.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::StoreResources::count_stats",
+      "path": "src/store_timing/resources.rs",
+      "reason": "GET /v1/debug/store's `count_gate` member (edge #270): the general and commit pools' views as one JSON object; the compiler checks the expansion and the pools DST asserts the answer.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_store_reports_the_count_bounds_pools",
+      "path": "src/dst/tests/runtime_open_gate.rs",
+      "reason": "The expected `count_gate` member of GET /v1/debug/store and the operator dashboard (edge #270), compared with the answers; serde macro output is compiled and asserted by the DST.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::macro(proptest)",
       "path": "src/application/read_batch/tests.rs",
       "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",

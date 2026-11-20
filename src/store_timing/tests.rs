@@ -275,7 +275,7 @@ async fn debug_store_totals_count_every_wrapped_operation_by_billed_outcome() {
     let config = crate::config::StorageConfig::default();
     let resources = std::sync::Arc::new(StoreResources::new(&config));
     let store = super::TimingStore::new(object_store::memory::InMemory::new(), resources.clone());
-    let sample = || super::snapshot(60, false, &resources, &serde_json::Value::Null);
+    let sample = || super::observations::snapshot(60, false, &resources, &serde_json::Value::Null);
     let before = sample();
     drive_every_outcome(&store).await;
     let after = sample();
