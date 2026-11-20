@@ -279,16 +279,17 @@ async fn the_repository_reads_the_instance_that_joined_it() {
     let repository = super::super::FleetRepository::new(Some(shared));
     repository.join("streams-9");
     store.desired(1).await;
-    store.beat("streams-1", 1).await;
+    let live = crate::shard::now_ms();
+    store.beat("streams-1", live).await;
     let beats = repository.read_heartbeat_set().await.unwrap();
-    assert_eq!(names(&beats), [("streams-1", 1)]);
+    assert_eq!(names(&beats), [("streams-1", live)]);
     assert_eq!(store.asked().1, ["fleet"]);
 
     store.beat("streams-9", 1).await;
     let beats = repository.read_heartbeat_set().await.unwrap();
     assert_eq!(
         names(&beats),
-        [("streams-1", 1), ("streams-9", 1)],
+        [("streams-1", live), ("streams-9", 1)],
         "the joined instance is read by the read after its first beat (a read between the every-member reads keeps streams-1's copy)"
     );
     let joined = vec![get(DESIRED, true, 304), get(&hb("streams-9"), false, 200)];
@@ -811,7 +812,7 @@ fn beat_in(beats: &[Heartbeat], instance: &str) -> Option<(i64, bool)> {
 #[tokio::test(crate = "crate::test_rt")]
 async fn peers_are_read_on_one_read_in_three_and_the_rest_at_every_read() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::on_the_cadence();
     members.join("streams-1");
     store.desired(9).await;
     store.drains(&[]).await;
@@ -870,7 +871,7 @@ async fn peers_are_read_on_one_read_in_three_and_the_rest_at_every_read() {
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_runtime_the_drain_marker_names_is_read_at_every_read_until_its_draining_beat() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::on_the_cadence();
     members.join("streams-1");
     store.desired(3).await;
     store.drains(&[]).await;
@@ -901,8 +902,8 @@ async fn a_runtime_the_drain_marker_names_is_read_at_every_read_until_its_draini
     members.heartbeats(&store).await.unwrap();
     assert_eq!(
         by_kind(&store.asked_all().0, "streams-1"),
-        (1, 1, 1, 0),
-        "once its draining beat is held, it waits for the every-member read"
+        (1, 1, 1, 1),
+        "once its draining beat is held, a counted ordinal is read as one the ring does not count"
     );
 
     store.drains(&[("streams-3", "c")]).await;
@@ -917,6 +918,7 @@ async fn a_runtime_the_drain_marker_names_is_read_at_every_read_until_its_draini
             get(DESIRED, true, 304),
             get(DRAINS, true, 304),
             get(&hb("streams-1"), true, 304),
+            get(&hb("streams-2"), true, 304),
             get(&hb("streams-3"), true, 200),
         ],
         "an announced runtime whose draining beat has not landed is read again at the next read"
@@ -930,7 +932,7 @@ async fn a_runtime_the_drain_marker_names_is_read_at_every_read_until_its_draini
 #[tokio::test(crate = "crate::test_rt")]
 async fn a_stale_drain_marker_entry_never_makes_a_live_member_read_as_draining() {
     let store = Recording::default();
-    let members = Members::default();
+    let members = Members::on_the_cadence();
     members.join("streams-1");
     store.desired(2).await;
     store.drains(&[("streams-2", "old-boot")]).await;
@@ -950,4 +952,45 @@ async fn a_stale_drain_marker_entry_never_makes_a_live_member_read_as_draining()
             "read {read}: only the every-member read"
         );
     }
+}
+
+/// A counted ordinal held under a beat the ring does not count, draining or not live, is read at
+/// every read (Addendum 20 (a)): an ordinal stopped at a scale-in that boots again is read within
+/// a tick, not at the next peer read. A live peer's newer beat still waits for that read.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_counted_ordinal_held_under_a_beat_the_ring_does_not_count_is_read_at_every_read() {
+    let store = Recording::default();
+    let members = Members::on_the_cadence();
+    members.join("streams-1");
+    store.desired(4).await;
+    store.drains(&[]).await;
+    for (instance, ts_ms, draining) in [
+        (1, 1, false),
+        (2, 1, true),
+        (3, -60_000, false),
+        (4, 1, false),
+    ] {
+        store
+            .beat_of(&format!("streams-{instance}"), ts_ms, "old", draining)
+            .await;
+    }
+    members.heartbeats(&store).await.unwrap();
+    store.asked_all();
+    for instance in ["streams-2", "streams-3", "streams-4"] {
+        store.beat_of(instance, 2, "new", false).await;
+    }
+    let beats = members.heartbeats(&store).await.unwrap();
+    let seen = ["streams-2", "streams-3", "streams-4"].map(|instance| beat_in(&beats, instance));
+    assert_eq!(seen, [Some((2, false)), Some((2, false)), Some((1, false))]);
+    assert_eq!(
+        store.asked_all().0,
+        vec![
+            get(DESIRED, true, 304),
+            get(DRAINS, true, 304),
+            get(&hb("streams-1"), true, 304),
+            get(&hb("streams-2"), true, 200),
+            get(&hb("streams-3"), true, 200),
+        ],
+        "a read between the every-member reads"
+    );
 }

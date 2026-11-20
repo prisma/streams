@@ -36,7 +36,10 @@
 //! billed 200, while liveness is judged at 30 s and every scale decision
 //! sustains 20 s. The reads between GET the desired document, this runtime's
 //! own beat, every counted ordinal not yet held (so a count rise, a booting
-//! ordinal and a joining instance are read as soon as before) and the drain
+//! ordinal and a joining instance are read as soon as before), every counted
+//! ordinal whose held beat is draining or not live (so an ordinal stopped at a
+//! scale-in that boots again is read within a tick, not at the next peer read:
+//! GATE-DECISION-meas-full-forward-wedge Addendum 20 (a)) and the drain
 //! marker (`drains`), and keep every other copy. A runtime the marker names
 //! as draining is read at every read until a draining beat of the named boot
 //! is held, so a planned drain's peers read it within a tick, as before.
@@ -93,6 +96,8 @@ pub(super) struct Members {
     routers: Mutex<Found>,
     /// Every member is read on one read in this many: `PEER_READ_TICKS`.
     peer_read_ticks: u32,
+    /// The reader's clock, on which a held beat's age is judged.
+    clock: fn() -> i64,
 }
 
 impl Default for Members {
@@ -104,6 +109,7 @@ impl Default for Members {
             heartbeats: Mutex::default(),
             routers: Mutex::default(),
             peer_read_ticks: PEER_READ_TICKS,
+            clock: crate::shard::now_ms,
         }
     }
 }
@@ -175,6 +181,7 @@ impl Members {
         let desired = held_copy(&self.desired);
         let drains = held_copy(&self.drains);
         let (held, due, peers_due) = snapshot(&self.heartbeats, self.peer_read_ticks);
+        let now_ms = (self.clock)();
         let (desired, drains, read, pass) = within_deadline(async {
             let desired = read_one(
                 store,
@@ -205,7 +212,7 @@ impl Members {
                 }
                 Pass::Every => read_each(store, by_name, &held).await?,
                 Pass::Between => {
-                    let paths = between(&named, own, &held, drains.as_ref());
+                    let paths = between(&named, own, &held, drains.as_ref(), now_ms);
                     let read = read_each(store, paths.clone(), &held).await?;
                     kept(held.clone(), &paths, read)
                 }
@@ -271,7 +278,9 @@ fn held_copy(document: &Mutex<Option<Held>>) -> Option<Held> {
 }
 
 /// What a read between the reads of every member names: this runtime's own
-/// beat, every counted ordinal not held, and every runtime the drain marker
+/// beat, every counted ordinal not held or held under a beat that is draining
+/// or not live at `now_ms` (one the ring does not count: Addendum 20 (a)),
+/// and every runtime the drain marker
 /// names whose held beat is of the named boot and not yet draining. A marker
 /// entry for a boot the held beat does not carry is stale and names nothing;
 /// one for a member not held names nothing either (a counted ordinal is read
@@ -281,6 +290,7 @@ fn between(
     own: Option<ObjPath>,
     held: &Copies,
     drains: Option<&Held>,
+    now_ms: i64,
 ) -> BTreeSet<ObjPath> {
     let marker = drains
         .and_then(|copy| serde_json::from_slice::<Drains>(&copy.body).ok())
@@ -292,9 +302,14 @@ fn between(
             .and_then(|copy| serde_json::from_slice::<Heartbeat>(&copy.body).ok())?;
         (beat.boot_id == entry.boot_id && !beat.draining).then_some(path)
     });
+    let uncounted = |path: &&ObjPath| {
+        held.get(*path)
+            .and_then(|copy| serde_json::from_slice::<Heartbeat>(&copy.body).ok())
+            .is_none_or(|beat| beat.draining || !beat.candidacy(now_ms).live())
+    };
     named
         .iter()
-        .filter(|path| !held.contains_key(*path))
+        .filter(uncounted)
         .cloned()
         .chain(own)
         .chain(draining)
@@ -468,6 +483,15 @@ impl Members {
     fn reading_every_member() -> Self {
         Members {
             peer_read_ticks: 1,
+            ..Members::default()
+        }
+    }
+
+    /// Members on the cadence whose clock reads zero: the cadence tests' beats, published at
+    /// small times, are live.
+    fn on_the_cadence() -> Self {
+        Members {
+            clock: || 0,
             ..Members::default()
         }
     }
