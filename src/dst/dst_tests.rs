@@ -91,6 +91,8 @@ mod split_store_inflight;
 mod split_superseded;
 #[path = "tests/split_t_outcome.rs"]
 mod split_t_outcome;
+#[path = "tests/store_first_creates.rs"]
+mod store_first_creates;
 #[path = "tests/topology_clone_clock.rs"]
 mod topology_clone_clock;
 

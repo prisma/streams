@@ -11612,6 +11612,18 @@
     "scenarios": []
   },
   {
+    "name": "store_requests_in_flight_for_first_creates_and_appends",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a diagnosis, run under the machine's lock\"]"
+    ],
+    "function_sha256": "6390c4aad384b376bf31fd997c894d7280511f6225c5b5012824a72b9bf9d147",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/store_first_creates.rs",
+    "scenarios": []
+  },
+  {
     "name": "stored_ns_reads_every_page_of_a_stream",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

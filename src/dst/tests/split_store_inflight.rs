@@ -33,11 +33,11 @@ use std::time::{Duration, Instant};
 
 /// What a request is and the objects it touches: its kind (`GET`, `HEAD`, `PUT`, `LIST`, `COPY`,
 /// `DELETE`) and its path with every component that names one object or shard replaced by `*`.
-type Key = (&'static str, String);
+pub(super) type Key = (&'static str, String);
 
 /// Reads the instance's own requests in flight now (`AdmissionController::active`, the count the
 /// heartbeat reports).
-type RequestsNow = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub(super) type RequestsNow = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Requests begun while more than this many were in flight have their call stack sampled.
 const SAMPLE_ABOVE: usize = 32;
@@ -50,10 +50,10 @@ const MAX_SAMPLES: usize = 8_000;
 
 /// The timeline's step, and how long it follows an event.
 const STEP: Duration = Duration::from_millis(500);
-const FOLLOW: Duration = Duration::from_secs(10);
+pub(super) const FOLLOW: Duration = Duration::from_secs(10);
 
 /// One sampled request: when it began, its key, and its call stack, unresolved.
-type Sample = (Instant, Key, std::backtrace::Backtrace);
+pub(super) type Sample = (Instant, Key, std::backtrace::Backtrace);
 
 /// The requests in flight now, and the highest total seen since the window opened, with the
 /// requests in flight at that moment, the instance's own requests then, and each key's highest.
@@ -74,18 +74,18 @@ struct Counts {
 /// One window's peak: the highest total, what was in flight then, the instance's own requests
 /// then, and each key's highest.
 #[derive(Debug)]
-struct Peak {
+pub(super) struct Peak {
     total: usize,
     at_peak: Vec<(Key, usize)>,
     requests_at_peak: i64,
-    key_peaks: Vec<(Key, usize)>,
+    pub(super) key_peaks: Vec<(Key, usize)>,
     /// The general class's highest.
     general: usize,
 }
 
 impl Peak {
     /// The peak and its largest contributors, at most `top` of each.
-    fn shown(&self, top: usize) -> String {
+    pub(super) fn shown(&self, top: usize) -> String {
         format!(
             "peak {} (general class {}) with {} requests in flight [at the peak: {}] [each key's \
              highest: {}]",
@@ -110,10 +110,10 @@ fn rows(rows: &[(Key, usize)], top: usize) -> String {
 /// Counts the requests in flight through a `GaugeStore`, by window and by quarter second, and
 /// samples their call stacks.
 #[derive(Default)]
-struct Gauge {
+pub(super) struct Gauge {
     counts: Mutex<Counts>,
-    samples: Mutex<Vec<Sample>>,
-    requests: Mutex<Option<RequestsNow>>,
+    pub(super) samples: Mutex<Vec<Sample>>,
+    pub(super) requests: Mutex<Option<RequestsNow>>,
     /// Each quarter second's peak since the measurement began: the store requests in flight and
     /// the instance's own requests then.
     quarters: Mutex<HashMap<u64, (usize, i64)>>,
@@ -214,7 +214,7 @@ impl Gauge {
     }
 
     /// Starts the measurement: windows, quarters and samples count from now.
-    fn start(&self) -> Instant {
+    pub(super) fn start(&self) -> Instant {
         let now = Instant::now();
         *self.began.lock().unwrap() = Some(now);
         drop(self.window());
@@ -222,7 +222,7 @@ impl Gauge {
     }
 
     /// The window's peak; the next window opens at what is in flight now.
-    fn window(&self) -> Peak {
+    pub(super) fn window(&self) -> Peak {
         let mut counts = self.counts.lock().unwrap();
         let peak = Peak {
             total: counts.peak,
@@ -256,10 +256,10 @@ impl Gauge {
 }
 
 /// One sampled request, resolved: when it began, its key and its call site.
-type Site = (Instant, Key, String);
+pub(super) type Site = (Instant, Key, String);
 
 /// `samples`, each with its call site resolved (`call_site`).
-fn resolved(samples: Vec<Sample>) -> Vec<Site> {
+pub(super) fn resolved(samples: Vec<Sample>) -> Vec<Site> {
     samples
         .into_iter()
         .map(|(at, key, stack)| (at, key, call_site(&stack.to_string())))
@@ -268,7 +268,7 @@ fn resolved(samples: Vec<Sample>) -> Vec<Site> {
 
 /// The call sites of the sampled requests begun in `[from, from + span)`, most frequent first, at
 /// most `top`, each with how many began there and the kinds and paths they touched.
-fn sites_in(sites: &[Site], from: Instant, span: Duration, top: usize) -> String {
+pub(super) fn sites_in(sites: &[Site], from: Instant, span: Duration, top: usize) -> String {
     let mut counted: HashMap<&str, (usize, HashMap<Key, usize>)> = HashMap::new();
     let within = sites
         .iter()
@@ -385,9 +385,9 @@ impl Drop for InFlight {
 
 /// A store that counts the requests in flight through it.
 #[derive(Debug)]
-struct GaugeStore {
-    inner: Arc<dyn ObjectStore>,
-    gauge: Arc<Gauge>,
+pub(super) struct GaugeStore {
+    pub(super) inner: Arc<dyn ObjectStore>,
+    pub(super) gauge: Arc<Gauge>,
 }
 
 impl std::fmt::Display for GaugeStore {
