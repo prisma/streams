@@ -424,3 +424,91 @@ async fn a_served_requests_registry_work_is_weighed_for_its_project() {
     drop(ctl.enter(true).serve(served).await);
     assert_eq!(share.store_ops_level(), 1_000.0 - 43.0);
 }
+
+/// Whether `call` is still waiting after 100 ms.
+async fn still_waiting<F: std::future::Future>(call: std::pin::Pin<&mut F>) -> bool {
+    tokio::time::timeout(std::time::Duration::from_millis(100), call)
+        .await
+        .is_err()
+}
+
+/// A wrapped store over memory and its count bound's resources.
+fn counted() -> (
+    super::TimingStore<object_store::memory::InMemory>,
+    std::sync::Arc<StoreResources>,
+) {
+    let io = std::sync::Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
+    let store = super::TimingStore::new(object_store::memory::InMemory::new(), io.clone());
+    (store, io)
+}
+
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_ranged_read_answers_its_ranges_once_it_has_a_general_permit() {
+    use object_store::{ObjectStore, ObjectStoreExt, path::Path};
+    let (store, io) = counted();
+    let path = Path::from("registry/v5/ranged.json");
+    store
+        .put(&path, b"0123456789".to_vec().into())
+        .await
+        .unwrap();
+    let held = io.hold_general().await;
+    let mut read = Box::pin(store.get_ranges(&path, &[0..2, 5..8]));
+    assert!(
+        still_waiting(read.as_mut()).await,
+        "it waits for a general permit"
+    );
+    drop(held);
+    let parts = read.await.unwrap();
+    assert_eq!(parts, vec![&b"01"[..], &b"567"[..]]);
+}
+
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_listing_takes_a_permit_of_its_objects_class() {
+    use futures_util::StreamExt;
+    use object_store::{ObjectStore, ObjectStoreExt, path::Path};
+    let (store, io) = counted();
+    for key in ["registry/v5/a.json", "shards/s/wal/1.sst"] {
+        store
+            .put(&Path::from(key), b"1".to_vec().into())
+            .await
+            .unwrap();
+    }
+    let (wal, registry) = (Path::from("shards/s/wal"), Path::from("registry/v5"));
+    let held = io.hold_general().await;
+    let first_wal = store.list(Some(&wal)).next().await;
+    assert!(
+        first_wal.is_some(),
+        "a WAL listing takes the commit path's permit"
+    );
+    let delimited_wal = store.list_with_delimiter(Some(&wal)).await.unwrap();
+    assert_eq!(delimited_wal.objects.len(), 1);
+    let mut listing = store.list(Some(&registry));
+    let mut first = Box::pin(listing.next());
+    assert!(
+        still_waiting(first.as_mut()).await,
+        "a registry listing waits"
+    );
+    let mut delimited = Box::pin(store.list_with_delimiter(Some(&registry)));
+    assert!(still_waiting(delimited.as_mut()).await);
+    drop(held);
+    assert!(first.await.is_some());
+    assert_eq!(delimited.await.unwrap().objects.len(), 1);
+}
+
+#[tokio::test(crate = "crate::test_rt")]
+async fn an_aborted_upload_waits_for_a_permit_of_its_class() {
+    use object_store::{ObjectStoreExt, path::Path};
+    let (store, io) = counted();
+    let mut upload = store
+        .put_multipart(&Path::from("registry/v5/upload.json"))
+        .await
+        .unwrap();
+    let held = io.hold_general().await;
+    let mut abort = Box::pin(upload.abort());
+    assert!(
+        still_waiting(abort.as_mut()).await,
+        "it waits for a general permit"
+    );
+    drop(held);
+    abort.await.unwrap();
+}
