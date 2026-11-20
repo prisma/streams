@@ -1505,6 +1505,17 @@
     "scenarios": []
   },
   {
+    "name": "a_fresh_cells_document_is_created_listing_the_ordinals_in_one_write",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d071d79723518bd84815e57fe0392ef51f46a2a2259f5af8c1a26ff13900b42d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fresh_entry_refuses_a_capability_without_a_lookup",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1891,6 +1902,17 @@
     "scenarios": []
   },
   {
+    "name": "a_listed_member_stale_on_one_reader_leaves_that_readers_ring_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "aa9ec3b9d9b6b0d698947131b6d8343f6ebeab7331eb0104bfc93b4ca9446cc2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_listing_holds_its_reservation_until_it_has_answered",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2101,6 +2123,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_members_write_whose_answer_was_lost_is_found_by_the_next_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0f838e39403a19b6f08d4634fa48574c956419f1efa2156e3a103c6ce0af6f77",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
     "scenarios": []
   },
   {
@@ -3121,6 +3154,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/queue_overload.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_queues_sends_parked_at_a_splits_barrier_leave_the_write_gate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "96c199da277fec94742ba4f57b5d2b83314b036519e2c26a024cecc5d2a6a993",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
     "scenarios": []
   },
   {
@@ -6150,6 +6194,17 @@
     "scenarios": []
   },
   {
+    "name": "an_older_cells_document_is_listed_once_by_a_member_of_todays_ring",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5b889ed60359ca7db265e6e03ccd9f882049d27752b3ec1662555e3a8feb19ce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_open_a_live_intent_names_holds_until_the_intent_ends",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6802,6 +6857,17 @@
     "scenarios": [
       "CRT-007"
     ]
+  },
+  {
+    "name": "creates_with_content_parked_at_a_splits_barrier_leave_the_write_gate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "263fc79e78836b3be17551d729eb89a448932e0a36de8fd82e4bf5911edf58b2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
   },
   {
     "name": "creation_does_not_report_success_after_a_concurrent_delete",
@@ -9255,6 +9321,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "other_leaves_writes_are_not_shed_through_a_splits_pause_and_release",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "789ebce67ab215ecd99270ba61aa01c8b0f2ae62c7f4430c5f58103020829f4b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
     "scenarios": []
   },
   {
@@ -12384,6 +12461,17 @@
     "scenarios": []
   },
   {
+    "name": "the_record_lists_todays_ring_through_a_count_rise_and_a_drop",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e70f3a6ba1f62549c5847ca9d36cbf8dee58c8bced5a38807937af96544f630d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_released_queue_is_waited_for_until_it_drains_or_its_bound",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -12684,6 +12772,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_reserve.rs",
+    "scenarios": []
+  },
+  {
+    "name": "two_members_creating_a_fresh_cells_document_at_once_end_with_one",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "20c62241068f1d558b5dac60b1c113900464ef0da27d07889f499d2b27fede36",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
     "scenarios": []
   },
   {
@@ -13019,6 +13118,28 @@
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
     "function_sha256": "e2dd9a8473e412a23cac6444a2fc8a87808e3a155addc25265c3ec530aa3e73e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
+    "name": "writes_holding_a_place_at_a_splits_barrier_are_netted_out_at_the_line_exactly",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ec4cf264c1420a7945bc798f3e1deb0920c652f42d5cbfcb2af887491a0f9ea6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/parked_waits.rs",
+    "scenarios": []
+  },
+  {
+    "name": "writes_parked_at_a_splits_barrier_leave_the_write_gate_up_to_the_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "752efdd8029ff51bd9f0930b4f91228de1d1cada8569af496d3cc54a6f1d19d7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/parked_waits.rs",

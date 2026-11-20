@@ -45,6 +45,8 @@ mod fleet_handoff_drain;
 mod fleet_handoff_reads;
 #[path = "tests/fleet_moves.rs"]
 mod fleet_moves;
+#[path = "tests/fleet_record.rs"]
+mod fleet_record;
 #[path = "tests/fleet_rejoin.rs"]
 mod fleet_rejoin;
 #[path = "tests/fleet_topology.rs"]

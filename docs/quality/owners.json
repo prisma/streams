@@ -1505,6 +1505,14 @@
       "syntax": "path = \"tests/topology_cancel.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_record",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The membership of record in its interim (section 22 step 4, Addendum 14): real fleet members through a count rise and a drop and a member stale on one reader, an older cell's document listed once, a fresh cell's document created once (by one of two members at once), and a members write whose answer was lost; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_record.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::start",
@@ -4902,6 +4910,14 @@
       "owner": "crate::QueueService::claim",
       "path": "src/application/queues/delivery.rs",
       "reason": "A long-poll claim pins its waiter's Notified future so it can be enabled before the claim, as tokio's Notify requires to not miss a wake.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::answered",
+      "path": "src/topology/gate/parked.rs",
+      "reason": "A request write's committer answer is raced against the barrier's next park: the park's Notified future is pinned on the stack so it can be enabled before the parked flag is read, and a park between the two is not missed (Addendum 25); the compiler checks the pin's expansion.",
       "syntax": "std::pin::pin"
     },
     {

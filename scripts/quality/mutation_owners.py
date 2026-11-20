@@ -169,7 +169,10 @@ OWNERS = (
     owner('topology_mod', 'src/topology.rs', 'topology::'),
     owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
-    owner('topology_gate', 'src/topology/gate.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
+    # A request write parked at a split's barrier takes a waiting place (Addendum 25): the barrier DSTs
+    # at the cap, at the line, and for appends, queue sends and creates through a pause.
+    owner('topology_gate_parked', 'src/topology/gate/parked.rs', 'dst_tests::parked_waits::writes_ dst_tests::parked_waits::other_leaves_ dst_tests::parked_waits::a_queues_sends_ dst_tests::parked_waits::creates_with_content_'),
+    owner('topology_gate', 'src/topology/gate.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched dst_tests::parked_waits::writes_parked_at'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence:: dst_tests::fleet_topology:: dst_tests::topology_reclaim::'),
     owner('topology_reclaim', 'src/topology/reclaim.rs', 'topology::reclaim:: dst_tests::topology_reclaim::'),
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: dst_tests::merge_claim_traffic:: shard::seal::gc::lineage_tests::the_open_path_fence'),
@@ -447,6 +450,9 @@ OWNERS = (
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    # The membership of record and its interim writer (§22 step 4, Addendum 14): its unit tests and
+    # the record DSTs (a count rise and drop, an older document, a lost write answer), each ~10-20 s.
+    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record::'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',

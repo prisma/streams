@@ -42,7 +42,9 @@ impl ShardEngine {
                 mpsc::error::TrySendError::Full(_) => NqRefusal::Busy,
                 mpsc::error::TrySendError::Closed(_) => moved(),
             })?;
-        rx.await.map_err(|_| moved())?
+        crate::topology::gate::parked::answered(rx, self)
+            .await
+            .map_err(|_| moved())?
     }
 
     /// Free places in the committer's queue now.

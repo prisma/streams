@@ -163,6 +163,14 @@ impl OwnershipService {
         self.inner.view.write().unwrap().overrides = map.into_iter().collect();
     }
 
+    // The interim's (§22 step 4, GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 1): it sets one
+    // newer entry beside the ring last published, which changes nothing while every ring is
+    // today's rule over the reader's beats. Its production callers are exactly the lag move, a
+    // merge's co-location and a split's birth (pinned by
+    // `fleet::record::tests::the_ownership_view_has_exactly_its_known_production_writers`). The
+    // join's commit ends it: each of the three publishes its own document whole through
+    // `Standing::ring_of`, and this method is removed. (A line comment above the item, not its
+    // doc: a doc line is inside the item's `unwrap_used` exception scope and would grow it.)
     /// One override, as the rebalancer installs it the moment its CAS
     /// wins (the mirror catches up next tick).
     #[expect(
