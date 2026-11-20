@@ -163,7 +163,14 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
             _ = cancel.cancelled() => return TaskResult::Done,
             _ = tokio::time::sleep(period) => {}
         }
-        let decision = pass(&cell, &mut policy, &mut seen).await;
+        // A cancellation drops a pass where it stands, as the supervisor's grace would abort it
+        // (Addendum 22): what a pass asks of the topology loop or the handoff runner is theirs,
+        // and its one write, co-location's overrides CAS, lands whole or not at all.
+        let decision = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return TaskResult::Done,
+            decision = pass(&cell, &mut policy, &mut seen) => decision,
+        };
         tracing::debug!(?decision, "topology policy");
     }
 }

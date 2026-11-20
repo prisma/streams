@@ -391,6 +391,8 @@ mod sse_delivery;
 #[path = "tests/topology_lifecycle.rs"]
 mod topology_lifecycle;
 
+#[path = "tests/topology_cancel.rs"]
+mod topology_cancel;
 #[path = "tests/topology_colocation.rs"]
 mod topology_colocation;
 

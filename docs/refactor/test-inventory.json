@@ -4793,6 +4793,28 @@
     "scenarios": []
   },
   {
+    "name": "a_stop_while_a_merges_start_opens_a_half_ends_its_tasks_and_leaves_the_cell_whole",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fcb7f7ae25028d32f9bbfb07f6b3281d365fc210c02f69948d1546c93be5a230",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_cancel.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stop_while_a_merges_start_writes_its_intent_ends_its_tasks_and_leaves_the_cell_whole",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "502a49d46754acb5dc27e2e1f133f2f55fe16d19fbbaaf9e76b38c884d317b75",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_cancel.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stopped_ordinal_that_boots_again_fences_its_peer_and_is_fenced_back",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

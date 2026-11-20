@@ -106,10 +106,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 2,
       "owner": "crate::run",
       "path": "src/topology/policy_loop.rs",
-      "reason": "The topology policy task selects between supervised cancellation and its period (S5); compiler checks expansion.",
+      "reason": "The topology policy task selects between supervised cancellation and its period (S5), and between cancellation and its pass (Addendum 22: a stop drops a pass as the grace would abort it); compiler checks expansion.",
       "syntax": "tokio::select"
     },
     {
@@ -746,10 +746,10 @@
     },
     {
       "category": "macro-dsl",
-      "count": 1,
+      "count": 2,
       "owner": "crate::run",
       "path": "src/topology/ops.rs",
-      "reason": "The topology loop waits on its supervised cancellation or its next split request, whichever comes first; the compiler checks the select's expansion.",
+      "reason": "The topology loop waits on its supervised cancellation or its next request, whichever comes first, and on cancellation or that request's start (Addendum 22: a stop drops a start as the grace would abort it); the compiler checks the select's expansion.",
       "syntax": "tokio::select"
     },
     {
@@ -1495,6 +1495,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "A stopped ordinal that boots again while its peer holds its old draining beat (Addendum 20 (a), section 22): two real fleet members, the peer's read of the beat held; each opens the leaf its own view gives it and fences the other once, pinned until the join; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/fleet_rejoin.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_cancel",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A runtime that stops while a topology operation's start is in flight (Addendum 22, the topology_colocation shutdown flake): one rig merges with a store operation of the start held on each side of its first durable write; no task is aborted, the held request is answered, and a fresh boot finds no live intent, the topology as stored and every record; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/topology_cancel.rs\""
     },
     {
       "category": "macro-dsl",

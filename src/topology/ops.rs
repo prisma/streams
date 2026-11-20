@@ -104,7 +104,11 @@ pub(crate) fn start(parts: Parts, tasks: &TaskSupervisor) {
     });
 }
 
-/// The loop: each request started in turn, each started split finished as its own task.
+/// The loop: each request started in turn, each started split finished as its own task. A
+/// cancellation drops a start where it stands, as the supervisor's grace would abort it
+/// (Addendum 22): every state a start leaves has its owner, the directory's open task for an open
+/// and a source's opener (`recover::claim`) for a written intent, and the operation itself runs as
+/// its own task from its intent on.
 async fn run(
     parts: Parts,
     mut requests: mpsc::Receiver<Request>,
@@ -116,22 +120,35 @@ async fn run(
             _ = cancel.cancelled() => return TaskResult::Done,
             request = requests.recv() => request,
         };
+        let Some(request) = request else {
+            return TaskResult::Done;
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return TaskResult::Done,
+            () = parts.handle(request, &tasks) => {}
+        }
+    }
+}
+
+impl Parts {
+    /// One request started, and answered.
+    async fn handle(&self, request: Request, tasks: &TaskSupervisor) {
         let (prefix, reply) = match request {
-            None => return TaskResult::Done,
-            Some(Request::Split { prefix, reply }) => (prefix, reply),
-            Some(Request::Merge { prefix, reply }) => {
+            Request::Split { prefix, reply } => (prefix, reply),
+            Request::Merge { prefix, reply } => {
                 // The asker may have gone away: the merge runs on regardless.
-                drop(reply.send(parts.start_merge(&prefix, &tasks).await));
-                continue;
+                drop(reply.send(self.start_merge(&prefix, tasks).await));
+                return;
             }
         };
-        let answer = match parts.start(&prefix).await {
+        let answer = match self.start(&prefix).await {
             Ok(started) => {
                 let accepted = Accepted {
                     op_id: started.op_id().to_string(),
                     version: started.version(),
                 };
-                finish(started, parts.clock.clone(), &tasks);
+                finish(started, self.clock.clone(), tasks);
                 Ok(accepted)
             }
             Err(refused) => Err(refused),
