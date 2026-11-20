@@ -75,9 +75,9 @@ pub(super) fn manual() -> SealSettings {
 /// builds it (`keyspace::db_builder`: one tree (layout 7), the pending
 /// rows' merge operator, the metrics recorder), the group-commit pump at
 /// `gap`, a ring of `ring_bytes` and no compactor (the tests inspect L0
-/// SSTs; the L0 caps are raised so none stalls). Waits for the sealer's
-/// open.
-pub(super) async fn open(
+/// SSTs; the L0 caps are raised so none stalls), its sealer's open started
+/// and not waited for.
+pub(super) async fn start(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
     settings: SealSettings,
@@ -111,6 +111,18 @@ pub(super) async fn open(
     };
     let engine = ShardEngine::start(prefix.to_string(), db, store, cfg, None, maintenance);
     engine.layout.seal.configure(|s| *s = settings);
+    engine
+}
+
+/// [`start`], once its sealer has opened.
+pub(super) async fn open(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    settings: SealSettings,
+    ring_bytes: usize,
+    gap: Duration,
+) -> Arc<ShardEngine> {
+    let engine = start(store, prefix, settings, ring_bytes, gap).await;
     // An open that keeps failing (its rebuild refused) retries for ever;
     // a test fails instead of waiting with it.
     tokio::time::timeout(Duration::from_secs(20), engine.seal_ready())

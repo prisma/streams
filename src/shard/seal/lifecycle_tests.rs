@@ -14,7 +14,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use super::test_hooks::Hold;
 use super::tests::{
     Oracle, Rig, append, append_recorded, hashes, manual, open, random_bytes, random_record,
-    read_back, reopen, rig, rig_with, settle,
+    read_back, reopen, rig, rig_with, settle, start,
 };
 use super::{SealError, SealSettings, Trigger};
 use crate::shard::Deliver;
@@ -476,6 +476,54 @@ async fn readiness_without_a_sealer_task_fails_at_once() {
     assert!(error.contains("no sealer task"), "{error}");
     crate::shard::inject_seal_open_faults(&prefix, 0);
     engine.begin_close();
+}
+
+/// **A close settles while the sealer's open fails** (GATE-DECISION-meas-full-forward-wedge
+/// Addendum 21 (a); the 3a diagnostic leg's drain). The reopened engine's sealer open meets a fence
+/// at every try, so the sealer never marks its state ready; the engine is then closed. Every worker
+/// ends within the close's grace and the close settles with the engine's real end. Before: the
+/// deadline loop waited for the sealer's readiness without watching the close, was aborted at the
+/// 5 s grace, and the close settled `seal-deadlines: Cancelled`, a failed close for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_close_while_the_sealers_open_is_fenced_settles_within_its_grace() {
+    let rig = rig("close-unready", manual(), Duration::from_millis(2)).await;
+    append(&rig.engine, [9; 16], vec![Bytes::from_static(b"unsealed")]).await;
+    settle(&rig.engine).await;
+    rig.engine.begin_close();
+    let closed = tokio::time::timeout(Duration::from_secs(10), rig.engine.closed()).await;
+    assert!(closed.is_ok(), "the first engine closes");
+    rig.engine.db.close().await.unwrap();
+    crate::shard::test_support::inject_seal_open_load_fences(&rig.prefix, u32::MAX);
+    let engine = start(
+        rig.store.clone(),
+        &rig.prefix,
+        rig.settings,
+        rig.ring_bytes,
+        Duration::from_millis(2),
+    )
+    .await;
+    let t0 = Instant::now();
+    while engine
+        .layout
+        .seal
+        .counters
+        .open_failures
+        .load(Ordering::Relaxed)
+        == 0
+    {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the sealer's open meets the fence"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    engine.begin_close();
+    let settled = engine
+        .shutdown_handle()
+        .settle(Duration::from_secs(8))
+        .await;
+    crate::shard::test_support::inject_seal_open_load_fences(&rig.prefix, 0);
+    assert_eq!(settled, Some(Ok(())));
 }
 
 /// **One handle per stream.** After a restart, each stream the sealer

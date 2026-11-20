@@ -616,8 +616,13 @@ impl ShardEngine {
     /// replay bound back further).
     pub(super) async fn deadline_loop(self: Arc<Self>) {
         let sp = self.seal_state();
-        sp.wait_ready().await;
+        // The close is watched from the first moment: a sealer whose open fails until the
+        // engine closes never marks its state ready (Addendum 21 (a)).
         let mut closed = self.close_tx.subscribe();
+        self.until_closed(sp.wait_ready()).await;
+        if self.is_closed() {
+            return;
+        }
         let mut deferring = false;
         while self.seal_wait(&mut closed).await {
             let settings = sp.settings();
