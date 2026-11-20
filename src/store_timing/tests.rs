@@ -590,3 +590,37 @@ async fn a_delete_stream_polled_with_its_permit_is_in_the_outbound_gauge_until_i
         "{open} of {STREAMS} polled delete streams in the outbound gauge, {ended} once dropped"
     );
 }
+
+/// A WAL or manifest delete takes a general permit, never one of the commit path's (Addendum 25
+/// of the forward-wedge ruling): object_store's single delete is a delete stream of one path, and
+/// a delete stream takes a general permit whatever its paths, so SlateDB's WAL trim (eight
+/// single deletes at once per database) waits behind the general pool and the commit path's pool
+/// never sees it.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_wal_or_manifest_delete_waits_for_a_general_permit_and_takes_no_commit_permit() {
+    use object_store::{ObjectStoreExt, path::Path};
+    let (store, io) = counted();
+    let wal = Path::from("shards/root/wal/00000000000000000001.sst");
+    let manifest = Path::from("shards/root/manifest/00000000000000000001.manifest");
+    for path in [&wal, &manifest] {
+        store.put(path, b"x".to_vec().into()).await.unwrap();
+    }
+    let held = io.hold_general().await;
+    let mut deletes = Box::pin(futures_util::future::join(
+        store.delete(&wal),
+        store.delete(&manifest),
+    ));
+    assert!(
+        still_waiting(deletes.as_mut()).await,
+        "both wait for general permits"
+    );
+    drop(held);
+    let (wal_deleted, manifest_deleted) = deletes.await;
+    wal_deleted.unwrap();
+    manifest_deleted.unwrap();
+    assert_eq!(
+        io.count_seen()[1],
+        (1, 0),
+        "the commit path's pool saw only the two PUTs, one at a time, and no wait"
+    );
+}
