@@ -630,7 +630,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7838016bae288699e0331b3c68bdf126218b648ba3139ca879348530e3918341",
+    "function_sha256": "2b594af48bda625b79848698f91af4d67d187499a70c184ac68d0f4ec7aefec5",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff.rs",

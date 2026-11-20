@@ -3101,6 +3101,19 @@ convergence DST's grow deadline is derived from its waits (340 s). Its follow-up
   - Measure the miss rate and the memtable flush's time on the rig's store and in the field,
     then decide whether the 2 s / 300 ms bounds fit (and why a memtable flush on an in-memory
     store takes over 2 s), before any bound changes.
+  - The count-balance DST (`fleet_handoff::a_count_balance_move_does_not_fence_its_writer`,
+    GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 4 (b); 5 runs 2026-11-20, a 20 ms store,
+    steady appenders): every attempt, the successful one included, spent the unparked flush's
+    whole 2 s; an attempt ended `NotStarted` (2.30 s) when the flush under the park missed its
+    300 ms, and `Moved` (2.22 s) when it fit (86-111 ms). Misses followed the host's load:
+    three at a load of 7 to 12, one at 5 to 6, six (the 30 s bound) at the gate's 8.4. Each costs
+    a 4.3 s cycle and parks the shard's writers for up to half a second for nothing.
+  - Every leg reports each `missed its bound` line with its member's CPU in that second. Come
+    back to the ruling if a leg shows a move `NotStarted` at `step=flush` three times running on
+    one shard, or a shard left on a member over 80% CPU for 30 s by such misses.
+  - Measured next, without load: whether the unparked flush returns under steady appends and
+    after how long, and the parked flush's delta with a pre-flush of 0, 200 ms and 2 s (Addendum 4
+    (a)); D3 is re-ruled on them, which also sets 3b's `PRE_FLUSH`.
 
 ## 25. Follow-ups from the stream-count seed (2026-11-19)
 

@@ -34,15 +34,23 @@ struct MoveWait {
     t0: Instant,
     seen: Option<Instant>,
     ended: u32,
+    /// How long the wait may take: [`BOUND`], or a test's own derived bound.
+    bound: Duration,
 }
 
 impl MoveWait {
     fn begin(giver: &crate::http::AppState) -> Self {
+        Self::begin_within(giver, BOUND)
+    }
+
+    /// A wait bounded by `bound` rather than [`BOUND`].
+    fn begin_within(giver: &crate::http::AppState, bound: Duration) -> Self {
         let seen = giver.fleet.standing().last_handoff().map(|(_, at)| at);
         Self {
             t0: Instant::now(),
             seen,
             ended: 0,
+            bound,
         }
     }
 
@@ -63,7 +71,7 @@ impl MoveWait {
             "{what}: {} planned moves ended, none landed",
             self.ended
         );
-        assert!(self.t0.elapsed() < BOUND, "{what}");
+        assert!(self.t0.elapsed() < self.bound, "{what}");
     }
 }
 
@@ -485,6 +493,33 @@ pub(super) async fn balance_cell() -> (HttpRig, HttpRig) {
     (a, b)
 }
 
+/// This test's own bound on count balance's move (GATE-DECISION-s22-3b-step4-2026-11-21,
+/// Addendum 4 (c)), derived, not [`BOUND`]: the two settled passes (2.2 s), then up to ten
+/// attempts that end `NotStarted` at one cycle each (the unparked flush's whole 2 s bound, the
+/// park, the flush under the park missing its 300 ms, and the next 2 s pass: 4.3 s), then the move
+/// and the target's open (1 s): 2.2 + 10 x 4.3 + 1 = 46.2 s. On the test host a missed attempt
+/// follows the load: three at a load of 7 to 12, one at 5 to 6, six at the gate's 8.4.
+const BALANCE_BOUND: Duration = Duration::from_secs(47);
+
+/// No planned move has claimed the giver for this long: no attempt is under way (each claims the
+/// engine about 2 s in, every 4.3 s), so count balance's pacing holds a cooldown on the rig's
+/// clock, which the test advances (Addendum 4 (2)); in production the hold is the designed delay.
+const STALLED: Duration = Duration::from_secs(10);
+
+/// A move claiming `giver` restarts the stall watch; past [`STALLED`], `clock` passes the cooldown.
+fn unstick(
+    giver: &crate::shard::ShardEngine,
+    clock: &crate::runtime::ManualClock,
+    claimed: &mut Instant,
+) {
+    if giver.gc_state().gate.moving() {
+        *claimed = Instant::now();
+    } else if claimed.elapsed() > STALLED {
+        clock.advance_monotonic(Duration::from_secs(61));
+        *claimed = Instant::now();
+    }
+}
+
 /// **A count-balance move does not fence its writer** (F6, red first). [`balance_cell`]'s 00,
 /// loaded, with appends to it arriving at both members, moved by `streams-1`'s count balance to
 /// `streams-2`. The same assertions as the returned child's.
@@ -514,9 +549,11 @@ async fn a_count_balance_move_does_not_fence_its_writer() {
     let scenario = async {
         // Count balance waits its own move cooldown from its boot.
         a.clock.advance_monotonic(Duration::from_secs(61));
-        let mut wait = MoveWait::begin(&a.state);
+        let mut wait = MoveWait::begin_within(&a.state, BALANCE_BOUND);
+        let mut claimed = Instant::now();
         while !b.state.shards.is_open("00") {
             wait.pending(&a.state, "count balance moves 00 to streams-2");
+            unstick(&giver, &a.clock, &mut claimed);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
