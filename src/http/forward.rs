@@ -312,6 +312,7 @@ async fn serve(state: &AppState, request: Request, next: Next) -> Response {
     let Some(_waiting) = state.admission.enter_forward() else {
         return answer;
     };
+    crate::admission::park::forwarding();
     let held = Held {
         method,
         uri,

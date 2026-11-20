@@ -3170,3 +3170,15 @@ delegation):
     today's answer exactly: each send is `201` with its message stored once, or
     `503 queue_unavailable` with nothing stored. The reroute's commit turns it into every send
     `201`, with its edge record.
+
+## 28. Follow-ups from the write gate's burst count (2026-11-20)
+
+- **The cell's effective quotas have no type of their own** (GATE-DECISION-meas-full-forward-wedge-2026-11-19,
+  Addendum 29). `ProjectQuotas` is one type for what a feed states and for what the cell holds a
+  project to, so `QuotaRegistry::park_share` can be handed a feed's quotas unclamped (a request
+  weight of 8 on a cell shared eight ways, which the cell holds as 7): #272's burst DST did, and its
+  own fair-shed judgement then disagreed with the gate's. It is safe today only because
+  `CellCeiling::effective` clamps the feed when it loads (`auth/ceiling.rs`). The item: give the
+  cell's effective quotas their own type, made only by `CellCeiling::effective`, and have
+  `park_share`, project admission and the gates take that type. Its first step is listing every
+  constructor of a principal.

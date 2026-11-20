@@ -99,6 +99,8 @@ mod split_t_outcome;
 mod store_first_creates;
 #[path = "tests/topology_clone_clock.rs"]
 mod topology_clone_clock;
+#[path = "tests/write_gate_burst.rs"]
+mod write_gate_burst;
 
 #[path = "tests/split_generations.rs"]
 mod split_generations;

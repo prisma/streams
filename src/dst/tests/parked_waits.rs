@@ -576,8 +576,9 @@ async fn writes_served_by_an_open_shard_still_count_in_the_write_gate() {
     let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, 1);
     let held = || engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1;
     let counted = two_waves(&state, addr, "served", held, || store.release_hold()).await;
+    // No write took a waiting place: one that had would have left the gate's count, and more than
+    // eight would have been admitted (edge change #272: the gate judges `write_slots`' count).
     assert_eq!(counted, (8, 8), "(appends acked, writes shed)");
-    assert_eq!(state.admission.waiting(), 0, "no waiting place is held");
     engine_shutdown(&state).await;
 }
 

@@ -1387,6 +1387,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::write_gate_burst",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The write gate sheds a burst's excess over its line exactly (Addendum 27 of the forward-wedge ruling, 2026-11-20; edge change #272): a stack of three fault stores holds the readers' descriptor reads, the appends' until the whole burst is in flight, and every WAL PUT; each case asserts its project's fair-shed verdict, then that the sheds equal the appends and reads in flight less the verdict's line.",
+      "syntax": "path = \"tests/write_gate_burst.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_t_outcome",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split whose 'T' write fails after the attempt (S4 6.4, addendum 6 of DESIGN-DECISION-c3-incomplete-rig-2026-11-11): the split refuses Unfinished with no resume and no rollback, the queued writer is refused as final, and the parent's next opener rolls forward from a landed 'T' or back without one; compiler and the full DST suite exercise the module.",

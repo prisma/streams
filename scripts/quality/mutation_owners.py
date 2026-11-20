@@ -132,6 +132,11 @@ OWNERS = (
     # K1-K2c): the places a cap gives, and the two legs where they keep writes from being shed.
     owner('admission_waiting', 'src/admission/waiting.rs',
           'admission::waiting:: dst_tests::parked_waits::writes_'),
+    # The write gate's count (edge change #272): its unit tests and the hooked burst DST, beside
+    # the DSTs that meet the gate through a waiting place, a queue's overload and fair shedding.
+    owner('admission_write_slots', 'src/admission/write_slots.rs',
+          'admission:: dst_tests::write_gate_burst:: dst_tests::parked_waits:: dst_tests::queue_overload:: '
+          'dst_tests::fair_shed::'),
     owner('admission_forwards', 'src/admission/forwards.rs',
           'admission::forwards:: '
           'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
@@ -583,7 +588,8 @@ OWNERS = (
           'dst_tests::seal_coordination:: dst_tests::security_seal:: dst_tests::seal_fencing:: '
           'dst_tests::seal_convergence::'),
     owner('product_operation', 'src/product/operation.rs',
-          'dst_tests::security_operations:: dst_tests::security_routes::'),
+          'dst_tests::security_operations:: dst_tests::security_routes:: product::operation:: '
+          'dst_tests::write_gate_burst::every_route_that_enters_at_zero'),
     owner('product_append_body', 'src/product/append_body.rs',
           'product::tests:: dst_tests::append_application:: dst_tests::producer_protocol:: '
           'dst_tests::quota_enforcement::'),

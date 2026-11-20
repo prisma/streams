@@ -508,7 +508,7 @@ async fn a_served_requests_first_chunk_claim_covers_it_waits_and_keeps_its_refus
     let ctl = ctl(4);
     let response = ctl
         .enter(true)
-        .serve(async {
+        .serve(false, async {
             let other = ReadHold::try_reserve(&ctl, None, 0, 900 * KIB).unwrap();
             bind_read(ReadHold::try_reserve(&ctl, None, 0, 100 * KIB).unwrap());
             let started = tokio::time::Instant::now();
