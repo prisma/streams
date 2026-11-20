@@ -407,6 +407,40 @@ async fn the_fleet_store_exists_only_with_a_fleet_prefix_and_writes_under_it() {
         .await;
 }
 
+/// A store built as the server builds it passes through the runtime's store count bound
+/// (Addendum 19 of the forward-wedge ruling): while every general permit of the
+/// `StoreResources` it was built with is held, a descriptor GET through a store from
+/// `store_for` waits; released, it reaches s3lite and answers. Each wait is bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_store_from_store_for_waits_for_its_runtimes_count_bound() {
+    let s3lite = s3lite_harness::S3lite::bind().await;
+    let config = local_config(&s3lite.endpoint(), None);
+    let resources = Arc::new(crate::store_timing::StoreResources::new(&config.storage));
+    let store = config
+        .store_for(&resources)
+        .expect("build the store as the server does");
+    let held = resources.hold_general().await;
+    let key = ObjPath::from("registry/v5/containers/pin/streams/pin.json");
+    s3lite
+        .serve_while(async move {
+            let mut get = Box::pin(store.get(&key));
+            let waited = tokio::time::timeout(Duration::from_millis(300), get.as_mut()).await;
+            assert!(
+                waited.is_err(),
+                "a GET through store_for waits while the general pool is held"
+            );
+            drop(held);
+            let answered = tokio::time::timeout(Duration::from_secs(10), get)
+                .await
+                .expect("released, the GET answers within 10 s");
+            assert!(
+                matches!(answered, Err(object_store::Error::NotFound { .. })),
+                "it reached the store: {answered:?}"
+            );
+        })
+        .await;
+}
+
 /// Every object the server deletes reaches the provider as one keyed
 /// `DELETE /<bucket>/<key>`, never as a `DeleteObjects` request
 /// (`POST /<bucket>?delete` with an XML list of keys): Tigris does not bill

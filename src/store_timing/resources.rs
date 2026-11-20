@@ -44,6 +44,16 @@ impl StoreResources {
         }
     }
 
+    /// Every general permit, held until the returned permits drop: a test's full general pool.
+    #[cfg(test)]
+    pub(crate) async fn hold_general(&self) -> Vec<Option<tokio::sync::OwnedSemaphorePermit>> {
+        let mut held = Vec::with_capacity(GENERAL_PERMITS);
+        for _ in 0..GENERAL_PERMITS {
+            held.push(self.general.acquire().await);
+        }
+        held
+    }
+
     /// Each pool's most permits held at once and its waits: the general pool's, then the commit
     /// path's.
     #[cfg(test)]

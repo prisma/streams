@@ -3124,7 +3124,8 @@ delegation): the seed counts every descriptor not tombstoned (edge change #268),
 GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addenda 17 and 19 (Fable, under the owner's
 delegation): one instance holds at most 320 store requests in flight (`store_timing::count_gate`:
 256 general permits shared by SST transfers and every other request, 64 of their own for the WAL,
-the manifest and the fleet). Its follow-ups:
+the manifest and the fleet); `a_store_from_store_for_waits_for_its_runtimes_count_bound` pins that
+the server's stores pass through it. Its follow-ups:
 
 - **A split's topology requests in the reserved class (a lever, built only on evidence).**
   - A split's topology requests are class 4, so they share the general pool with a pile's
@@ -3133,10 +3134,6 @@ the manifest and the fleet). Its follow-ups:
   - Moving `topology/` objects into the reserved class would take them out of that queue. It
     is not built: come back to Fable if a leg shows a split pause of 900 ms or more in a second
     in which the general pool waited.
-- **Nothing pins that the server's stores pass through the gate.** The provider contract builds
-  its stores with `store_for`, through `TimingStore`, but asserts nothing of the count bound;
-  the pile DST wraps its own store. A test that a store from `store_for` waits while the
-  runtime's general pool is held would pin it.
 - **The gate's waits are not observable in production.** `/v1/debug/store` reports the bulk
   gate (`bulk_gate`), not the count bound's pools; a scouting leg on the fix sees their effect
   only through store connections and latency.
