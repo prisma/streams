@@ -1489,6 +1489,14 @@
       "syntax": "path = \"tests/fleet_handoff_reads.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_rejoin",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A stopped ordinal that boots again while its peer holds its old draining beat (Addendum 20 (a), section 22): two real fleet members, the peer's read of the beat held; each opens the leaf its own view gives it and fences the other once, pinned until the join; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_rejoin.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::start",

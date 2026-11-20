@@ -4793,6 +4793,17 @@
     "scenarios": []
   },
   {
+    "name": "a_stopped_ordinal_that_boots_again_fences_its_peer_and_is_fenced_back",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "7210491a6a2288adebcf622b214676368b7d795e6d89ef304567576dd6b3d7b4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_rejoin.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stopping_runtime_publishes_its_withdrawal",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
