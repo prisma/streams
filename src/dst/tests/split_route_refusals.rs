@@ -16,12 +16,23 @@ use std::time::Duration;
 async fn rig(
     prefixes: Vec<String>,
 ) -> (super::fixture_http::HttpRig, crate::tasks::TaskSupervisor) {
+    rig_with(prefixes, None, |_| {}).await
+}
+
+/// [`rig`], with a fleet store of its own and the command line edited by `cli`.
+async fn rig_with(
+    prefixes: Vec<String>,
+    fleet_store: Option<Arc<dyn ObjectStore>>,
+    cli: fn(&mut crate::config::CliArgs),
+) -> (super::fixture_http::HttpRig, crate::tasks::TaskSupervisor) {
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
             instance: Some("inst-a".into()),
             prefixes,
+            fleet_store,
+            cli,
             ..Default::default()
         },
     )
@@ -43,6 +54,7 @@ async fn rig(
         fleet: rig.state.fleet.clone(),
         ownership: rig.state.ownership.clone(),
         move_cooldown_ms: 600_000,
+        settle_ms: crate::topology::ops::settle_ms(&rig.state.config.cli),
         clock: rig.state.runtime.clock.clone(),
         owner: "inst-a".to_string(),
         shards_max: 7,
@@ -190,6 +202,40 @@ async fn a_leaf_an_override_places_elsewhere_is_refused_naming_it() {
     let owner = serde_json::json!({"error": "not_ring_owner", "owner": "inst-b"});
     assert_eq!(refused, (409, owner));
     unsplit(&rig.state).await;
+    tasks.cancel();
+    engine_shutdown(&rig.state).await;
+}
+
+/// **The fleet's settle before a split follows the configured topology cooldown**
+/// (GATE-DECISION-s22-join-2026-11-20 Addendum 5): on a cell whose `SHARD_TOPOLOGY_COOLDOWN_SECS`
+/// is 10 s, the fleet's count published 11 s ago with no override, a split of a leaf the ring
+/// gives this instance is started (`202`). Before, the settle was a fixed 60 s whatever the
+/// setting, and the route answered `topology_busy {reason: "fleet"}` for 49 s more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_waits_for_the_fleet_only_its_configured_topology_cooldown() {
+    let fleet_store = mem();
+    let (rig, tasks) = rig_with(
+        vec!["0".into(), "1".into()],
+        Some(fleet_store.clone()),
+        |cli| cli.shard_topology_cooldown_secs = 10,
+    )
+    .await;
+    assert!(rig.state.fleet.enabled(), "the cell has a fleet");
+    rig.state
+        .ownership
+        .set_ring_active(vec!["inst-a".to_string()]);
+    let counted_at = crate::shard::now_ms() - 11_000;
+    let desired =
+        format!(r#"{{"count":2,"epoch":1,"reason":"seed","computed_at_ms":{counted_at}}}"#);
+    let store: &dyn ObjectStore = &*fleet_store;
+    object_store::ObjectStoreExt::put(store, &"fleet/desired.json".into(), desired.into())
+        .await
+        .unwrap();
+    let (status, answer) = post_split(rig.addr, "0").await;
+    assert_eq!(
+        status, 202,
+        "a split 11 s after the count, at a 10 s cooldown: {answer}"
+    );
     tasks.cancel();
     engine_shutdown(&rig.state).await;
 }

@@ -4634,6 +4634,30 @@
     "scenarios": []
   },
   {
+    "name": "a_split_waiting_out_the_fleet_settle_keeps_the_instance_it_asked_for",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fffccefaae9d3f51eae8d07b25064c1a9aeb2ef2992d3ccd73daca57a1a695ea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_convergence.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_waits_for_the_fleet_only_its_configured_topology_cooldown",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f366901034b61174915460f08421c3f3839058925f084849da14ed3ec59ec71c",
+    "mechanisms": [],
+    "configuration": [
+      "format!(r#\"{{\"count\":2,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":{counted_at}}}\"#);"
+    ],
+    "file": "src/dst/tests/split_route_refusals.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_split_waits_for_the_fleet_to_settle",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

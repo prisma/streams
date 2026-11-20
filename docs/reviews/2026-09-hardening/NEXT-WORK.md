@@ -3182,3 +3182,11 @@ delegation):
   cell's effective quotas their own type, made only by `CellCeiling::effective`, and have
   `park_share`, project admission and the gates take that type. Its first step is listing every
   constructor of a principal.
+
+## 29. Follow-ups from the fleet settle following the topology cooldown (2026-11-21)
+
+- **"The fleet has settled" is a clock** (GATE-DECISION-s22-join-2026-11-20, Addendum 5). A split or a
+  merge waits until the fleet's published count is `SHARD_TOPOLOGY_COOLDOWN_SECS` old
+  (`topology::ops::settle_ms`), a stand-in for "the new member is listed". After §22's join it could
+  be read from the membership document instead: the count's members live in it, so the topology
+  waits exactly as long as the fleet needs and no longer.
