@@ -79,6 +79,60 @@ async fn gap_reset_keeps_the_other_streams_eviction_slots() {
     assert_eq!(engine.ring_resident_bytes(), 3 * 1024);
 }
 
+/// The bytes the ring of `handle` counts and the bytes of its batches.
+fn ring_bytes(handle: &StreamHandle) -> (usize, usize) {
+    let ring = handle.ring.lock().unwrap();
+    (ring.bytes, ring.batches.iter().map(|b| b.bytes).sum())
+}
+
+/// An idle release empties the ring of a handle idle past the window that only the
+/// resident map holds, and returns its bytes to the budget; a handle a reader holds and a
+/// handle touched inside the window keep their rings, and every ring's count stays its
+/// batches' bytes.
+#[tokio::test(crate = "crate::test_rt")]
+async fn an_idle_release_empties_only_the_rings_of_unheld_idle_handles() {
+    use std::sync::atomic::Ordering;
+    let engine = engine(16 * 1024).await;
+    let idle = engine.stream_handle([1; 16]).await.unwrap();
+    let held = engine.stream_handle([2; 16]).await.unwrap();
+    let touched = engine.stream_handle([3; 16]).await.unwrap();
+    for handle in [&idle, &held, &touched] {
+        engine.ring_publish(handle, &frames(0, 1, 1024));
+        engine.ring_publish(handle, &frames(1, 2, 1024));
+    }
+    idle.last_touch_ms.store(0, Ordering::Relaxed);
+    held.last_touch_ms.store(0, Ordering::Relaxed);
+    drop(idle);
+    assert_eq!(engine.ring_resident_bytes(), 9 * 1024);
+
+    engine.ring_release_idle(std::time::Duration::from_secs(60));
+
+    let idle = engine.stream_handle([1; 16]).await.unwrap();
+    assert_eq!(
+        batch_starts(&idle),
+        Vec::<u64>::new(),
+        "the unheld idle handle's ring is empty"
+    );
+    assert_eq!(ring_bytes(&idle), (0, 0));
+    assert_eq!(
+        batch_starts(&held),
+        vec![0, 1],
+        "a held handle keeps its ring"
+    );
+    assert_eq!(ring_bytes(&held), (3 * 1024, 3 * 1024));
+    assert_eq!(
+        batch_starts(&touched),
+        vec![0, 1],
+        "a touched handle keeps its ring"
+    );
+    assert_eq!(ring_bytes(&touched), (3 * 1024, 3 * 1024));
+    assert_eq!(
+        engine.ring_resident_bytes(),
+        6 * 1024,
+        "its bytes are back in the budget"
+    );
+}
+
 /// The stored page of the one record at `offset`, as the shard log seals it.
 fn sealed_page(offset: u64) -> Bytes {
     let subkey = derive_subkey(&StreamKey([7; 32]), &[9; 16], "", 1);

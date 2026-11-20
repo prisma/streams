@@ -710,6 +710,8 @@ impl ShardEngine {
         if idle.is_zero() && self.handle_max_resident == 0 {
             return;
         }
+        // The rings of idle handles first: a ring's batch pins its handle (`ring_release_idle`).
+        self.ring_release_idle(idle);
         let evicted = self.evict_idle_handles(idle, self.handle_max_resident);
         if let Some(evicted) = std::num::NonZeroUsize::new(evicted) {
             tracing::debug!(shard = %self.prefix, "evicted {evicted} idle stream handles");

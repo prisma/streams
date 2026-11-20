@@ -65,6 +65,55 @@ impl ShardEngine {
         }
     }
 
+    /// Release the ring batches of every handle idle past `idle` that nothing but the resident
+    /// map and the ring's FIFO holds (Addendum 20 (b)), so the sealer's idle eviction can evict it:
+    /// the FIFO pins a handle per batch and only a later publish pops it, so on an engine with no
+    /// writes the rings of its last streams pinned their handles forever. A handle a reader holds
+    /// keeps its ring. The FIFO's lock and a ring's are never held together, as in the publish's
+    /// eviction; a batch published meanwhile is newer than the ones released, so it stays. A
+    /// poisoned FIFO releases nothing.
+    pub(super) fn ring_release_idle(&self, idle: std::time::Duration) {
+        if idle.is_zero() {
+            return;
+        }
+        let now = u64::try_from(super::now_ms()).unwrap_or(0);
+        let cutoff = now.saturating_sub(u64::try_from(idle.as_millis()).unwrap_or(u64::MAX));
+        let released: Vec<(Arc<StreamHandle>, usize)> = {
+            let Ok(mut fifo) = self.ring_fifo.lock() else {
+                return;
+            };
+            let mut pinned: std::collections::HashMap<
+                *const StreamHandle,
+                (Arc<StreamHandle>, usize),
+            > = std::collections::HashMap::new();
+            for handle in fifo.iter() {
+                pinned
+                    .entry(Arc::as_ptr(handle))
+                    .or_insert_with(|| (handle.clone(), 0))
+                    .1 += 1;
+            }
+            // Held by the resident map, by its `batches` FIFO entries and by the clone here.
+            pinned.retain(|_, (handle, batches)| {
+                handle.last_touch_ms.load(Ordering::Relaxed) <= cutoff
+                    && Arc::strong_count(handle) == *batches + 2
+            });
+            fifo.retain(|handle| !pinned.contains_key(&Arc::as_ptr(handle)));
+            pinned.into_values().collect()
+        };
+        for (handle, batches) in &released {
+            let Ok(mut ring) = handle.ring.lock() else {
+                continue;
+            };
+            let oldest = (*batches).min(ring.batches.len());
+            let bytes: usize = ring.batches.drain(..oldest).map(|batch| batch.bytes).sum();
+            ring.bytes -= bytes;
+            let bytes = i64::try_from(bytes).unwrap_or(i64::MAX);
+            self.ring_budget.fetch_add(bytes, Ordering::Relaxed);
+            let oldest = u64::try_from(oldest).unwrap_or(u64::MAX);
+            self.ring_evicted.fetch_add(oldest, Ordering::Relaxed);
+        }
+    }
+
     /// Record the ring's resident bytes once the budget reads `after`.
     fn note_ring_peak(&self, after: i64) {
         let resident = u64::try_from((self.ring_cfg_bytes as i64 - after).max(0)).unwrap_or(0);

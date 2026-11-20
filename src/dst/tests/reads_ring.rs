@@ -602,3 +602,139 @@ async fn the_tail_ring_pins_no_more_handles_than_the_resident_cap() {
     assert_eq!(engine.resident_streams(), 64, "every dirty handle stays");
     engine.begin_close();
 }
+
+/// **An idle engine's handles leave though the ring holds their tails** (Addendum 20 (b) of the
+/// forward-wedge ruling: the 3a leg's idle leaves `00` + `01` held 9,972 resident handles, flat
+/// for 24 min, with `HANDLE_IDLE_EVICT_SECS=10`). The ring's FIFO pins a handle per published
+/// batch, and only a later publish pops it, so on an engine with no writes the rings of its last
+/// streams pin their handles below the resident cap forever, and the sealer's idle eviction skips
+/// every pinned handle. 64 tiny streams, sealed, then left idle past a 1 s idle window on an
+/// engine whose ring holds all their tails: the sealer's own eviction (every 5 s) evicts every
+/// handle and returns the rings' bytes, and each stream reads back its frame from its segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn an_idle_engines_handles_leave_though_the_ring_holds_their_tails() {
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes: 8 * 1024 * 1024,
+        handle_idle_evict: std::time::Duration::from_secs(1),
+        handle_max_resident: 8_192,
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(mem(), "dst-ring-idle", cfg).await;
+    let key = skey();
+    for i in 0..64 {
+        append_sized(&engine, capped_stream(i), &key, "", 64).await;
+    }
+    while engine.seal_requested().await.expect("seal").streams > 0 {}
+    let (_, holding) = ring_census(&engine, 64).await;
+    assert_eq!(holding, 64, "the ring holds every stream's tail");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while engine.resident_streams() > 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        (engine.resident_streams(), engine.ring_resident_bytes()),
+        (0, 0),
+        "an idle engine's handles and rings are released within 15 s"
+    );
+    let after = capped_frames(&engine, 64).await;
+    for (i, read) in after.iter().enumerate() {
+        assert_eq!(read.frames.len(), 1, "stream {i} reads back");
+    }
+    engine.begin_close();
+}
+
+/// Each of `streams` holding one sealed 64-byte record on an engine whose ring holds every tail,
+/// with a 1 s idle window, over `store`.
+async fn sealed_ring_engine(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    streams: u8,
+) -> Arc<crate::shard::ShardEngine> {
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes: 8 * 1024 * 1024,
+        handle_idle_evict: std::time::Duration::from_secs(1),
+        handle_max_resident: 8_192,
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(store, prefix, cfg).await;
+    for i in 0..streams {
+        append_sized(&engine, capped_stream(i), &skey(), "", 64).await;
+    }
+    while engine.seal_requested().await.expect("seal").streams > 0 {}
+    engine
+}
+
+/// Past the sealer's idle sweep: 7 s, more than its 5 s period plus the 1 s idle window.
+const PAST_A_SWEEP: std::time::Duration = std::time::Duration::from_secs(7);
+
+/// **A stream touched inside its idle window keeps its ring** (Addendum 23): stream 0, read
+/// every 200 ms across a sweep, still holds its tail, and its tail read is served from the ring
+/// with no store GET of a segment or a table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_stream_touched_inside_its_window_keeps_its_ring_across_a_sweep() {
+    let store = crate::dst::trace_store::TraceStore::verbatim(mem());
+    let engine = sealed_ring_engine(store.clone(), "dst-ring-touched", 2).await;
+    let until = std::time::Instant::now() + PAST_A_SWEEP;
+    while std::time::Instant::now() < until {
+        drop(engine.stream_handle(capped_stream(0)).await.expect("touch"));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let handle = engine
+        .stream_handle(capped_stream(0))
+        .await
+        .expect("handle");
+    assert!(
+        !handle.ring.lock().unwrap().batches.is_empty(),
+        "its ring holds its tail"
+    );
+    store.reset();
+    let read = durable_frames(&engine, &handle, 0, 1, 1 << 20)
+        .await
+        .expect("read");
+    assert_eq!(read.frames.len(), 1);
+    let fetched: Vec<_> = store
+        .operation_counts()
+        .into_iter()
+        .filter(|(op, class, _)| {
+            *op == StoreOp::Get && !matches!(class, ObjClass::Manifest | ObjClass::Wal)
+        })
+        .collect();
+    assert!(
+        fetched.is_empty(),
+        "the tail read is the ring's: {fetched:?}"
+    );
+    drop(handle);
+    engine.begin_close();
+}
+
+/// **A stream with a parked reader keeps its handle and its ring** (Addendum 23): a reader holding
+/// stream 0's handle, as a parked read does, across a sweep and past the idle window keeps the
+/// handle resident and its tail in the ring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2, crate = "crate::test_rt")]
+async fn a_stream_with_a_parked_reader_keeps_its_handle_and_ring_past_the_window() {
+    let engine = sealed_ring_engine(mem(), "dst-ring-parked", 2).await;
+    let parked = engine
+        .stream_handle(capped_stream(0))
+        .await
+        .expect("handle");
+    tokio::time::sleep(PAST_A_SWEEP).await;
+    let resident = engine.resident_streams();
+    assert!(
+        resident >= 1,
+        "the parked reader's handle stays: {resident}"
+    );
+    assert!(
+        !parked.ring.lock().unwrap().batches.is_empty(),
+        "its ring holds its tail"
+    );
+    let again = engine
+        .stream_handle(capped_stream(0))
+        .await
+        .expect("handle");
+    assert!(
+        Arc::ptr_eq(&parked, &again),
+        "the same handle, never evicted"
+    );
+    drop((parked, again));
+    engine.begin_close();
+}

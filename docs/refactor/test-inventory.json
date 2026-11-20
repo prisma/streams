@@ -4896,6 +4896,28 @@
     "scenarios": []
   },
   {
+    "name": "a_stream_touched_inside_its_window_keeps_its_ring_across_a_sweep",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f1102887edd12345c137abd36b4a2f0deeb7750e315f1ad2e04589db81801dc7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stream_with_a_parked_reader_keeps_its_handle_and_ring_past_the_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "f77f205e6685211bf95ac80ada836c04dde438150f0a1fabeb9d981398efd1b8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_stuck_tick_keeps_its_heartbeat_but_not_its_progress",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -5903,6 +5925,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_idle_engines_handles_leave_though_the_ring_holds_their_tails",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3431fd04c2fee42a27a3d3a7c7656ec8b3b1bd42ce569779e065634bd2d503c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
     "scenarios": []
   },
   {
