@@ -24,7 +24,7 @@ pub(super) async fn published(
     let _one = state.shards.revalidation().lock().await;
     let read = state.fleet.read_overrides().await?;
     let me = state.config.cli.instance_name.as_str();
-    let (overrides, version) = super::record::listed(state, me, candidates, read).await;
+    let (overrides, version) = super::record::listed(&state.fleet, me, candidates, read).await;
     // Tests only: a tick held between its read and its publication, the lock still held.
     #[cfg(test)]
     if let Some(point) = state.fleet.standing().take_view_pause()
@@ -37,9 +37,10 @@ pub(super) async fn published(
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
-    // Publish only a complete successful authority read, its ring and entries from the one
-    // document. This synchronous replacement cannot expose a mixed ring/map.
-    let ring = candidates.ring(overrides.members.as_deref());
+    // Publish only a complete successful authority read. This synchronous replacement cannot
+    // expose a mixed ring/map. In the interim every document's ring is today's rule over the
+    // pass's candidates (`record`).
+    let ring = candidates.today();
     state.fleet.standing().set_candidates(candidates);
     state.ownership.set_view(ring, map);
     state.fleet.standing().tags().set(tag_of(version.as_ref()));
@@ -85,7 +86,7 @@ async fn published_here(state: &AppState) -> Option<String> {
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
-    let ring = state.fleet.standing().ring_of(&overrides);
+    let ring = state.fleet.standing().ring_of();
     state
         .ownership
         .set_view(ring.unwrap_or_else(|| state.ownership.ring_active()), map);

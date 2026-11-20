@@ -259,13 +259,14 @@ impl Standing {
         self.set_candidates(&super::record::Candidates::new(count, names));
     }
 
-    /// The ring of `document`, over the tick's last pass's candidates (§22 C1, C2): what every
-    /// publication between ticks pairs with that document's entries. `None` before the first
-    /// pass, when the caller keeps the view's ring (it creates no view an instance awaiting its
-    /// first one lacks).
-    pub(crate) fn ring_of(&self, document: &super::Overrides) -> Option<Vec<String>> {
+    /// The ring every publication between ticks pairs with the entries of the document it read
+    /// (§22 C2): in the interim, today's rule over the tick's last pass's candidates, which is
+    /// every document's ring (`record`; the join gives it the document again). `None` before the
+    /// first pass, when the caller keeps the view's ring (it creates no view an instance awaiting
+    /// its first one lacks).
+    pub(crate) fn ring_of(&self) -> Option<Vec<String>> {
         let candidates = self.candidates.lock().ok()?;
-        Some(candidates.as_ref()?.ring(document.members.as_deref()))
+        Some(candidates.as_ref()?.today())
     }
 
     /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides
@@ -466,6 +467,20 @@ mod tests {
     use super::{DocTimes, Standing, Viewed, ViewedBeat};
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
+
+    /// The ring between ticks is the tick's last pass's (§22 C2): none before a pass, then today's
+    /// rule over that pass's candidates, which the next pass replaces (PR #173's survivors
+    /// `Standing::set_candidates` as `()` and `Standing::ring_of` as `None`).
+    #[test]
+    fn the_ring_between_ticks_is_the_last_passs_by_todays_rule() {
+        let standing = Standing::default();
+        assert_eq!(standing.ring_of(), None, "no pass yet");
+        standing.note_pass(2, &["streams-2", "streams-1", "streams-3"]);
+        let both = vec!["streams-1".to_string(), "streams-2".to_string()];
+        assert_eq!(standing.ring_of(), Some(both));
+        standing.note_pass(3, &["streams-3"]);
+        assert_eq!(standing.ring_of(), Some(vec!["streams-3".to_string()]));
+    }
 
     /// A drain has begun from its first handoff and once it is announced, each alone; a planned
     /// move's close that did not end clean is counted, once each.

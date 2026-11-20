@@ -2,24 +2,26 @@
 //! interim rule that keeps it until the join and the leave land
 //! (GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addendum 14).
 //!
-//! The overrides document's `members` names the ring of record. A view's ring is the listed
-//! members that qualify by the reader's beats (`planning::member`: live, progressing, not withdrawn,
-//! not draining), in the document's order, computed from the one document read that gives the
-//! view its entries (C1, C2). No listed member qualifying, the listed members within the count are
-//! the ring unfiltered (C3's fallback, today's bootstrap).
+//! The overrides document's `members` names the ring of record. Once the join lands, a view's ring
+//! is the listed members that qualify by the reader's beats (`planning::member`: live, progressing,
+//! not withdrawn, not draining), computed from the one document read that gives the view its
+//! entries (C1, C2), and no listed member qualifying, the listed members unfiltered (C3).
 //!
 //! **The interim** (Addendum 14): until the join lands, the tick keeps `members` equal to the
 //! ordinal set within the count it read (`streams-1`..=`streams-count`), by one CAS of the overrides
 //! document from [`listed`], its one write path, written only by an instance that today's rule puts
-//! in its own ring (C17). Every reader then filters the listed members by its own beats, so its
-//! ring is exactly the set today's rule computes, at every tick and on every member. A document that
-//! does not list this pass's ordinal set (an older cell's, C17, or one written for a count another
-//! member read) gives today's rule. The join replaces the add half; removal stays today's rule until
-//! the leave lands.
+//! in its own ring (C17). Over a document listing that set, the listed members a reader's beats
+//! qualify, in ordinal order, else all of them, are exactly today's rule
+//! ([`Candidates::today`]); over any other document the interim's ring is today's rule too. So in
+//! the interim every ring is `today()` over the pass's candidates, whatever document it is paired
+//! with, and no code computes a ring from `members` (PR #173's survivor `record.rs:105:29`, that
+//! arm replaced by `today()`, was equivalent and the arm is removed). The join brings its own C1
+//! arm.
+//! The join replaces the add half; removal stays today's rule until the leave lands.
 
 use object_store::UpdateVersion;
 
-use super::{AppState, FleetDocument, Member, Overrides};
+use super::{FleetDocument, FleetRepository, Member, Overrides};
 
 /// The ordinal names within `count`: `streams-1`..=`streams-count`, one at least.
 pub(super) fn ordinal(count: u64) -> Vec<String> {
@@ -95,28 +97,6 @@ impl Candidates {
             .collect();
         if active.is_empty() { ordinal } else { active }
     }
-
-    /// The ring of a document listing `members` (C1, C3): the listed members that are candidates,
-    /// in the listed order, else the listed members within the count unfiltered. In the interim a
-    /// document that does not list this pass's ordinal set gives [`Candidates::today`] (C17,
-    /// Addendum 14); the join's commit removes that arm.
-    pub(super) fn ring(&self, members: Option<&[Member]>) -> Vec<String> {
-        match members {
-            Some(listed) if names_exactly(listed, &ordinal(self.count)) => {
-                // The listed names in ordinal order, then those that are candidates.
-                let is_listed = |name: &String| listed.iter().any(|member| &member.name == name);
-                let names: Vec<String> =
-                    ordinal(self.count).into_iter().filter(is_listed).collect();
-                let active: Vec<String> = names
-                    .iter()
-                    .filter(|name| self.contains(name))
-                    .cloned()
-                    .collect();
-                if active.is_empty() { names } else { active }
-            }
-            _ => self.today(),
-        }
-    }
 }
 
 /// The interim's one write path (Addendum 14), under the revalidation lock the tick holds: the
@@ -129,7 +109,7 @@ impl Candidates {
 /// followed by one read that finds what is stored; an unreadable document leaves the one read,
 /// whose ring is then today's rule.
 pub(super) async fn listed(
-    state: &AppState,
+    fleet: &FleetRepository,
     me: &str,
     candidates: &Candidates,
     read: (Overrides, Option<UpdateVersion>),
@@ -148,8 +128,7 @@ pub(super) async fn listed(
     let Ok(body) = serde_json::to_vec(&next) else {
         return read;
     };
-    let written = state
-        .fleet
+    let written = fleet
         .replaced_document(FleetDocument::Overrides, body, version.clone())
         .await;
     tracing::info!(
@@ -163,7 +142,7 @@ pub(super) async fn listed(
         Some(written) if written.e_tag.is_some() || written.version.is_some() => {
             (next, Some(written))
         }
-        _ => state.fleet.read_overrides().await.unwrap_or(read),
+        _ => fleet.read_overrides().await.unwrap_or(read),
     }
 }
 
@@ -174,52 +153,6 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_string()).collect()
-    }
-
-    /// `list` as members of record with no boot ids, as the interim writes them.
-    fn listed(list: &[String]) -> Vec<Member> {
-        let entry = |name: &String| Member {
-            name: name.clone(),
-            boot_id: None,
-        };
-        list.iter().map(entry).collect()
-    }
-
-    /// The interim's invariant (Addendum 14, condition 1): over a document listing the pass's
-    /// ordinal set, the ring is today's, for every candidate set, the fallback included.
-    #[test]
-    fn a_document_listing_the_ordinal_set_gives_todays_ring() {
-        let cases: [(u64, &[&str]); 6] = [
-            (1, &["streams-1"]),
-            (2, &["streams-1", "streams-2"]),
-            (2, &["streams-2"]),
-            (3, &["streams-1", "streams-3", "streams-4"]),
-            (2, &[]),
-            (1, &["streams-2", "streams-3"]),
-        ];
-        for (count, qualified) in cases {
-            let candidates = Candidates::new(count, names(qualified));
-            let members = listed(&ordinal(count));
-            assert_eq!(
-                candidates.ring(Some(&members)),
-                candidates.today(),
-                "{count} {qualified:?}"
-            );
-        }
-    }
-
-    /// C17 and the interim: a document without `members`, or listing another count's ordinal
-    /// set, gives today's rule.
-    #[test]
-    fn a_document_without_the_ordinal_set_gives_todays_rule() {
-        let candidates = Candidates::new(2, names(&["streams-1", "streams-2", "streams-3"]));
-        let today = names(&["streams-1", "streams-2"]);
-        assert_eq!(candidates.ring(None), today);
-        assert_eq!(candidates.ring(Some(&listed(&ordinal(3)))), today);
-        assert_eq!(
-            candidates.ring(Some(&listed(&names(&["streams-2"])))),
-            today
-        );
     }
 
     /// C17 (§2.1): a document is read back byte-identical by an instance that does not write it:
@@ -279,16 +212,126 @@ mod tests {
         assert_eq!(super::relisted(None, ordinal(1)), Some(fresh));
     }
 
-    /// §2.1: the interim reads names only; a boot id changes no ring.
-    #[test]
-    fn a_boot_id_changes_no_ring() {
-        let candidates = Candidates::new(2, names(&["streams-1", "streams-2"]));
-        let mut stamped = listed(&ordinal(2));
-        stamped[0].boot_id = Some("b1".into());
-        assert_eq!(
-            candidates.ring(Some(&stamped)),
-            candidates.ring(Some(&listed(&ordinal(2))))
-        );
+    /// A store over memory that counts the overrides document's reads and, with `bare`, answers a
+    /// write with neither an ETag nor a version (no store this crate runs on does; the seam for
+    /// `listed`'s guard).
+    #[derive(Debug)]
+    struct Answers {
+        inner: std::sync::Arc<dyn object_store::ObjectStore>,
+        bare: bool,
+        reads: std::sync::atomic::AtomicU64,
+    }
+
+    impl std::fmt::Display for Answers {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "answers")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl object_store::ObjectStore for Answers {
+        async fn put_opts(
+            &self,
+            path: &object_store::path::Path,
+            body: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            let mut written = self.inner.put_opts(path, body, opts).await?;
+            if self.bare {
+                (written.e_tag, written.version) = (None, None);
+            }
+            Ok(written)
+        }
+        async fn put_multipart_opts(
+            &self,
+            path: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(path, opts).await
+        }
+        async fn get_opts(
+            &self,
+            path: &object_store::path::Path,
+            opts: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            if path.as_ref() == "fleet/overrides.json" {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.get_opts(path, opts).await
+        }
+        fn delete_stream(
+            &self,
+            paths: futures_util::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(paths)
+        }
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            opts: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, opts).await
+        }
+    }
+
+    /// `listed` on a fresh cell of one over a store answering `bare`: the version it answers, the
+    /// stored document's ETag, and the overrides reads it made.
+    async fn listed_over(bare: bool) -> (Option<String>, Option<String>, u64) {
+        use object_store::ObjectStoreExt as _;
+        let inner: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let answers = std::sync::Arc::new(Answers {
+            inner: inner.clone(),
+            bare,
+            reads: std::sync::atomic::AtomicU64::new(0),
+        });
+        let store: std::sync::Arc<dyn object_store::ObjectStore> = answers.clone();
+        let fleet = crate::fleet::FleetRepository::new(Some(store));
+        let candidates = Candidates::new(1, names(&["streams-1"]));
+        let read = (crate::fleet::Overrides::default(), None);
+        let (written, version) = super::listed(&fleet, "streams-1", &candidates, read).await;
+        assert_eq!(written.members.map(|listed| listed.len()), Some(1));
+        let path = object_store::path::Path::from("fleet/overrides.json");
+        let stored = inner.head(&path).await.unwrap().e_tag;
+        let reads = answers.reads.load(std::sync::atomic::Ordering::SeqCst);
+        (version.and_then(|version| version.e_tag), stored, reads)
+    }
+
+    /// A committed write is published at the version the store answered, with no read of the
+    /// document (PR #173's survivors `record.rs:163`, the guard as `false` and its `||` as `&&`:
+    /// the memory store answers an ETag and no version).
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_committed_members_write_answers_its_version_without_a_read() {
+        let (answered, stored, reads) = listed_over(false).await;
+        assert!(stored.is_some());
+        assert_eq!((answered, reads), (stored, 0));
+    }
+
+    /// A write the store answered with neither an ETag nor a version is read back, so the next CAS
+    /// is anchored on the stored version (the survivor guard as `true` would answer none).
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn a_members_write_answered_without_a_version_is_read_back() {
+        let (answered, stored, reads) = listed_over(true).await;
+        assert!(stored.is_some());
+        assert_eq!((answered, reads), (stored, 1));
     }
 
     /// Today's ring: the qualified ordinals within the count, in ordinal order; none qualifying,

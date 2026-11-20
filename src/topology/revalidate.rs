@@ -39,12 +39,13 @@ impl Refresh {
         })
     }
 
-    /// Read the overrides and publish them with the document's own ring over the fleet tick's last
-    /// candidates (§22 C2); before the tick's first pass, with the view's current active members,
-    /// which it keeps exactly (so it never creates a view an instance awaiting its first one lacks).
+    /// Read the overrides and publish them with the ring over the fleet tick's last candidates, in
+    /// the interim every document's ring (§22 C2); before the tick's first pass, with the view's
+    /// current active members, which it keeps exactly (so it never creates a view an instance
+    /// awaiting its first one lacks).
     async fn refreshed(&self) -> anyhow::Result<()> {
         let (overrides, _) = self.fleet.read_overrides().await?;
-        let ring = self.fleet.standing().ring_of(&overrides);
+        let ring = self.fleet.standing().ring_of();
         let map = overrides
             .entries
             .into_iter()
