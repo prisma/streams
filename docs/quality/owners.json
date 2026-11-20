@@ -4915,6 +4915,14 @@
     {
       "category": "macro-dsl",
       "count": 1,
+      "owner": "crate::answered",
+      "path": "src/topology/gate/parked.rs",
+      "reason": "A request write's committer answer is raced against the barrier's next park: the park's Notified future is pinned on the stack so it can be enabled before the parked flag is read, and a park between the two is not missed (Addendum 25); the compiler checks the pin's expansion.",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
       "owner": "crate::tail",
       "path": "src/dst/tests/live_wait.rs",
       "reason": "Exact request documents and expected wire answers of the multiplexed wait (WIRE-MATRIX §2.24, edge changes #200-#202); serde macro output is compiled and asserted by the live_wait DST.",

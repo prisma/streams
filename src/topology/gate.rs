@@ -43,6 +43,8 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::shard::ShardEngine;
 
+pub(crate) mod parked;
+
 /// Where a retired parent's operations go (S4-DESIGN §6.2 step 4): for a route hash, the child
 /// engine this instance owns, once open, if any. Asynchronous, so a split releases its barrier as
 /// soon as its topology is installed and a held operation waits for its child's open instead.
@@ -58,6 +60,8 @@ pub(crate) struct MaintenanceGate {
     collection_off: AtomicBool,
     splitting: AtomicBool,
     parked: AtomicBool,
+    /// Woken at every park of the split's barrier (`parked::answered`).
+    parks: tokio::sync::Notify,
     retired: Mutex<Option<Reroute>>,
     /// A planned move claims the engine (F6, step 1): no split starts on it meanwhile.
     moving: AtomicBool,
@@ -261,9 +265,18 @@ impl MaintenanceGate {
         self.parked.load(Ordering::Acquire)
     }
 
-    /// The split's barrier sets it.
+    /// The split's barrier sets it; a park wakes every `next_park`.
     pub(crate) fn set_parked(&self, on: bool) {
         self.parked.store(on, Ordering::Release);
+        if on {
+            self.parks.notify_waiters();
+        }
+    }
+
+    /// Completes at the barrier's next park, once enabled (`Notified::enable`): enabled before
+    /// `parked` is read, a park between the two is not missed.
+    pub(crate) fn next_park(&self) -> tokio::sync::futures::Notified<'_> {
+        self.parks.notified()
     }
 
     /// The retired parent's reroute, once its split published (read only while `splitting`).

@@ -3151,3 +3151,22 @@ the server's stores pass through it. Its follow-ups:
 - **The gate's waits are not observable in production.** `/v1/debug/store` reports the bulk
   gate (`bulk_gate`), not the count bound's pools; a scouting leg on the fix sees their effect
   only through store connections and latency.
+
+## 27. Follow-ups from the split's barrier waits (2026-11-20)
+
+GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addenda 25 and 28 (Fable, under the owner's
+delegation):
+
+- **A queue operation held at a split's barrier is refused, not rerouted (after the leave; an edge
+  change when built).**
+  - A split's barrier reroutes only appends to the child engine this instance owns
+    (`commit_and_park`). Every other held operation is rejected `Splitting`, and a native queue
+    operation's reply is dropped (`CommitTransaction::reject_op`, its `_` arm). So a queue send,
+    claim or settle that meets a split's pause is answered `503 queue_unavailable`, retryable,
+    with nothing stored.
+  - This is not a shed: admission never refuses it, and nothing is lost. But it is one refusal a
+    client sees per such operation per split.
+  - The DST `parked_waits::a_queues_sends_parked_at_a_splits_barrier_leave_the_write_gate` pins
+    today's answer exactly: each send is `201` with its message stored once, or
+    `503 queue_unavailable` with nothing stored. The reroute's commit turns it into every send
+    `201`, with its edge record.
