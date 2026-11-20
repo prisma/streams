@@ -370,8 +370,8 @@ async fn changed(state: &AppState, doc: Overrides, prefix: &str, change: &Change
     }
 }
 
-/// Publish `doc`'s overrides as this instance's mirror, under the directory's revalidation lock
-/// (F2 A1); whether the mirror now places `prefix` on another instance.
+/// Publish `doc`'s overrides with its own ring as this instance's mirror, under the directory's
+/// revalidation lock (F2 A1); whether the mirror now places `prefix` on another instance.
 async fn mirror(
     state: &AppState,
     doc: &Overrides,
@@ -381,7 +381,9 @@ async fn mirror(
     let entries = doc.entries.iter().map(|(p, e)| (p.clone(), e.to.clone()));
     {
         let _one = state.shards.revalidation().lock().await;
-        let active = state.ownership.ring_active();
+        // The document's own ring over the tick's last candidates (§22 C2).
+        let ring = state.fleet.standing().ring_of(doc);
+        let active = ring.unwrap_or_else(|| state.ownership.ring_active());
         state.ownership.set_view(active, entries.collect());
         let tag = super::view::tag_of(version);
         state.fleet.standing().tags().set(tag);

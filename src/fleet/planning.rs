@@ -104,34 +104,28 @@ pub(super) fn another_member(
         })
 }
 
-/// The ring's active members: the first `count` ordinal instances that have
-/// neither withdrawn nor begun a planned drain, whose controller published a
-/// completed pass within the progress deadline of their latest heartbeat
-/// and, for a peer, whose heartbeat is still live.
-/// This instance is running (its own tick is asking), so its liveness is not
-/// judged, and it is kept when the listing missed its heartbeat. Every
-/// instance judges every candidate, itself included, from the same
-/// published documents, so their rings agree. An empty result falls back to
-/// the unfiltered ordinal set (bootstrap: everyone asleep, the first request
-/// must land).
+/// The pass's candidates (§22 C3): every instance that has neither withdrawn nor begun a planned
+/// drain, whose controller published a completed pass within the progress deadline of its latest
+/// heartbeat and, for a peer, whose heartbeat is still live, with the `count` read; no ordinal
+/// filter. This instance is running (its own tick is asking), so its liveness is not judged, and
+/// it is kept when the listing missed its heartbeat. The ring is made from them and the overrides
+/// document (`record::Candidates::ring`); today's rule, the first `count` ordinals among them or
+/// all of them unfiltered, is `record::Candidates::today`.
 // mt-lint: allow(name-keyed-map): fleet instance -> its published candidacy
 pub(super) fn active_members(
     count: u64,
     instance: &str,
     candidacies: &HashMap<String, Candidacy>,
-) -> Vec<String> {
-    let ordinal: Vec<String> = (1..=count.max(1))
-        .map(|index| format!("streams-{index}"))
-        .collect();
-    let active: Vec<String> = ordinal
+) -> super::record::Candidates {
+    let qualified = candidacies
         .iter()
-        .filter(|name| member(name.as_str() == instance, candidacies.get(*name)))
-        .cloned()
-        .collect();
-    if active.is_empty() { ordinal } else { active }
+        .filter(|(name, candidacy)| member(name.as_str() == instance, Some(candidacy)))
+        .map(|(name, _)| name.clone());
+    let unlisted_self = (!candidacies.contains_key(instance)).then(|| instance.to_string());
+    super::record::Candidates::new(count, qualified.chain(unlisted_self).collect())
 }
 
-/// One ordinal candidate's ring membership (see `active_members`).
+/// One candidate's ring membership (see `active_members`).
 fn member(is_self: bool, candidacy: Option<&Candidacy>) -> bool {
     match candidacy {
         Some(candidacy) => {
@@ -496,7 +490,7 @@ mod tests {
     }
 
     fn ring(count: u64, beats: &[(String, Candidacy)]) -> Vec<String> {
-        active_members(count, "streams-1", &beats.iter().cloned().collect())
+        active_members(count, "streams-1", &beats.iter().cloned().collect()).today()
     }
 
     #[test]
@@ -629,6 +623,15 @@ mod tests {
             PROGRESS_DEADLINE_MS, 139_000,
             "the pilot's ring mirror (src/bin/pilot/lb.rs) repeats this value"
         );
+    }
+
+    /// C3: the candidates carry no ordinal filter; today's ring keeps it.
+    #[test]
+    fn a_qualified_instance_beyond_the_count_is_a_candidate_outside_todays_ring() {
+        let beats = [beat("streams-1", 0, Some(0)), beat("streams-3", 0, Some(0))];
+        let candidates = active_members(2, "streams-1", &beats.iter().cloned().collect());
+        assert!(candidates.contains("streams-3"));
+        assert_eq!(candidates.today(), ["streams-1"]);
     }
 
     #[test]
