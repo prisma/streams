@@ -429,12 +429,7 @@ impl ObjectStore for GaugeStore {
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
         let path = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
         let flight = self.gauge.begin("LIST", &path);
-        let inner = self.inner.list(prefix);
-        futures_util::stream::unfold((inner, flight), |(mut inner, flight)| async move {
-            let item = inner.next().await?;
-            Some((item, (inner, flight)))
-        })
-        .boxed()
+        until_first_item(self.inner.list(prefix), flight)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
@@ -453,13 +448,25 @@ impl ObjectStore for GaugeStore {
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
         let flight = self.gauge.begin("DELETE", "");
-        let out = self.inner.delete_stream(locations);
-        futures_util::stream::unfold((out, flight), |(mut out, flight)| async move {
-            let item = out.next().await?;
-            Some((item, (out, flight)))
-        })
-        .boxed()
+        until_first_item(self.inner.delete_stream(locations), flight)
     }
+}
+
+/// `inner`, counted in flight until its first item or its end. The gauge's store is in memory: a
+/// listing's or a delete stream's store work is done by its first item, after which nothing of it
+/// is in flight at the store. That is also the span the count bound's permit covers
+/// (`count_gate::Gated`: a call's own wait, never the rest of its stream).
+fn until_first_item<T: Send + 'static>(
+    inner: futures_util::stream::BoxStream<'static, T>,
+    flight: InFlight,
+) -> futures_util::stream::BoxStream<'static, T> {
+    let state = (inner, Some(flight));
+    futures_util::stream::unfold(state, |(mut inner, flight)| async move {
+        let item = inner.next().await;
+        drop(flight);
+        Some((item?, (inner, None)))
+    })
+    .boxed()
 }
 
 /// Writers each appending to a stream of their own until stopped: each one's acks, and every
@@ -813,10 +820,67 @@ async fn a_pile_after_a_move_in_stays_within_the_store_count_bound() {
     );
     assert!(peak.general <= GENERAL_PERMITS, "{}", peak.shown(8));
     assert!(
+        general.0 <= GENERAL_PERMITS && commit.0 <= COMMIT_PERMITS,
+        "the pools' own peaks: {general:?} {commit:?}"
+    );
+    assert!(
         general.1 > 0,
         "the pile fills the general pool: {general:?}"
     );
     assert_eq!(commit.1, 0, "the commit path never waits: {commit:?}");
+}
+
+/// **The gauge counts a listing as the count bound does** (Addendum 17's red on PR #167's first
+/// run: the gauge saw 257 general requests beside a general pool that peaked at 256). A listing's
+/// permit covers its call to its first item, and on the gauge's in-memory store that is all of
+/// its store work. A listing open past its first item beside 256 parked descriptor GETs is 256
+/// general requests in flight, as the general pool counts, not 257.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_gauge_counts_an_open_listing_only_to_its_first_item() {
+    use object_store::ObjectStoreExt;
+    let mem = super::fixture_storage::mem();
+    for n in 0..2 {
+        let key = ObjPath::from(format!("registry/v5/listed/{n}.json"));
+        mem.put(&key, b"{}".to_vec().into()).await.unwrap();
+    }
+    let fault = FaultStore::uniform(mem, 0x5419, FaultPlan::CLEAN);
+    let parked = fault.hold_class(
+        crate::dst::StoreOp::Get,
+        crate::dst::ObjClass::Other,
+        GENERAL_PERMITS as u64,
+    );
+    let gauge = Arc::new(Gauge::default());
+    let io = Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
+    let gauged = GaugeStore {
+        inner: fault.clone(),
+        gauge: gauge.clone(),
+    };
+    let store = TimingStore::new(gauged, io.clone());
+    let mut listing = store.list(Some(&ObjPath::from("registry/v5/listed")));
+    assert!(listing.next().await.is_some(), "the listing's first item");
+    let keys: Vec<ObjPath> = (0..GENERAL_PERMITS)
+        .map(|n| ObjPath::from(format!("registry/v5/g/{n}")))
+        .collect();
+    let gets = keys.iter().map(|key| store.get(key));
+    let parked_all = async {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while parked.load(Ordering::Relaxed) < GENERAL_PERMITS as u64 {
+            assert!(Instant::now() < deadline, "every GET parks");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let peak = gauge.window();
+        fault.release_hold();
+        peak
+    };
+    let (_, peak) =
+        futures_util::future::join(futures_util::future::join_all(gets), parked_all).await;
+    assert_eq!(
+        (peak.general, io.count_seen()[0].0),
+        (GENERAL_PERMITS, GENERAL_PERMITS),
+        "{}",
+        peak.shown(4)
+    );
+    assert!(listing.next().await.is_some(), "the listing's second item");
 }
 
 /// `split_pause`'s parent of `streams` streams, every descriptor past the cache's TTL, split

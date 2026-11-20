@@ -2706,7 +2706,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c7365d60c77dc0a6cc0e0e64c7720b656555beb019858f1972c16333d51c4c4b",
+    "function_sha256": "1ac72c31bb38f831b6fccc41da10cbb60213eef1355330cff4c7fc3887f13335",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_store_inflight.rs",
@@ -11926,6 +11926,19 @@
     "scenarios": [
       "DUR-001"
     ]
+  },
+  {
+    "name": "the_gauge_counts_an_open_listing_only_to_its_first_item",
+    "attributes": [
+      "#[tokio::test(crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c98117d3617f8a1f7e8ad90e39c54445d5a077a582cf75fe2879b378ca6acfa8",
+    "mechanisms": [],
+    "configuration": [
+      "let fault = FaultStore::uniform(mem, 0x5419, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/split_store_inflight.rs",
+    "scenarios": []
   },
   {
     "name": "the_givers_span_page_of_the_moved_child_is_served_by_the_stale_target",
