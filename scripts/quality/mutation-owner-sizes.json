@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "9c6294bc0fa35f7dedd60294478d89edbcbe3feb",
+  "commit": "7ca0139bcafd27da5f2257d90ee555d2d8474954",
   "measured_on": "2026-11-20",
   "owners": {
     "admission_body": 14,
@@ -284,7 +284,8 @@
     "topology": 84,
     "topology_actor": 27,
     "topology_fence": 34,
-    "topology_gate": 43,
+    "topology_gate": 44,
+    "topology_gate_parked": 2,
     "topology_intent": 48,
     "topology_merge": 43,
     "topology_mod": 0,
