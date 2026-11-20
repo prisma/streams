@@ -11961,6 +11961,17 @@
     ]
   },
   {
+    "name": "the_gauge_counts_a_stream_queued_for_its_permit_only_once_it_holds_it",
+    "attributes": [
+      "#[tokio::test(crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0e51074201a5cb358b720c644b000605318a507c9bb686cb4c036e8190feb18a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_store_inflight.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_gauge_counts_an_open_listing_only_to_its_first_item",
     "attributes": [
       "#[tokio::test(crate = \"crate::test_rt\")]"

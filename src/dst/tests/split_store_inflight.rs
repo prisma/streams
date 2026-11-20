@@ -428,8 +428,7 @@ impl ObjectStore for GaugeStore {
         prefix: Option<&ObjPath>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
         let path = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
-        let flight = self.gauge.begin("LIST", &path);
-        until_first_item(self.inner.list(prefix), flight)
+        until_first_item(self.inner.list(prefix), self.gauge.clone(), "LIST", path)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
@@ -447,21 +446,27 @@ impl ObjectStore for GaugeStore {
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
-        let flight = self.gauge.begin("DELETE", "");
-        until_first_item(self.inner.delete_stream(locations), flight)
+        let deletes = self.inner.delete_stream(locations);
+        until_first_item(deletes, self.gauge.clone(), "DELETE", String::new())
     }
 }
 
-/// `inner`, counted in flight until its first item or its end. The gauge's store is in memory: a
-/// listing's or a delete stream's store work is done by its first item, after which nothing of it
-/// is in flight at the store. That is also the span the count bound's permit covers
-/// (`count_gate::Gated`: a call's own wait, never the rest of its stream).
+/// `inner`, counted in flight as `kind` at `path` from its first poll until its first item or its
+/// end. A stream sends nothing before it is polled, and `TimingStore` polls it only once it holds
+/// its count permit (`count_gate::Gated`), so a stream created while its pool is full is queued, not
+/// at the store. The gauge's store is in memory: a listing's or a delete stream's store work is
+/// done by its first item, after which nothing of it is in flight at the store. From the first poll
+/// to the first item is the span the count bound's permit covers (a call's own wait, never the rest
+/// of its stream).
 fn until_first_item<T: Send + 'static>(
     inner: futures_util::stream::BoxStream<'static, T>,
-    flight: InFlight,
+    gauge: Arc<Gauge>,
+    kind: &'static str,
+    path: String,
 ) -> futures_util::stream::BoxStream<'static, T> {
-    let state = (inner, Some(flight));
-    futures_util::stream::unfold(state, |(mut inner, flight)| async move {
+    let state = (inner, Some((gauge, path)));
+    futures_util::stream::unfold(state, move |(mut inner, first)| async move {
+        let flight = first.map(|(gauge, path)| gauge.begin(kind, &path));
         let item = inner.next().await;
         drop(flight);
         Some((item?, (inner, None)))
@@ -881,6 +886,53 @@ async fn the_gauge_counts_an_open_listing_only_to_its_first_item() {
         peak.shown(4)
     );
     assert!(listing.next().await.is_some(), "the listing's second item");
+}
+
+/// **The gauge counts a listing or a delete stream from its first poll** (PR #169's red: the gauge
+/// saw 257 general requests beside a general pool that peaked at 256, one of them a compacted
+/// listing). `TimingStore` takes a stream's permit on its first poll and polls the stream only
+/// then, so a listing and a delete stream created while the general pool is full are queued for
+/// their permits, not in flight at the store; once the pool frees, each is one in flight to its
+/// first item.
+#[tokio::test(crate = "crate::test_rt")]
+async fn the_gauge_counts_a_stream_queued_for_its_permit_only_once_it_holds_it() {
+    use object_store::ObjectStoreExt;
+    let mem = super::fixture_storage::mem();
+    let key = ObjPath::from("shards/root/compacted/0.sst");
+    mem.put(&key, b"x".to_vec().into()).await.unwrap();
+    let gauge = Arc::new(Gauge::default());
+    let io = Arc::new(StoreResources::new(&crate::config::StorageConfig::default()));
+    let gauged = GaugeStore {
+        inner: mem,
+        gauge: gauge.clone(),
+    };
+    let store = TimingStore::new(gauged, io.clone());
+    let held = io.hold_general().await;
+    let mut listing = store.list(Some(&ObjPath::from("shards/root/compacted")));
+    let mut deletes = store.delete_stream(futures_util::stream::iter([Ok(key)]).boxed());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        listing.poll_next_unpin(&mut cx).is_pending()
+            && deletes.poll_next_unpin(&mut cx).is_pending(),
+        "both wait for a general permit"
+    );
+    let queued = gauge.window();
+    assert_eq!(
+        queued.general,
+        0,
+        "a stream queued for its permit is not at the store: {}",
+        queued.shown(4)
+    );
+    drop(held);
+    assert!(listing.next().await.is_some(), "the listing's item");
+    assert!(deletes.next().await.is_some(), "the delete's item");
+    let ran = gauge.window();
+    assert_eq!(
+        ran.general,
+        1,
+        "each in flight alone to its first item: {}",
+        ran.shown(4)
+    );
 }
 
 /// `split_pause`'s parent of `streams` streams, every descriptor past the cache's TTL, split
