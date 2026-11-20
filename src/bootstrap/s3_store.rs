@@ -59,7 +59,11 @@ impl S3Store {
         // Records Tigris's Server-Timing (their internal ms) and
         // x-tigris-served-from per response → sp50/sp99 + served_from
         // in /v1/debug/store. wall − server = network path.
-        let http = crate::store_timing::SniffConnector.connect(&options)?;
+        // The client's DNS cache (`store_timing::resolver`): its connections share one lookup
+        // per host and keep it for its TTL.
+        let dns = std::sync::Arc::new(crate::store_timing::CachingResolver::default());
+        let options = options.with_dns_resolver(dns.clone());
+        let http = crate::store_timing::SniffConnector(dns).connect(&options)?;
         let builder = builder
             .with_client_options(options)
             .with_http_connector(SharedHttp(http))

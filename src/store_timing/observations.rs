@@ -659,6 +659,8 @@ pub(super) fn http_op(method: &str, query: Option<&str>) -> u8 {
 #[derive(Debug)]
 struct SniffService {
     inner: object_store::client::HttpClient,
+    /// The client's DNS cache, told of every failed connect.
+    dns: std::sync::Arc<super::resolver::CachingResolver>,
 }
 
 #[async_trait]
@@ -682,7 +684,14 @@ impl object_store::client::HttpService for SniffService {
         } else {
             classify(req.uri().path())
         };
-        let resp = self.inner.execute(req).await?;
+        let host = req.uri().host().map(str::to_string);
+        let resp = self.inner.execute(req).await.inspect_err(|error| {
+            if error.kind() == object_store::client::HttpErrorKind::Connect
+                && let Some(host) = &host
+            {
+                self.dns.forget(host);
+            }
+        })?;
         let h = http_stats();
         if let Some(us) = resp
             .headers()
@@ -708,9 +717,10 @@ impl object_store::client::HttpService for SniffService {
     }
 }
 
-/// Install with `AmazonS3Builder::with_http_connector(SniffConnector)`.
-#[derive(Debug, Default)]
-pub(crate) struct SniffConnector;
+/// Install with `AmazonS3Builder::with_http_connector`, over the client's DNS cache, the resolver
+/// its options name, which forgets a host whose connect failed.
+#[derive(Debug)]
+pub(crate) struct SniffConnector(pub(crate) std::sync::Arc<super::resolver::CachingResolver>);
 
 impl object_store::client::HttpConnector for SniffConnector {
     fn connect(
@@ -720,6 +730,7 @@ impl object_store::client::HttpConnector for SniffConnector {
         let inner = object_store::client::ReqwestConnector::default().connect(options)?;
         Ok(object_store::client::HttpClient::new(SniffService {
             inner,
+            dns: self.0.clone(),
         }))
     }
 }

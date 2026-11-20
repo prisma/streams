@@ -45,9 +45,11 @@ pub(crate) static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 pub(crate) static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 mod count_gate;
+mod resolver;
 mod resources;
 #[cfg(test)]
 pub(crate) use count_gate::{COMMIT_PERMITS, GENERAL_PERMITS};
+pub(crate) use resolver::CachingResolver;
 pub(crate) use resources::StoreResources;
 
 /// ObjectStore wrapper that times every operation. Sits *beneath*
