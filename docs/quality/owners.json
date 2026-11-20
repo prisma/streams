@@ -1381,7 +1381,7 @@
       "count": 1,
       "owner": "crate::store_first_creates",
       "path": "src/dst/dst_tests.rs",
-      "reason": "The store requests a cell's first creates and appends put in flight on an instance that has served none of them (Addendum 25 of the forward-wedge ruling, 2026-11-20): the pile DST's gauge beneath the production store wrapper on a shared cell, a store 20 ms away. Measured and ignored in the suite, run under the machine's lock: the requests in flight by kind and path, their call sites and the count bound's pools, for one project of 600 streams appended and 100 created at once after a restart (the combined leg's case), and for 64 and 256 projects' first creates at once.",
+      "reason": "The store requests a cell's first creates and appends put in flight on an instance that has served none of them (Addendum 25 of the forward-wedge ruling, 2026-11-20): the pile DST's gauge beneath the production store wrapper on a shared cell, a store 20 ms away. Measured and ignored in the suite, run under the machine's lock: the requests in flight by kind and path, their call sites and the count bound's pools, for one project of 600 streams appended and 100 created at once after a restart (the combined leg's case), and for 64 and 256 projects' first creates at once; and the leg's case under the production in-flight cap of 512 (Addendum 26): requests in flight at their peak, the sheds, and each answered request's own store time by stage (descriptor reads, engine reads, the rest), from the calls its task made above the production wrapper.",
       "syntax": "path = \"tests/store_first_creates.rs\""
     },
     {

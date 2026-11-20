@@ -536,6 +536,18 @@
     "scenarios": []
   },
   {
+    "name": "a_cold_engine_under_the_in_flight_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a diagnosis, run under the machine's lock\"]"
+    ],
+    "function_sha256": "dff6e80a61bd16961b9bae83c4bbf09996a22cf81c47131f9a030ac1e9cfc391",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/store_first_creates.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_cold_pair_split_across_two_instances_is_colocated_and_merged",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
