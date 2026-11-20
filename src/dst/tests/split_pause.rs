@@ -99,7 +99,7 @@ pub(super) async fn reopened_cold(
 /// A one-leaf cell over `store` whose sealer never seals, with `streams` streams each holding one
 /// unsealed record, so each has its index rows in the sentinel; the memtable flushed to tables and
 /// the leaf reopened cold, so no block of them is cached.
-async fn loaded(store: Arc<dyn object_store::ObjectStore>, streams: usize) -> HttpRig {
+pub(super) async fn loaded(store: Arc<dyn object_store::ObjectStore>, streams: usize) -> HttpRig {
     let rig = http_rig_build(
         store,
         RigRuntime::first(),

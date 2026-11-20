@@ -2702,6 +2702,17 @@
     "scenarios": []
   },
   {
+    "name": "a_pile_after_a_move_in_stays_within_the_store_count_bound",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c7365d60c77dc0a6cc0e0e64c7720b656555beb019858f1972c16333d51c4c4b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_store_inflight.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_plain_append_with_the_owed_finals_body_is_refused_during_sealing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -11401,6 +11412,18 @@
     ]
   },
   {
+    "name": "split_pause_with_a_pile_in_flight",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a measurement, run under the machine's lock\"]"
+    ],
+    "function_sha256": "1178113ddbba3b301dc608628cf0b4bafea8d562677b540651c4832666003eac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_store_inflight.rs",
+    "scenarios": []
+  },
+  {
     "name": "sse_follows_lineage_across_split",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -11531,6 +11554,18 @@
     "scenarios": [
       "DUR-009"
     ]
+  },
+  {
+    "name": "store_requests_in_flight_around_a_split_and_an_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a diagnosis, run under the machine's lock\"]"
+    ],
+    "function_sha256": "a904870dead4a9f6dc58cb465f106135436662ee4f13363c971ce3906d6f9558",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/split_store_inflight.rs",
+    "scenarios": []
   },
   {
     "name": "stored_ns_reads_every_page_of_a_stream",

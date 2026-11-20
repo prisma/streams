@@ -44,7 +44,10 @@ pub(crate) use sentinels::spawn_sentinels;
 pub(crate) static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+mod count_gate;
 mod resources;
+#[cfg(test)]
+pub(crate) use count_gate::{COMMIT_PERMITS, GENERAL_PERMITS};
 pub(crate) use resources::StoreResources;
 
 /// ObjectStore wrapper that times every operation. Sits *beneath*
@@ -80,6 +83,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
             .resources
             .bulk_permit(classify(location.as_ref()), bytes)
             .await;
+        let _c = self
+            .resources
+            .count_permit(classify(location.as_ref()))
+            .await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
         let outcome = Outcome::of(&r);
@@ -95,7 +102,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     ) -> Result<Box<dyn MultipartUpload>> {
         let g = OpGuard::new(1, location);
         let class = classify(location.as_ref());
-        match self.inner.put_multipart_opts(location, opts).await {
+        let held = self.resources.count_permit(class).await;
+        let created = self.inner.put_multipart_opts(location, opts).await;
+        drop(held);
+        match created {
             Ok(up) => Ok(Box::new(TimedMpu {
                 inner: up,
                 guard: Some(g),
@@ -126,6 +136,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 .bulk_permit(classify(location.as_ref()), w)
                 .await
         };
+        let _c = self
+            .resources
+            .count_permit(classify(location.as_ref()))
+            .await;
         let is_head = options.head;
         let g = OpGuard::new(if is_head { 3 } else { 2 }, location);
         let r = self.inner.get_opts(location, options).await;
@@ -184,6 +198,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 ranges.iter().map(|r| r.end.saturating_sub(r.start)).sum(),
             )
             .await;
+        let _c = self
+            .resources
+            .count_permit(classify(location.as_ref()))
+            .await;
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
         g.finish(Outcome::of(&r));
@@ -210,12 +228,14 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         let s = stats();
         let now = s.inflight.fetch_add(1, Ordering::Relaxed) + 1;
         s.inflight_peak.fetch_max(now, Ordering::Relaxed);
-        TimedDeleteStream {
+        // A delete stream's paths are not known before it runs: gc's, never the commit path's,
+        // so it takes a general permit.
+        let timed = TimedDeleteStream {
             inner: self.inner.delete_stream(locations),
             last: Instant::now(),
             open: true,
-        }
-        .boxed()
+        };
+        count_gate::Gated::new(self.resources.count_permit(4), timed).boxed()
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
@@ -223,15 +243,17 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // needs drops the stream before it ends.
         charge(prefix.map_or("", AsRef::as_ref), CLASS_A);
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
-        TimedStream {
+        let timed = TimedStream {
             inner: self.inner.list(prefix),
             guard: Some(g),
-        }
-        .boxed()
+        };
+        let class = listed_class(prefix);
+        count_gate::Gated::new(self.resources.count_permit(class), timed).boxed()
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
         charge(prefix.map_or("", AsRef::as_ref), CLASS_A);
+        let _c = self.resources.count_permit(listed_class(prefix)).await;
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         let r = self.inner.list_with_delimiter(prefix).await;
         g.finish(Outcome::of(&r));
@@ -239,6 +261,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+        let _c = self.resources.count_permit(classify(to.as_ref())).await;
         let g = OpGuard::new(6, from);
         let r = self.inner.copy_opts(from, to, options).await;
         let outcome = Outcome::of(&r);
@@ -246,6 +269,12 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         charge(to.as_ref(), billed(outcome, CLASS_A));
         r
     }
+}
+
+/// The class of a listing under `prefix`: the class of an object in it, so a listing of a
+/// shard's `wal` names the WAL's class as its objects do.
+fn listed_class(prefix: Option<&Path>) -> u8 {
+    classify(&format!("{}/", prefix.map_or("", AsRef::as_ref)))
 }
 
 /// The root every registry object lives under (descriptors, fork debts,
@@ -374,24 +403,26 @@ impl MultipartUpload for TimedMpu {
         self.bytes = self.bytes.saturating_add(bytes);
         let class = self.class;
         let inner = self.inner.put_part(data);
-        if class != 2 {
-            return inner;
-        }
         let resources = self.resources.clone();
         Box::pin(async move {
             let _b = resources.bulk_permit(class, bytes).await;
+            let _c = resources.count_permit(class).await;
             inner.await
         })
     }
     async fn complete(&mut self) -> Result<PutResult> {
+        let held = self.resources.count_permit(self.class).await;
         let r = self.inner.complete().await;
+        drop(held);
         if let Some(g) = self.guard.take() {
             g.finish_put(Outcome::of(&r), self.bytes);
         }
         r
     }
     async fn abort(&mut self) -> Result<()> {
+        let held = self.resources.count_permit(self.class).await;
         let r = self.inner.abort().await;
+        drop(held);
         if let Some(g) = self.guard.take() {
             g.finish(Outcome::Failed);
         }

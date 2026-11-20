@@ -1,5 +1,7 @@
 //! Shared store-I/O admission owned by one runtime, across all its stores.
+use super::count_gate::{COMMIT_PERMITS, CountWait, GENERAL_PERMITS, Pool};
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
@@ -7,6 +9,9 @@ use std::time::Instant;
 pub(crate) struct StoreResources {
     bulk: Option<BulkGate>,
     nominal_get_bytes: u64,
+    /// The count bound's two pools (`count_permit`).
+    general: Arc<Pool>,
+    commit: Arc<Pool>,
 }
 
 impl StoreResources {
@@ -17,7 +22,33 @@ impl StoreResources {
             )
             .map(BulkGate::new),
             nominal_get_bytes: config.bulk_nominal_get_bytes,
+            general: Pool::new(GENERAL_PERMITS),
+            commit: Pool::new(COMMIT_PERMITS),
         }
+    }
+
+    /// The wait for a permit of the count bound (Addendum 17): `COMMIT_PERMITS` of their own for
+    /// the WAL, the manifest and the fleet (classes 0, 1 and 3), `GENERAL_PERMITS` shared by every
+    /// other class.
+    ///
+    /// The order: a request takes its bulk bytes first (`bulk_permit`, SST transfers only), then
+    /// this permit, and holds both for the call's own wait. A request queued for bulk bytes holds
+    /// no count permit, so SST transfers waiting on the byte gate never occupy the slots
+    /// descriptor reads need. Every holder of either is a dispatched call that completes on
+    /// network I/O, and no holder of a count permit waits for bulk bytes, so no wait is circular.
+    pub(super) fn count_permit(&self, class: u8) -> CountWait {
+        if matches!(class, 0 | 1 | 3) {
+            self.commit.acquire()
+        } else {
+            self.general.acquire()
+        }
+    }
+
+    /// Each pool's most permits held at once and its waits: the general pool's, then the commit
+    /// path's.
+    #[cfg(test)]
+    pub(crate) fn count_seen(&self) -> [(usize, u64); 2] {
+        [self.general.seen(), self.commit.seen()]
     }
 
     pub(super) async fn bulk_permit(&self, class: u8, bytes: u64) -> Option<BulkHold<'_>> {

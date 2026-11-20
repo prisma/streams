@@ -85,6 +85,8 @@ mod split_pause;
 mod split_purged;
 #[path = "tests/split_start.rs"]
 mod split_start;
+#[path = "tests/split_store_inflight.rs"]
+mod split_store_inflight;
 #[path = "tests/split_superseded.rs"]
 mod split_superseded;
 #[path = "tests/split_t_outcome.rs"]

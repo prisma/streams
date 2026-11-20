@@ -1339,6 +1339,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::split_store_inflight",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The store requests one instance holds in flight and their count bound (Addenda 9, 10, 13, 16 and 17 of the forward-wedge ruling, 2026-11-20): a gauge beneath the production store wrapper on split_pause's parent, a store 20 ms away. Asserted: a pile of 2,500 distinct expired streams touched at once after a move-in stays within GENERAL_PERMITS + COMMIT_PERMITS store requests, the commit path never waits, every append is acknowledged. Measured and ignored in the suite, run under the machine's lock: each window's peak by kind and path around a split and a move-in open under 64 and 256 writers beside the instance's own requests in flight, their call sites and half-second timelines, and a split's pause with a pile in flight.",
+      "syntax": "path = \"tests/split_store_inflight.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_t_outcome",
       "path": "src/dst/dst_tests.rs",
       "reason": "A split whose 'T' write fails after the attempt (S4 6.4, addendum 6 of DESIGN-DECISION-c3-incomplete-rig-2026-11-11): the split refuses Unfinished with no resume and no rollback, the queued writer is refused as final, and the parent's next opener rolls forward from a landed 'T' or back without one; compiler and the full DST suite exercise the module.",
