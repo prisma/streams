@@ -3848,6 +3848,26 @@ None of these changes alters a status or code on a path that worked before, and 
 - **Risk reason:** low: one member is added to two operator-debug answers and every existing member keeps its value; nothing on a request path changes. The risk is a tool outside the repository that requires the exact member set. WIRE-MATRIX: the line of `GET /v1/debug/store` names the member.
 - **Check against commit:** written with the change.
 
+### #271 (this record's commit) — GET /v1/debug/store's outbound gauge counts a listing or a delete stream from when it holds its count permit, as it counts every other request, and a listing's or delete's duration starts there too
+
+- **Program item:** prisma/streams#149, the forward-wedge ruling's Addendum 25 (GATE-DECISION-meas-full-forward-wedge-2026-11-19, Fable 5.2 under the owner's delegation): the rig's gauge over 256 with listings at the top was permits held plus listings created and still waiting, so the rig could not read the gauge against the pools (#270).
+- **Surface:** operator-debug
+- **Endpoint:** `GET /v1/debug/store[?window=][&swap=]` (behind the one `/v1/debug` gate, #39) and `GET /operator/data.json`'s `local.store`: the members `out_inflight_now` and `out_inflight_peak`, and the `list:<class>` and `delete:<class>` cells' durations. No product, raw or fleet-internal route, and no object-store request, changes.
+- **Condition:** A listing or a delete stream (every delete: object_store's single delete is a delete stream of one path) made while its count bound pool is full, or made and not yet polled.
+- **Before:** `TimingStore::list` and `delete_stream` counted the stream in the outbound gauge when it was created, before `count_gate::Gated` asked for its permit; every other request counted after its permit. A listing's `list:<class>` duration ran from its creation, its wait for a permit included.
+- **After:**
+  - A listing or a delete stream enters the gauge on its first poll, which `Gated` makes only once it holds its permit, and leaves it at its end or its drop, as before. The rule is one for every request: counted once it holds its permit.
+  - A listing's duration runs from its first poll to its end; a delete's first event from its first poll. Every member keeps its name and type.
+- **Retry semantics:** None.
+- **Who is affected:** Operators and the scouting rigs, which read `out_inflight_now`: it no longer counts a stream waiting for its permit, so it reads against `count_gate` (#270). A stream made and dropped unpolled is no longer counted at all. Anyone comparing `list:<class>` or `delete:<class>` latencies (the window's percentiles, the slow ring): a value from before this commit includes the wait for a permit and one after does not, so the two are not comparable across it.
+- **Given up:** The time a listing or a delete waits for its count permit is no longer in any duration the snapshot reports, and nothing times it: `count_gate`'s `waits` counts those waits but does not time them. The gauge also no longer shows how many streams are waiting for a permit at once.
+- **Deployment comparison:** Not applicable: no setting changes.
+- **Pinning tests:**
+  - src/store_timing/tests.rs::a_stream_queued_for_its_count_permit_is_not_in_the_outbound_gauge (new: with the general pool held, 128 listings and 128 delete streams polled once each wait for permits and the process's gauge grows by fewer than 128; freed, each answers). Red on the unfixed tree: "256 of 256 streams queued for a permit are in the outbound gauge".
+  - unchanged and green: the `store_timing::` tests and src/dst/tests/runtime_open_gate.rs::debug_store_reports_this_runtimes_shard_opens (the peak swap).
+- **Risk reason:** low: two operator-debug members count fewer requests in one case (streams waiting for a permit) and none else changes; no request path changes. The risk is a dashboard that read the gauge as "requests made" rather than "requests at the store".
+- **Check against commit:** written with the change.
+
 ### #45 07db91a7 — Scaler cooldown and merge patience saturate instead of wrapping
 
 > **Flagged:** the commit does not match the recorded text. See [Discrepancies](#discrepancies).

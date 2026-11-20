@@ -319,6 +319,14 @@ impl StoreStats {
     }
 }
 
+impl StoreStats {
+    /// One outbound request enters the gauge: one more in flight, and the high-water mark.
+    pub(super) fn enter(&self) {
+        let now = self.inflight.fetch_add(1, Ordering::Relaxed) + 1;
+        self.inflight_peak.fetch_max(now, Ordering::Relaxed);
+    }
+}
+
 /// RAII: outbound-op guard — gauge up on create, down on drop, and records
 /// the latency sample exactly once (on explicit finish or on drop).
 pub(super) struct OpGuard {
@@ -331,9 +339,7 @@ pub(super) struct OpGuard {
 
 impl OpGuard {
     pub(super) fn new(op: u8, path: &Path) -> Self {
-        let s = stats();
-        let now = s.inflight.fetch_add(1, Ordering::Relaxed) + 1;
-        s.inflight_peak.fetch_max(now, Ordering::Relaxed);
+        stats().enter();
         let p = path.as_ref().to_string();
         OpGuard {
             op,

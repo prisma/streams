@@ -3,7 +3,10 @@ use super::{
     StoreStats, Totals, parse_server_timing_us, pct, percentile_index, store_read_percentiles,
 };
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, atomic::AtomicI64};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicI64, Ordering},
+};
 
 /// The counters' start in every private store below.
 const SINCE_MS: u64 = 1_790_000_000_000;
@@ -364,5 +367,21 @@ fn the_store_wait_is_the_touch_paths_reads_within_the_window() {
         store_read_percentiles(events.iter(), cutoff),
         (0, 0),
         "one read under the floor: none"
+    );
+}
+
+#[test]
+fn a_request_entering_the_gauge_raises_its_count_and_its_high_water_mark() {
+    let s = store();
+    s.enter();
+    s.enter();
+    s.inflight.fetch_sub(1, Ordering::Relaxed);
+    assert_eq!(
+        (
+            s.inflight.load(Ordering::Relaxed),
+            s.inflight_peak.load(Ordering::Relaxed)
+        ),
+        (1, 2),
+        "two entered and one left: one in flight, two at the most"
     );
 }

@@ -227,15 +227,14 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         &self,
         locations: BoxStream<'static, Result<Path>>,
     ) -> BoxStream<'static, Result<Path>> {
-        let s = stats();
-        let now = s.inflight.fetch_add(1, Ordering::Relaxed) + 1;
-        s.inflight_peak.fetch_max(now, Ordering::Relaxed);
         // A delete stream's paths are not known before it runs: gc's, never the commit path's,
-        // so it takes a general permit.
+        // so it takes a general permit. It enters the outbound gauge on its first poll, once it
+        // holds the permit, as every other request does after its own (edge change #271).
         let timed = TimedDeleteStream {
             inner: self.inner.delete_stream(locations),
             last: Instant::now(),
-            open: true,
+            started: false,
+            open: false,
         };
         count_gate::Gated::new(self.resources.count_permit(4), timed).boxed()
     }
@@ -244,10 +243,12 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // Charged when the listing starts: a caller that takes what it
         // needs drops the stream before it ends.
         charge(prefix.map_or("", AsRef::as_ref), CLASS_A);
-        let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
+        // Timed and counted in the outbound gauge from its first poll, once it holds its
+        // permit (edge change #271).
         let timed = TimedStream {
             inner: self.inner.list(prefix),
-            guard: Some(g),
+            pending: Some(prefix.cloned().unwrap_or_default()),
+            guard: None,
         };
         let class = listed_class(prefix);
         count_gate::Gated::new(self.resources.count_permit(class), timed).boxed()
@@ -312,10 +313,14 @@ fn billed(outcome: Outcome, class: u64) -> u64 {
     }
 }
 
-/// Times a list stream over its whole life (streams hold the outbound
-/// connection until exhausted or dropped).
+/// Times a list stream from its first poll to its end (streams hold the outbound
+/// connection until exhausted or dropped). `TimingStore` polls it only once it
+/// holds its count permit (`count_gate::Gated`), so a listing queued for one is
+/// not in the outbound gauge (edge change #271).
 struct TimedStream<S> {
     inner: S,
+    /// The prefix, until the first poll starts its guard.
+    pending: Option<Path>,
     guard: Option<OpGuard>,
 }
 
@@ -325,6 +330,9 @@ impl<S: Stream<Item = Result<ObjectMeta>> + Unpin> Stream for TimedStream<S> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<ObjectMeta>>> {
+        if let Some(prefix) = self.pending.take() {
+            self.guard = Some(OpGuard::new(5, &prefix));
+        }
         let poll = self.inner.poll_next_unpin(cx);
         if let std::task::Poll::Ready(None) = poll
             && let Some(g) = self.guard.take()
@@ -335,11 +343,15 @@ impl<S: Stream<Item = Result<ObjectMeta>> + Unpin> Stream for TimedStream<S> {
     }
 }
 
-/// delete_stream wrapper: gauge held for the stream's life, one recorded
-/// event per completed (yielded) delete.
+/// delete_stream wrapper: gauge held from its first poll (once it holds its
+/// count permit, edge change #271) to its end, one recorded event per completed
+/// (yielded) delete.
 struct TimedDeleteStream {
     inner: BoxStream<'static, Result<Path>>,
     last: Instant,
+    /// Polled once: it entered the gauge.
+    started: bool,
+    /// In the gauge now.
     open: bool,
 }
 
@@ -349,6 +361,12 @@ impl Stream for TimedDeleteStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<Path>>> {
+        if !self.started {
+            self.started = true;
+            self.open = true;
+            self.last = Instant::now();
+            stats().enter();
+        }
         let poll = self.inner.poll_next_unpin(cx);
         match &poll {
             std::task::Poll::Ready(Some(item)) => {

@@ -512,3 +512,81 @@ async fn an_aborted_upload_waits_for_a_permit_of_its_class() {
     drop(held);
     abort.await.unwrap();
 }
+
+/// A listing or a delete stream queued for its count permit is not in the outbound gauge
+/// (`out_inflight_now`, edge change #271): it enters once it is polled holding its permit, as
+/// every other request enters after its own, and leaves at its end. The gauge is the process's,
+/// which other tests' requests move by a few, so the queued streams are many.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_stream_queued_for_its_count_permit_is_not_in_the_outbound_gauge() {
+    use futures_util::StreamExt;
+    use object_store::{ObjectStore, ObjectStoreExt, path::Path};
+    const QUEUED: usize = 256;
+    let (store, io) = counted();
+    let key = Path::from("registry/v5/queued/0.json");
+    store.put(&key, b"{}".to_vec().into()).await.unwrap();
+    let prefix = Path::from("registry/v5/queued");
+    let held = io.hold_general().await;
+    let inflight = || super::stats().inflight.load(Ordering::Relaxed);
+    let before = inflight();
+    let mut streams: Vec<futures_util::stream::BoxStream<'static, bool>> = (0..QUEUED)
+        .map(|n| {
+            if n % 2 == 0 {
+                store.list(Some(&prefix)).map(|meta| meta.is_ok()).boxed()
+            } else {
+                let paths = futures_util::stream::iter([Ok(key.clone())]).boxed();
+                store.delete_stream(paths).map(|path| path.is_ok()).boxed()
+            }
+        })
+        .collect();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for stream in &mut streams {
+        assert!(
+            stream.poll_next_unpin(&mut cx).is_pending(),
+            "it waits for a permit"
+        );
+    }
+    let queued = inflight() - before;
+    assert!(
+        queued < i64::try_from(QUEUED / 2).unwrap(),
+        "{queued} of {QUEUED} streams queued for a permit are in the outbound gauge"
+    );
+    drop(held);
+    for stream in streams {
+        assert!(
+            stream.all(|ok| async move { ok }).await,
+            "each answers once it has a permit"
+        );
+    }
+}
+
+/// A delete stream polled holding its count permit is in the outbound gauge until its end
+/// (edge change #271): the process's gauge, which other tests' requests move by a few, so the
+/// streams are many, each over a list of paths that never ends while it is held.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_delete_stream_polled_with_its_permit_is_in_the_outbound_gauge_until_it_ends() {
+    use futures_util::StreamExt;
+    use object_store::ObjectStore;
+    const STREAMS: usize = 128;
+    let (store, _io) = counted();
+    let inflight = || super::stats().inflight.load(Ordering::Relaxed);
+    let before = inflight();
+    let mut streams: Vec<_> = (0..STREAMS)
+        .map(|_| store.delete_stream(futures_util::stream::pending().boxed()))
+        .collect();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for stream in &mut streams {
+        assert!(
+            stream.poll_next_unpin(&mut cx).is_pending(),
+            "its paths never end"
+        );
+    }
+    let open = inflight() - before;
+    drop(streams);
+    let ended = inflight() - before;
+    let half = i64::try_from(STREAMS / 2).unwrap();
+    assert!(
+        open > half && ended < half,
+        "{open} of {STREAMS} polled delete streams in the outbound gauge, {ended} once dropped"
+    );
+}
