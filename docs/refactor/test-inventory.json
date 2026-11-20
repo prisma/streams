@@ -1505,6 +1505,17 @@
     "scenarios": []
   },
   {
+    "name": "a_fresh_cells_document_is_created_listing_the_ordinals_in_one_write",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "d071d79723518bd84815e57fe0392ef51f46a2a2259f5af8c1a26ff13900b42d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_fresh_entry_refuses_a_capability_without_a_lookup",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1891,6 +1902,17 @@
     "scenarios": []
   },
   {
+    "name": "a_listed_member_stale_on_one_reader_leaves_that_readers_ring_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "aa9ec3b9d9b6b0d698947131b6d8343f6ebeab7331eb0104bfc93b4ca9446cc2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_listing_holds_its_reservation_until_it_has_answered",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2101,6 +2123,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_topology.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_members_write_whose_answer_was_lost_is_found_by_the_next_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0f838e39403a19b6f08d4634fa48574c956419f1efa2156e3a103c6ce0af6f77",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
     "scenarios": []
   },
   {
@@ -6147,6 +6180,17 @@
       "crate::failpoints::release_release_after_epoch_check(\"frk21src\");"
     ],
     "file": "src/dst/tests/fork_cleanup.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_older_cells_document_is_listed_once_by_a_member_of_todays_ring",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5b889ed60359ca7db265e6e03ccd9f882049d27752b3ec1662555e3a8feb19ce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
     "scenarios": []
   },
   {
@@ -12384,6 +12428,17 @@
     "scenarios": []
   },
   {
+    "name": "the_record_lists_todays_ring_through_a_count_rise_and_a_drop",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e70f3a6ba1f62549c5847ca9d36cbf8dee58c8bced5a38807937af96544f630d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_released_queue_is_waited_for_until_it_drains_or_its_bound",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -12684,6 +12739,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_reserve.rs",
+    "scenarios": []
+  },
+  {
+    "name": "two_members_creating_a_fresh_cells_document_at_once_end_with_one",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "20c62241068f1d558b5dac60b1c113900464ef0da27d07889f499d2b27fede36",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
     "scenarios": []
   },
   {

@@ -62,6 +62,8 @@ while time.time() - start < DURATION:
     ov = get_json("fleetops/fleet/overrides.json") or {}
     ov_entries = ov.get("entries", {}) or {}
     ov_str = "|".join(f"{p}->{e.get('to','?')}" for p, e in sorted(ov_entries.items())) or "-"
+    # The ring of record (§22): absent on an older cell's document, shown as "-".
+    members = "|".join(m.get("name", "?") for m in (ov.get("members") or [])) or "-"
     now_ms = time.time() * 1000
     hbs = heartbeats()
     live = {k: v for k, v in hbs.items() if now_ms - v.get("ts_ms", 0) < 10_000}
@@ -72,7 +74,7 @@ while time.time() - start < DURATION:
     line = f"{t},{desired},{len(live)},{'|'.join(names)},{rps},{cpu},{owned},{epoch},{ov_str}"
     csv.write(line + "\n"); csv.flush()
     stamp = time.strftime("%H:%M:%S")
-    print(f"[{stamp} t+{t:4}s] desired={desired} live={len(live)} [{' '.join(names)}] rps=[{rps}] cpu%=[{cpu}] shards=[{owned}] ov=[{ov_str}]")
+    print(f"[{stamp} t+{t:4}s] desired={desired} live={len(live)} [{' '.join(names)}] rps=[{rps}] cpu%=[{cpu}] shards=[{owned}] ov=[{ov_str}] members=[{members}]")
     if epoch != last_epoch:
         reason = des.get("reason", "?")
         msg = f"t+{t}s desired.json epoch {last_epoch} -> {epoch}: count={desired} reason: {reason}"

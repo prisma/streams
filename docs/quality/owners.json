@@ -1505,6 +1505,14 @@
       "syntax": "path = \"tests/topology_cancel.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_record",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The membership of record in its interim (section 22 step 4, Addendum 14): real fleet members through a count rise and a drop and a member stale on one reader, an older cell's document listed once, a fresh cell's document created once (by one of two members at once), and a members write whose answer was lost; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_record.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 2,
       "owner": "crate::start",

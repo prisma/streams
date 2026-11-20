@@ -447,6 +447,9 @@ OWNERS = (
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    # The membership of record and its interim writer (§22 step 4, Addendum 14): its unit tests and
+    # the record DSTs (a count rise and drop, an older document, a lost write answer), each ~10-20 s.
+    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record::'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
