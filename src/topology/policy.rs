@@ -186,6 +186,9 @@ pub(crate) struct Policy {
     doubling: Option<Doubling>,
     /// The last decision's candidate was a split: its hold is a split's (#261 amendment).
     split: bool,
+    /// The parent of the last decision's merge candidate when this instance is its partner and
+    /// only the gate's `peer_acts` held it (`partner_merge`).
+    partner: Option<String>,
 }
 
 /// What a tick would start, before the gates.
@@ -200,6 +203,7 @@ impl Policy {
     pub(crate) fn decide(&mut self, view: &View, at: &Limits) -> Decision {
         self.observe(view, at);
         self.split = false;
+        self.partner = None;
         let held = match self.split_candidate(view, at) {
             Some(Ok(split)) => {
                 self.split = true;
@@ -212,9 +216,20 @@ impl Policy {
             return Decision::Hold(Hold::BeatsStale);
         }
         match self.merge_candidate(view, at) {
-            Some(merge) => act(view, at, merge),
+            Some(merge) => {
+                self.partner = partner_of(view, at, &merge);
+                act(view, at, merge)
+            }
             None => Decision::Hold(held),
         }
+    }
+
+    /// The parent of the last decision's merge candidate when this instance holds its `…1`,
+    /// another instance its `…0`, and nothing but the gate's `peer_acts` held it: the pair whose
+    /// half this instance's pass co-locates (#261 B1 as amended, GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 7). `None` for the actor and for any other decision.
+    pub(crate) fn partner_merge(&self) -> Option<&str> {
+        self.partner.as_deref()
     }
 
     /// Whether the last decision's candidate was a split, not a merge or none: a hold it ended in
@@ -385,6 +400,22 @@ fn act(view: &View, at: &Limits, candidate: Candidate<'_>) -> Decision {
         Candidate::Merge(_, _) if view.congested => Decision::Hold(Hold::Congested),
         Candidate::Merge(parent, _) => Decision::Merge { parent },
     }
+}
+
+/// The parent of `candidate`, a merge, when `view.me` holds its `…1` and another instance its
+/// `…0`, and the gate holds it for that alone: the same gate run for the partner's own half, and
+/// no congestion (see `Policy::partner_merge`).
+fn partner_of(view: &View, at: &Limits, candidate: &Candidate<'_>) -> Option<String> {
+    let Candidate::Merge(parent, zero) = candidate else {
+        return None;
+    };
+    let one = format!("{parent}1");
+    let held = view
+        .leaves
+        .iter()
+        .find(|leaf| leaf.prefix == one && leaf.owner == view.me)?;
+    let free = zero.owner != view.me && !view.congested && gate(view, at, held).is_none();
+    free.then(|| parent.clone())
 }
 
 /// Why `actor`'s operation may not start this tick (S4 §10.1 rule 1, rev 4's serialisation).

@@ -17,16 +17,14 @@ use std::time::Duration;
 
 /// The policy's lines and the fleet's waits, compressed: a second's sustains, cooldown and
 /// anti-flap, 7 appends a second as the split line, three shards an instance (so a split
-/// beside a parent needs a second instance). S4's and S6's own wait for the fleet (60 s after a
-/// count change) and the count's 30 s grow floor stay as shipped: they are constants of the
-/// binary. The scale-in window is 30 s (`fleet::hysteresis::tests::DST_SCALE_IN`,
+/// beside a parent needs a second instance). S4's and S6's own wait for the fleet after a count
+/// change follows the topology cooldown, so it is a second here too; the count's 30 s grow floor
+/// stays as shipped, a constant of the binary. The scale-in window is 30 s (`fleet::hysteresis::tests::DST_SCALE_IN`,
 /// DESIGN-DECISION-grow-shrink-gap-2026-11-11), not compressed below the fleet's own observation:
 /// - longer than one peer read plus a beat (8 s: planners re-read their peers one tick in three),
 ///   so no planner shrinks on a view older than its window;
 /// - longer than a split's hand-over with one failed attempt (the 5 s quiesce deadline, the next
 ///   pass 10 s on, its publish, the sibling's split on its owner's next pass: about 23 s);
-/// - shorter than S4's 60 s settle, so the test still pins #261 amendment B2 (without it a 30 s
-///   shrink beats the settle);
 /// - and the grow floor's 30 s: the fleet shrinks no faster than it grows.
 fn compressed(cli: &mut crate::config::CliArgs) {
     cli.fleet_max = FLEET_MAX;
@@ -49,8 +47,8 @@ const FLEET_MAX: u64 = 4;
 
 /// How long the quiet half may take to converge from `instances` running at the fourth leaf,
 /// derived from the waits it is made of (DESIGN-DECISION-converge-budget-2026-11-11 §2a):
-/// - a merge: S4's and S6's settle after a count change (`topology::ops::FLEET_SETTLE_MS`,
-///   60 s), a policy pass (`policy_loop::PERIOD`, 10 s) to co-locate the pair, the move
+/// - a merge: S4's and S6's settle after a count change (`topology::ops::settle_ms`, the
+///   topology cooldown, `compressed`'s 1 s), a policy pass (`policy_loop::PERIOD`, 10 s) to co-locate the pair, the move
 ///   cooldown that co-location starts (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, which
 ///   `compressed` does not set), a pass to merge, and one attempt lost to the 5 s quiesce
 ///   deadline with its retry and publish (20 s): 160 s, charged to each of the three merges in
@@ -64,19 +62,19 @@ const FLEET_MAX: u64 = 4;
 /// Three instances at the fourth leaf give 645 s; two give 685 s; four give 605 s.
 fn converge_budget(instances: usize) -> Duration {
     const MERGES: u64 = 3;
-    const PER_MERGE_SECS: u64 = 60 + 10 + 60 + 10 + 20;
+    let per_merge_secs = settle_secs(compressed) + 10 + 60 + 10 + 20;
     const PER_COUNT_CHANGE_SECS: u64 = 30 + 10;
     const STOP_SECS: u64 = 5;
     let instances = u64::try_from(instances).unwrap_or(FLEET_MAX).min(FLEET_MAX);
     let changes = (FLEET_MAX - instances) + (FLEET_MAX - 1);
-    Duration::from_secs(MERGES * PER_MERGE_SECS + changes * PER_COUNT_CHANGE_SECS + STOP_SECS)
+    Duration::from_secs(MERGES * per_merge_secs + changes * PER_COUNT_CHANGE_SECS + STOP_SECS)
 }
 
 /// How long the loaded half may take to reach four leaves, derived from the waits it is made of
 /// (GATE-DECISION-convergence-grow-budget-2026-11-19). The chain is serial: S4's settle and the
 /// policy's `override_recent` both hold on the fleet's youngest override, not the leaf's own.
 /// - fixed waits: the count's 30 s grow floor (`fleet::hysteresis::GROW_FLOOR_MS`), S4's settle
-///   after the count change (`topology::ops::FLEET_SETTLE_MS`, 60 s), and three move cooldowns
+///   after the count change (`topology::ops::settle_ms`, `compressed`'s 1 s), and three move cooldowns
 ///   (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, which `compressed` does not set): the born
 ///   children's before the room move of `0`, the move's before `0` splits, and `00`'s and `01`'s
 ///   before `1` splits: 270 s;
@@ -89,11 +87,19 @@ fn converge_budget(instances: usize) -> Duration {
 /// 340 s. One more serial cooldown in the chain (the fastest measured chain is 282 s) reaches the
 /// fourth leaf no sooner than 342 s, so it fails here.
 fn grow_budget() -> Duration {
-    const FIXED_WAITS_SECS: u64 = 30 + 60 + 3 * 60;
+    let fixed_waits_secs = 30 + settle_secs(compressed) + 3 * 60;
     const OPERATIONS: u64 = 4;
     const LOST_PASSES: u64 = 3;
     const PASS_SECS: u64 = 10;
-    Duration::from_secs(FIXED_WAITS_SECS + (OPERATIONS + LOST_PASSES) * PASS_SECS)
+    Duration::from_secs(fixed_waits_secs + (OPERATIONS + LOST_PASSES) * PASS_SECS)
+}
+
+/// S4's and S6's settle after a count change, in seconds, under `cli`: the topology cooldown it
+/// sets (`topology::ops::settle_ms`).
+fn settle_secs(cli: fn(&mut crate::config::CliArgs)) -> u64 {
+    let mut args = crate::config::CliArgs::deterministic();
+    cli(&mut args);
+    u64::try_from(crate::topology::ops::settle_ms(&args) / 1_000).unwrap_or(u64::MAX)
 }
 
 /// The cell: its shared data and fleet stores, and the instances running, by ordinal.
@@ -105,6 +111,8 @@ struct Cell {
     began: tokio::time::Instant,
     /// Every append answered 409 or 503 and retried, in the order they ended.
     retries: std::sync::Mutex<Vec<AppendRetry>>,
+    /// The command line every instance runs (`compressed`, or the B2 test's).
+    cli: fn(&mut crate::config::CliArgs),
 }
 
 /// An append answered 409 or 503 and retried: whether it may have landed is G7's ambiguity,
@@ -121,8 +129,14 @@ struct AppendRetry {
 }
 
 impl Cell {
-    /// A one-shard cell with its topology stored at version 1 and a desired count of one.
+    /// A one-shard cell with its topology stored at version 1 and a desired count of one, its
+    /// instances on `compressed`.
     async fn new() -> Self {
+        Self::with(compressed).await
+    }
+
+    /// [`Cell::new`], its instances running `cli`.
+    async fn with(cli: fn(&mut crate::config::CliArgs)) -> Self {
         let (data, fleet) = (mem(), mem());
         let seed = r#"{"count":1,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
         let path = Path::from("fleet/desired.json");
@@ -133,6 +147,7 @@ impl Cell {
             running: BTreeMap::new(),
             began: tokio::time::Instant::now(),
             retries: std::sync::Mutex::new(Vec::new()),
+            cli,
         };
         cell.start(1).await;
         let topology = crate::topology::model::Topology {
@@ -157,7 +172,7 @@ impl Cell {
             HttpRigOptions {
                 fleet_store: Some(self.fleet.clone()),
                 instance: Some(format!("streams-{n}")),
-                cli: compressed,
+                cli: self.cli,
                 prefixes: vec![String::new()],
                 ..Default::default()
             },
@@ -536,5 +551,63 @@ async fn a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_ba
         let count = u64::try_from(read.as_array().map_or(0, Vec::len)).unwrap();
         assert_eq!(count, *records, "{path} after converging");
     }
+    cell.shutdown().await;
+}
+
+/// #261 amendment B2's wait: `compressed` with a topology cooldown of 45 s, so S4's settle after
+/// a count change (45 s) is longer than the 30 s scale-in window, which is longer than a split's
+/// hand-over (about 23 s, `compressed`'s doc).
+fn settle_over_scale_in(cli: &mut crate::config::CliArgs) {
+    compressed(cli);
+    cli.shard_topology_cooldown_secs = 45;
+}
+
+/// How long the B2 cell may take to reach three leaves on two instances: the cooldown before the
+/// split that asks for the second instance (45 s), the count's grow floor (30 s), S4's settle
+/// after the count change (45 s), the born children's and the room move's cooldowns
+/// (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, twice), and four policy passes (10 s) with
+/// three lost: 310 s.
+fn settle_budget() -> Duration {
+    let settle = settle_secs(settle_over_scale_in);
+    Duration::from_secs(settle + 30 + settle + 2 * 60 + 7 * 10)
+}
+
+/// **A split waiting out the fleet's settle keeps the instance it asked for** (#261 amendment
+/// B2, ratified in DESIGN-DECISION-settle-scalein-2026-11-10; its own DST since S4's settle
+/// follows the topology cooldown, GATE-DECISION-s22-join-2026-11-20 Addendum 5). Under load a
+/// one-shard cell splits, and its next split needs a second instance, which the fleet asks for.
+/// S4's settle after that count change (45 s) is longer than the scale-in window (30 s): the
+/// held split publishes `split_refused: "fleet_settling"` and the planner keeps the count, so the
+/// split starts once the settle ends and the cell reaches three leaves on two instances. Without
+/// B2 the shrink beats the settle, the settle restarts with each count change, and the cell never
+/// gets its third leaf.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_split_waiting_out_the_fleet_settle_keeps_the_instance_it_asked_for() {
+    let mut cell = Cell::with(settle_over_scale_in).await;
+    let began = tokio::time::Instant::now();
+    cell.began = began;
+    let deadline = began + settle_budget();
+    let (mut n, mut trace, mut next, mut tick) = (0_u64, Vec::new(), began, began);
+    while (cell.leaves().await.len() < 3 || cell.running.len() < 2)
+        && tokio::time::Instant::now() < deadline
+    {
+        if tokio::time::Instant::now() >= next {
+            next += Duration::from_secs(10);
+            trace.push(cell.snapshot(began, n).await);
+        }
+        drop(cell.load_tick(n).await);
+        n += LOAD_PER_TICK;
+        tick = (tick + LOAD_TICK).max(tokio::time::Instant::now());
+        tokio::time::sleep_until(tick).await;
+    }
+    let reached = (cell.leaves().await.len(), cell.running.len());
+    assert!(
+        reached.0 >= 3 && reached.1 >= 2,
+        "a split waiting out the settle: reached {reached:?} (leaves, instances) in {:?}; \
+         trace:{}\nfleet:{}",
+        began.elapsed(),
+        trace.concat(),
+        cell.fleet_state().await
+    );
     cell.shutdown().await;
 }

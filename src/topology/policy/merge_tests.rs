@@ -159,6 +159,30 @@ fn the_owner_of_the_zero_child_merges() {
     );
 }
 
+/// **The partner learns the pair whose half it co-locates** (#261 B1 as amended, Addendum 7): the
+/// holder of `1` is named the partner of the merge `""` when the gate's `peer_acts` alone holds it,
+/// not while a young override holds it too, and never as the actor (`a`) or as an instance holding
+/// neither half (`c`).
+#[test]
+fn a_merges_partner_is_named_only_when_peer_acts_alone_holds_it() {
+    let (mut policy, mut view) = (Policy::default(), cold_pair(10, 10));
+    view.me = "b".to_owned();
+    tick(&mut policy, &mut view, T0);
+    let peer_acts = Decision::Hold(Hold::PeerActs);
+    assert_eq!(tick(&mut policy, &mut view, QUIET), peer_acts);
+    assert_eq!(policy.partner_merge(), Some(""), "the partner");
+    view.youngest_override_ms = Some(QUIET - 59_999);
+    assert_eq!(tick(&mut policy, &mut view, QUIET), peer_acts);
+    assert_eq!(policy.partner_merge(), None, "a young override holds it");
+    view.youngest_override_ms = None;
+    view.me = "a".to_owned();
+    assert_eq!(tick(&mut policy, &mut view, QUIET), merge(""));
+    assert_eq!(policy.partner_merge(), None, "the actor");
+    view.me = "c".to_owned();
+    assert_eq!(tick(&mut policy, &mut view, QUIET), peer_acts);
+    assert_eq!(policy.partner_merge(), None, "neither half's holder");
+}
+
 #[test]
 fn the_deepest_pair_merges_first() {
     let mut view = cell(vec![

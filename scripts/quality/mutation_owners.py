@@ -132,6 +132,11 @@ OWNERS = (
     # K1-K2c): the places a cap gives, and the two legs where they keep writes from being shed.
     owner('admission_waiting', 'src/admission/waiting.rs',
           'admission::waiting:: dst_tests::parked_waits::writes_'),
+    # The write gate's count (edge change #272): its unit tests and the hooked burst DST, beside
+    # the DSTs that meet the gate through a waiting place, a queue's overload and fair shedding.
+    owner('admission_write_slots', 'src/admission/write_slots.rs',
+          'admission:: dst_tests::write_gate_burst:: dst_tests::parked_waits:: dst_tests::queue_overload:: '
+          'dst_tests::fair_shed::'),
     owner('admission_forwards', 'src/admission/forwards.rs',
           'admission::forwards:: '
           'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
@@ -169,7 +174,10 @@ OWNERS = (
     owner('topology_mod', 'src/topology.rs', 'topology::'),
     owner('topology_model', 'src/topology/model.rs', 'topology:: registry::tests:: shard_directory::'),
     owner('topology_revalidate', 'src/topology/revalidate.rs', 'topology::revalidate'),
-    owner('topology_gate', 'src/topology/gate.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched'),
+    # A request write parked at a split's barrier takes a waiting place (Addendum 25): the barrier DSTs
+    # at the cap, at the line, and for appends, queue sends and creates through a pause.
+    owner('topology_gate_parked', 'src/topology/gate/parked.rs', 'dst_tests::parked_waits::writes_ dst_tests::parked_waits::other_leaves_ dst_tests::parked_waits::a_queues_sends_ dst_tests::parked_waits::creates_with_content_'),
+    owner('topology_gate', 'src/topology/gate.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'shard::seal::gc::gate_tests:: dst_tests::split_barrier:: shard::native_queue_tests::touched dst_tests::parked_waits::writes_parked_at'),
     owner('topology_intent', 'src/topology/intent.rs', 'topology::intent:: dst_tests::open_fence:: dst_tests::fleet_topology:: dst_tests::topology_reclaim::'),
     owner('topology_reclaim', 'src/topology/reclaim.rs', 'topology::reclaim:: dst_tests::topology_reclaim::'),
     owner('topology_fence', 'src/topology/fence.rs', 'topology::fence dst_tests::open_fence:: dst_tests::merge_claim_traffic:: shard::seal::gc::lineage_tests::the_open_path_fence'),
@@ -447,6 +455,9 @@ OWNERS = (
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
+    # The membership of record and its interim writer (§22 step 4, Addendum 14): its unit tests and
+    # the record DSTs (a count rise and drop, an older document, a lost write answer), each ~10-20 s.
+    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record::'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
@@ -577,7 +588,8 @@ OWNERS = (
           'dst_tests::seal_coordination:: dst_tests::security_seal:: dst_tests::seal_fencing:: '
           'dst_tests::seal_convergence::'),
     owner('product_operation', 'src/product/operation.rs',
-          'dst_tests::security_operations:: dst_tests::security_routes::'),
+          'dst_tests::security_operations:: dst_tests::security_routes:: product::operation:: '
+          'dst_tests::write_gate_burst::every_route_that_enters_at_zero'),
     owner('product_append_body', 'src/product/append_body.rs',
           'product::tests:: dst_tests::append_application:: dst_tests::producer_protocol:: '
           'dst_tests::quota_enforcement::'),

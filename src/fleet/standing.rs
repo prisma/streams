@@ -66,6 +66,9 @@ pub(crate) struct Standing {
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
+    /// Tests: an instance the topology policy's view shows not accepting (`skew_view`).
+    #[cfg(test)]
+    view_skew: Mutex<Option<String>>,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -77,6 +80,9 @@ pub(crate) struct Standing {
     topology: Mutex<(Option<&'static str>, u32)>,
     /// The topology policy's latest decision as its segments (`Decision::reason`).
     decision: Mutex<String>,
+    /// The fleet tick's last pass's candidates (§22 C2): what a publication between ticks makes
+    /// its document's ring from. `None` before the first pass.
+    candidates: Mutex<Option<super::record::Candidates>>,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -132,10 +138,13 @@ impl Default for Standing {
             last_handoff: Mutex::new(None),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
+            #[cfg(test)]
+            view_skew: Mutex::new(None),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
             decision: Mutex::new(String::new()),
+            candidates: Mutex::new(None),
         }
     }
 }
@@ -241,6 +250,30 @@ impl Standing {
         }
     }
 
+    /// The tick's pass read `candidates` (§22 C2).
+    pub(super) fn set_candidates(&self, candidates: &super::record::Candidates) {
+        if let Ok(mut kept) = self.candidates.lock() {
+            *kept = Some(candidates.clone());
+        }
+    }
+
+    /// Tests: the tick's last pass read `count` with `names` its candidates.
+    #[cfg(test)]
+    pub(crate) fn note_pass(&self, count: u64, names: &[&str]) {
+        let names = names.iter().map(|name| (*name).to_string()).collect();
+        self.set_candidates(&super::record::Candidates::new(count, names));
+    }
+
+    /// The ring every publication between ticks pairs with the entries of the document it read
+    /// (§22 C2): in the interim, today's rule over the tick's last pass's candidates, which is
+    /// every document's ring (`record`; the join gives it the document again). `None` before the
+    /// first pass, when the caller keeps the view's ring (it creates no view an instance awaiting
+    /// its first one lacks).
+    pub(crate) fn ring_of(&self) -> Option<Vec<String>> {
+        let candidates = self.candidates.lock().ok()?;
+        Some(candidates.as_ref()?.today())
+    }
+
     /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides
     /// read, under the revalidation lock, and publishes once `point.go` resolves.
     #[cfg(test)]
@@ -254,6 +287,21 @@ impl Standing {
     #[cfg(test)]
     pub(crate) fn take_view_pause(&self) -> Option<crate::topology::gate::PausePoint> {
         self.view_pause.0.lock().ok()?.take()
+    }
+
+    /// Tests: the topology policy's view of the cell shows `instance` not accepting, as a view
+    /// that lags its peers' would, until it is cleared (`None`).
+    #[cfg(test)]
+    pub(crate) fn skew_view(&self, instance: Option<&str>) {
+        if let Ok(mut slot) = self.view_skew.lock() {
+            *slot = instance.map(str::to_owned);
+        }
+    }
+
+    /// Tests: the instance `skew_view` set.
+    #[cfg(test)]
+    pub(crate) fn view_skew(&self) -> Option<String> {
+        self.view_skew.lock().ok()?.clone()
     }
 
     /// Tests: a live split intent naming `sources`, as a beat would have read it.
@@ -439,6 +487,20 @@ mod tests {
     use super::{DocTimes, Standing, Viewed, ViewedBeat};
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
+
+    /// The ring between ticks is the tick's last pass's (§22 C2): none before a pass, then today's
+    /// rule over that pass's candidates, which the next pass replaces (PR #173's survivors
+    /// `Standing::set_candidates` as `()` and `Standing::ring_of` as `None`).
+    #[test]
+    fn the_ring_between_ticks_is_the_last_passs_by_todays_rule() {
+        let standing = Standing::default();
+        assert_eq!(standing.ring_of(), None, "no pass yet");
+        standing.note_pass(2, &["streams-2", "streams-1", "streams-3"]);
+        let both = vec!["streams-1".to_string(), "streams-2".to_string()];
+        assert_eq!(standing.ring_of(), Some(both));
+        standing.note_pass(3, &["streams-3"]);
+        assert_eq!(standing.ring_of(), Some(vec!["streams-3".to_string()]));
+    }
 
     /// A drain has begun from its first handoff and once it is announced, each alone; a planned
     /// move's close that did not end clean is counted, once each.

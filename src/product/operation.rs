@@ -133,3 +133,91 @@ impl ProductOperation {
         })
     }
 }
+
+/// Whether a request will meet the write gate on its ordinary path, by its method and its path at
+/// arrival: a product append or batch (`ProductOperation`; not a seal, which meets the gate only
+/// when it carries a final record), a raw append or close (a POST to
+/// a stream), a queue's send, batch or settle (the queue surface's `writes_like_append`). Such a
+/// request enters the write gate's count at the gate, not at its arrival
+/// (`admission::write_slots`, edge change #272).
+pub(crate) fn meets_write_gate(method: &Method, path: &str) -> bool {
+    use super::queues::Resource;
+    use ProductOperation as Op;
+    if *method != Method::POST {
+        return false;
+    }
+    if let Some(rest) = path.strip_prefix("/v1/streams/") {
+        let verb = super::strip_verb(rest).1;
+        let op = super::classify_route(rest)
+            .ok()
+            .and_then(|route| Op::resolve(&route, verb, method));
+        return matches!(op, Some(Op::Append | Op::AppendBatch));
+    }
+    if let Some(rest) = path.strip_prefix("/v1/queues/") {
+        let resource = super::queues::parse(rest).ok().map(|(_, r)| r);
+        return matches!(
+            resource,
+            Some(Resource::Messages | Resource::MessagesBatch | Resource::GroupVerb("settle"))
+        );
+    }
+    path.strip_prefix("/v1/stream/")
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with("__ds/"))
+}
+
+/// Count `request` in at the transport (`AdmissionController::enter`, a data-plane route as an
+/// arrival), and whether it will meet the write gate (`meets_write_gate`): its ticket and that.
+pub(crate) fn count_in<B>(
+    admission: &crate::admission::AdmissionController,
+    request: &axum::http::Request<B>,
+) -> (crate::admission::InflightTicket, bool) {
+    let path = request.uri().path();
+    let ticket = admission.enter(super::live_wait::data_plane(path));
+    (ticket, meets_write_gate(request.method(), path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::meets_write_gate;
+    use axum::http::Method;
+
+    /// The routes that meet the write gate on their ordinary path enter at 0, by method and path:
+    /// a product append and batch, a raw append or close, a queue's send, batch and settle.
+    /// Every other route, and these paths under another method, counts from its arrival.
+    #[test]
+    fn the_routes_that_meet_the_write_gate_and_only_they_enter_at_zero() {
+        let post = Method::POST;
+        for path in [
+            "/v1/streams/orders/records",
+            "/v1/streams/orders/records:batch",
+            "/v1/stream/orders",
+            "/v1/queues/jobs/messages",
+            "/v1/queues/jobs/messages:batch",
+            "/v1/queues/jobs/groups/default:settle",
+        ] {
+            assert!(meets_write_gate(&post, path), "POST {path} meets the gate");
+        }
+        let not = [
+            (Method::GET, "/v1/streams/orders/records"),
+            (Method::PUT, "/v1/streams/orders"),
+            (Method::DELETE, "/v1/streams/orders"),
+            (Method::GET, "/v1/streams/orders:scan"),
+            (Method::POST, "/v1/streams/orders/consumers/c1:pull"),
+            (Method::POST, "/v1/streams/orders/consumers/c1:settle"),
+            (Method::PUT, "/v1/stream/orders"),
+            (Method::GET, "/v1/stream/orders"),
+            (Method::POST, "/v1/stream/__ds/x"),
+            (Method::POST, "/v1/streams/orders:seal"),
+            (Method::POST, "/v1/queues/jobs/groups/default:claim"),
+            (Method::PUT, "/v1/queues/jobs"),
+            (Method::GET, "/v1/queues/jobs/messages"),
+            (Method::POST, "/v1/streams"),
+            (Method::POST, "/v1/containers/p1/live:wait"),
+        ];
+        for (method, path) in not {
+            assert!(
+                !meets_write_gate(&method, path),
+                "{method} {path} counts from its arrival"
+            );
+        }
+    }
+}
