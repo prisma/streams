@@ -1411,6 +1411,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::move_release",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A move's release on a target that has just opened, a diagnosis (Addendum 16 of GATE-DECISION-s22-join-2026-11-20, after Addendum 27 (a) of the forward-wedge ruling): the target is the product (one project's streams seeded sealed and 667 left unsealed, the server restarted over a store 20 ms away behind the production store wrapper and its pools, at the in-flight cap of 512 shared eight ways, its leaf opened); the giver, the third member and the clients are modelled (128 forward places a member, a 409 resent after 1 s to its owner or its entry, the driver's catch-up off and on), and the pile a 2 s hold collects is released as a wave and paced to the places. It prints per tenth of a second the target's requests in flight, forwards, direct arrivals, sheds, 409s and commit groups, and the pile's park-to-answer times. Ignored in the suite, run under the machine's lock; nothing is asserted.",
+      "syntax": "path = \"tests/move_release.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::write_gate_burst",
       "path": "src/dst/dst_tests.rs",
       "reason": "The write gate sheds a burst's excess over its line exactly (Addendum 27 of the forward-wedge ruling, 2026-11-20; edge change #272): a stack of three fault stores holds the readers' descriptor reads, the appends' until the whole burst is in flight, and every WAL PUT; each case asserts its project's fair-shed verdict, then that the sheds equal the appends and reads in flight less the verdict's line.",

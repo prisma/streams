@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 /// A project whose first create seeds its stream count, with a request rate no create reaches.
-fn seeded(_: usize) -> ProjectQuotas {
+pub(super) fn seeded(_: usize) -> ProjectQuotas {
     ProjectQuotas {
         requests_per_sec: 100_000,
         max_streams: 10_000,
@@ -86,13 +86,13 @@ async fn measured<F: std::future::Future<Output = u16>>(
 }
 
 /// One record appended to project `i`'s stream `name`: its status.
-async fn append(cell: &Cell, i: usize, name: String) -> u16 {
+pub(super) async fn append(cell: &Cell, i: usize, name: String) -> u16 {
     let path = format!("/v1/streams/{name}/records");
     cell.call(i, "POST", &path, br#"{"n":1}"#).await.0
 }
 
 /// One stream `name` created by project `i`: its status.
-async fn create(cell: &Cell, i: usize, name: String) -> u16 {
+pub(super) async fn create(cell: &Cell, i: usize, name: String) -> u16 {
     cell.call(i, "PUT", &format!("/v1/streams/{name}"), CREATE)
         .await
         .0
@@ -181,7 +181,7 @@ async fn store_requests_in_flight_for_first_creates_and_appends() {
 
 /// One store call seen above the production store wrapper: the task that made it, its kind and
 /// path, and when it began and answered (its count permit's wait included).
-type Call = (
+pub(super) type Call = (
     Option<tokio::task::Id>,
     &'static str,
     String,
@@ -193,9 +193,9 @@ type Call = (
 /// its wait for a permit, with the task that made it: a request's own calls run in its
 /// connection's task.
 #[derive(Debug)]
-struct Stages {
-    inner: Arc<dyn ObjectStore>,
-    calls: std::sync::Mutex<Vec<Call>>,
+pub(super) struct Stages {
+    pub(super) inner: Arc<dyn ObjectStore>,
+    pub(super) calls: std::sync::Mutex<Vec<Call>>,
 }
 
 impl std::fmt::Display for Stages {
@@ -288,13 +288,13 @@ impl ObjectStore for Stages {
 }
 
 /// The stream a descriptor GET reads, from its key (`registry::desc_path`: hex of the name).
-fn read_name(path: &str) -> Option<String> {
+pub(super) fn read_name(path: &str) -> Option<String> {
     let hex = path.rsplit_once("/streams/")?.1.strip_suffix(".json")?;
     String::from_utf8(crate::crypto::unhex(hex)?).ok()
 }
 
 /// p50, p99 and the most of `values` in milliseconds.
-fn quantiles(mut values: Vec<u128>) -> String {
+pub(super) fn quantiles(mut values: Vec<u128>) -> String {
     values.sort_unstable();
     let at = |q: usize| values.get((values.len() * q / 100).min(values.len().saturating_sub(1)));
     let ms = |v: Option<&u128>| v.copied().unwrap_or(0);
@@ -363,12 +363,17 @@ fn by_stage(calls: &[Call], answers: &[Answer]) -> String {
     )
 }
 
-/// One request, timed: the stream it names, its status and how long it took to answer.
 /// One request, answered: the stream it names, its status, its error code and how long it took.
-type Answer = (String, u16, Option<String>, std::time::Duration);
+pub(super) type Answer = (String, u16, Option<String>, std::time::Duration);
 
 /// Project 0's request `method` on `path` with `body`, timed: its answer.
-async fn timed(cell: &Cell, name: String, method: &str, path: String, body: &[u8]) -> Answer {
+pub(super) async fn timed(
+    cell: &Cell,
+    name: String,
+    method: &str,
+    path: String,
+    body: &[u8],
+) -> Answer {
     let sent = Instant::now();
     let (status, _, answer) = cell.call(0, method, &path, body).await;
     (name, status, error_code(&answer), sent.elapsed())
@@ -464,4 +469,142 @@ async fn a_cold_engine_under_the_in_flight_cap() {
     for (streams, projects) in [(600, 1), (1_000, 1), (600, 2)] {
         println!("{}", under_the_cap(streams, 100, 512, projects).await);
     }
+}
+
+/// Each task's calls after `began`, the requests' apart: its first start and last answer from
+/// `began`, and its calls and their time by store class (`store_timing::classify`: 0 the WAL, 1 the
+/// manifest, 2 the shard log's tables, 3 the fleet, 4 the rest). A request's task is named by its
+/// descriptor read; one that also read or wrote the shard's log is shown on its own line.
+fn by_task(calls: &[Call], began: Instant) -> String {
+    let requests: std::collections::HashSet<_> = calls
+        .iter()
+        .filter(|(_, kind, path, _, _)| *kind == "GET" && read_name(path).is_some())
+        .filter_map(|(task, _, _, _, _)| *task)
+        .collect();
+    let mut tasks: std::collections::HashMap<Option<tokio::task::Id>, Vec<&Call>> =
+        std::collections::HashMap::new();
+    for call in calls {
+        tasks.entry(call.0).or_default().push(call);
+    }
+    let ms = |at: Instant| at.saturating_duration_since(began).as_millis();
+    let mut lines: Vec<(u128, String)> = Vec::new();
+    for (task, calls) in tasks {
+        let classes: std::collections::BTreeMap<u8, (usize, u128)> = calls.iter().fold(
+            std::collections::BTreeMap::new(),
+            |mut by, (_, _, path, at, ended)| {
+                let entry: &mut (usize, u128) =
+                    by.entry(crate::store_timing::classify(path)).or_default();
+                entry.0 += 1;
+                entry.1 += ended.saturating_duration_since(*at).as_millis();
+                by
+            },
+        );
+        let request = task.is_some_and(|t| requests.contains(&t));
+        if request && classes.keys().all(|class| *class == 4) {
+            continue;
+        }
+        let first = calls.iter().map(|call| ms(call.3)).min().unwrap_or(0);
+        let last = calls.iter().map(|call| ms(call.4)).max().unwrap_or(0);
+        let shown: Vec<String> = classes
+            .iter()
+            .map(|(class, (n, took))| format!("class {class} {n} calls {took} ms"))
+            .collect();
+        let who = if request {
+            "a request's task"
+        } else {
+            "a task"
+        };
+        lines.push((
+            first,
+            format!("+{first}..+{last} ms {who}: {}", shown.join(", ")),
+        ));
+    }
+    lines.sort();
+    let lines: Vec<String> = lines.into_iter().map(|(_, line)| line).collect();
+    format!(
+        "{} requests' tasks; the other tasks by first call:\nCOLD_STEPS   {}",
+        requests.len(),
+        lines.join("\nCOLD_STEPS   ")
+    )
+}
+
+/// The commit groups after `began_ms` (`ShardEngine::timings`): each one's durable ack from it,
+/// its requests, and its oldest request's wait for the group to start (`queue`, the cold loads of
+/// its prepare included), its encode, its write and its wait for the WAL PUT (`durable`), in ms.
+fn groups_after(groups: &[crate::shard::GroupTiming], began_ms: i64) -> String {
+    let mut groups = groups.to_vec();
+    groups.sort_by_key(|g| g.ts_ms);
+    let shown: Vec<String> = groups
+        .iter()
+        .take(24)
+        .map(|g| {
+            format!(
+                "+{} {} reqs: queue {} encode {} write {} durable {}",
+                g.ts_ms - began_ms,
+                g.reqs,
+                g.queue_wait_us / 1_000,
+                g.encode_us / 1_000,
+                g.write_us / 1_000,
+                g.durable_wait_us / 1_000
+            )
+        })
+        .collect();
+    format!("commit groups {}: {}", groups.len(), shown.join("; "))
+}
+
+/// **A cold engine's first commits, by task** (a diagnosis for Addendum 15 of the s22 join ruling,
+/// run under the machine's lock; ignored in the suite): 2b's first case (600 appends and 100
+/// creates at once on one project after a restart, at the in-flight cap of 512, on a store 20 ms
+/// away behind the production wrapper), the leaf opened by the burst itself. It prints every task's
+/// store calls by class on one timeline from the burst (the open's log reads, its index loads, the
+/// committer's cold loads, the WAL PUTs) and the commit groups, so the second each request waits
+/// is split between the open, the maintenance load, the first group's prepare and its WAL PUT.
+/// Nothing is asserted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+#[ignore = "a diagnosis, run under the machine's lock"]
+async fn a_cold_engines_first_commits_by_task() {
+    let (timing, _, io) = gauged();
+    let stages = Arc::new(Stages {
+        inner: timing,
+        calls: std::sync::Mutex::default(),
+    });
+    let store: Arc<dyn ObjectStore> = stages.clone();
+    let cell = restarted_cell(&store, 600, 1).await;
+    cell.state.admission.set_max_inflight(512);
+    stages.calls.lock().unwrap().clear();
+    let (began, began_ms) = (Instant::now(), crate::shard::now_ms());
+    let mut calls: Vec<futures_util::future::BoxFuture<'_, _>> = (0..600)
+        .map(|n| {
+            let path = format!("/v1/streams/s{n}/records");
+            timed(&cell, format!("s{n}"), "POST", path, br#"{"n":1}"#).boxed()
+        })
+        .collect();
+    calls.extend((0..100).map(|n| {
+        let path = format!("/v1/streams/new{n}");
+        timed(&cell, format!("new{n}"), "PUT", path, CREATE).boxed()
+    }));
+    let answers = futures_util::future::join_all(calls).await;
+    let groups: Vec<crate::shard::GroupTiming> = cell
+        .state
+        .shards
+        .open("")
+        .map(|engine| engine.timings.lock().unwrap().iter().copied().collect())
+        .unwrap_or_default();
+    engine_shutdown(&cell.state).await;
+    let calls = std::mem::take(&mut *stages.calls.lock().unwrap());
+    let ok: Vec<u128> = answers
+        .iter()
+        .filter(|(_, status, _, _)| *status < 300)
+        .map(|(_, _, _, took)| took.as_millis())
+        .collect();
+    println!(
+        "COLD_STEPS 600 appended and 100 created at once after a restart, cap 512: {} answered {}; \
+         pools (peak, waits) general {:?} commit {:?}\nCOLD_STEPS   {}\nCOLD_STEPS   {}",
+        ok.len(),
+        quantiles(ok),
+        io.count_seen()[0],
+        io.count_seen()[1],
+        by_task(&calls, began),
+        groups_after(&groups, began_ms),
+    );
 }
