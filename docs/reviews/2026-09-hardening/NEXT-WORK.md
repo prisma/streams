@@ -3206,3 +3206,13 @@ delegation):
   (`topology::ops::settle_ms`), a stand-in for "the new member is listed". After §22's join it could
   be read from the membership document instead: the count's members live in it, so the topology
   waits exactly as long as the fleet needs and no longer.
+
+## 30. Follow-ups from the merge's pause, measured (2026-11-21)
+
+- **The merge's open is not warmed** (GATE-DECISION-s22-join-2026-11-20, Addendum 10). At 2,500
+  streams on a store 20 ms away (`dst_tests::merge_pause`) a merge pauses about 0.8 s, half a second
+  of it its clones and most of the rest the merged leaf's open, and a paced writer's longest gap
+  between acks is 1.55 s: 0.45 s under `HOLD`, at about the largest pair the merge line admits
+  (about 2,048 handles with unsealed data). The split had its log reads (F5) and its warmed tails
+  (fix 2); the merge has neither. Any raise of `SHARD_MERGE_LINE_PCT` or `HANDLE_MAX_RESIDENT` is
+  re-measured with `merge_pause` first.

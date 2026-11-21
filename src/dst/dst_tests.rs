@@ -61,6 +61,8 @@ mod merge_claim_traffic;
 mod merge_finish_k;
 #[path = "tests/merge_k.rs"]
 mod merge_k;
+#[path = "tests/merge_pause.rs"]
+mod merge_pause;
 #[path = "tests/never_leaf_k.rs"]
 mod never_leaf_k;
 #[path = "tests/open_fence.rs"]
