@@ -312,7 +312,16 @@ async fn preparing_stands_collection_down_the_undo_resumes_it_an_idle_pair_drain
         super::drain(&pair, std::time::Duration::from_secs(60)),
     );
     drained.await.expect("an idle pair drains at once");
-    assert!(super::retire_sources(&pair, 5, "op-m").await.is_ok());
+    let phases = super::Phases::new();
+    let op = super::Op {
+        dir: &dir,
+        store: &*store,
+        pair: &pair,
+        op_id: "op-m",
+        birth: None,
+        phases: &phases,
+    };
+    assert!(super::retire_sources(&op, 5).await.is_ok());
     for (source, _) in &pair.sources {
         let raw = source
             .db

@@ -903,3 +903,65 @@ async fn source_opener(
         maintenance,
     )
 }
+
+/// **A published merge carries its phases by name and in order, and its pause** (GATE-DECISION-
+/// s22-join-2026-11-20 Addendum 9 (1), the merge's phase line). A merge of `00`'s halves publishes:
+/// its phases are exactly `prepare`, `quiesce`, `park`, `flush` and `checkpoint` of each source,
+/// `lists`, `clones`, `'T'`, `births`, `cas`, `open 00` and `drain`, each a nonzero time; its pause
+/// (park to release) is nonzero and no longer than the phases from the park to the CAS plus `M`'s
+/// open; and its log line's `phases` reads `name=ms` for each, in that order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_published_merge_carries_its_phases_by_name_and_in_order() {
+    let Rig { state, parent, .. } = rig().await;
+    split_00(&state, &parent).await;
+    let halves = halves_of_00(&state).await;
+    let clock = state.runtime.clock.clone();
+    let published = crate::topology::merge::merge(
+        &state.shards,
+        [&halves[0], &halves[1]],
+        "op-phases",
+        "inst-a",
+        &*clock,
+    )
+    .await
+    .expect("the merge publishes");
+    let names: Vec<&str> = published.phases.iter().map(|(n, _)| n.as_str()).collect();
+    let expected = [
+        "prepare",
+        "quiesce",
+        "park",
+        "flush 000",
+        "checkpoint 000",
+        "flush 001",
+        "checkpoint 001",
+        "lists",
+        "clones",
+        "'T'",
+        "births",
+        "cas",
+        "open 00",
+        "drain",
+    ];
+    assert_eq!(names, expected);
+    let zero: Vec<&str> = published
+        .phases
+        .iter()
+        .filter(|(_, took)| took.is_zero())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert!(zero.is_empty(), "phases that took no time: {zero:?}");
+    let paused: Duration = published.phases[3..13].iter().map(|(_, took)| *took).sum();
+    assert!(
+        !published.pause.is_zero() && published.pause <= paused,
+        "the pause {:?} against its phases {paused:?}",
+        published.pause
+    );
+    let line = crate::topology::merge::shown_phases(&published);
+    let parts: Vec<String> = expected
+        .iter()
+        .zip(&published.phases)
+        .map(|(name, (_, took))| format!("{name}={}", took.as_millis()))
+        .collect();
+    assert_eq!(line, parts.join(" "), "the log line's phases");
+    engine_shutdown(&state).await;
+}

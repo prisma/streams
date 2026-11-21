@@ -82,6 +82,88 @@ pub(crate) struct Published {
     pub version: u64,
     /// `M`'s engine is `None` when it did not open after the publish: it opens on its next request.
     pub merged: (String, u32, Option<Arc<ShardEngine>>),
+    /// The pause: from both barriers' park to their release to `M` (as a split's, S4-DESIGN §9).
+    pub pause: Duration,
+    /// The phases the merge timed, in the order they ended (`Phases`): Preparing, the quiesce and
+    /// the park, then the pause's steps, `M`'s open and the sources' drain.
+    pub phases: Vec<(String, Duration)>,
+}
+
+/// A merge's timings by phase (GATE-DECISION-s22-join-2026-11-20 Addendum 9 (1)), with the split's
+/// names where the steps match (`split::phases`): `prepare`, `quiesce` and `park`, then from the
+/// park `flush <source>`, `checkpoint <source>`, `lists`, `clones`, `'T'`, `births` and `cas`, then
+/// `open <M>` and `drain`; and the pause, from the park to the release.
+struct Phases(std::sync::Mutex<Timing>);
+
+/// When the current phase started, when both sources parked, the pause, and the phases so far.
+struct Timing {
+    since: std::time::Instant,
+    parked: Option<std::time::Instant>,
+    pause: Duration,
+    taken: Vec<(String, Duration)>,
+}
+
+impl Phases {
+    fn new() -> Self {
+        let since = std::time::Instant::now();
+        let timing = Timing {
+            since,
+            parked: None,
+            pause: Duration::ZERO,
+            taken: Vec::new(),
+        };
+        Self(std::sync::Mutex::new(timing))
+    }
+
+    /// The phase `phase` ended now: it took the time since the last mark or start.
+    fn mark(&self, phase: &str) {
+        if let Ok(mut timing) = self.0.lock() {
+            let now = std::time::Instant::now();
+            let took = now.duration_since(timing.since);
+            timing.since = now;
+            timing.taken.push((phase.to_string(), took));
+        }
+    }
+
+    /// Both sources parked now: the phase `park` ends and the pause begins.
+    fn parked(&self) {
+        self.mark("park");
+        if let Ok(mut timing) = self.0.lock() {
+            timing.parked = Some(timing.since);
+        }
+    }
+
+    /// The barriers were released to `M` now: the pause ends.
+    fn released(&self) {
+        if let Ok(mut timing) = self.0.lock() {
+            timing.pause = timing.parked.map(|at| at.elapsed()).unwrap_or_default();
+        }
+    }
+
+    /// The phase `phase` took `took`, measured on its own.
+    fn record(&self, phase: &str, took: Duration) {
+        if let Ok(mut timing) = self.0.lock() {
+            timing.taken.push((phase.to_string(), took));
+        }
+    }
+
+    /// The pause and the phases recorded so far, in order.
+    fn taken(&self) -> (Duration, Vec<(String, Duration)>) {
+        self.0
+            .lock()
+            .map(|timing| (timing.pause, timing.taken.clone()))
+            .unwrap_or_default()
+    }
+}
+
+/// A published merge's phases, `name=ms`, space-separated, in order: its log line's `phases`.
+pub(crate) fn shown_phases(published: &Published) -> String {
+    let parts: Vec<String> = published
+        .phases
+        .iter()
+        .map(|(name, took)| format!("{name}={}", took.as_millis()))
+        .collect();
+    parts.join(" ")
 }
 
 /// The two sources, in prefix order (`…0`, `…1`), with their homes, and the merged leaf's.
@@ -99,6 +181,8 @@ struct Op<'a> {
     op_id: &'a str,
     /// How its product is born on this instance, if it is (`birth`).
     birth: Option<&'a super::split::Birth>,
+    /// Its timings by phase (`Phases`).
+    phases: &'a Phases,
 }
 
 /// Merge the sibling leaves `sources` (`…0`, then `…1`) into their parent prefix (S6 §7.2), as
@@ -179,12 +263,14 @@ impl Started {
     ) -> Result<Published, Refused> {
         let store = self.pair.sources[0].0.data_store().clone();
         let actor = super::actor::Actor::new(&*store, clock, self.held);
+        let phases = Phases::new();
         let op = Op {
             dir: &self.dir,
             store: &*store,
             pair: &self.pair,
             op_id: &self.op_id,
             birth: self.birth.as_ref(),
+            phases: &phases,
         };
         let steps = std::pin::pin!(run(&op, &actor, self.version));
         let renewals = std::pin::pin!(actor.renew());
@@ -192,6 +278,11 @@ impl Started {
             futures_util::future::Either::Left((ran, _)) => ran,
             futures_util::future::Either::Right((never, _)) => match never {},
         };
+        if let Ok(published) = &ran {
+            let (op_id, pause_ms) = (&self.op_id, published.pause.as_millis());
+            let phases = shown_phases(published);
+            tracing::info!(%op_id, pause_ms, phases, "the merge published, by phase");
+        }
         match &ran {
             Ok(_) => actor.end(intent::State::Reclaimed, "published").await,
             Err(Refused::RolledBack(why)) => actor.end(intent::State::RolledBack, why).await,
@@ -210,11 +301,7 @@ async fn run(
     version: u64,
 ) -> Result<Published, Refused> {
     let Op {
-        dir,
-        store,
-        pair,
-        op_id,
-        ..
+        dir, store, pair, ..
     } = *op;
     let [(left, _), (right, _)] = &pair.sources;
     let prepared = prepare(dir, store, pair).await;
@@ -222,6 +309,7 @@ async fn run(
         Ok(()) => actor.still_owned("the pause").await,
         Err(e) => Err(e),
     };
+    op.phases.mark("prepare");
     let holds = match &prepared {
         Ok(()) => {
             let first = left.gc_state().gate.exclusive(QUIESCE).await;
@@ -233,6 +321,7 @@ async fn run(
         }
         Err(_) => None,
     };
+    op.phases.mark("quiesce");
     let barriers = match holds {
         Some(_) => match (left.barrier().await, right.barrier().await) {
             (Ok(a), Ok(b)) => Some((a, b)),
@@ -244,6 +333,7 @@ async fn run(
         },
         None => None,
     };
+    op.phases.parked();
     #[cfg(test)]
     if let Some(point) = left.gc_state().gate.take_pause() {
         // Tests only: a test that went away is no reason to stop the merge.
@@ -252,7 +342,7 @@ async fn run(
         }
     }
     let copied = match (&prepared, &barriers) {
-        (Ok(()), Some(_)) => copy(dir, store, pair, op_id).await,
+        (Ok(()), Some(_)) => copy(op).await,
         (Err(e), _) => Err(e.clone()),
         (_, None) => Err("the quiesce did not complete within its deadline".to_string()),
     };
@@ -261,7 +351,7 @@ async fn run(
         Err(e) => Err(e),
     };
     let retired = match copied {
-        Ok(()) => retire_sources(pair, version, op_id).await,
+        Ok(()) => retire_sources(op, version).await,
         Err(e) => Err(Retiring::Before(e)),
     };
     if matches!(retired, Ok(()) | Err(Retiring::After(_))) {
@@ -475,15 +565,19 @@ async fn put_lists(
 /// Quiesced: both WALs flushed and checkpointed, the lists written again from the quiesced
 /// sentinels, then `M` cloned as the union of both checkpoints, each projected onto its range,
 /// and seeded (its `'Y'` last).
-async fn copy(
-    dir: &ShardDirectory,
-    store: &dyn ObjectStore,
-    pair: &Pair,
-    op_id: &str,
-) -> Result<(), String> {
+async fn copy(op: &Op<'_>) -> Result<(), String> {
+    let Op {
+        dir,
+        store,
+        pair,
+        op_id,
+        phases,
+        ..
+    } = *op;
     let mut checkpoints = Vec::with_capacity(2);
     for (source, _) in &pair.sources {
         source.db.flush().await.map_err(|e| format!("flush: {e}"))?;
+        phases.mark(&format!("flush {}", source.prefix));
         let options = CheckpointOptions {
             lifetime: Some(CHECKPOINT_LIFETIME),
             source: None,
@@ -494,11 +588,15 @@ async fn copy(
             .create_checkpoint(CheckpointScope::All, &options)
             .await
             .map_err(|e| format!("checkpoint: {e}"))?;
+        phases.mark(&format!("checkpoint {}", source.prefix));
         checkpoints.push(checkpoint);
     }
     let merged = merged_rows(pair).await?;
     put_lists(dir, store, pair, &merged).await?;
-    clone_merged(pair, &checkpoints, merged).await
+    phases.mark("lists");
+    let cloned = clone_merged(pair, &checkpoints, merged).await;
+    phases.mark("clones");
+    cloned
 }
 
 /// `M`'s log cloned from both checkpoints, each source projected onto its own range, and seeded
@@ -552,7 +650,8 @@ enum Retiring {
     After(String),
 }
 
-async fn retire_sources(pair: &Pair, version: u64, op_id: &str) -> Result<(), Retiring> {
+async fn retire_sources(op: &Op<'_>, version: u64) -> Result<(), Retiring> {
+    let (pair, op_id) = (op.pair, op.op_id);
     let retired = fence::Retired {
         version: version + 1,
         op_id: op_id.to_string(),
@@ -568,6 +667,7 @@ async fn retire_sources(pair: &Pair, version: u64, op_id: &str) -> Result<(), Re
             .map_err(after)?;
         source.db.flush().await.map_err(after)?;
     }
+    op.phases.mark("'T'");
     Ok(())
 }
 
@@ -586,6 +686,7 @@ async fn publish(
         pair,
         op_id,
         birth,
+        phases,
     } = *op;
     // The product is born on this instance, as a split's children are (§22 C19): its prefix's
     // ring home need not be the actor, and with no entry the ring's pick would open it elsewhere.
@@ -594,6 +695,7 @@ async fn publish(
             .born_off_ring(dir, &[pair.prefix.as_str()], op_id)
             .await;
     }
+    phases.mark("births");
     let failed = |e: store::WriteError| format!("{e:?}");
     let (topology, etag) = store::read(store).await.map_err(failed)?;
     let next = topology.merged(&pair.prefix, pair.home, op_id)?;
@@ -601,6 +703,7 @@ async fn publish(
     let mut shards = next.shards.clone();
     shards.version = next.version;
     dir.install(shards, Some(etag), now);
+    phases.mark("cas");
     // The release first: each held operation waits for `M`'s open, then goes to it.
     let range = Range::of(&pair.prefix);
     let (resolver, merged_prefix) = (dir.clone(), pair.prefix.clone());
@@ -618,7 +721,9 @@ async fn publish(
         })
     });
     retire(reroute);
+    phases.released();
     let route = super::ops::route_of(&pair.prefix);
+    let opening = std::time::Instant::now();
     // The merge is published: `M` failing to open here opens on its next request, and the merge
     // goes on to retire its sources.
     let engine = match open_merged(dir, &route, &pair.prefix).await {
@@ -628,14 +733,20 @@ async fn publish(
             None
         }
     };
+    phases.record(&format!("open {}", pair.prefix), opening.elapsed());
+    let draining = std::time::Instant::now();
     drain(pair, DRAIN).await;
+    phases.record("drain", draining.elapsed());
     for (source, _) in &pair.sources {
         // A newer topology no longer has the source's prefix as a leaf (the variant's meaning).
         dir.retire(&source.prefix, RetirementReason::Split, |_, _| true);
     }
+    let (pause, phases) = phases.taken();
     Ok(Published {
         version: next.version,
         merged: (pair.prefix.clone(), pair.home, engine),
+        pause,
+        phases,
     })
 }
 

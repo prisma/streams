@@ -3159,6 +3159,17 @@
     "scenarios": []
   },
   {
+    "name": "a_published_merge_carries_its_phases_by_name_and_in_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4bc15cb2027e0ed20d740419b205ef0f01e816a1cce0d365c3693d1519e5f0f8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_finish_k.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_published_split_carries_its_phases_in_order",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
