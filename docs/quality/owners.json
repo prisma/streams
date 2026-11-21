@@ -1379,6 +1379,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::merge_pause",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A merge's pause and its phases, measured (Addendum 9 of GATE-DECISION-s22-join-2026-11-20): split_pause's loaded parent of 2,500 streams on a store 20 ms away, split and left quiet, merged back under a paced writer on each half, in two shapes (2,500 streams on a store 20 ms away, and C3's pair, a few streams a half in memory); three runs of each print the pause, start to publish, the merge's phases and each writer's answers. The 2,500-stream runs are ignored, run under the machine's lock; one small pair's merge runs in the suite and asserts every write acked (204), no outcome_unknown and stored equal to acked, no time.",
+      "syntax": "path = \"tests/merge_pause.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::split_store_inflight",
       "path": "src/dst/dst_tests.rs",
       "reason": "The store requests one instance holds in flight and their count bound (Addenda 9, 10, 13, 16 and 17 of the forward-wedge ruling, 2026-11-20): a gauge beneath the production store wrapper on split_pause's parent, a store 20 ms away. Asserted: a pile of 2,500 distinct expired streams touched at once after a move-in stays within GENERAL_PERMITS + COMMIT_PERMITS store requests, the commit path never waits, every append is acknowledged. Measured and ignored in the suite, run under the machine's lock: each window's peak by kind and path around a split and a move-in open under 64 and 256 writers beside the instance's own requests in flight, their call sites and half-second timelines, and a split's pause with a pile in flight.",

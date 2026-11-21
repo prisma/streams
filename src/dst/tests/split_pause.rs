@@ -330,10 +330,10 @@ async fn the_pause_of_a_parent_with_trimmed_queues_reads_its_intervals_at_once()
 }
 
 /// One closed-loop append's answer: when it was acked, its status and the offset it returned.
-struct Ack {
-    at: std::time::Instant,
-    status: u16,
-    offset: Option<String>,
+pub(super) struct Ack {
+    pub(super) at: std::time::Instant,
+    pub(super) status: u16,
+    pub(super) offset: Option<String>,
 }
 
 /// Appends to `stream` at `addr`, one record at a time, until `done`: each answer as it came.
@@ -365,7 +365,7 @@ async fn acked(
 
 /// A stream of the 10,000-stream parent whose route the split gives to the child `half` (the
 /// route's first bit), other than `load-0` (the compaction's top-up).
-async fn stream_of_child(state: &State, half: u8) -> String {
+pub(super) async fn stream_of_child(state: &State, half: u8) -> String {
     for n in 1..100 {
         let name = format!("load-{n}");
         let sref = state.deployment.raw_adapter_sref(&name);
