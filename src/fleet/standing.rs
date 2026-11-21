@@ -77,6 +77,9 @@ pub(crate) struct Standing {
     topology: Mutex<(Option<&'static str>, u32)>,
     /// The topology policy's latest decision as its segments (`Decision::reason`).
     decision: Mutex<String>,
+    /// The fleet tick's last pass's candidates (§22 C2): what a publication between ticks makes
+    /// its document's ring from. `None` before the first pass.
+    candidates: Mutex<Option<super::record::Candidates>>,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -136,6 +139,7 @@ impl Default for Standing {
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
             decision: Mutex::new(String::new()),
+            candidates: Mutex::new(None),
         }
     }
 }
@@ -239,6 +243,29 @@ impl Standing {
         if let Ok(mut kept) = self.topology_intent.lock() {
             *kept = live;
         }
+    }
+
+    /// The tick's pass read `candidates` (§22 C2).
+    pub(super) fn set_candidates(&self, candidates: &super::record::Candidates) {
+        if let Ok(mut kept) = self.candidates.lock() {
+            *kept = Some(candidates.clone());
+        }
+    }
+
+    /// Tests: the tick's last pass read `count` with `names` its candidates.
+    #[cfg(test)]
+    pub(crate) fn note_pass(&self, count: u64, names: &[&str]) {
+        let names = names.iter().map(|name| (*name).to_string()).collect();
+        self.set_candidates(&super::record::Candidates::new(count, names));
+    }
+
+    /// The ring of `document`, over the tick's last pass's candidates (§22 C1, C2): what every
+    /// publication between ticks pairs with that document's entries. `None` before the first
+    /// pass, when the caller keeps the view's ring (it creates no view an instance awaiting its
+    /// first one lacks).
+    pub(crate) fn ring_of(&self, document: &super::Overrides) -> Option<Vec<String>> {
+        let candidates = self.candidates.lock().ok()?;
+        Some(candidates.as_ref()?.ring(document.members.as_deref()))
     }
 
     /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides

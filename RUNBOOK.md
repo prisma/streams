@@ -284,6 +284,16 @@ the rendezvous ring while the target is live. Splits survive scaler
 crashes: the append path re-seals and publishes the missing transition
 itself (`resume_split`).
 
+The same document's `members` is the ring of record (§22): a list of
+`{"name": "streams-N"}` entries. Until the join lands, the fleet tick keeps
+it equal to `streams-1`..`streams-<desired count>` (one CAS when the count
+changes, and once when a cell first runs a version that writes it; a fresh
+cell's first tick creates the document), and each instance's ring is the
+listed members its own heartbeat reads judge live, which is the ring the
+desired count gave before. An absent `members` is an older cell's document
+and is read by the old rule until the first write. `boot_id` is absent and
+read by nothing yet. Never edit `members` by hand.
+
 While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
 has published a ring, of any size), the scaler splits nothing (edge change
 #119): a split's child lands on another shard, which is another server's

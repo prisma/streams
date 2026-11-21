@@ -274,20 +274,29 @@ impl FleetRepository {
         body: Vec<u8>,
         version: Option<UpdateVersion>,
     ) -> bool {
-        let Some(store) = self.store.as_ref() else {
-            return false;
-        };
+        self.replaced_document(doc, body, version).await.is_some()
+    }
+
+    /// [`Self::replace_document`], answering the version it wrote when it committed: a writer that
+    /// must publish what it wrote needs no read of it (§22 step 4, `record::listed`).
+    pub(crate) async fn replaced_document(
+        &self,
+        doc: FleetDocument,
+        body: Vec<u8>,
+        version: Option<UpdateVersion>,
+    ) -> Option<UpdateVersion> {
+        let store = self.store.as_ref()?;
         let mode = match version {
             Some(v) => PutMode::Update(v),
             None => PutMode::Create,
         };
         if let Err(error) = validate_write(doc, &body) {
             tracing::warn!(document = doc.path(), %error, "fleet write refused; prior authority retained");
-            return false;
+            return None;
         }
         // An uncertain PUT is retried from the next authoritative version;
         // callers never erase its durable pending events on timeout.
-        tokio::time::timeout(
+        let written = tokio::time::timeout(
             DOCUMENT_DEADLINE,
             store.put_opts(
                 &ObjPath::from(doc.path()),
@@ -296,7 +305,12 @@ impl FleetRepository {
             ),
         )
         .await
-        .is_ok_and(|result| result.is_ok())
+        .ok()?
+        .ok()?;
+        Some(UpdateVersion {
+            e_tag: written.e_tag,
+            version: written.version,
+        })
     }
 
     /// Create the drain marker empty when it is absent, so the tick's
@@ -451,6 +465,12 @@ fn validate_overrides(doc: &Overrides) -> anyhow::Result<()> {
     anyhow::ensure!(
         doc.pending_events.len() <= 64,
         "override outbox exceeds item budget"
+    );
+    anyhow::ensure!(
+        doc.members
+            .as_ref()
+            .is_none_or(|members| members.len() <= MAX_MEMBERS),
+        "override members exceed item budget"
     );
     Ok(())
 }

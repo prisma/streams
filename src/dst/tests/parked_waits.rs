@@ -576,8 +576,9 @@ async fn writes_served_by_an_open_shard_still_count_in_the_write_gate() {
     let engaged = store.hold_class(StoreOp::Put, ObjClass::Wal, 1);
     let held = || engaged.load(std::sync::atomic::Ordering::SeqCst) >= 1;
     let counted = two_waves(&state, addr, "served", held, || store.release_hold()).await;
+    // No write took a waiting place: one that had would have left the gate's count, and more than
+    // eight would have been admitted (edge change #272: the gate judges `write_slots`' count).
     assert_eq!(counted, (8, 8), "(appends acked, writes shed)");
-    assert_eq!(state.admission.waiting(), 0, "no waiting place is held");
     engine_shutdown(&state).await;
 }
 
@@ -605,4 +606,390 @@ async fn writes_held_by_a_move_leave_the_write_gate_up_to_the_cap() {
     let counted = two_waves(&state, addr, "held", || true, release).await;
     assert_eq!(counted, (16, 0), "(appends acked, writes shed)");
     engine_shutdown(&state).await;
+}
+
+/// **Writes parked at a split's barrier leave the write gate, up to the cap** (Addendum 25 of
+/// GATE-DECISION-meas-full-forward-wedge-2026-11-19: split `1`'s 7 sheds on an idle store, a
+/// 771 ms pause). The rig's one leaf splits with its pause held at the barrier's park, as a
+/// split's pause holds every write to its parent. At an in-flight cap of 8, eight appends park at
+/// the barrier and eight more are then sent; the split is then let go and publishes. Each of the
+/// sixteen is admitted, none is shed, and every one is acked by the children. Red before the fix:
+/// a write parked at the barrier holds no waiting place, so the second eight are shed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn writes_parked_at_a_splits_barrier_leave_the_write_gate_up_to_the_cap() {
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            prefixes: vec![String::new()],
+            ..Default::default()
+        },
+    )
+    .await;
+    super::topology_policy::store_topology(&rig).await;
+    let prefix = one_record(&rig.state, rig.addr, "splitting").await;
+    let parent = rig.state.shards.open(&prefix).expect("the leaf is open");
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    parent.gc_state().gate.pause_at_park(point);
+    let clock = rig.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&rig.state.shards, &parent, "op-cap", "inst-a", &*clock);
+    let go_tx = std::sync::Mutex::new(Some(go_tx));
+    let release = || {
+        let go = go_tx.lock().unwrap().take().expect("released once");
+        assert!(go.send(()).is_ok(), "the split waits for go");
+    };
+    let waves = async {
+        reached_rx.await.expect("the split parks");
+        two_waves(&rig.state, rig.addr, "splitting", || true, release).await
+    };
+    let (published, counted) = futures_util::future::join(split, waves).await;
+    let refused = published.err().map(|refused| refused.to_string());
+    assert_eq!(
+        (refused, counted),
+        (None, (16, 0)),
+        "(the split's refusal, (appends acked, writes shed))"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// Once sixteen are in flight, `last` sent and answered; then the paused split let go (`go`).
+async fn past_the_line(
+    state: &State,
+    last: impl std::future::Future<Output = u16>,
+    go: tokio::sync::oneshot::Sender<()>,
+) -> u16 {
+    settled(|| state.admission.snapshot().inflight == 16).await;
+    let answered = last.await;
+    assert!(go.send(()).is_ok(), "the split waits for go");
+    answered
+}
+
+/// **Writes holding a place at a split's barrier are netted out at the line, exactly** (package 4's
+/// over-shed cross-check, GATE-DECISION-meas-full-forward-wedge-2026-11-19 Addendum 27 (b)). At an
+/// in-flight cap of 8, eight appends park at the barrier and take the eight waiting places; eight
+/// more park with the places full, so they count, and the write gate is at its line; one more is
+/// then shed, and only it. The split is let go and the sixteen are acked by the children. A gate
+/// that counted a place-holder against itself sheds the second eight too; one that did not cap the
+/// places admits the seventeenth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn writes_holding_a_place_at_a_splits_barrier_are_netted_out_at_the_line_exactly() {
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            prefixes: vec![String::new()],
+            ..Default::default()
+        },
+    )
+    .await;
+    super::topology_policy::store_topology(&rig).await;
+    let prefix = one_record(&rig.state, rig.addr, "at-the-line").await;
+    let parent = rig.state.shards.open(&prefix).expect("the leaf is open");
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    parent
+        .gc_state()
+        .gate
+        .pause_at_park(crate::topology::gate::PausePoint { reached, go });
+    let clock = rig.state.runtime.clock.clone();
+    let split =
+        crate::topology::split::split(&rig.state.shards, &parent, "op-line", "inst-a", &*clock);
+    let (state, addr) = (&rig.state, rig.addr);
+    let send = |n: u64| async move {
+        let (path, body) = ("/v1/streams/at-the-line/records", format!(r#"{{"n":{n}}}"#));
+        call(addr, "POST", path, body.as_bytes()).await.0
+    };
+    let waves = async {
+        reached_rx.await.expect("the split parks");
+        state.admission.set_max_inflight(8);
+        let shed = || state.admission.snapshot().shed.inflight;
+        let before = shed();
+        let first = futures_util::future::join_all((1..=8).map(send));
+        let rest = async {
+            settled(|| state.admission.snapshot().inflight == 8).await;
+            let second = futures_util::future::join_all((9..=16).map(send));
+            futures_util::future::join(second, past_the_line(state, send(17), go_tx)).await
+        };
+        let (first, (second, last)) = futures_util::future::join(first, rest).await;
+        let acked = first
+            .iter()
+            .chain(&second)
+            .filter(|status| **status == 200)
+            .count();
+        (acked, last == 200, shed() - before)
+    };
+    let (published, counted) = futures_util::future::join(split, waves).await;
+    let refused = published.err().map(|refused| refused.to_string());
+    assert_eq!(
+        (refused, counted),
+        (None, (16, false, 1)),
+        "(the split's refusal, (appends acked, the seventeenth acked, writes shed))"
+    );
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+}
+
+/// A raw stream created at `addr` whose route lands in `leaf`: its path.
+async fn raw_stream_in(state: &State, addr: SocketAddr, leaf: &str) -> String {
+    use super::billing_closure_debts::{JSON, raw_put, stored};
+    for n in 0..200 {
+        let name = format!("barrier-{leaf}-{n}");
+        raw_put(addr, &name, &[JSON], b"").await;
+        let desc = stored(state, &state.deployment.raw_adapter_sref(&name)).await;
+        if state
+            .shards
+            .prefix_for(&desc.resolve_segment("").shard_route)
+            == leaf
+        {
+            return format!("/v1/stream/{name}");
+        }
+    }
+    panic!("no stream lands in {leaf}");
+}
+
+/// Record `n` appended to the raw stream `path`: the answer's status.
+async fn raw_append(addr: SocketAddr, path: &str, n: u64) -> u16 {
+    let json = [super::billing_closure_debts::JSON];
+    let body = format!(r#"[{{"n":{n}}}]"#);
+    super::fixture_requests::hreq(addr, "POST", path, &json, body.as_bytes())
+        .await
+        .0
+}
+
+/// Waves of eight appends to `path`, one every 50 ms for `span`: every answer's status.
+async fn steady(addr: SocketAddr, path: &str, span: Duration) -> Vec<u16> {
+    let t0 = Instant::now();
+    let mut statuses = Vec::new();
+    while t0.elapsed() < span {
+        let wave = (0..8).map(|n| raw_append(addr, path, n));
+        statuses.extend(futures_util::future::join_all(wave).await);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    statuses
+}
+
+/// A raw stream name, `tag`-`n`, whose route lands in `leaf` (computed, not created).
+fn name_in(state: &State, leaf: &str, tag: &str) -> String {
+    (0..1_000)
+        .map(|n| format!("{tag}-{n}"))
+        .find(|name| {
+            let sref = state.deployment.raw_adapter_sref(name);
+            state
+                .shards
+                .prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0)
+                == leaf
+        })
+        .unwrap_or_else(|| panic!("no {tag} name lands in {leaf}"))
+}
+
+/// What a request parked at the split's barrier gets: (requests answered as asked, other leaves'
+/// appends not acked during the pause, and after the release, writes shed), and the split's
+/// refusal, if it was refused.
+type ThroughAPause = (Option<String>, (usize, usize, usize, u64));
+
+/// A rig over the leaves `0` and `1` with `prepare` run on it; `1`'s split held at the barrier's
+/// park, and at an in-flight cap of 8 eight requests `parked(n)` sent to `1` (each answering whether
+/// it was answered as asked); `0`'s waves of eight appends run for 300 ms of the pause and a second
+/// after it ends; then `then` reads before the rig stops.
+async fn through_a_pause<P, F, X, T>(
+    tag: &str,
+    prepare: P,
+    parked: F,
+    then: X,
+) -> (ThroughAPause, T)
+where
+    P: AsyncFnOnce(&State, SocketAddr),
+    F: AsyncFn(&State, SocketAddr, u64) -> bool,
+    X: AsyncFnOnce(&State, SocketAddr) -> T,
+{
+    let rig = http_rig_build(
+        mem(),
+        RigRuntime::first(),
+        HttpRigOptions {
+            prefixes: vec!["0".into(), "1".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    super::topology_policy::store_topology(&rig).await;
+    let (state, addr) = (&rig.state, rig.addr);
+    let other = raw_stream_in(state, addr, "0").await;
+    assert_eq!(raw_append(addr, &other, 0).await, 204, "{other}");
+    prepare(state, addr).await;
+    state.admission.set_max_inflight(8);
+    let shed = || state.admission.snapshot().shed.inflight;
+    let before = shed();
+    let parent = state.shards.open("1").expect("the leaf is open");
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    parent.gc_state().gate.pause_at_park(point);
+    let clock = state.runtime.clock.clone();
+    let split = crate::topology::split::split(&state.shards, &parent, tag, "inst-a", &*clock);
+    let control = async {
+        reached_rx.await.expect("the split parks");
+        let held = futures_util::future::join_all((1..=8).map(|n| parked(state, addr, n)));
+        let around = async {
+            settled(|| state.admission.snapshot().inflight == 8).await;
+            let during = steady(addr, &other, Duration::from_millis(300)).await;
+            assert!(go_tx.send(()).is_ok(), "the split waits for go");
+            let after = steady(addr, &other, Duration::from_secs(1)).await;
+            (during, after)
+        };
+        futures_util::future::join(held, around).await
+    };
+    let (published, (held, (during, after))) = futures_util::future::join(split, control).await;
+    let not_acked = |statuses: &[u16]| statuses.iter().filter(|status| **status != 204).count();
+    let answered = held.iter().filter(|answered| **answered).count();
+    let counted = (
+        answered,
+        not_acked(&during),
+        not_acked(&after),
+        shed() - before,
+    );
+    let read = then(state, addr).await;
+    let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+    assert!(report.aborted.is_empty(), "{report:?}");
+    engine_shutdown(&rig.state).await;
+    (
+        (published.err().map(|refused| refused.to_string()), counted),
+        read,
+    )
+}
+
+/// **Other leaves' writes are not shed through a split's pause and its release** (Addendum 25 of
+/// GATE-DECISION-meas-full-forward-wedge-2026-11-19, condition 2): eight appends to `1` parked at
+/// its split's barrier, and `0`'s waves (`through_a_pause`). Every parked append is acked by the
+/// children, every append to `0` is answered `204`, and none is shed. Red before the fix: the eight
+/// parked appends hold the cap, so `0`'s waves are shed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn other_leaves_writes_are_not_shed_through_a_splits_pause_and_release() {
+    let held = std::sync::OnceLock::new();
+    let prepare = async |state: &State, addr: SocketAddr| {
+        let path = raw_stream_in(state, addr, "1").await;
+        assert_eq!(raw_append(addr, &path, 0).await, 204, "{path}");
+        held.set(path).unwrap();
+    };
+    let parked = async |_: &State, addr: SocketAddr, n: u64| {
+        raw_append(addr, held.get().unwrap(), n).await == 204
+    };
+    let (counted, ()) =
+        through_a_pause("op-appends", prepare, parked, async |_: &State, _| {}).await;
+    assert_eq!(
+        counted,
+        (None, (8, 0, 0, 0)),
+        "(refused, (parked acked, during, after, shed))"
+    );
+}
+
+/// **A queue's sends parked at a split's barrier leave the write gate** (Addendum 25): eight sends
+/// parked at `1`'s barrier beside `0`'s waves; every append to `0` is `204`, none is shed (red
+/// before the fix). A split reroutes only appends, so each send is `201` stored exactly once or
+/// `503 queue_unavailable` stored never (Addendum 28 pins today's; the reroute makes every one 201).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_queues_sends_parked_at_a_splits_barrier_leave_the_write_gate() {
+    let queue = std::sync::OnceLock::new();
+    let prepare = async |state: &State, addr: SocketAddr| {
+        let name = (0..1_000)
+            .map(|n| format!("barrier-q-{n}"))
+            .find(|name| {
+                let sref = crate::tenant::ProjectId::new("proj-test")
+                    .unwrap()
+                    .stream_ref(name);
+                let route = crate::crypto::RouteHash::for_stream(&sref).0;
+                state.shards.prefix_for(&route) == "1"
+            })
+            .expect("a queue name lands in 1");
+        let key = [("streams-encryption-key", PRISMA_KEY)];
+        let made = preq(addr, "PUT", &format!("/v1/queues/{name}"), &key, b"").await;
+        assert_eq!(made.0, 201, "create the queue {name}");
+        queue.set(name).unwrap();
+    };
+    let answers = std::sync::Mutex::new(Vec::new());
+    let parked = async |_: &State, addr: SocketAddr, n: u64| {
+        let key = [("streams-encryption-key", PRISMA_KEY)];
+        let path = format!("/v1/queues/{}/messages", queue.get().unwrap());
+        let body = format!(r#"{{"body":{{"n":{n}}}}}"#);
+        let sent = preq(addr, "POST", &path, &key, body.as_bytes());
+        let answered = tokio::time::timeout(Duration::from_secs(20), sent).await;
+        let (status, code) = answered.map_or((0, String::new()), |(status, _, raw)| {
+            let answer: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_default();
+            let code = answer["error"]["code"].as_str().or(answer["code"].as_str());
+            (status, code.unwrap_or_default().to_string())
+        });
+        answers.lock().unwrap().push((n, status, code));
+        status != 0
+    };
+    let stored = async |_: &State, addr: SocketAddr| stored_ns(addr, queue.get().unwrap()).await;
+    let (counted, stored) = through_a_pause("op-queue", prepare, parked, stored).await;
+    let answers = std::mem::take(&mut *answers.lock().unwrap());
+    eprintln!("QUEUE_SENDS_AT_A_SPLIT answers={answers:?} stored={stored:?}");
+    for (n, status, code) in &answers {
+        let copies = stored.iter().filter(|held| *held == n).count();
+        let exact = match status {
+            201 => copies == 1,
+            503 => code == "queue_unavailable" && copies == 0,
+            _ => false,
+        };
+        assert!(exact, "send {n}: {status} {code}, stored {copies} times");
+    }
+    let served = answers
+        .iter()
+        .filter(|(_, status, _)| *status == 201)
+        .count();
+    assert_eq!(
+        (counted, stored.len()),
+        ((None, (8, 0, 0, 0)), served),
+        "((refused, (sends answered, during, after, shed)), messages stored)"
+    );
+}
+
+/// The `n` of every message stored in the queue `name`, leased in claims of up to 64.
+async fn stored_ns(addr: SocketAddr, name: &str) -> Vec<u64> {
+    let key = [("streams-encryption-key", PRISMA_KEY)];
+    let path = format!("/v1/queues/{name}/groups/default:claim");
+    let mut ns = Vec::new();
+    loop {
+        let claim = br#"{"max":64,"leaseMs":60000,"waitMs":0}"#;
+        let (status, _, raw) = preq(addr, "POST", &path, &key, claim).await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&raw));
+        let answer: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_default();
+        let messages = answer["messages"].as_array().cloned().unwrap_or_default();
+        if messages.is_empty() {
+            return ns;
+        }
+        ns.extend(messages.iter().filter_map(|m| m["body"]["n"].as_u64()));
+    }
+}
+
+/// **Creates with initial content parked at a split's barrier leave the write gate** (Addendum 25,
+/// creation's path): eight raw streams whose routes land in `1`, each created with one record while
+/// its split's barrier holds `1`, beside `0`'s waves. Every create is answered `201`, every append
+/// to `0` `204`, and none is shed. Red before the fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn creates_with_content_parked_at_a_splits_barrier_leave_the_write_gate() {
+    let prepare = async |_: &State, _: SocketAddr| {};
+    let parked = async |state: &State, addr: SocketAddr, n: u64| {
+        let name = name_in(state, "1", &format!("barrier-create-{n}"));
+        let json = [super::billing_closure_debts::JSON];
+        let path = format!("/v1/stream/{name}");
+        let body = format!(r#"[{{"n":{n}}}]"#);
+        super::fixture_requests::hreq(addr, "PUT", &path, &json, body.as_bytes())
+            .await
+            .0
+            == 201
+    };
+    let (counted, ()) =
+        through_a_pause("op-creates", prepare, parked, async |_: &State, _| {}).await;
+    assert_eq!(
+        counted,
+        (None, (8, 0, 0, 0)),
+        "(refused, (creates answered, during, after, shed))"
+    );
 }

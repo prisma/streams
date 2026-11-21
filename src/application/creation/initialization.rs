@@ -136,26 +136,9 @@ pub(super) async fn seed(
             }),
             resp: tx,
         };
-        if engine.try_enqueue(req).is_err() {
-            return Err(CreationError::new(
-                CreationFailure::Overloaded,
-                "overloaded",
-                "queue full",
-            ));
-        }
-        match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
-            Ok(Ok(Ok(ack))) => {
-                next = ack.next_offset;
-                closed_now = ack.closed || close;
-            }
-            _ => {
-                return Err(CreationError::new(
-                    CreationFailure::Ambiguous,
-                    "append_timeout",
-                    "initial body timed out",
-                ));
-            }
-        }
+        let ack = engine.initial_ack(req, rx).await?;
+        next = ack.next_offset;
+        closed_now = ack.closed || close;
     } else if !created && close {
         closed_now = true; // preserved on idempotent PUT of a closed stream
     } else if created && !initial_content_pending {
@@ -164,6 +147,35 @@ pub(super) async fn seed(
     }
 
     Ok((next, closed_now))
+}
+
+impl ShardEngine {
+    /// A create's initial content `req` enqueued on this engine, and the committer's answer on `rx`:
+    /// its ack; the create's `overloaded` when the queue is full; or its `append_timeout`. A write
+    /// the split's barrier parks takes a waiting place meanwhile (`topology::gate::parked`,
+    /// Addendum 25). Outside `seed`, whose exception scopes may not grow.
+    async fn initial_ack(
+        &self,
+        req: crate::shard::AppendReq,
+        rx: oneshot::Receiver<Result<crate::shard::AppendAck, crate::shard::AppendErr>>,
+    ) -> Result<crate::shard::AppendAck, CreationError> {
+        if self.try_enqueue(req).is_err() {
+            return Err(CreationError::new(
+                CreationFailure::Overloaded,
+                "overloaded",
+                "queue full",
+            ));
+        }
+        let answered = crate::topology::gate::parked::answered(rx, self);
+        match tokio::time::timeout(APPEND_TIMEOUT, answered).await {
+            Ok(Ok(Ok(ack))) => Ok(ack),
+            _ => Err(CreationError::new(
+                CreationFailure::Ambiguous,
+                "append_timeout",
+                "initial body timed out",
+            )),
+        }
+    }
 }
 
 #[expect(

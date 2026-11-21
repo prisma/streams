@@ -1398,6 +1398,7 @@ before marking it complete."
 - **Fork candidate D: a scan's source initialisation is 4 wide and a sorted run's tables open one by one (recorded, not on #149's path).** Read from the fork at e14e58d: `reader.rs:191` builds a scan's L0 iterators `total_ssts.clamp(1, 4)` at a time, then the sorted runs the same way, each awaiting its first block; a sorted run's later tables open as the scan reaches them. So a short scan's wall time is its initialisation depth, not its rows: fix 2's four tail runs each pay the same waves over the same tables (`tails_ms` 171 at 5,000 members, about eight 20 ms round trips, inferred). Measure with per-kind request counts in Streams before any pin move; an upstream issue per `FORK.md` if it goes ahead.
 
 - **A merge's child is born on the ring, not on the merge's actor (built: §22 step 2, C19, edge #265 amendment C19; GATE-DECISION-f2-children-on-actor-2026-11-16 §6).** The merge opens its child `M` on its actor at publish (`merge.rs`'s publish), but `M`'s owner is the ring's pick for `M`, as a split's children were before F2 (edge change #265): when the ring gives `M` to another member, the actor's open is refused `NotOwner` and its held operations are refused or forwarded while that member opens `M` cold. The fix is F2's mechanism for one child: the actor writes `M`'s override entry between `'T'` and the topology CAS under the directory's revalidation lock (A1's rule already refreshes every install), and `intent::Live::keeps` keeps a live merge's `M`. Red: `a_merges_child_is_served_by_the_actor_at_publish` (members `streams-1` and `streams-2`, `M` ringed to `streams-2`, an append held at the merge's park, acked by the actor at its offset, `streams-2`'s `open_count() == 0`).
+- **`AppState::moves` takes an unread `_candidates` argument (recorded, not built; §22 step 4, GATE-DECISION-s22-3b-step4-2026-11-21 §2.3).** Step 4 made `planning::active_members` return the pass's candidates (C3) with `fleet::start`'s text unchanged, and the tick's moves plan over the ring it published (`ownership.ring_active()`), so the `&active` that `fleet::start` still passes to `state.moves(..)` is read by nothing. `fleet::start`'s scope has approved growth rows and is frozen exactly, so removing the argument there is a `stale exception growth row` only the owner updates. Remove the parameter and its argument the next time `fleet::start`'s rows are opened for another reason, in that commit, its row amended by the owner; no row is asked for it alone.
   Witness (GATE-DECISION-colocation-prune-race-2026-11-17 §3): in `dst::dst_tests::topology_colocation::a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_merged_there` the pair is merged on `streams-3`, but `00` ring-picks `streams-1`, so the merged leaf moves there at the next tick and `streams-3`, which the fleet grew for the merge, ends empty: the fleet's one-shard growth buys an instance the merged leaf then leaves (in the partner test `0` likewise rings to `streams-1` after merging on `streams-2`). The ring home's room is not checked either, while the co-location reserved room for the merged leaf on the target (+2, +3): the reservation is spent on the wrong member. When this is built, those two DSTs gain the assertion that the merged leaf's effective owner is the co-location's target.
 - **A billing sweep's close arms a 503 on a healthy cold shard (defect, found 2026-11-15; GATE-DECISION-mutation-timeout-2026-11-14 §7, question 3).** `sweep_owned_outboxes` opens a cold, debt-free leaf to look at its outbox. `close_scheduler_engine` then closes it with `SweepEviction`, and `ledger_after` arms `HOLDOFF_BASE` (3 s, `src/sharddir.rs:49`) for it even though `is_evidence` says a sweep's close is no evidence. A customer's first request in that window gets 503 `shard_moving` with Retry-After (`src/sharddir.rs:544`): about 3 s in every 300 s per cold shard. It predates push 4 and does not gate #149. Rank 12 / PR 6.1.1-B already removed the strike drift, so this is the remaining part.
   - **Red first:** a DST in which a customer's first request lands within 3 s of a sweep's close of a debt-free cold leaf, and today reads 503. Then check what the `closing` branch answers while the old engine terminates (`closing_outcome`). If that is also a 503, the fix is the wait, not only the ledger line.
@@ -3150,3 +3151,34 @@ the server's stores pass through it. Its follow-ups:
 - **The gate's waits are not observable in production.** `/v1/debug/store` reports the bulk
   gate (`bulk_gate`), not the count bound's pools; a scouting leg on the fix sees their effect
   only through store connections and latency.
+
+## 27. Follow-ups from the split's barrier waits (2026-11-20)
+
+GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addenda 25 and 28 (Fable, under the owner's
+delegation):
+
+- **A queue operation held at a split's barrier is refused, not rerouted (after the leave; an edge
+  change when built).**
+  - A split's barrier reroutes only appends to the child engine this instance owns
+    (`commit_and_park`). Every other held operation is rejected `Splitting`, and a native queue
+    operation's reply is dropped (`CommitTransaction::reject_op`, its `_` arm). So a queue send,
+    claim or settle that meets a split's pause is answered `503 queue_unavailable`, retryable,
+    with nothing stored.
+  - This is not a shed: admission never refuses it, and nothing is lost. But it is one refusal a
+    client sees per such operation per split.
+  - The DST `parked_waits::a_queues_sends_parked_at_a_splits_barrier_leave_the_write_gate` pins
+    today's answer exactly: each send is `201` with its message stored once, or
+    `503 queue_unavailable` with nothing stored. The reroute's commit turns it into every send
+    `201`, with its edge record.
+
+## 28. Follow-ups from the write gate's burst count (2026-11-20)
+
+- **The cell's effective quotas have no type of their own** (GATE-DECISION-meas-full-forward-wedge-2026-11-19,
+  Addendum 29). `ProjectQuotas` is one type for what a feed states and for what the cell holds a
+  project to, so `QuotaRegistry::park_share` can be handed a feed's quotas unclamped (a request
+  weight of 8 on a cell shared eight ways, which the cell holds as 7): #272's burst DST did, and its
+  own fair-shed judgement then disagreed with the gate's. It is safe today only because
+  `CellCeiling::effective` clamps the feed when it loads (`auth/ceiling.rs`). The item: give the
+  cell's effective quotas their own type, made only by `CellCeiling::effective`, and have
+  `park_share`, project admission and the gates take that type. Its first step is listing every
+  constructor of a principal.

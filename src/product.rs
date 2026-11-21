@@ -3505,7 +3505,7 @@ mod internal;
 pub(crate) mod live_wait;
 mod operation;
 pub(crate) mod ownership;
-pub(crate) use operation::{ProductOperation, VERBS};
+pub(crate) use operation::{ProductOperation, VERBS, count_in};
 pub(crate) mod queues;
 mod read_cursor;
 pub(crate) mod read_memory;
