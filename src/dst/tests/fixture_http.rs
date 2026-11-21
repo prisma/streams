@@ -43,6 +43,9 @@ pub(super) struct HttpRigOptions {
     /// The scenario's own command line over the hermetic fixture: a flag
     /// given on argv, which clap resolves ahead of its variable.
     pub(super) cli: fn(&mut crate::config::CliArgs),
+    /// The scenario's own fleet settings, edited after the configuration loads: those only the
+    /// environment sets (the move cooldown), which the rig never reads.
+    pub(super) fleet: fn(&mut crate::config::FleetConfig),
     /// What the directory's opener is wrapped in; none by default
     /// (`split_born_root`'s early seal wraps it).
     pub(super) open_wrap: OpenWrap,
@@ -69,6 +72,7 @@ impl Default for HttpRigOptions {
             auth_service: None,
             fleet_auth: None,
             cli: |_| {},
+            fleet: |_| {},
             open_wrap: Box::new(|open| open),
         }
     }
@@ -389,10 +393,15 @@ fn rig_directory(
     crate::shard_directory::ShardDirectory::new_at(prefixes, ownership.clone(), timing, opener)
 }
 
+/// A scenario's edit of the rig's command line ([`HttpRigOptions::cli`]).
+type CliEdit = fn(&mut crate::config::CliArgs);
+/// A scenario's edit of the rig's fleet settings ([`HttpRigOptions::fleet`]).
+type FleetEdit = fn(&mut crate::config::FleetConfig);
+
 /// Resolve the fixture's hermetic CLI and admission inputs before any runtime
 /// owner is constructed, so its configured limits agree with the HTTP surface.
 fn fixture_config(
-    cli_edit: fn(&mut crate::config::CliArgs),
+    (cli_edit, fleet_edit): (CliEdit, FleetEdit),
     max_request_body_bytes: Option<usize>,
     instance_name: Option<&str>,
     admission: Option<crate::config::AdmissionConfig>,
@@ -414,6 +423,7 @@ fn fixture_config(
     if let Some(admission) = admission {
         rig_config.admission = admission;
     }
+    fleet_edit(&mut rig_config.fleet);
     // A named rig is a fleet member on 127.0.0.1: its peers' plain-http URLs are trusted, as
     // FLEET_ALLOW_HTTP_PEERS=1 trusts them on a local rig, so a published URL map forwards.
     rig_config.fleet.allow_http_peers = instance_name.is_some();
@@ -468,6 +478,7 @@ pub(super) async fn http_rig_build(
         auth_service,
         fleet_auth,
         cli,
+        fleet: fleet_edit,
         open_wrap: wrap,
     } = opts;
     let registry = crate::registry::Registry::new(
@@ -487,7 +498,6 @@ pub(super) async fn http_rig_build(
         touch_entropy,
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
-    let opener_store = store.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
     // the CLI half comes from the HERMETIC fixture, never from a parse
@@ -500,7 +510,7 @@ pub(super) async fn http_rig_build(
     // it — and any assembly reading the config disagreed with the
     // runtime it was assembling.
     let rig_config = fixture_config(
-        cli,
+        (cli, fleet_edit),
         max_request_body_bytes,
         instance_name.as_deref(),
         admission,
@@ -562,7 +572,7 @@ pub(super) async fn http_rig_build(
             "test".to_string(),
         ),
         shards: rig_directory(prefixes, &ownership, &rig_config, wrap, |notifier| {
-            rig_opener(opener_store, opener_shard_cfg, open_park, seal, notifier)
+            rig_opener(store.clone(), opener_shard_cfg, open_park, seal, notifier)
         }),
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,

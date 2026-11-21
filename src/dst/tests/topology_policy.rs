@@ -193,17 +193,19 @@ async fn policy_rig_at(
         instance: "streams-1",
         runtime: RigRuntime::first(),
         split_sustain_ms: 1_000,
+        fleet: |_| {},
     };
     policy_rig_on(fleet, on, cli, entry, prefixes).await
 }
 
-/// Where a policy rig runs: its cell's data store, its instance and its process incarnation, and
-/// the split sustain of the test's own loop (a second, unless a scenario must never split).
+/// Where a policy rig runs: its cell's data store, instance and incarnation, its own loop's split
+/// sustain (a second, unless it must never split), and its fleet (`HttpRigOptions::fleet`).
 pub(super) struct On {
     pub(super) data: Arc<dyn ObjectStore>,
     pub(super) instance: &'static str,
     pub(super) runtime: RigRuntime,
     pub(super) split_sustain_ms: i64,
+    pub(super) fleet: fn(&mut crate::config::FleetConfig),
 }
 
 /// `policy_rig_at`, run as `on.instance` over `on.data`, so two instances can share a cell.
@@ -221,6 +223,7 @@ pub(super) async fn policy_rig_on(
             fleet_store: Some(fleet),
             instance: Some(on.instance.into()),
             cli,
+            fleet: on.fleet,
             prefixes,
             ..Default::default()
         },

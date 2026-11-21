@@ -52,6 +52,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         instance: "streams-1",
         runtime: RigRuntime::first(),
         split_sustain_ms: NEVER,
+        fleet: colocating,
     };
     let (a, _) = policy_rig_on(fleet.clone(), one, cold, split_double, halves.clone()).await;
     store_topology(&a).await;
@@ -81,6 +82,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         instance: "streams-2",
         runtime: RigRuntime::incarnation(1),
         split_sustain_ms: NEVER,
+        fleet: colocating,
     };
     let (b, _) = policy_rig_on(fleet.clone(), two, cold, split_double, halves).await;
     for rig in [&a, &b] {
@@ -213,7 +215,7 @@ fn colocation_time(moved: &serde_json::Value, halves: &[String; 2], merged_ms: i
         .filter_map(|event| event["event_time_ms"].as_i64())
         .min()
         .expect("a write of a half");
-    let cooldown_secs = crate::config::FleetConfig::default().rebalance_move_cooldown_secs;
+    let cooldown_secs = MOVE_COOLDOWN_SECS;
     let cooldown_ms = i64::try_from(cooldown_secs).unwrap() * 1_000;
     let took = merged_ms - first_ms;
     eprintln!("COLOCATE_TIME ms={took} halves={halves:?} cooldown_ms={cooldown_ms}");
@@ -278,6 +280,18 @@ async fn count_of_two(fleet: &Arc<dyn ObjectStore>) -> i64 {
     now
 }
 
+/// The co-location DSTs' move cooldown: 20 s instead of the default 60 s, so the suite does not wait
+/// out minutes of cooldowns in real time (PR #178's CI ran past its limit). It is two of the policy
+/// loop's 10 s periods, so a hold ends on a pass as the default's six did. The return window
+/// stays at its default (300 s), far past every co-location here: a pin on a half at its ring home
+/// is a no-op that return-home drops once it is older than that window.
+pub(super) const MOVE_COOLDOWN_SECS: u64 = 20;
+
+/// The co-location DSTs' fleet settings: the move cooldown [`MOVE_COOLDOWN_SECS`].
+pub(super) fn colocating(fleet: &mut crate::config::FleetConfig) {
+    fleet.rebalance_move_cooldown_secs = MOVE_COOLDOWN_SECS;
+}
+
 /// The rigs of the co-location DSTs: the policy's lines with a merge sustain of 20 s (longer than
 /// the setup), a second's reversal, and three shards an instance at most.
 pub(super) fn full(cli: &mut crate::config::CliArgs) {
@@ -309,6 +323,7 @@ pub(super) async fn full_rig(
         instance,
         runtime,
         split_sustain_ms: 1_000_000_000,
+        fleet: colocating,
     };
     policy_rig_on(fleet.clone(), on, cli, split_double, leaves)
         .await
@@ -577,8 +592,8 @@ async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_me
     pinned(&fleet, &layout, now).await;
     laid_out(&a, &layout).await;
 
-    // The ask is the actor's: its beat says why the merge waits (after the fleet's 60 s wait on
-    // the count this test published); the count then grows.
+    // The ask is the actor's: its beat says why the merge waits (after the fleet's settle on the
+    // count this test published); the count then grows.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
     let mut beat = document(&fleet, "streams-1").await;
     let asks = |beat: &serde_json::Value| {
@@ -781,6 +796,7 @@ async fn room_cell() -> (
         instance,
         runtime,
         split_sustain_ms: 1_000,
+        fleet: colocating,
     };
     let one = on("streams-1", RigRuntime::first());
     let (a, _) = policy_rig_on(

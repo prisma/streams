@@ -563,7 +563,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "1816cef5cb0e27264174e7e5af561d128f3042118918b6b12a2bef9fb538057a",
+    "function_sha256": "60a4fdf58b17e5acc3a145893710f56ce1dbcfbe233c725a2df202978ce472d0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
