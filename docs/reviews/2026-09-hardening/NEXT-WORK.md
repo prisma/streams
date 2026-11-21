@@ -2956,6 +2956,22 @@ EDGE-261-RATIFICATION.md) left these:
   - whether a prepared reference list that names an object a pre-quiesce clean batch then
     zeroed keeps that object from the lineage sweep for good: a storage leak, not a loss, and
     not verified.
+- **A merge's publication is learnt tick by tick, so a client's three replays can all meet
+  members that have not read it yet** (GATE-DECISION-s22-join-2026-11-20 Addendum 7, the
+  co-location commit's C3 DST). Each instance installs the merged topology at its own tick. For
+  that while, an append to the merged leaf can be sent to the old owner's view three times over
+  and end `409 not_ring_owner`: retryable, and nothing written. The leg on bd9cfcc8d saw one such
+  append on each half's stream, out of 959 replays.
+  - `topology_colocation_load::a_colocation_move_does_not_fence_its_writer` bounds this: only that
+    409, at most 1 % of the appends sent, and no replay path that visits a member twice.
+  - **Open question:** should #250's forward, which learns a newer topology where it is seen, also
+    cover this case, so that a member that has read the publish answers for one that has not?
+- **A forwarder that has just learnt it owns the stream could resolve again and serve it**
+  (GATE-DECISION-s22-join-2026-11-20 Addendum 9 (2)). Today, F6's relayed-409 refresh makes the
+  forwarder read the overrides it does not hold. It then answers a `409` naming itself, and the
+  client's replay is served there: one extra hop, about 16 ms in C3's trace.
+  - It could serve the request itself, as the peer read hop already does for reads (A1 to A3).
+  - An edge change when built; not now.
 
 ## 20. Follow-ups from edge change #260 (2026-11-09)
 

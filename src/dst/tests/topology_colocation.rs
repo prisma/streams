@@ -1,8 +1,9 @@
 #![cfg(test)]
-//! The topology policy's merges across instances (S5 + S6 §7.2 step 0, edge #261 B1): a cold pair
-//! the fleet split across two instances is moved onto one instance first, the merge's actor, its
-//! partner or a third instance with room, and a merge with no room anywhere asks the fleet for an
-//! instance. Each scenario runs two or three real instances over one data store and one fleet
+//! The topology policy's merges across instances (S5 + S6 §7.2 step 0, edge #261 B1 as amended by
+//! GATE-DECISION-s22-join-2026-11-20 Addendum 7): a cold pair the fleet split across two instances
+//! is gathered on one instance first, the merge's actor, its partner or a third instance with room,
+//! each half written by its own holder (a pin on the target, a giver-first handoff elsewhere), and a
+//! merge with no room anywhere asks the fleet for an instance. Each scenario runs two or three real instances over one data store and one fleet
 //! store, on `topology_policy`'s rigs, and takes minutes (the move's cooldown among it).
 
 use super::fixture_http::engine_shutdown;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The leaves of the cell's stored topology.
-async fn stored_leaves(store: &Arc<dyn ObjectStore>) -> Vec<String> {
+pub(super) async fn stored_leaves(store: &Arc<dyn ObjectStore>) -> Vec<String> {
     let (stored, _) = crate::topology::store::read(&**store).await.unwrap();
     stored.shards.leaves.keys().cloned().collect()
 }
@@ -28,8 +29,10 @@ async fn stored_leaves(store: &Arc<dyn ObjectStore>) -> Vec<String> {
 /// streams of the cell `0` + `1`; `streams-2` then beats, the ring gives it both halves, and a
 /// move (count balance's, as an aged override) gives `1` back to `streams-1`. Both halves go
 /// cold past the merge sustain. The merge's actor, `0`'s owner `streams-2`, cannot merge a half
-/// another instance holds: it moves `1` to itself, waits out the move's cooldown, and merges. The stored topology ends as the one leaf `""`, its owner serves it, and every stream
-/// reads back the same records.
+/// another instance holds and is the target: it names `0` for itself; `1`'s holder `streams-1` then
+/// hands `1` to it giver first, and once the move's cooldown has passed `streams-2` merges. The
+/// stored topology ends as the one leaf `""`, its owner serves it, every stream reads back the same
+/// records, and no handoff fell back to a takeover by fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     let fleet = seeded().await;
@@ -109,7 +112,8 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     }
     assert!(split(), "the pair is split: {:?}", (owner("0"), owner("1")));
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    // The settle on the count, the pin's cooldown, then the handoff's.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     while stored_leaves(&data).await != [""] && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -118,7 +122,8 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         document(&fleet, "streams-2").await["topology_decision"].clone(),
     );
     assert_eq!(stored_leaves(&data).await, [""], "decisions {decisions:?}");
-    moved_onto_then_pruned(&fleet, "", "streams-2").await;
+    moved_onto_then_pruned(&fleet, "", &[("0", "streams-2"), ("1", "streams-2")]).await;
+    unfenced(&[&a, &b]);
     let root = owner("").expect("the ring owns the merged root");
     let serving = if root == "streams-1" { a.addr } else { b.addr };
     for (name, before) in &kept {
@@ -136,18 +141,27 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     engine_shutdown(&b.state).await;
 }
 
-/// Both halves of `parent` were moved onto `to` first, then their entries pruned: of the overrides
-/// document's `rebalance_move` events, those whose shard is `<parent>0` or `<parent>1` are exactly
-/// `(<parent>0, to)` and `(<parent>1, to)` (filtered by shard: after the merge the parent has no
+/// The halves of `parent` were written exactly as `onto` says, then their entries pruned: of the
+/// overrides document's `rebalance_move` events, those whose shard is `<parent>0` or `<parent>1`
+/// are exactly `onto`, each a half and the instance its entry named (a holder's pin of its half on
+/// the target, or its handoff of it there; a half already named for the target is not written
+/// again) (filtered by shard: after the merge the parent has no
 /// override and count balance may move it; nothing in the rig drains the events, whose drain runs
 /// from the telemetry loop this rig never starts). The merge published `parent`, so neither half is
 /// a leaf and a beat drops both entries (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 3;
 /// #251 R3-d, C2): within 10 s the document names neither. An entry is never read after the publish
 /// as a fact, and the merged leaf's owner is not asserted: it is the ring's pick, which #251 B1
-/// records may move it off `to` (GATE-DECISION-colocation-prune-race-2026-11-17).
-async fn moved_onto_then_pruned(fleet: &Arc<dyn ObjectStore>, parent: &str, to: &str) {
+/// records may move it off `to` (GATE-DECISION-colocation-prune-race-2026-11-17). Called as the
+/// merge is seen, it also times the co-location (`colocation_time`).
+pub(super) async fn moved_onto_then_pruned(
+    fleet: &Arc<dyn ObjectStore>,
+    parent: &str,
+    onto: &[(&str, &str)],
+) {
+    let merged_ms = crate::shard::now_ms();
     let halves = [format!("{parent}0"), format!("{parent}1")];
     let moved = document(fleet, "overrides").await;
+    colocation_time(&moved, &halves, merged_ms);
     let mut moves: Vec<(String, String)> = moved["pending_events"]
         .as_array()
         .into_iter()
@@ -165,8 +179,12 @@ async fn moved_onto_then_pruned(fleet: &Arc<dyn ObjectStore>, parent: &str, to: 
         })
         .collect();
     moves.sort();
-    let onto = halves.clone().map(|half| (half, to.to_string()));
-    assert_eq!(moves, onto, "both halves moved onto {to} first: {moved}");
+    let mut onto: Vec<(String, String)> = onto
+        .iter()
+        .map(|(half, to)| ((*half).to_string(), (*to).to_string()))
+        .collect();
+    onto.sort();
+    assert_eq!(moves, onto, "the halves' writes: {moved}");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let entries = document(fleet, "overrides").await["entries"].clone();
@@ -179,6 +197,30 @@ async fn moved_onto_then_pruned(fleet: &Arc<dyn ObjectStore>, parent: &str, to: 
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+/// The co-location's whole time, from its first write (the earliest `rebalance_move` event of a
+/// half in the overrides document `moved`) to `merged_ms`, when the merge was seen: printed as
+/// `COLOCATE_TIME ms=<n>` and under three move cooldowns (Addendum 7, point 1: past it, the
+/// ordering's cost is a come-back).
+fn colocation_time(moved: &serde_json::Value, halves: &[String; 2], merged_ms: i64) {
+    let first_ms = moved["pending_events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["event_type"] == "rebalance_move")
+        .filter(|event| halves.iter().any(|half| event["shard"] == half.as_str()))
+        .filter_map(|event| event["event_time_ms"].as_i64())
+        .min()
+        .expect("a write of a half");
+    let cooldown_secs = crate::config::FleetConfig::default().rebalance_move_cooldown_secs;
+    let cooldown_ms = i64::try_from(cooldown_secs).unwrap() * 1_000;
+    let took = merged_ms - first_ms;
+    eprintln!("COLOCATE_TIME ms={took} halves={halves:?} cooldown_ms={cooldown_ms}");
+    assert!(
+        took < 3 * cooldown_ms,
+        "the co-location took {took} ms, past three move cooldowns"
+    );
 }
 
 /// The records of `name` from whichever of `addrs` serves it (its shard's owner), within 20 s.
@@ -238,7 +280,7 @@ async fn count_of_two(fleet: &Arc<dyn ObjectStore>) -> i64 {
 
 /// The rigs of the co-location DSTs: the policy's lines with a merge sustain of 20 s (longer than
 /// the setup), a second's reversal, and three shards an instance at most.
-fn full(cli: &mut crate::config::CliArgs) {
+pub(super) fn full(cli: &mut crate::config::CliArgs) {
     lines(cli);
     cli.shard_merge_sustain_secs = 20;
     cli.shard_split_reversal_min_secs = 1;
@@ -255,7 +297,7 @@ fn full_of_four(cli: &mut crate::config::CliArgs) {
 /// A rig of the co-location DSTs: `instance` over `data` with `cli`, its loop never splitting (a
 /// loaded host can push the committer axis over the line; the split double would split one
 /// directory only).
-async fn full_rig(
+pub(super) async fn full_rig(
     fleet: &Arc<dyn ObjectStore>,
     data: &Arc<dyn ObjectStore>,
     (instance, runtime): (&'static str, RigRuntime),
@@ -274,7 +316,7 @@ async fn full_rig(
 }
 
 /// Wait, within 30 s, until `rig` sees every leaf of `layout` owned as it says.
-async fn laid_out(rig: &super::fixture_http::HttpRig, layout: &[(&str, &str)]) {
+pub(super) async fn laid_out(rig: &super::fixture_http::HttpRig, layout: &[(&str, &str)]) {
     let owner = |prefix: &str| rig.state.ownership.effective_owner(prefix);
     let done = || {
         layout
@@ -291,7 +333,7 @@ async fn laid_out(rig: &super::fixture_http::HttpRig, layout: &[(&str, &str)]) {
 
 /// Wait, within `secs`, until the stored topology has `parent` as a leaf and not its `…0`; whether
 /// it did, and the instances' decisions when it did not.
-async fn merged_within(
+pub(super) async fn merged_within(
     data: &Arc<dyn ObjectStore>,
     fleet: &Arc<dyn ObjectStore>,
     parent: &str,
@@ -318,12 +360,28 @@ async fn merged_within(
     ))
 }
 
-/// Every stream of `kept` reads back its records from whichever of `rigs` serves it, and the rigs
-/// shut down cleanly.
-async fn whole_and_shut(
+/// No planned move of any of `rigs` fell back to a takeover by fence (F6 E5), and the last one
+/// each made, if any, closed its engine clean.
+pub(super) fn unfenced(rigs: &[&super::fixture_http::HttpRig]) {
+    for rig in rigs {
+        let standing = rig.state.fleet.standing();
+        let last = standing.last_handoff().map(|(phases, _)| phases.fenced);
+        let name = rig.state.ownership.instance();
+        assert_eq!(
+            (standing.handoffs_fenced(), last.unwrap_or(false)),
+            (0, false),
+            "{name}"
+        );
+    }
+}
+
+/// Every stream of `kept` reads back its records from whichever of `rigs` serves it, no handoff of
+/// theirs was fenced (`unfenced`), and the rigs shut down cleanly.
+pub(super) async fn whole_and_shut(
     rigs: &[&super::fixture_http::HttpRig],
     kept: &[(String, serde_json::Value)],
 ) {
+    unfenced(rigs);
     let addrs: Vec<_> = rigs.iter().map(|rig| rig.addr).collect();
     for (name, before) in kept {
         assert_eq!(&served_by_one(&addrs, name).await, before, "{name}");
@@ -339,9 +397,11 @@ async fn whole_and_shut(
 /// With `SHARDS_PER_INSTANCE_MAX` 3, the cell `00 01 10 11` sits as moves left it: `streams-1`
 /// serves `00`, `10` and `11`, `streams-2` serves `01`. The pair `0` is cold. Its actor, `00`'s
 /// owner `streams-1`, has no room for `01` and the merged leaf (3 + 2 > 3); its partner, `01`'s
-/// owner `streams-2`, has (1 + 2 = 3). The actor moves both halves onto the partner, which then owns
-/// `00`, is the actor, and merges: `0` is a leaf of the stored topology, both halves moved to
-/// `streams-2` and their entries are then dropped, and every stream reads back the records it had.
+/// owner `streams-2`, has (1 + 2 = 3). Both compute the partner as the target: the partner's half is
+/// already named for it (its aged entry), so it writes nothing; the actor hands `00` to it giver
+/// first. The partner then owns `00`, is the actor, and merges: `0` is a leaf of the stored
+/// topology, the one write of the halves is `00`'s to `streams-2` and their entries are then
+/// dropped, every stream reads back the records it had, and no handoff was fenced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
     let (fleet, data) = (seeded().await, mem());
@@ -376,12 +436,75 @@ async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
     pinned(&fleet, &layout[1..], now).await;
     laid_out(&a, &layout).await;
     merged_within(&data, &fleet, "0", 300).await.unwrap();
-    moved_onto_then_pruned(&fleet, "0", "streams-2").await;
+    moved_onto_then_pruned(&fleet, "0", &[("00", "streams-2")]).await;
     whole_and_shut(&[&a, &b], &kept).await;
 }
 
+/// **A pair whose holders briefly see different targets settles with one merge and no fence**
+/// (GATE-DECISION-s22-join-2026-11-20 Addendum 7). With `SHARDS_PER_INSTANCE_MAX` 3, a count of
+/// three and every leaf pinned where moves left it, `streams-1` serves `00`, `10` and `11`,
+/// `streams-2` serves `01` and `streams-3` none. The pair `0` is cold. By every true view its
+/// target is the partner `streams-2` (the actor is full; 1 + 2 = 3). The actor's view shows
+/// `streams-2` not accepting (`Standing::skew_view`, as a view that lags its beat would) until its
+/// pass has acted: by that view the target is the third `streams-3` (0 + 3), and it hands `00`
+/// there; `streams-2`, the target by its own view and holding its half by its entry, writes
+/// nothing. Then the views agree again: `streams-3` holds `00`, so it is the actor and, with room
+/// (1 + 2), the target, and `streams-2` hands `01` to it once `00` is named for it. One merge: `0`
+/// is a leaf of the stored topology; the halves' writes are exactly `00` and `01` to `streams-3`,
+/// each by its holder (`streams-1` and `streams-2` each made a planned handoff); no handoff was
+/// fenced; every stream reads back the records it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_pair_whose_holders_briefly_see_different_targets_settles_with_one_merge() {
+    let (fleet, data) = (seeded().await, mem());
+    let leaves = || ["00", "01", "10", "11"].map(str::to_string).to_vec();
+    let held = full_and_held;
+    let one = ("streams-1", RigRuntime::first());
+    let a = full_rig(&fleet, &data, one, held, leaves()).await;
+    a.state.fleet.standing().skew_view(Some("streams-2"));
+    store_topology(&a).await;
+    let kept = streams_with_a_record(a.addr, "skew", 16).await;
+    let now = crate::shard::now_ms();
+    let desired = format!(r#"{{"count":3,"epoch":2,"reason":"test","computed_at_ms":{now}}}"#);
+    fleet
+        .put(&Path::from("fleet/desired.json"), PutPayload::from(desired))
+        .await
+        .unwrap();
+    let two = ("streams-2", RigRuntime::incarnation(1));
+    let b = full_rig(&fleet, &data, two, held, leaves()).await;
+    let three = ("streams-3", RigRuntime::incarnation(2));
+    let c = full_rig(&fleet, &data, three, held, leaves()).await;
+    let layout = [
+        ("00", "streams-1"),
+        ("01", "streams-2"),
+        ("10", "streams-1"),
+        ("11", "streams-1"),
+    ];
+    // Aged 70 s: past the move cooldown, and far enough inside the return window that no entry
+    // is returned home before the merge.
+    pinned(&fleet, &layout, now + 50_000).await;
+    laid_out(&a, &layout).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    while document(&fleet, "overrides").await["entries"]["00"]["to"] != "streams-3" {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the actor hands 00 by its skewed view"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    a.state.fleet.standing().skew_view(None);
+    merged_within(&data, &fleet, "0", 300).await.unwrap();
+    let both = [("00", "streams-3"), ("01", "streams-3")];
+    moved_onto_then_pruned(&fleet, "0", &both).await;
+    let handed = |rig: &super::fixture_http::HttpRig| rig.state.fleet.standing().last_handoff();
+    assert!(
+        handed(&a).is_some() && handed(&b).is_some(),
+        "each holder handed its own half"
+    );
+    whole_and_shut(&[&a, &b, &c], &kept).await;
+}
+
 /// Every leaf of `layout` pinned to its instance by an override aged two minutes, as moves left them.
-async fn pinned(fleet: &Arc<dyn ObjectStore>, layout: &[(&str, &str)], now: i64) {
+pub(super) async fn pinned(fleet: &Arc<dyn ObjectStore>, layout: &[(&str, &str)], now: i64) {
     let ms = now - 120_000;
     let entries: serde_json::Map<String, serde_json::Value> = layout
         .iter()
@@ -406,9 +529,10 @@ async fn pinned(fleet: &Arc<dyn ObjectStore>, layout: &[(&str, &str)], now: i64)
 /// partner has room (4 + 2 > 4), and there is no third instance, so the merge asks the fleet for
 /// one, as a split does: the actor's beat says `instance_full shards_per_instance=4/4`, and the
 /// fleet's one-shard allowance grows the desired count past two. `streams-3` then beats, empty; it
-/// has room for both halves and the merged leaf (0 + 3 within 4), takes both, is the actor, and
-/// merges: `00` is a leaf of the stored topology, both halves moved to `streams-3` and their entries
-/// are then dropped, and every stream reads back the records it had.
+/// has room for both halves and the merged leaf (0 + 3 within 4): each holder hands its own half
+/// to it giver first, and it is then the actor and merges: `00` is a leaf of the stored topology,
+/// both halves moved to `streams-3` and their entries are then dropped, every stream reads back the
+/// records it had, and no handoff was fenced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_merged_there() {
     let (fleet, data) = (seeded().await, mem());
@@ -487,7 +611,8 @@ async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_me
     )
     .await;
     merged_within(&data, &fleet, "00", 300).await.unwrap();
-    moved_onto_then_pruned(&fleet, "00", "streams-3").await;
+    let both = [("000", "streams-3"), ("001", "streams-3")];
+    moved_onto_then_pruned(&fleet, "00", &both).await;
     whole_and_shut(&[&a, &b, &c], &kept).await;
 }
 

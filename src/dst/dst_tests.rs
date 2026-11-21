@@ -399,6 +399,8 @@ mod topology_lifecycle;
 mod topology_cancel;
 #[path = "tests/topology_colocation.rs"]
 mod topology_colocation;
+#[path = "tests/topology_colocation_load.rs"]
+mod topology_colocation_load;
 
 #[path = "tests/topology_convergence.rs"]
 mod topology_convergence;

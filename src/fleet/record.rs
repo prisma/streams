@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn the_ownership_view_has_exactly_its_known_production_writers() {
         let expected = [
-            ("set_override", "fleet/colocate.rs", "colocate"),
+            ("set_override", "fleet/colocate.rs", "pin"),
             ("set_override", "fleet/moves.rs", "evacuate"),
             ("set_override", "topology/split/birth.rs", "born"),
             ("set_view", "fleet/handoff.rs", "mirror"),

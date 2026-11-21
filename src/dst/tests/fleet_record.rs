@@ -134,13 +134,13 @@ async fn settled(
     }
 }
 
-/// Every reader's ring is `today` before, while and after `actor` co-locates `0` and `1` on
-/// itself (`fleet::colocate`, the policy's merge step 0, called as the policy calls it): its CAS of
-/// the overrides document and its `set_override` of each half, the interim's one-entry writer
-/// (GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 1). Sampled every 2 ms while the co-location
-/// runs, at once after it (the `set_override`s just ran), and for a tick and a half after, when
-/// each reader has published the written document whole.
-async fn across_a_colocate(actor: &HttpRig, readers: &[&HttpRig], today: &[&str]) {
+/// Every reader's ring is `today` before, while and after the holder of `1` among `readers` pins
+/// it (`fleet::colocate::pin`, a co-location's write for the half its holder keeps, called as the
+/// policy calls it): its CAS of the overrides document and its `set_override` of the half, the
+/// interim's one-entry writer (GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 1). Sampled every
+/// 2 ms while the pin runs, at once after it (the `set_override` just ran), and for a tick and a
+/// half after, when each reader has published the written document whole.
+async fn across_a_colocate(readers: &[&HttpRig], today: &[&str]) {
     let rings = || -> Vec<Vec<String>> {
         readers
             .iter()
@@ -149,20 +149,17 @@ async fn across_a_colocate(actor: &HttpRig, readers: &[&HttpRig], today: &[&str]
     };
     let today = vec![names(today); readers.len()];
     assert_eq!(rings(), today, "before the co-location");
+    let holder = readers.iter().find(|rig| {
+        let owner = rig.state.ownership.effective_owner("1");
+        owner.as_deref() == Some(rig.state.ownership.instance())
+    });
+    let state = &holder.expect("a reader holds 1").state;
     let done = std::sync::atomic::AtomicBool::new(false);
-    let halves = names(&["0", "1"]);
-    let state = &actor.state;
     let colocated = async {
-        let moved = crate::fleet::colocate::colocate(
-            &state.fleet,
-            &state.ownership,
-            &*state.data_store,
-            &halves,
-            "streams-1",
-        )
-        .await;
+        let store = &*state.data_store;
+        let pinned = crate::fleet::colocate::pin(&state.fleet, &state.ownership, store, "1").await;
         done.store(true, std::sync::atomic::Ordering::SeqCst);
-        moved
+        pinned
     };
     let sampled = async {
         while !done.load(std::sync::atomic::Ordering::SeqCst) {
@@ -170,27 +167,32 @@ async fn across_a_colocate(actor: &HttpRig, readers: &[&HttpRig], today: &[&str]
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     };
-    let (moved, ()) = futures_util::future::join(colocated, sampled).await;
-    assert!(moved, "the co-location commits");
+    let (pinned, ()) = futures_util::future::join(colocated, sampled).await;
+    assert_eq!(
+        pinned,
+        crate::fleet::colocate::Pinned::Written,
+        "the pin commits"
+    );
     assert_eq!(rings(), today, "at once after its set_override");
     let t0 = tokio::time::Instant::now();
     while t0.elapsed() < Duration::from_secs(3) {
         assert_eq!(rings(), today, "after the co-location");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let owner = actor.state.ownership.effective_owner("1");
+    let entry = state.ownership.overrides().get("1").cloned();
     assert_eq!(
-        owner.as_deref(),
-        Some("streams-1"),
-        "the co-location's entry is in the view"
+        entry.as_deref(),
+        Some(state.ownership.instance()),
+        "the pin's entry is in the view"
     );
 }
 
 /// **The record lists today's ring through a count rise and a count drop** (Addendum 14,
 /// condition 1). Two live members on a count of one: the document lists `streams-1` and both views'
 /// ring is `streams-1`. The count rises to two: the document lists both and both rings are both.
-/// At that steady count `streams-1` co-locates `0` and `1` on itself, and both rings stay both
-/// before, while and after (`across_a_colocate`: the interim's `set_override` writes no ring).
+/// At that steady count the holder of `1` pins it for itself, as a co-location does, and both rings
+/// stay both before, while and after (`across_a_colocate`: the interim's `set_override` writes no
+/// ring).
 /// The count drops to one: the document lists `streams-1` again (written by `streams-1`;
 /// `streams-2`, outside today's ring, writes nothing) and both rings are `streams-1`. No sample
 /// shows a ring today's rule would not give at that count.
@@ -217,7 +219,7 @@ async fn the_record_lists_todays_ring_through_a_count_rise_and_a_drop() {
         &[one, both],
     )
     .await;
-    across_a_colocate(&a, &[&a, &b], both).await;
+    across_a_colocate(&[&a, &b], both).await;
     desired(&fleet, 1, 3).await;
     settled(
         "the drop to one",

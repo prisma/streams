@@ -563,10 +563,33 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e9afa6a9d5189824a4c3c0ef3c0aa73b93a516c7c4d86bc608bb17ca8d9f318a",
+    "function_sha256": "1816cef5cb0e27264174e7e5af561d128f3042118918b6b12a2bef9fb538057a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_colocation_move_does_not_fence_its_writer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c7d5faaaec66105122d58e7bf5684c0caac0b3e1512188408fc22c3097b3c15d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_load.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_colocation_move_under_writes_measured_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a measurement: run alone, in release, on an idle host (NOTES.md)\"]"
+    ],
+    "function_sha256": "54d6511724b68984b9b9979e88a67391fb889e3b134c5695198593a3d6d7cf95",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_load.rs",
     "scenarios": []
   },
   {
@@ -2360,6 +2383,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_whose_own_half_is_not_open_opens_it_and_completes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fbad8ef2c5837a5bb634ba3beefb45113752dd97719442a7e783dcdd08e6d321",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_load.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_whose_publish_fails_after_t_is_left_live",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2603,6 +2637,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_memory.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_pair_whose_holders_briefly_see_different_targets_settles_with_one_merge",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "de335cfb5afd51a6ebb5c2c1d18c8f4939381c04503d8865a632ab41da863194",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation.rs",
     "scenarios": []
   },
   {
@@ -4517,7 +4562,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4d8f1a26c67c3c670ef2d8a148d6908a1d83197abfa9011d9530bb54fb884cf2",
+    "function_sha256": "92a3399b79a5eb18af1c80eb1d675cf1fa891f52a3ef3b7def93bf1fcbd34d33",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -4528,7 +4573,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "032897aaff8bd7185a8fba52d548a526dcd3bbb10679a49fedb2e1a724fade5e",
+    "function_sha256": "37f69e7df6904da544d2ff9083a21f906dd3062c54f1e71350b721ad1b995dc1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -12209,6 +12254,17 @@
     "scenarios": []
   },
   {
+    "name": "the_hop_rule_allows_only_a_self_naming_409_then_a_served_send",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "56144d2d3411e7873e048db1dab7ce884a2535a7af977ebd32a0b3d9d71746af",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_load.rs",
+    "scenarios": []
+  },
+  {
     "name": "the_intent_watch_ends_a_published_split_its_actor_left_live",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -12534,7 +12590,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e70f3a6ba1f62549c5847ca9d36cbf8dee58c8bced5a38807937af96544f630d",
+    "function_sha256": "68509e32e62ceed8cd47f14343c4739b32f359de16a3be355a7decb6e5dae846",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_record.rs",

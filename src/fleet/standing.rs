@@ -66,6 +66,9 @@ pub(crate) struct Standing {
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
+    /// Tests: an instance the topology policy's view shows not accepting (`skew_view`).
+    #[cfg(test)]
+    view_skew: Mutex<Option<String>>,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -135,6 +138,8 @@ impl Default for Standing {
             last_handoff: Mutex::new(None),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
+            #[cfg(test)]
+            view_skew: Mutex::new(None),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
@@ -282,6 +287,21 @@ impl Standing {
     #[cfg(test)]
     pub(crate) fn take_view_pause(&self) -> Option<crate::topology::gate::PausePoint> {
         self.view_pause.0.lock().ok()?.take()
+    }
+
+    /// Tests: the topology policy's view of the cell shows `instance` not accepting, as a view
+    /// that lags its peers' would, until it is cleared (`None`).
+    #[cfg(test)]
+    pub(crate) fn skew_view(&self, instance: Option<&str>) {
+        if let Ok(mut slot) = self.view_skew.lock() {
+            *slot = instance.map(str::to_owned);
+        }
+    }
+
+    /// Tests: the instance `skew_view` set.
+    #[cfg(test)]
+    pub(crate) fn view_skew(&self) -> Option<String> {
+        self.view_skew.lock().ok()?.clone()
     }
 
     /// Tests: a live split intent naming `sources`, as a beat would have read it.

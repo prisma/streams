@@ -13,12 +13,20 @@
 (* served). Writer epochs are abstract: an open makes every other engine  *)
 (* of that source stale, which is all the epoch bump does.                *)
 (*                                                                         *)
-(* Co-location (S6 §7.2 step 0, 74f226387, and the lead's fix of          *)
-(* 2026-11-10): when the halves live on two instances, the policy on the  *)
-(* owner of …0 moves both to itself if it has room for the half and the  *)
-(* merged leaf M (resident + 2 <= Cap), else (PartnerFallback) to the     *)
-(* owner of …1 if it has room, else (AskWhenNoRoom) asks for an instance; *)
-(* the fleet adds Spare and count balance moves load onto it. The merge   *)
+(* Co-location (S6 §7.2 step 0, 74f226387, the lead's fix of 2026-11-10, *)
+(* and #261 B1-e, GATE-DECISION-s22-join-2026-11-20 Addendum 7): when the *)
+(* halves live on two instances, each holder moves only its own source,  *)
+(* one step each, to the target: the owner of …0 if it has room for the  *)
+(* half and the merged leaf M (resident + 2 <= Cap), else                 *)
+(* (PartnerFallback) the owner of …1 with that room, else a third live    *)
+(* instance with room for both halves and M (+ 3); a holder on the target *)
+(* pins its source, one elsewhere hands it there, in either order (the   *)
+(* code pins before it hands; the model allows both); a holder's view may *)
+(* give it another target B1's tiers allow, a bounded number of times     *)
+(* (MaxSkews). With no target (AskWhenNoRoom) the actor asks for an       *)
+(* instance; the fleet adds Spare and count balance moves load onto it.   *)
+(* Giver first is outside this model: a handoff is one step here, and its *)
+(* park, flush and close before the CAS are TLA-011's. The merge          *)
 (* starts only once the move's cooldown passed (`fresh` false) and the    *)
 (* actor holds both engines; it never needs room for M (#251 R5: the     *)
 (* shard ceiling refuses no merge, so an instance at or past Cap merges a *)
@@ -63,7 +71,10 @@
 (* (EagerOpen: weakly fair, the tick retries), and with the fix accepted   *)
 (* on 2026-11-10 (LapsedOpen) a source of any live, lapsed intent: the     *)
 (* first TLA-048 run showed a dead or Unfinished actor's cold local pair   *)
-(* otherwise stays live for good. The heartbeat's reclaim of               *)
+(* otherwise stays live for good. And the merge entry's own open of a     *)
+(* half its instance does not hold open (MergeOpen, Addendum 7: weakly    *)
+(* fair, the policy's pass retries; its behaviours are RequestOpen's).    *)
+(* The heartbeat's reclaim of                                             *)
 (* a published intent (833bcdc5b) is weakly fair. Liveness assumes weak   *)
 (* fairness only for steps the code retries.                              *)
 (*                                                                         *)
@@ -138,6 +149,7 @@ VARIABLES
     ovr,        \* [Src -> Insts \cup {NoOne}]: fleet/overrides.json's entry
     fresh,      \* an override younger than the move cooldown exists
     asked,      \* the policy asked the fleet for an instance
+    skews,      \* co-location steps taken towards a target a differing view gave
     load,       \* [Insts -> Nat]: other shards each instance holds
     eng,        \* [Insts -> [Src -> {"none", "cur", "stale", "maint"}]]
     held,       \* [Insts -> [Src -> BOOLEAN]]: the fence holds that engine
@@ -171,12 +183,12 @@ VARIABLES
                 \* actor) for source `src`; "reopened" once `who` opens `src` again
                 \* through the hold (not as its first open after a start)
 
-vars == <<alive, ovr, fresh, asked, load, eng, held, installed, plog, acked, ckpt,
+vars == <<alive, ovr, fresh, asked, load, skews, eng, held, installed, plog, acked, ckpt,
           mfiles, mrecs, T, version, pubHome, intent, pc, A, aok, barrier, att,
           crashes, parts, cstep, csrc, rolledBack, inconsistent, lapses, first, restarts,
           unheldFresh, sib>>
 
-placeVars == <<alive, ovr, fresh, asked, load>>
+placeVars == <<alive, ovr, fresh, asked, load, skews>>
 dataVars == <<plog, acked, ckpt, mfiles, mrecs, T, version, pubHome>>
 actorVars == <<pc, A, aok, barrier, att>>
 procVars == <<first, restarts, unheldFresh, sib>>
@@ -219,7 +231,7 @@ TypeOK ==
 
 Init ==
     /\ alive = InitAlive
-    /\ ovr = [s \in Src |-> NoOne] /\ fresh = FALSE /\ asked = FALSE
+    /\ ovr = [s \in Src |-> NoOne] /\ fresh = FALSE /\ asked = FALSE /\ skews = 0
     /\ load = [i \in Insts |-> LoadInit(i)]
     /\ eng = [i \in Insts |-> [s \in Src |-> IF i = Pick(s) THEN "cur" ELSE "none"]]
     /\ held = [i \in Insts |-> [s \in Src |-> FALSE]]
@@ -312,39 +324,81 @@ CloseEngine(i, s) ==
 
 PolicyReady == version = 1 /\ ~Live /\ ~fresh /\ att < MaxAtt /\ ~ActorAlive
 
-\* The policy on the owner of …0 co-locates a pair split across two instances.
-Colocate ==
+\* Co-location, one step a source by its holder (#261 B1-e, GATE-DECISION-s22-join-2026-11-20
+\* Addendum 7): no instance writes the entry of a source it does not hold. The target is B1's
+\* order over the state (`Target`, `fleet::colocate::colocation_target`): the actor (the owner
+\* of …0) with room for the half and M, else (PartnerFallback) the partner with the same room,
+\* else a third live instance with room for both halves and M (+ 3), fewest shards first. A
+\* holder whose view differs may take another target B1's tiers allow (`Allowed`), at most
+\* MaxSkews times in all (views agree again). On the target the holder names its source for
+\* itself (the pin); elsewhere it hands its source there, giver first (one step here: the
+\* handoff is TLA-011's), in either order: the code pins before it hands; the model allows both.
+\* Either write is an override younger than the move cooldown (`fresh`).
+Thirds == {t \in alive : t # Owner(0) /\ t # Owner(1) /\ Resident(t) + 3 <= Cap}
+
+Target ==
+    LET a == Owner(0)
+        p == Owner(1)
+    IN IF Room2(a) THEN a
+       ELSE IF PartnerFallback /\ Room2(p) THEN p
+       ELSE IF Thirds # {} THEN CHOOSE t \in Thirds : \A u \in Thirds : Resident(t) <= Resident(u)
+       ELSE NoOne
+
+Allowed(t) ==
+    \/ t = Owner(0) /\ Room2(t)
+    \/ t = Owner(1) /\ PartnerFallback /\ Room2(t)
+    \/ t \in Thirds
+
+\* The views that differ from the state's, in all: a bound, as a view's lag is.
+MaxSkews == 1
+
+ColocateHalf(s) ==
     /\ PolicyReady /\ Owner(0) # Owner(1)
-    /\ LET a == Owner(0)
-           p == Owner(1)
-       IN IF Room2(a) THEN /\ ovr' = [s \in Src |-> a] /\ fresh' = TRUE
-                           /\ UNCHANGED asked
-          ELSE IF PartnerFallback /\ Room2(p)
-               THEN /\ ovr' = [s \in Src |-> p] /\ fresh' = TRUE
-                    /\ UNCHANGED asked
-          ELSE /\ AskWhenNoRoom /\ ~asked /\ Spare \notin alive
-               /\ asked' = TRUE /\ UNCHANGED <<ovr, fresh>>
-    /\ UNCHANGED <<alive, load, eng, held, installed, dataVars, intent, actorVars,
+    /\ LET h == Owner(s)
+       IN \E t \in Insts :
+          /\ \/ t = Target
+             \/ skews < MaxSkews /\ t # Target /\ Allowed(t)
+          /\ skews' = IF t = Target THEN skews ELSE skews + 1
+          /\ t = h => ovr[s] # h
+          /\ ovr' = [ovr EXCEPT ![s] = t] /\ fresh' = TRUE
+    /\ UNCHANGED <<alive, asked, load, eng, held, installed, dataVars, intent, actorVars,
                    crashes, parts, cstep, csrc, ghostVars>>
+
+\* The actor finds no instance with room: it asks the fleet for one (the partner holds).
+ColocateAsk ==
+    /\ PolicyReady /\ Owner(0) # Owner(1) /\ Target = NoOne
+    /\ AskWhenNoRoom /\ ~asked /\ Spare \notin alive
+    /\ asked' = TRUE
+    /\ UNCHANGED <<alive, ovr, fresh, load, skews, eng, held, installed, dataVars, intent,
+                   actorVars, crashes, parts, cstep, csrc, ghostVars>>
+
+\* The merge entry's own open (`ops::merge::start_merge` resolves each half,
+\* `Adoption::Internal`): once both sources are one instance's and the policy
+\* may start a merge, that instance opens a source it does not hold open.
+\* Needed since co-location runs in either order (Addendum 7): a source handed
+\* first, then a restart, leaves the target's own source closed with no
+\* override, which neither EagerOpen nor a cold pair's request reopens (the
+\* colocate-partner trace, tlc/20261120T191628Z).
+MergeOpen(i, s) == PolicyReady /\ Owner(0) = Owner(1) /\ Owner(s) = i /\ OpenOn(i, s)
 
 \* The move's cooldown passes.
 Settle ==
     /\ fresh /\ fresh' = FALSE
-    /\ UNCHANGED <<alive, ovr, asked, load, eng, held, installed, dataVars, intent,
+    /\ UNCHANGED <<alive, ovr, asked, load, skews, eng, held, installed, dataVars, intent,
                    actorVars, crashes, parts, cstep, csrc, ghostVars>>
 
 \* The fleet adds the spare instance it was asked for.
 FleetAdd ==
     /\ asked /\ Spare \notin alive
     /\ alive' = alive \cup {Spare} /\ asked' = FALSE
-    /\ UNCHANGED <<ovr, fresh, load, eng, held, installed, dataVars, intent, actorVars,
+    /\ UNCHANGED <<ovr, fresh, load, skews, eng, held, installed, dataVars, intent, actorVars,
                    crashes, parts, cstep, csrc, ghostVars>>
 
 \* Count balance moves one other shard onto the emptier spare.
 Balance(i) ==
     /\ Spare \in alive /\ i # Spare /\ load[i] > load[Spare]
     /\ load' = [load EXCEPT ![i] = @ - 1, ![Spare] = @ + 1]
-    /\ UNCHANGED <<alive, ovr, fresh, asked, eng, held, installed, dataVars, intent,
+    /\ UNCHANGED <<alive, ovr, fresh, asked, skews, eng, held, installed, dataVars, intent,
                    actorVars, crashes, parts, cstep, csrc, ghostVars>>
 
 ---------------------------------------------------------------------------
@@ -517,13 +571,13 @@ Restart(i) ==
 Partition ==
     /\ ActorAlive /\ A \in alive /\ parts < MaxParts /\ Cardinality(alive) >= 2
     /\ alive' = alive \ {A} /\ parts' = parts + 1
-    /\ UNCHANGED <<ovr, fresh, asked, load, eng, held, installed, dataVars, intent,
+    /\ UNCHANGED <<ovr, fresh, asked, load, skews, eng, held, installed, dataVars, intent,
                    actorVars, crashes, cstep, csrc, ghostVars>>
 
 Heal ==
     /\ A # NoOne /\ A \notin alive /\ A \in InitAlive
     /\ alive' = alive \cup {A}
-    /\ UNCHANGED <<ovr, fresh, asked, load, eng, held, installed, dataVars, intent,
+    /\ UNCHANGED <<ovr, fresh, asked, load, skews, eng, held, installed, dataVars, intent,
                    actorVars, crashes, parts, cstep, csrc, ghostVars>>
 
 ---------------------------------------------------------------------------
@@ -662,10 +716,11 @@ ReclaimPublished ==
 Next ==
     \/ \E s \in Src, i \in Insts :
           \/ AppendSrc(s, i) \/ AppendM(s, i) \/ RequestOpen(i, s) \/ EagerOpen(i, s)
+          \/ MergeOpen(i, s)
           \/ CloseEngine(i, s) \/ FenceStep(i, s)
     \/ \E i \in Insts : Install(i) \/ Balance(i) \/ Crash(i) \/ Restart(i)
                         \/ ClaimFence(i) \/ ClaimCAS(i) \/ Abandon(i) \/ Act(i)
-    \/ Colocate \/ Settle \/ FleetAdd
+    \/ ColocateHalf(0) \/ ColocateHalf(1) \/ ColocateAsk \/ Settle \/ FleetAdd
     \/ Begin \/ StillOwned("prepared", "owned1") \/ StillOwned("cloned", "owned2")
     \/ Abort \/ Park \/ Checkpoint \/ Clone
     \/ Retire(0, "owned2", "t0") \/ Retire(1, "t0", "t1") \/ Publish \/ Reclaim
@@ -684,12 +739,13 @@ Fairness ==
     /\ WF_vars(Checkpoint) /\ WF_vars(Clone) /\ WF_vars(Retire(0, "owned2", "t0"))
     /\ WF_vars(Retire(1, "t0", "t1")) /\ WF_vars(Publish) /\ WF_vars(Reclaim)
     /\ WF_vars(LeaseLapse) /\ WF_vars(Heal) /\ WF_vars(ReclaimPublished)
-    /\ WF_vars(Colocate) /\ WF_vars(Settle) /\ WF_vars(FleetAdd)
+    /\ WF_vars(ColocateHalf(0)) /\ WF_vars(ColocateHalf(1)) /\ WF_vars(ColocateAsk)
+    /\ WF_vars(Settle) /\ WF_vars(FleetAdd)
     /\ \A i \in Insts :
           /\ WF_vars(Install(i)) /\ WF_vars(Balance(i)) /\ WF_vars(ClaimFence(i))
           /\ WF_vars(ClaimCAS(i)) /\ WF_vars(Abandon(i)) /\ WF_vars(Act(i))
     /\ \A i \in Insts, s \in Src :
-          /\ WF_vars(EagerOpen(i, s)) /\ WF_vars(CloseEngine(i, s))
+          /\ WF_vars(EagerOpen(i, s)) /\ WF_vars(MergeOpen(i, s)) /\ WF_vars(CloseEngine(i, s))
           /\ IF ClaimRaceFair THEN SF_vars(FenceStep(i, s)) ELSE WF_vars(FenceStep(i, s))
           /\ RequestsFair => WF_vars(RequestOpen(i, s))
 

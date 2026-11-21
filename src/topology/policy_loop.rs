@@ -165,7 +165,8 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
         }
         // A cancellation drops a pass where it stands, as the supervisor's grace would abort it
         // (Addendum 22): what a pass asks of the topology loop or the handoff runner is theirs,
-        // and its one write, co-location's overrides CAS, lands whole or not at all.
+        // and its one write, a co-location's pin (`fleet::colocate::pin`), lands whole or not at
+        // all.
         let decision = tokio::select! {
             biased;
             _ = cancel.cancelled() => return TaskResult::Done,
@@ -188,7 +189,8 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
             .intent_rolled_back(&op_id, &prefix, view.now_ms, cooldown);
     }
     let decided = policy.decide(&view, &cell.limits);
-    let decision = act(cell, &view, decided, &mut seen.backoff).await;
+    let partner = policy.partner_merge();
+    let decision = act(cell, &view, decided, partner, &mut seen.backoff).await;
     let waiting = split_refused(&decision, policy.decided_split());
     let standing = cell.fleet.standing();
     standing.set_topology(waiting, resident(&view, &cell.me));
@@ -210,13 +212,23 @@ fn split_refused(decision: &Decision, split: bool) -> Option<&'static str> {
 }
 
 /// `decision`, after the split or merge entry's answer to the operation it names. A refused
-/// merge holds, by its refusal's code, and the next pass decides again. A split of a prefix whose
+/// merge holds, by its refusal's code, and the next pass decides again; the partner of a merge
+/// (`partner`, `Policy::partner_merge`) co-locates its own half instead. A split of a prefix whose
 /// last split rolled back waits out its backoff (`backoff`), and a `rolled_back` refusal starts or
 /// doubles it. Once this runtime's planned drain has begun it starts none of them (F6's drain
 /// addendum, G5): the pass holds steady.
-async fn act(cell: &Cell, view: &View, decision: Decision, backoff: &mut Backoff) -> Decision {
+async fn act(
+    cell: &Cell,
+    view: &View,
+    decision: Decision,
+    partner: Option<&str>,
+    backoff: &mut Backoff,
+) -> Decision {
     if cell.fleet.standing().drain_begun() {
         return Decision::Hold(super::policy::Hold::Steady);
+    }
+    if let Some(parent) = partner {
+        return colocate(cell, view, parent).await;
     }
     if let Decision::Merge { parent } = &decision {
         return match (cell.merge)(parent.clone()).await {
@@ -247,80 +259,53 @@ async fn act(cell: &Cell, view: &View, decision: Decision, backoff: &mut Backoff
     }
 }
 
-/// A merge refused because another instance holds a half (S6-DESIGN §7.2 step 0, #261 B1): both
-/// halves move, in one overrides CAS, onto the first instance with room for them and the merged
-/// leaf (`colocation_target`): this instance (the merge's actor), the instance holding `…1`, then
-/// any other accepting instance, fewest shards first. Whichever then owns `…0` is the actor and
+/// This instance's half of a merge's co-location (S6-DESIGN §7.2 step 0; #261 B1 as amended by
+/// GATE-DECISION-s22-join-2026-11-20 Addendum 7), for the merge's actor (`…0`'s holder, refused
+/// `not_ring_owner`) and for its partner (`…1`'s holder, whose candidate only `peer_acts` held).
+/// Each holder computes the target from its view and writes only for the half it holds
+/// (`fleet::colocate::step`): on the target it names that half for itself (`pin`); elsewhere it
+/// hands the half there giver first (`fleet::handoff`). Whichever then holds both is the actor and
 /// merges once the move's cooldown has passed (`override_recent` meanwhile). With no instance that
-/// has room it asks the fleet for one, as a split does (the beat's `instance_full`; the count grows
-/// within its clamp), and the next pass decides again. A lost CAS holds steady.
+/// has room the actor asks the fleet for one, as a split does (the beat's `instance_full`; the
+/// count grows within its clamp); a holder with nothing to write holds `peer_acts`, the partner
+/// without a target among them. A write not made holds steady; the next pass decides again.
 async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
     use super::policy::Hold;
-    let halves = [format!("{parent}0"), format!("{parent}1")];
+    use crate::fleet::colocate::{Pinned, Step, pin};
+    use crate::fleet::handoff::{Change, Outcome, hand_off};
     let max = cell.limits.shards_per_instance_max;
-    let Some(target) = colocation_target(view, max, &cell.me, &halves[1]) else {
-        tracing::info!(
-            parent,
-            "topology merge: no instance has room for its halves"
-        );
-        return Decision::AskInstance {
+    let step = crate::fleet::colocate::step(view, max, parent, &cell.ownership);
+    tracing::info!(parent, ?step, "topology merge: co-location");
+    match step {
+        Step::NoRoom => Decision::AskInstance {
             resident: resident(view, &cell.me),
             max,
-        };
-    };
-    if crate::fleet::colocate::colocate(
-        &cell.fleet,
-        &cell.ownership,
-        &*cell.store,
-        &halves,
-        &target,
-    )
-    .await
-    {
-        tracing::info!(parent, %target, "topology merge: moving both halves onto one instance first");
-        return Decision::Hold(Hold::OverrideRecent);
+        },
+        Step::Wait => Decision::Hold(Hold::PeerActs),
+        Step::Pin(half) => match pin(&cell.fleet, &cell.ownership, &*cell.store, &half).await {
+            Pinned::Written => Decision::Hold(Hold::OverrideRecent),
+            Pinned::Already => Decision::Hold(Hold::PeerActs),
+            Pinned::NotHeld | Pinned::Lost => Decision::Hold(Hold::Steady),
+        },
+        Step::Hand { half, to } => {
+            match hand_off(&cell.fleet, &half, Change::To(to), false).await {
+                Outcome::Moved => Decision::Hold(Hold::OverrideRecent),
+                Outcome::Kept | Outcome::NotStarted | Outcome::Evacuate => {
+                    Decision::Hold(Hold::Steady)
+                }
+            }
+        }
     }
-    tracing::info!(parent, "topology merge: the overrides CAS was lost");
-    Decision::Hold(Hold::Steady)
 }
 
-/// Where a pair split across instances goes before its merge (see `colocate`): the first of this
-/// instance `me`, the owner of the half `one` (`…1`) and every other accepting instance, fewest
-/// shards first, with room under `max` for what it would hold until the merge publishes. The
-/// holder of a half takes the other half and the merged leaf (its shards + 2); any other instance
-/// takes both halves and the merged leaf (+ 3). The partner and the others must be accepting.
-fn colocation_target(view: &View, max: u32, me: &str, one: &str) -> Option<String> {
-    let partner = view
-        .leaves
-        .iter()
-        .find(|leaf| leaf.prefix == one)
-        .map(|leaf| leaf.owner.clone())
-        .filter(|owner| owner != me);
-    let accepting = |id: &str| view.instances.iter().any(|i| i.id == id && i.accepting);
-    let room = |id: &str, takes: u32| resident(view, id).saturating_add(takes) <= max;
-    if room(me, 2) {
-        return Some(me.to_string());
+/// Tests: `instances` with `skew`, when given, not accepting: a view of the cell that lags its
+/// peers' (`Standing::skew_view`).
+#[cfg(test)]
+fn skewed(mut instances: Vec<Instance>, skew: Option<&str>) -> Vec<Instance> {
+    for instance in &mut instances {
+        instance.accepting &= skew != Some(instance.id.as_str());
     }
-    if let Some(partner) = partner.filter(|p| accepting(p) && room(p, 2)) {
-        return Some(partner);
-    }
-    let mut others: Vec<&Instance> = view
-        .instances
-        .iter()
-        .filter(|i| {
-            i.accepting
-                && i.id != me
-                && view
-                    .leaves
-                    .iter()
-                    .all(|l| l.prefix != one || l.owner != i.id)
-        })
-        .collect();
-    others.sort_by_key(|i| (i.resident_shards, i.id.clone()));
-    others
-        .into_iter()
-        .find(|i| room(&i.id, 3))
-        .map(|i| i.id.clone())
+    instances
 }
 
 fn resident(view: &View, me: &str) -> u32 {
@@ -429,6 +414,8 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
         .collect();
     let (stale, shed) = (cell.limits.beat_stale_ms, cell.rss_shed_mb);
     let instances = instances(&leaves, &beats, now_ms, stale, shed);
+    #[cfg(test)]
+    let instances = skewed(instances, standing.view_skew().as_deref());
     let docs = standing.doc_times();
     // Fleet documents the tick has not read lately are treated as just changed: no topology
     // operation starts on a stale view of the fleet (S4 §10.1 rule 1).
@@ -647,82 +634,6 @@ mod tests {
         assert_eq!(
             merge_refusal_code(&S6::NotMergeable(String::new())),
             "not_mergeable"
-        );
-    }
-
-    /// A split pair's co-location target (`colocation_target`): the actor when it has room for the
-    /// other half and the merged leaf (+2), else the partner holding `…1` (+2) when it accepts,
-    /// else the accepting instance with the fewest shards that has room for both halves and the
-    /// merged leaf (+3); none when no instance has room.
-    #[test]
-    fn a_split_pairs_halves_go_to_the_first_instance_with_room() {
-        use crate::topology::policy::{Instance, Leaf, View};
-        let instance = |id: &str, resident_shards: u32, accepting: bool| Instance {
-            id: id.into(),
-            resident_shards,
-            accepting,
-        };
-        let leaf = |prefix: &str, owner: &str| Leaf {
-            prefix: prefix.into(),
-            born_ms: 0,
-            owner: owner.into(),
-            beat_ms: None,
-            load: std::collections::BTreeMap::new(),
-        };
-        let view = |a: u32, b: u32, c: Option<(u32, bool)>, b_accepting: bool| View {
-            now_ms: 0,
-            me: "a".into(),
-            instances: [instance("a", a, true), instance("b", b, b_accepting)]
-                .into_iter()
-                .chain(c.map(|(n, ok)| instance("c", n, ok)))
-                .collect(),
-            leaves: vec![leaf("00", "a"), leaf("01", "b")],
-            split_demand: 0,
-            live: 3,
-            beats_fresh: true,
-            intent_live: false,
-            last_op_end_ms: None,
-            desired_computed_ms: None,
-            youngest_override_ms: None,
-            congested: false,
-        };
-        let target = |v: &View| super::colocation_target(v, 3, "a", "01");
-        assert_eq!(
-            target(&view(1, 3, None, true)).as_deref(),
-            Some("a"),
-            "the actor has room"
-        );
-        assert_eq!(
-            target(&view(2, 1, None, true)).as_deref(),
-            Some("b"),
-            "the partner has room"
-        );
-        assert_eq!(
-            target(&view(2, 1, None, false)),
-            None,
-            "a partner that does not accept"
-        );
-        assert_eq!(
-            target(&view(2, 2, Some((0, true)), true)).as_deref(),
-            Some("c"),
-            "a third with +3"
-        );
-        assert_eq!(
-            target(&view(2, 2, Some((1, true)), true)),
-            None,
-            "a third with 1 + 3 > 3"
-        );
-        assert_eq!(
-            target(&view(2, 2, Some((0, false)), true)),
-            None,
-            "a third that does not accept"
-        );
-        let mut holds_another = view(2, 2, Some((0, true)), true);
-        holds_another.leaves.push(leaf("1", "c"));
-        assert_eq!(
-            target(&holds_another).as_deref(),
-            Some("c"),
-            "a third holding a leaf other than the half"
         );
     }
 
