@@ -642,6 +642,7 @@ pub(super) fn start_ops_on(state: &State, shards_max: u32) -> crate::tasks::Task
         fleet: state.fleet.clone(),
         ownership: state.ownership.clone(),
         move_cooldown_ms: 600_000,
+        settle_ms: crate::topology::ops::settle_ms(&state.config.cli),
         clock: state.runtime.clock.clone(),
         owner: "inst-a".to_string(),
         shards_max,

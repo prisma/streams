@@ -45,6 +45,8 @@ mod fleet_handoff_drain;
 mod fleet_handoff_reads;
 #[path = "tests/fleet_moves.rs"]
 mod fleet_moves;
+#[path = "tests/fleet_record.rs"]
+mod fleet_record;
 #[path = "tests/fleet_rejoin.rs"]
 mod fleet_rejoin;
 #[path = "tests/fleet_topology.rs"]
@@ -97,6 +99,8 @@ mod split_t_outcome;
 mod store_first_creates;
 #[path = "tests/topology_clone_clock.rs"]
 mod topology_clone_clock;
+#[path = "tests/write_gate_burst.rs"]
+mod write_gate_burst;
 
 #[path = "tests/split_generations.rs"]
 mod split_generations;

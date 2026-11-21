@@ -29,27 +29,45 @@ fn a_split_fits_exactly_while_the_parent_and_both_children_stay_within_the_maxim
 /// than the move cooldown, both at the millisecond.**
 #[test]
 fn the_fleet_settles_at_its_settle_time_and_its_move_cooldown_exactly() {
-    use super::{FLEET_SETTLE_MS, settled};
+    use super::settled;
     let now = 1_000_000;
+    let settle = 60_000;
     let cooldown = 30_000;
     let none = std::iter::empty;
-    assert!(settled(now, None, none(), cooldown), "no fleet documents");
-    assert!(settled(now, Some(now - FLEET_SETTLE_MS), none(), cooldown));
+    assert!(
+        settled(now, None, none(), settle, cooldown),
+        "no fleet documents"
+    );
+    assert!(settled(now, Some(now - settle), none(), settle, cooldown));
     assert!(!settled(
         now,
-        Some(now - FLEET_SETTLE_MS + 1),
+        Some(now - settle + 1),
         none(),
+        settle,
         cooldown
     ));
-    assert!(settled(now, None, [now - cooldown].into_iter(), cooldown));
+    assert!(settled(
+        now,
+        None,
+        [now - cooldown].into_iter(),
+        settle,
+        cooldown
+    ));
     assert!(!settled(
         now,
         None,
         [now - cooldown + 1].into_iter(),
+        settle,
         cooldown
     ));
     assert!(
-        !settled(now, None, [0, now - cooldown + 1].into_iter(), cooldown),
+        !settled(
+            now,
+            None,
+            [0, now - cooldown + 1].into_iter(),
+            settle,
+            cooldown
+        ),
         "any young override"
     );
 }

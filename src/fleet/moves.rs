@@ -22,8 +22,8 @@ pub(super) struct Tick<'a> {
     state: &'a AppState,
     /// This instance.
     me: &'a str,
-    /// The ring's active members this tick published.
-    active: &'a [String],
+    /// The ring's active members this tick published (§22 C3: the ring, not the candidates).
+    active: Vec<String>,
     /// Fresh peers' (cpu, effective absorb lag): the health test of both moves.
     // mt-lint: allow(name-keyed-map): fleet instance -> its fresh load
     peer_load: &'a HashMap<String, (f64, u64)>,
@@ -33,12 +33,18 @@ pub(super) struct Tick<'a> {
 }
 
 impl AppState {
-    /// The fleet tick's read, as its moves plan over it: this instance `me`, the `active` ring it
-    /// published, its fresh peers' load and every heartbeat's candidacy.
+    /// The fleet tick's read, as its moves plan over it: this instance `me`, the ring the tick
+    /// published from its pass's candidates and the overrides document (§22 C3: the moves plan
+    /// over that ring, never over the candidates, which `fleet::start` passes unchanged), its fresh
+    /// peers' load and every heartbeat's candidacy.
     pub(super) fn moves<'a>(
         &'a self,
         me: &'a str,
-        active: &'a [String],
+        // Unread, and kept: `fleet::start`'s scope has approved growth rows and is frozen exactly,
+        // so even dropping this argument there is a stale row only the owner updates. The moves
+        // plan over the ring (§22 C3), never over the candidates. NEXT-WORK records its removal for
+        // the next time those rows are opened (GATE-DECISION-s22-3b-step4-2026-11-21 §2.3).
+        _candidates: &'a super::record::Candidates,
         // mt-lint: allow(name-keyed-map): fleet instance -> its fresh load
         peer_load: &'a HashMap<String, (f64, u64)>,
         // mt-lint: allow(name-keyed-map): fleet instance -> its candidacy
@@ -47,7 +53,7 @@ impl AppState {
         Tick {
             state: self,
             me,
-            active,
+            active: self.ownership.ring_active(),
             peer_load,
             candidacies,
         }
@@ -73,7 +79,7 @@ impl Tick<'_> {
             if self.active.is_empty() {
                 continue;
             }
-            let home = self.active[crate::ownership::ring_pick(prefix, self.active)].clone();
+            let home = self.active[crate::ownership::ring_pick(prefix, &self.active)].clone();
             if home == entry.to {
                 drop_keys.push(prefix.clone()); // override is a no-op
                 continue;
@@ -126,7 +132,7 @@ impl Tick<'_> {
         wedge_max_ms: i64,
     ) -> Option<(String, String)> {
         let threshold_secs = self.state.config.fleet.rebalance_lag_secs;
-        let unreserved = self.candidacies.unreserved(self.active);
+        let unreserved = self.candidacies.unreserved(&self.active);
         let target = pick_move_target(self.peer_load, &unreserved, self.me, threshold_secs);
         if target.is_none() {
             let (_, _, my_lag) = self.state.fleet_pressure();

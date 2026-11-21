@@ -125,7 +125,7 @@ use serde_json::json;
 use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::product::{
     internal_queue_cursor, internal_segment_scan, internal_sref, internal_sweep_segment,
-    live_wait::data_plane, verify_internal_target,
+    verify_internal_target,
 };
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{ShardEngine, now_ms};
@@ -596,8 +596,7 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path_is_stream = data_plane(req.uri().path());
-    let ticket = state.admission.enter(path_is_stream);
+    let (ticket, gated) = crate::product::count_in(&state.admission, &req);
     let cur = ticket.current();
     // Round-13 (review): the ORDINARY inflight admission gate moved
     // POST-auth into append_core — running it here answered 429 with
@@ -634,7 +633,7 @@ async fn track_inflight(
     // 8 MiB of body drain and receive capacity answers (429/503) where
     // the contract requires 401: authenticate before buffering or
     // materially consuming the request body.
-    ticket.serve(next.run(req)).await
+    ticket.serve(gated, next.run(req)).await
 }
 
 /// Calibrated-latency endpoint for edge probes: holds the request for

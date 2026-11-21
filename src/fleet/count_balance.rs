@@ -295,8 +295,9 @@ impl FleetRead {
         let reserved = reserved_by_member(&candidacies);
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
-        let active = planning::active_members(count, me, &candidacies);
         let (overrides, _) = state.fleet.read_overrides().await.ok()?;
+        // The ring over these candidates: in the interim, today's rule (§22 C3, `record`).
+        let active = planning::active_members(count, me, &candidacies).today();
         let window = Duration::from_secs(state.config.fleet.rebalance_return_secs);
         Some(Self {
             active,

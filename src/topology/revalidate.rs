@@ -39,16 +39,20 @@ impl Refresh {
         })
     }
 
-    /// Read the overrides and publish them with the view's current active members, which it keeps
-    /// exactly (so it never creates a view an instance awaiting its first one lacks).
+    /// Read the overrides and publish them with the ring over the fleet tick's last candidates, in
+    /// the interim every document's ring (§22 C2); before the tick's first pass, with the view's
+    /// current active members, which it keeps exactly (so it never creates a view an instance
+    /// awaiting its first one lacks).
     async fn refreshed(&self) -> anyhow::Result<()> {
         let (overrides, _) = self.fleet.read_overrides().await?;
+        let ring = self.fleet.standing().ring_of();
         let map = overrides
             .entries
             .into_iter()
             .map(|(prefix, entry)| (prefix, entry.to))
             .collect();
-        self.ownership.set_view(self.ownership.ring_active(), map);
+        let active = ring.unwrap_or_else(|| self.ownership.ring_active());
+        self.ownership.set_view(active, map);
         Ok(())
     }
 }
@@ -435,5 +439,28 @@ mod tests {
             "a newer version sets it"
         );
         assert_ne!(first, newer);
+    }
+
+    /// **An install's refresh pairs a newer document's entries with that document's ring** (§22
+    /// C2, GATE-DECISION-s22-3b-step4-2026-11-21 §2.2), not with the ring last published. The view
+    /// last published is `streams-1` alone, no override; the fleet tick's last pass read a count of
+    /// two with both members live. The stored document now lists both and moves `10` to
+    /// `streams-2`: the refresh publishes both members as the ring, beside that entry.
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn an_installs_refresh_pairs_a_newer_documents_entries_with_its_own_ring() {
+        let fleet_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let fleet = crate::fleet::FleetRepository::new(Some(fleet_store.clone()));
+        let ownership = fleet.ownership("streams-1".to_string());
+        ownership.set_view(vec!["streams-1".to_string()], Default::default());
+        fleet.standing().note_pass(2, &["streams-1", "streams-2"]);
+        let newer = br#"{"entries":{"10":{"to":"streams-2","ms":0}},"members":[{"name":"streams-1"},{"name":"streams-2"}]}"#;
+        let path = object_store::path::Path::from("fleet/overrides.json");
+        fleet_store.put(&path, newer.to_vec().into()).await.unwrap();
+        let refresh = super::Refresh::of(&fleet, &ownership).unwrap();
+        refresh.refreshed().await.unwrap();
+        let both = vec!["streams-1".to_string(), "streams-2".to_string()];
+        let moved = vec![("10".to_string(), "streams-2".to_string())];
+        let overrides: Vec<(String, String)> = ownership.overrides().into_iter().collect();
+        assert_eq!((ownership.ring_active(), overrides), (both, moved));
     }
 }

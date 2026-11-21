@@ -38,11 +38,6 @@ impl AdmissionController {
         }
         Some(WaitingPlace { ctl: self.clone() })
     }
-
-    /// Requests waiting on a move or an open that hold a place now.
-    pub(crate) fn waiting(&self) -> i64 {
-        self.inner.waiting.load(Ordering::Relaxed)
-    }
 }
 
 #[cfg(test)]
@@ -64,22 +59,45 @@ mod tests {
         })
     }
 
+    /// The places held now (the cap's own count, `enter_waiting`).
+    fn places_held(c: &AdmissionController) -> i64 {
+        c.inner.waiting.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A request the write gate's count holds: its ticket and its slot (`write_slots`).
+    fn counted(
+        c: &AdmissionController,
+    ) -> (
+        super::super::InflightTicket,
+        super::super::write_slots::Slot,
+    ) {
+        (
+            c.enter(true),
+            super::super::write_slots::Slot::new(c, false),
+        )
+    }
+
     /// At a cap of 4, four waiters take places and a fifth does not; with the cap's worth waiting,
-    /// the write gate admits at 8 in flight (4 active) and refuses at 9 (5 active), and a dropped
-    /// place is taken again. With no cap there is no place (no gate to leave), and asking leaves
-    /// the count at zero.
+    /// the write gate admits at 8 in flight (4 active) and refuses at 9 (5 active), and once the
+    /// waiters are answered the place is taken again. With no cap there is no place (no gate to
+    /// leave), and asking leaves the count at zero. The gate judges the requests its count holds
+    /// (`write_slots`, edge change #272); a waiter's place and slot are answered together.
     #[test]
     fn waiters_leave_the_write_gate_up_to_the_cap() {
         let c = controller(4);
-        let tickets: Vec<_> = (0..8).map(|_| c.enter(true)).collect();
+        let tickets: Vec<_> = (0..4).map(|_| counted(&c)).collect();
+        let mut waiters: Vec<_> = (0..4).map(|_| counted(&c)).collect();
         let places: Vec<_> = (0..5).filter_map(|_| c.enter_waiting()).collect();
-        assert_eq!((places.len(), c.waiting()), (4, 4));
+        waiters.iter().for_each(|(_, slot)| slot.waits());
+        assert_eq!((places.len(), places_held(&c)), (4, 4));
         assert_eq!(c.admit_write_inflight(), Ok(()), "8 in flight, 4 waiting");
-        let ninth = c.enter(true);
+        let ninth = counted(&c);
         assert!(c.admit_write_inflight().is_err(), "9 in flight, 4 waiting");
         drop(ninth);
+        waiters.clear();
         drop(places);
-        assert_eq!(c.waiting(), 0);
+        waiters.extend((0..4).map(|_| counted(&c)));
+        assert_eq!(places_held(&c), 0);
         assert!(
             c.admit_write_inflight().is_err(),
             "8 in flight, none waiting"
@@ -88,11 +106,11 @@ mod tests {
             c.enter_waiting().is_some(),
             "a dropped place is taken again"
         );
-        drop(tickets);
+        drop((tickets, waiters));
         let uncapped = controller(0);
         let none: Vec<_> = (0..3).filter_map(|_| uncapped.enter_waiting()).collect();
         assert_eq!(
-            (none.len(), uncapped.waiting()),
+            (none.len(), places_held(&uncapped)),
             (0, 0),
             "no cap, no place, and the count left at zero"
         );
@@ -106,7 +124,7 @@ mod tests {
         let c = controller(2);
         let _tickets: Vec<_> = (0..9).map(|_| c.enter(true)).collect();
         let _places: Vec<_> = (0..2).filter_map(|_| c.enter_waiting()).collect();
-        assert_eq!(c.waiting(), 2);
+        assert_eq!(places_held(&c), 2);
         assert!(c.survival_refused(9, "/v1/stream/a"));
         assert_eq!(c.swap_active_peak().0, 9);
     }

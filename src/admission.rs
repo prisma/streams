@@ -31,6 +31,7 @@ pub(crate) mod park;
 pub(crate) mod read_memory;
 mod survival;
 pub(crate) mod waiting;
+pub(crate) mod write_slots;
 
 /// Bound on distinct streams tracked by the per-stream admission map:
 /// the map stays proportional to concurrently-active streams and can
@@ -134,6 +135,7 @@ struct Inner {
     forwards: AtomicI64,
     /// Requests waiting on a move or a shard's open, out of the write gate (`waiting`).
     waiting: AtomicI64,
+    judged: write_slots::Judged,
     /// The peak of active requests (in flight minus parked) since the
     /// heartbeat last swapped it.
     active_peak: AtomicI64,
@@ -278,6 +280,7 @@ impl AdmissionController {
                 parked: AtomicI64::new(0),
                 forwards: AtomicI64::new(0),
                 waiting: AtomicI64::new(0),
+                judged: write_slots::Judged::default(),
                 active_peak: AtomicI64::new(0),
                 live_pool: AtomicU64::new(knobs.subscriptions.effective),
                 max_inflight: AtomicI64::new(knobs.max_inflight),
@@ -380,17 +383,9 @@ impl AdmissionController {
     /// hides the instance from its own operators), and requests parked
     /// in a wait are not writes in flight (shared cells M1). A served
     /// request fair shedding spares (`fair_shed`) passes up to a quarter
-    /// over the cap.
+    /// over the cap. It judges `write_slots`' count (edge change #272).
     pub(crate) fn admit_write_inflight(&self) -> Result<(), WriteRefusal> {
-        if let Some((active, cap)) = self.over_inflight_cap()
-            && (active > fair_shed::inflight_hard_line(cap)
-                || park::verdict() != Some(fair_shed::Verdict::Spared))
-        {
-            self.inner.shed_total.fetch_add(1, Ordering::Relaxed);
-            self.inner.shed_inflight.fetch_add(1, Ordering::Relaxed);
-            return Err(WriteRefusal::Overloaded);
-        }
-        Ok(())
+        self.meet_write_gate()
     }
 
     /// The RSS write-shed (R25-E): sampled RSS against the shed line. A
@@ -438,19 +433,11 @@ impl AdmissionController {
             self.inner.shed_blamed.fetch_add(1, Ordering::Relaxed);
             return Some(WriteRefusal::MemoryPressure);
         }
-        self.over_inflight_cap()?;
+        self.judged_over_cap()?;
         self.inner
             .shed_blamed_inflight
             .fetch_add(1, Ordering::Relaxed);
         Some(WriteRefusal::Overloaded)
-    }
-
-    /// The active requests (in flight minus parked, less `waiting`) and the
-    /// cap, when an in-flight cap is set and they are over it.
-    fn over_inflight_cap(&self) -> Option<(u64, u64)> {
-        let cap = u64::try_from(self.max_inflight()).unwrap_or(0);
-        let active = u64::try_from(self.active() - self.waiting()).unwrap_or(0);
-        (cap > 0 && active > cap).then_some((active, cap))
     }
 
     /// The pressure (sampled RSS, MiB) and the line, when a shed line is
@@ -716,13 +703,6 @@ impl AdmissionController {
             fleet_ops: i.fleet_ops.load(ord),
         }
     }
-
-    /// Rigs simulate load without holding tickets (the inflight
-    /// admission tests push the count past the cap directly).
-    #[cfg(test)]
-    pub(crate) fn add_inflight_for_test(&self, n: i64) {
-        self.inner.inflight.fetch_add(n, Ordering::Relaxed);
-    }
 }
 
 #[cfg(test)]
@@ -820,7 +800,9 @@ mod tests {
     #[test]
     fn parked_requests_leave_the_write_gate_survival_and_the_active_count() {
         let c = ctl(2, 0, 0, 0);
-        let tickets: Vec<_> = (0..9).map(|_| c.enter(false)).collect();
+        let tickets: Vec<_> = (0..9)
+            .map(|_| (c.enter(false), write_slots::Slot::new(&c, false)))
+            .collect();
         assert_eq!(c.admit_write_inflight(), Err(WriteRefusal::Overloaded));
         assert!(c.survival_refused(9, "/v1/stream/a"), "9 active over 4 x 2");
         let parked: Vec<_> = (0..7).map(|_| c.park().expect("unlimited pool")).collect();

@@ -16,9 +16,15 @@ use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
 /// How many split requests may wait for the loop.
 const QUEUED: usize = 16;
-/// How old the fleet's published count must be before a split starts (S4-DESIGN §10.1,
-/// `SHARD_TOPOLOGY_COOLDOWN_SECS`): the topology waits for the fleet, never the reverse.
-const FLEET_SETTLE_MS: i64 = 60_000;
+/// How old the fleet's published count must be before a split or a merge starts (S4-DESIGN
+/// §10.1): the configured `SHARD_TOPOLOGY_COOLDOWN_SECS`, so the topology waits for the fleet,
+/// never the reverse. It was a fixed 60 s, the setting's default, whatever the setting
+/// (GATE-DECISION-s22-join-2026-11-20 Addendum 5).
+pub(crate) fn settle_ms(cli: &crate::config::CliArgs) -> i64 {
+    i64::try_from(cli.shard_topology_cooldown_secs)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000)
+}
 
 /// A started split: its operation, and the topology version it splits from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +88,8 @@ pub(crate) struct Parts {
     /// This instance's ownership view, which a split's children are born into (`split::Birth`).
     pub ownership: crate::ownership::OwnershipService,
     pub move_cooldown_ms: i64,
+    /// How old the fleet's published count must be (`settle_ms`).
+    pub settle_ms: i64,
     pub clock: Arc<dyn Clock>,
     pub owner: String,
     pub shards_max: u32,
@@ -218,8 +226,8 @@ impl Parts {
 }
 
 impl Parts {
-    /// Whether the fleet settled (S4-DESIGN §10.1): its published count at least
-    /// [`FLEET_SETTLE_MS`] old and no override younger than the move cooldown, both by the wall
+    /// Whether the fleet settled (S4-DESIGN §10.1): its published count at least `settle_ms`
+    /// old and no override younger than the move cooldown, both by the wall
     /// clock the fleet's documents are stamped in; else `topology_busy {reason: "fleet"}`. A cell
     /// without the fleet has nothing to wait for; an unreadable document is `Unavailable`.
     async fn fleet_settled(&self) -> Result<(), Refused> {
@@ -232,7 +240,13 @@ impl Parts {
         let (overrides, _) = self.fleet.read_overrides().await.map_err(unread)?;
         let counted_at = desired.map(|d| d.computed_at_ms);
         let moved_at = overrides.entries.values().map(|entry| entry.ms);
-        if settled(now, counted_at, moved_at, self.move_cooldown_ms) {
+        if settled(
+            now,
+            counted_at,
+            moved_at,
+            self.settle_ms,
+            self.move_cooldown_ms,
+        ) {
             Ok(())
         } else {
             Err(Refused::Busy("fleet"))
@@ -254,15 +268,15 @@ fn room_for_split(open: usize, shards_max: u32) -> Result<(), Refused> {
 }
 
 /// Whether the fleet settled at `now`: its count, published at `counted_at`, at least
-/// [`FLEET_SETTLE_MS`] old, and no override, each stamped at its `moved_at`, younger than
-/// `cooldown_ms`.
+/// `settle_ms` old, and no override, each stamped at its `moved_at`, younger than `cooldown_ms`.
 fn settled(
     now: i64,
     counted_at: Option<i64>,
     mut moved_at: impl Iterator<Item = i64>,
+    settle_ms: i64,
     cooldown_ms: i64,
 ) -> bool {
-    let young_count = counted_at.is_some_and(|at| now.saturating_sub(at) < FLEET_SETTLE_MS);
+    let young_count = counted_at.is_some_and(|at| now.saturating_sub(at) < settle_ms);
     let young_move = moved_at.any(|at| now.saturating_sub(at) < cooldown_ms);
     !(young_count || young_move)
 }

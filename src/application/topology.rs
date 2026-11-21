@@ -124,7 +124,7 @@ pub(crate) async fn close_segment_on_engine(
         );
         return None;
     }
-    match rx.await {
+    match crate::topology::gate::parked::answered(rx, engine).await {
         Ok(Ok(ack)) => Some(ack.next_offset),
         Ok(Err(crate::shard::AppendErr::Closed { next_offset })) => Some(next_offset),
         Ok(Err(other)) => {
