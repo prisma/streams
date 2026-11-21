@@ -295,8 +295,10 @@ impl FleetRead {
         let reserved = reserved_by_member(&candidacies);
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
-        let active = planning::active_members(count, me, &candidacies);
         let (overrides, _) = state.fleet.read_overrides().await.ok()?;
+        // The ring of the document read, over these candidates (§22 C1-C3).
+        let active =
+            planning::active_members(count, me, &candidacies).ring(overrides.members.as_deref());
         let window = Duration::from_secs(state.config.fleet.rebalance_return_secs);
         Some(Self {
             active,

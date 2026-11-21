@@ -791,3 +791,100 @@ async fn a_forwarded_create_is_admitted_only_at_the_owner() {
     engine_shutdown(&a).await;
     engine_shutdown(&b).await;
 }
+
+/// Wait until `state`'s write gate judges `count`, at most `within`: whether it did.
+async fn judged_at(state: &State, count: i64, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while state.admission.judged() != count {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    true
+}
+
+/// **A forwarded write holds its place in the write gate's count only while it is forwarded**
+/// (edge change #272, Addendum 27's second condition): a raw append the non-owner forwards is
+/// counted from the forward's start, at the call site (`http::forward`, `park::forwarding`), and
+/// the count is back where it was however the forward ends: the owner answers, the owner never
+/// connects (the non-owner answers its `409`), the owner is silent past the forward's bound
+/// (`503 forward_failed`), or the client drops the request while it is forwarded (the place
+/// returns with the served request, at the latest at the forward's bound). A count left behind
+/// on any of these would lower the write gate's line for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_forwarded_writes_place_in_the_write_gate_returns_however_the_forward_ends() {
+    let p = pair().await;
+    p.a.admission.set_max_inflight(512);
+    for name in ["fgA", "fgB", "fgC", "fgD"] {
+        create(p.addr_b, name).await;
+    }
+    let base = p.a.admission.judged();
+    let append = |path: &'static str| hreq(p.addr_a, "POST", path, &[CT], br#"[{"n":1}]"#);
+
+    let (status, _, _) = append("/v1/stream/fgA").await;
+    assert!(status < 300, "answered by the owner: {status}");
+    assert!(
+        judged_at(&p.a, base, Duration::from_secs(5)).await,
+        "answered: the count is back"
+    );
+
+    let (_owner, url, _fillers) = saturated_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+    let held = async { judged_at(&p.a, base + 1, Duration::from_millis(900)).await };
+    let ((status, _, _), counted) =
+        futures_util::future::join(append("/v1/stream/fgB"), held).await;
+    assert_eq!(
+        (status, counted),
+        (409, true),
+        "never connects: counted while it tried"
+    );
+    assert!(
+        judged_at(&p.a, base, Duration::from_secs(5)).await,
+        "never connects: back"
+    );
+
+    let (owner, url) = owner_stand_in().await;
+    p.a.peer.set_peer("inst-b", &url);
+    let silent = async {
+        let socket = accept_unanswered(&owner).await;
+        let counted = judged_at(&p.a, base + 1, Duration::from_secs(1)).await;
+        (socket, counted)
+    };
+    let ((status, _, _), (_socket, counted)) =
+        futures_util::future::join(append("/v1/stream/fgC"), silent).await;
+    assert_eq!(
+        (status, counted),
+        (503, true),
+        "timed out: counted while it waited"
+    );
+    assert!(
+        judged_at(&p.a, base, Duration::from_secs(5)).await,
+        "timed out: back"
+    );
+
+    let dropped = tokio::time::timeout(Duration::from_secs(10), async {
+        let request = append("/v1/stream/fgD");
+        let silent = async {
+            let socket = accept_unanswered(&owner).await;
+            assert!(
+                judged_at(&p.a, base + 1, Duration::from_secs(1)).await,
+                "counted"
+            );
+            socket
+        };
+        futures_util::future::select(Box::pin(request), Box::pin(silent)).await;
+    });
+    assert!(
+        dropped.await.is_ok(),
+        "the forward reached the silent owner"
+    );
+    // The non-owner learns of the drop when it next writes to the client, at the latest when the
+    // forward's own bound answers it.
+    let back = answer_bound(&p.a) + Duration::from_secs(5);
+    assert!(
+        judged_at(&p.a, base, back).await,
+        "dropped: the count is back"
+    );
+    engine_shutdown(&p.b).await;
+}

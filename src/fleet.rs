@@ -33,6 +33,8 @@ mod hysteresis;
 mod moves;
 mod outbox;
 mod planning;
+// The membership of record and its interim writer (§22 C1-C4, C17; Addendum 14).
+mod record;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
 pub(crate) mod repository;
@@ -53,6 +55,18 @@ pub(crate) struct Overrides {
     /// Pending-event outbox (§12.4) — same contract as Desired's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_events: Vec<crate::ops::OpsEvent>,
+    /// The ring of record (§22 C1, `record`): absent in an older cell's document (C17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<Member>>,
+}
+
+/// One member of record (§22 C1): its name, and the boot id the join stamps (R1a). The interim
+/// writes it absent and no reader uses it (GATE-DECISION-s22-3b-step4-2026-11-21 §2.1).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Member {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -390,6 +404,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
         move_cooldown_ms: i64::try_from(state.config.fleet.rebalance_move_cooldown_secs)
             .unwrap_or(i64::MAX)
             .saturating_mul(1_000),
+        settle_ms: crate::topology::ops::settle_ms(&state.config.cli),
         clock: state.runtime.clock.clone(),
         owner: state.config.cli.instance_name.clone(),
         shards_max: state.config.cli.shards_per_instance_max,

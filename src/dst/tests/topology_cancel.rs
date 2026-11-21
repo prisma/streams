@@ -46,6 +46,7 @@ fn ops(rig: &HttpRig) -> crate::tasks::TaskSupervisor {
         fleet: rig.state.fleet.clone(),
         ownership: rig.state.ownership.clone(),
         move_cooldown_ms: 600_000,
+        settle_ms: crate::topology::ops::settle_ms(&rig.state.config.cli),
         clock: rig.state.runtime.clock.clone(),
         owner: "inst-a".to_string(),
         shards_max: 7,

@@ -98,7 +98,8 @@ pub(super) async fn submit(
         }
         return Err(enqueue_refused(&error));
     }
-    match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
+    let answered = crate::topology::gate::parked::answered(rx, &engine);
+    match tokio::time::timeout(APPEND_TIMEOUT, answered).await {
         Ok(Ok(Err(AppendErr::Splitting))) => held_by_a_split(state, seg, &engine).await,
         Ok(Ok(o)) => Ok(o),
         _ => fail(

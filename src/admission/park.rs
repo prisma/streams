@@ -70,6 +70,8 @@ struct Request {
     verdict: OnceLock<Verdict>,
     /// Its place among the requests waiting on a move or an open (`waits_on_owner`).
     waiting: OnceLock<super::waiting::WaitingPlace>,
+    /// Its place in the write gate's count (`write_slots`), returned when it is answered.
+    slot: super::write_slots::Slot,
 }
 
 impl Drop for Request {
@@ -86,8 +88,15 @@ impl InflightTicket {
     /// Serve `handler` as the request this ticket admitted; the ticket
     /// drops when the handler's future completes or is dropped, and a read
     /// hold the request bound rides the response's body.
-    pub(crate) async fn serve<F: Future<Output = Response>>(self, handler: F) -> Response {
+    /// A request that will meet the write gate (`gated`, `product::operation::meets_write_gate`) is held by the
+    /// gate's count from its gate, any other from now.
+    pub(crate) async fn serve<F: Future<Output = Response>>(
+        self,
+        gated: bool,
+        handler: F,
+    ) -> Response {
         let read = Arc::new(OnceLock::new());
+        let slot = super::write_slots::Slot::new(&self.ctl, gated);
         let request = Request {
             ticket: self,
             share: OnceLock::new(),
@@ -97,6 +106,7 @@ impl InflightTicket {
             coverage: AtomicU64::new(0),
             verdict: OnceLock::new(),
             waiting: OnceLock::new(),
+            slot,
         };
         let response = REQUEST.scope(request, handler).await;
         match Arc::into_inner(read).and_then(OnceLock::into_inner) {
@@ -147,8 +157,30 @@ pub(crate) fn waits_on_owner() {
             && let Some(place) = request.ticket.ctl.enter_waiting()
         {
             drop(request.waiting.set(place));
+            request.slot.waits();
         }
     });
+}
+
+/// The served request meets the write gate at `line` (`write_slots::Slot::meet_gate`): whether it
+/// passes; `None` outside a served request.
+pub(super) fn meet_gate(line: i64) -> Option<bool> {
+    REQUEST
+        .try_with(|request| request.slot.meet_gate(line))
+        .ok()
+}
+
+/// Whether the served request adds itself to a check of the write gate's count
+/// (`write_slots::Slot::uncounted`); `None` outside a served request.
+pub(super) fn own_uncounted() -> Option<bool> {
+    REQUEST.try_with(|request| request.slot.uncounted()).ok()
+}
+
+/// The served request is forwarded to its stream's owner and held here for the answer: the write
+/// gate's count holds it from now (`write_slots`), as it would from its gate. Outside a served
+/// request, nothing.
+pub(crate) fn forwarding() {
+    let _counted = REQUEST.try_with(|request| request.slot.leaves_by_another_door());
 }
 
 /// The served request's fair-shed verdict: `None` when it was not counted.

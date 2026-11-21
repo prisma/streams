@@ -11,16 +11,20 @@ use object_store::UpdateVersion;
 
 use super::{AppState, Overrides};
 
-/// Read `fleet/overrides.json` and publish it with `active` as the ownership view, and `peers` as
-/// the peer map, under the revalidation lock: the overrides document and its version for the tick's
-/// rebalancer. A failed read publishes nothing (the last good view is kept).
+/// Read `fleet/overrides.json` and publish it with its ring over this pass's `candidates` (§22 C1,
+/// C2) as the ownership view, and `peers` as the peer map, under the revalidation lock: the
+/// overrides document and its version for the tick's rebalancer. In the interim the read document
+/// is first made to list the pass's ordinal set (`record::listed`, Addendum 14). A failed read
+/// publishes nothing (the last good view is kept).
 pub(super) async fn published(
     state: &AppState,
-    active: &[String],
+    candidates: &super::record::Candidates,
     peers: &HashMap<String, String>,
 ) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
     let _one = state.shards.revalidation().lock().await;
-    let (overrides, version) = state.fleet.read_overrides().await?;
+    let read = state.fleet.read_overrides().await?;
+    let me = state.config.cli.instance_name.as_str();
+    let (overrides, version) = super::record::listed(state, me, candidates, read).await;
     // Tests only: a tick held between its read and its publication, the lock still held.
     #[cfg(test)]
     if let Some(point) = state.fleet.standing().take_view_pause()
@@ -33,17 +37,19 @@ pub(super) async fn published(
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
-    // Publish only a complete successful authority read. This synchronous replacement cannot
-    // expose a mixed ring/map.
-    state.ownership.set_view(active.to_vec(), map);
+    // Publish only a complete successful authority read, its ring and entries from the one
+    // document. This synchronous replacement cannot expose a mixed ring/map.
+    let ring = candidates.ring(overrides.members.as_deref());
+    state.fleet.standing().set_candidates(candidates);
+    state.ownership.set_view(ring, map);
     state.fleet.standing().tags().set(tag_of(version.as_ref()));
     state.peer.set_peers(peers.clone());
     state.fleet.standing().mark_progress();
     Ok((overrides, version))
 }
 
-/// Read `fleet/overrides.json` and publish its entries with the ring this instance last published,
-/// under the revalidation lock: a planned move's mirror of the document it wrote (F6, step 7), and
+/// Read `fleet/overrides.json` and publish its entries with its own ring (§22 C2), under the
+/// revalidation lock: a planned move's mirror of the document it wrote (F6, step 7), and
 /// a forward's refresh when its sender holds another version (step 8, D7). The version read, or
 /// `None` when the read failed (nothing is published).
 pub(crate) async fn refreshed(state: &AppState) -> Option<String> {
@@ -69,8 +75,9 @@ pub(crate) async fn refresh_for(state: &AppState, seen: &str) {
     tags.read_for(seen, &before, read.as_deref(), tokio::time::Instant::now());
 }
 
-/// Read the overrides document and publish it with the ring this instance last published, the
-/// revalidation lock held by the caller; the version read.
+/// Read the overrides document and publish it with its own ring over the tick's last candidates
+/// (§22 C2; before the first pass, the ring this instance last published), the revalidation lock
+/// held by the caller; the version read.
 async fn published_here(state: &AppState) -> Option<String> {
     let (overrides, version) = state.fleet.read_overrides().await.ok()?;
     let map: HashMap<String, String> = overrides
@@ -78,7 +85,10 @@ async fn published_here(state: &AppState) -> Option<String> {
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
-    state.ownership.set_view(state.ownership.ring_active(), map);
+    let ring = state.fleet.standing().ring_of(&overrides);
+    state
+        .ownership
+        .set_view(ring.unwrap_or_else(|| state.ownership.ring_active()), map);
     let tag = tag_of(version.as_ref());
     state.fleet.standing().tags().set(tag.clone());
     Some(tag)
