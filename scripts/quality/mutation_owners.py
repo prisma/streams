@@ -230,7 +230,8 @@ OWNERS = (
     owner('topology_policy_loop', 'src/topology/policy_loop.rs',
           'topology::policy:: topology::policy_loop:: '
           'dst_tests::topology_policy::one_stream_carrying_a_shards_appends_holds_hot_entity '
-          'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal dst_tests::fleet_handoff_drain::'),
+          'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal dst_tests::fleet_handoff_drain:: '
+          'dst_tests::topology_colocation_shield::'),
     # A rolled-back split's backoff (meas149-reshaping F1d): its waits are unit tests, exact to the
     # millisecond; the loop's use of it is topology_policy_loop's.
     # A split refused for room moves its shard to an instance with room
@@ -476,7 +477,8 @@ OWNERS = (
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
           'dst_tests::fleet_count_balance::return_home_counts_its_homes_reserved_shards '
           'dst_tests::fleet_topology::a_live_intents_source_is_never_the_lag_moves_shard '
-          'dst_tests::topology_colocation::return_home_skips_a_live_intents_sources'),
+          'dst_tests::topology_colocation::return_home_skips_a_live_intents_sources '
+          'dst_tests::topology_colocation_shield::'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     # The CAS over an in-memory fleet store (owner 2026-11-10: "Approve (1)+(2)"); the policy's

@@ -63,6 +63,10 @@ pub(crate) struct Standing {
     tags: super::tags::Tags,
     /// The last planned move's phases and the instant its hold ended.
     last_handoff: Mutex<Option<(super::handoff::Phases, tokio::time::Instant)>>,
+    /// The halves this instance's policy is co-locating or about to merge, each with the instant
+    /// its shield lapses (`shield`).
+    // mt-lint: allow(name-keyed-map): shard prefix (a merge candidate's half) -> its shield's lapse
+    shielded: Mutex<BTreeMap<String, tokio::time::Instant>>,
     /// Tests: the fleet tick's next view publication pauses after its overrides read.
     #[cfg(test)]
     view_pause: ViewPause,
@@ -136,6 +140,7 @@ impl Default for Standing {
             handoffs_fenced: AtomicU64::new(0),
             tags: super::tags::Tags::default(),
             last_handoff: Mutex::new(None),
+            shielded: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
             #[cfg(test)]
@@ -322,6 +327,42 @@ impl Standing {
             .ok()
             .and_then(|live| live.as_ref().map(|l| l.sources.clone()))
             .unwrap_or_default()
+    }
+
+    /// Shield `halves` until `lapse` from now, renewing any mark (GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 13 (2)): this instance's count balance and lag move ([`Standing::unmovable`]) and
+    /// its return-home ([`Standing::shielded`]) leave them where they are meanwhile. It lives in
+    /// this process only: nothing is written to the overrides document for it.
+    pub(crate) fn shield(&self, halves: &[String], lapse: std::time::Duration) {
+        let now = tokio::time::Instant::now();
+        if let Ok(mut marks) = self.shielded.lock() {
+            marks.retain(|_, until| *until > now);
+            for half in halves {
+                marks.insert(half.clone(), now + lapse);
+            }
+        }
+    }
+
+    /// Whether `prefix` is shielded now (`shield`). A poisoned lock reads as no shield.
+    pub(crate) fn shielded(&self, prefix: &str) -> bool {
+        let now = tokio::time::Instant::now();
+        let live = |marks: &BTreeMap<String, tokio::time::Instant>| {
+            marks.get(prefix).is_some_and(|until| *until > now)
+        };
+        self.shielded.lock().is_ok_and(|marks| live(&marks))
+    }
+
+    /// The shards no move of this instance's own may take: the live topology intent's sources
+    /// (S4-DESIGN §4.4) and the halves it shields (`shield`). Count balance and the lag move read
+    /// it.
+    pub(crate) fn unmovable(&self) -> Vec<String> {
+        let mut unmovable = self.topology_sources();
+        let now = tokio::time::Instant::now();
+        if let Ok(marks) = self.shielded.lock() {
+            let live = marks.iter().filter(|(_, until)| **until > now);
+            unmovable.extend(live.map(|(prefix, _)| prefix.clone()));
+        }
+        unmovable
     }
 
     /// Whether return-home leaves the override on `prefix` in place this tick: the entry is
@@ -553,6 +594,41 @@ mod tests {
         assert!(!standing.return_home_skips("1", window, 300));
         standing.set_topology_intent(None);
         assert!(!standing.return_home_skips("00", window, 300));
+    }
+
+    /// **A shield holds its halves until it lapses, at its instant, and a renewal keeps it**
+    /// (GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)): `00` and `01` shielded are unmovable
+    /// beside a live intent's source `1`; renewing `00` at 20 s keeps `01`'s mark; at 30 s `01`
+    /// lapses exactly (shielded and unmovable no more) while `00` holds; at 50 s `00` lapses too.
+    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
+    async fn a_shield_holds_its_halves_until_it_lapses_and_a_renewal_keeps_it() {
+        let standing = Standing::default();
+        let lapse = Duration::from_secs(30);
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        standing.set_topology_sources(names(&["1"]));
+        standing.shield(&names(&["00", "01"]), lapse);
+        let sorted = |mut list: Vec<String>| {
+            list.sort();
+            list
+        };
+        assert_eq!(sorted(standing.unmovable()), names(&["00", "01", "1"]));
+        assert!(standing.shielded("00") && !standing.shielded("1"));
+        tokio::time::advance(Duration::from_secs(20)).await;
+        standing.shield(&names(&["00"]), lapse);
+        assert!(standing.shielded("01"), "a renewal keeps the other marks");
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert_eq!(
+            (standing.shielded("00"), standing.shielded("01")),
+            (true, false),
+            "01 lapses at its instant"
+        );
+        assert_eq!(sorted(standing.unmovable()), names(&["00", "1"]));
+        tokio::time::advance(Duration::from_secs(20)).await;
+        standing.set_topology_intent(None);
+        assert_eq!(
+            (standing.shielded("00"), standing.unmovable()),
+            (false, vec![])
+        );
     }
 
     /// **Return-home skips a live split's children** (GATE-DECISION-f2-children-on-actor A4), by

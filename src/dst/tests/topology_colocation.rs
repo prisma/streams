@@ -1,8 +1,9 @@
 #![cfg(test)]
 //! The topology policy's merges across instances (S5 + S6 §7.2 step 0, edge #261 B1 as amended by
-//! GATE-DECISION-s22-join-2026-11-20 Addendum 7): a cold pair the fleet split across two instances
-//! is gathered on one instance first, the merge's actor, its partner or a third instance with room,
-//! each half written by its own holder (a pin on the target, a giver-first handoff elsewhere), and a
+//! GATE-DECISION-s22-join-2026-11-20 Addenda 7 and 13): a cold pair the fleet split across two
+//! instances is gathered on one instance first, the merge's actor, its partner or a third instance
+//! with room, each half moved by its own holder (a giver-first handoff; the target writes nothing for
+//! the half it holds), and a
 //! merge with no room anywhere asks the fleet for an instance. Each scenario runs two or three real instances over one data store and one fleet
 //! store, on `topology_policy`'s rigs, and takes minutes (the move's cooldown among it).
 
@@ -29,8 +30,9 @@ pub(super) async fn stored_leaves(store: &Arc<dyn ObjectStore>) -> Vec<String> {
 /// streams of the cell `0` + `1`; `streams-2` then beats, the ring gives it both halves, and a
 /// move (count balance's, as an aged override) gives `1` back to `streams-1`. Both halves go
 /// cold past the merge sustain. The merge's actor, `0`'s owner `streams-2`, cannot merge a half
-/// another instance holds and is the target: it names `0` for itself; `1`'s holder `streams-1` then
-/// hands `1` to it giver first, and once the move's cooldown has passed `streams-2` merges. The
+/// another instance holds and is the target: it writes nothing for `0`, which the ring gives it
+/// (Addendum 13 (1)); `1`'s holder `streams-1` hands `1` to it giver first, and once the move's
+/// cooldown has passed `streams-2` merges. The
 /// stored topology ends as the one leaf `""`, its owner serves it, every stream reads back the same
 /// records, and no handoff fell back to a takeover by fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
@@ -114,7 +116,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
     }
     assert!(split(), "the pair is split: {:?}", (owner("0"), owner("1")));
 
-    // The settle on the count, the pin's cooldown, then the handoff's.
+    // The settle on the count, then the handoff's cooldown.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     while stored_leaves(&data).await != [""] && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -124,7 +126,7 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
         document(&fleet, "streams-2").await["topology_decision"].clone(),
     );
     assert_eq!(stored_leaves(&data).await, [""], "decisions {decisions:?}");
-    moved_onto_then_pruned(&fleet, "", &[("0", "streams-2"), ("1", "streams-2")]).await;
+    moved_onto_then_pruned(&fleet, "", &[("1", "streams-2")]).await;
     unfenced(&[&a, &b]);
     let root = owner("").expect("the ring owns the merged root");
     let serving = if root == "streams-1" { a.addr } else { b.addr };
@@ -145,9 +147,9 @@ async fn a_cold_pair_split_across_two_instances_is_colocated_and_merged() {
 
 /// The halves of `parent` were written exactly as `onto` says, then their entries pruned: of the
 /// overrides document's `rebalance_move` events, those whose shard is `<parent>0` or `<parent>1`
-/// are exactly `onto`, each a half and the instance its entry named (a holder's pin of its half on
-/// the target, or its handoff of it there; a half already named for the target is not written
-/// again) (filtered by shard: after the merge the parent has no
+/// are exactly `onto`, each a half and the instance its entry named (a holder's handoff of it to the
+/// target; a half the target already holds is not written, Addendum 13 (1)) (filtered by shard:
+/// after the merge the parent has no
 /// override and count balance may move it; nothing in the rig drains the events, whose drain runs
 /// from the telemetry loop this rig never starts). The merge published `parent`, so neither half is
 /// a leaf and a beat drops both entries (DESIGN-DECISION-c3-incomplete-rig-2026-11-11 Addendum 3;
@@ -282,9 +284,9 @@ async fn count_of_two(fleet: &Arc<dyn ObjectStore>) -> i64 {
 
 /// The co-location DSTs' move cooldown: 20 s instead of the default 60 s, so the suite does not wait
 /// out minutes of cooldowns in real time (PR #178's CI ran past its limit). It is two of the policy
-/// loop's 10 s periods, so a hold ends on a pass as the default's six did. The return window
-/// stays at its default (300 s), far past every co-location here: a pin on a half at its ring home
-/// is a no-op that return-home drops once it is older than that window.
+/// loop's 10 s periods, so a hold ends on a pass as the default's six did. The return window keeps
+/// its default (300 s): these DSTs lay their cells out with aged entries inside it. What keeps a
+/// co-location's halves in place is the holders' shield, whose own DSTs run at a 5 s window.
 pub(super) const MOVE_COOLDOWN_SECS: u64 = 20;
 
 /// The co-location DSTs' fleet settings: the move cooldown [`MOVE_COOLDOWN_SECS`].
@@ -464,7 +466,8 @@ async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
 /// pass has acted: by that view the target is the third `streams-3` (0 + 3), and it hands `00`
 /// there; `streams-2`, the target by its own view and holding its half by its entry, writes
 /// nothing. Then the views agree again: `streams-3` holds `00`, so it is the actor and, with room
-/// (1 + 2), the target, and `streams-2` hands `01` to it once `00` is named for it. One merge: `0`
+/// (1 + 2), the target, and `streams-2` hands `01` to it once its view gives `00` to it. One merge:
+/// `0`
 /// is a leaf of the stored topology; the halves' writes are exactly `00` and `01` to `streams-3`,
 /// each by its holder (`streams-1` and `streams-2` each made a planned handoff); no handoff was
 /// fenced; every stream reads back the records it had.

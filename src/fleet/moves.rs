@@ -73,7 +73,8 @@ impl Tick<'_> {
         // A live topology intent's sources keep their override (S4-DESIGN §4.4).
         for (prefix, entry) in &overrides.entries {
             let standing = self.state.fleet.standing();
-            if standing.return_home_skips(prefix, now_ms() - entry.ms, return_secs) {
+            let skips = standing.return_home_skips(prefix, now_ms() - entry.ms, return_secs);
+            if skips || standing.shielded(prefix) {
                 continue;
             }
             if self.active.is_empty() {

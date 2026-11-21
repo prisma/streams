@@ -164,9 +164,8 @@ async fn run(cell: Cell, period: Duration, cancel: Cancellation) -> TaskResult {
             _ = tokio::time::sleep(period) => {}
         }
         // A cancellation drops a pass where it stands, as the supervisor's grace would abort it
-        // (Addendum 22): what a pass asks of the topology loop or the handoff runner is theirs,
-        // and its one write, a co-location's pin (`fleet::colocate::pin`), lands whole or not at
-        // all.
+        // (Addendum 22): what a pass asks of the topology loop or the handoff runner is theirs, and
+        // a pass writes nothing of its own.
         let decision = tokio::select! {
             biased;
             _ = cancel.cancelled() => return TaskResult::Done,
@@ -189,6 +188,9 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
             .intent_rolled_back(&op_id, &prefix, view.now_ms, cooldown);
     }
     let decided = policy.decide(&view, &cell.limits);
+    if let Some(parent) = policy.merge_pair() {
+        shield(cell, &view, parent);
+    }
     let partner = policy.partner_merge();
     let decision = act(cell, &view, decided, partner, &mut seen.backoff).await;
     let waiting = split_refused(&decision, policy.decided_split());
@@ -260,21 +262,21 @@ async fn act(
 }
 
 /// This instance's half of a merge's co-location (S6-DESIGN §7.2 step 0; #261 B1 as amended by
-/// GATE-DECISION-s22-join-2026-11-20 Addendum 7), for the merge's actor (`…0`'s holder, refused
-/// `not_ring_owner`) and for its partner (`…1`'s holder, whose candidate only `peer_acts` held).
-/// Each holder computes the target from its view and writes only for the half it holds
-/// (`fleet::colocate::step`): on the target it names that half for itself (`pin`); elsewhere it
-/// hands the half there giver first (`fleet::handoff`). Whichever then holds both is the actor and
-/// merges once the move's cooldown has passed (`override_recent` meanwhile). With no instance that
-/// has room the actor asks the fleet for one, as a split does (the beat's `instance_full`; the
-/// count grows within its clamp); a holder with nothing to write holds `peer_acts`, the partner
-/// without a target among them. A write not made holds steady; the next pass decides again.
+/// GATE-DECISION-s22-join-2026-11-20 Addenda 7 and 13), for the merge's actor (`…0`'s holder,
+/// refused `not_ring_owner`) and for its partner (`…1`'s holder, whose candidate only `peer_acts`
+/// held). Each holder computes the target from its view (`fleet::colocate::step`): elsewhere than
+/// the target it hands its half there giver first (`fleet::handoff`); on the target it writes
+/// nothing. Whichever then holds both is the actor and merges once the move's cooldown has passed
+/// (`override_recent` meanwhile). With no instance that has room the actor asks the fleet for one,
+/// as a split does (the beat's `instance_full`; the count grows within its clamp); a holder with
+/// nothing to write holds `peer_acts`, the partner without a target among them. A move not made
+/// holds steady; the next pass decides again.
 async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
     use super::policy::Hold;
-    use crate::fleet::colocate::{Pinned, Step, pin};
+    use crate::fleet::colocate::Step;
     use crate::fleet::handoff::{Change, Outcome, hand_off};
     let max = cell.limits.shards_per_instance_max;
-    let step = crate::fleet::colocate::step(view, max, parent, &cell.ownership);
+    let step = crate::fleet::colocate::step(view, max, parent);
     tracing::info!(parent, ?step, "topology merge: co-location");
     match step {
         Step::NoRoom => Decision::AskInstance {
@@ -282,11 +284,6 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
             max,
         },
         Step::Wait => Decision::Hold(Hold::PeerActs),
-        Step::Pin(half) => match pin(&cell.fleet, &cell.ownership, &*cell.store, &half).await {
-            Pinned::Written => Decision::Hold(Hold::OverrideRecent),
-            Pinned::Already => Decision::Hold(Hold::PeerActs),
-            Pinned::NotHeld | Pinned::Lost => Decision::Hold(Hold::Steady),
-        },
         Step::Hand { half, to } => {
             match hand_off(&cell.fleet, &half, Change::To(to), false).await {
                 Outcome::Moved => Decision::Hold(Hold::OverrideRecent),
@@ -296,6 +293,26 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
             }
         }
     }
+}
+
+/// How long a shield outlives the pass that last renewed it: three of the loop's periods
+/// ([`PERIOD`], 10 s), so it lapses after three passes that do not renew it (Addendum 13 (2)).
+const SHIELD_LAPSE: Duration = Duration::from_secs(30);
+
+/// Shield the halves of `parent` this instance holds in `view` from its own count balance, lag move
+/// and return-home for [`SHIELD_LAPSE`] (GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)):
+/// each pass whose merge candidate the pair is renews it, so it lapses once the pair is merged or
+/// is a candidate no more. Nothing is written to the overrides document for it.
+fn shield(cell: &Cell, view: &View, parent: &str) {
+    let held = |half: &String| {
+        let mine = |leaf: &Leaf| leaf.prefix == *half && leaf.owner == cell.me;
+        view.leaves.iter().any(mine)
+    };
+    let halves: Vec<String> = [format!("{parent}0"), format!("{parent}1")]
+        .into_iter()
+        .filter(held)
+        .collect();
+    cell.fleet.standing().shield(&halves, SHIELD_LAPSE);
 }
 
 /// Tests: `instances` with `skew`, when given, not accepting: a view of the cell that lags its

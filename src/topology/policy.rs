@@ -189,6 +189,8 @@ pub(crate) struct Policy {
     /// The parent of the last decision's merge candidate when this instance is its partner and
     /// only the gate's `peer_acts` held it (`partner_merge`).
     partner: Option<String>,
+    /// The parent of the last decision's merge candidate, whatever held it (`merge_pair`).
+    merging: Option<String>,
 }
 
 /// What a tick would start, before the gates.
@@ -204,6 +206,7 @@ impl Policy {
         self.observe(view, at);
         self.split = false;
         self.partner = None;
+        self.merging = None;
         let held = match self.split_candidate(view, at) {
             Some(Ok(split)) => {
                 self.split = true;
@@ -218,6 +221,9 @@ impl Policy {
         match self.merge_candidate(view, at) {
             Some(merge) => {
                 self.partner = partner_of(view, at, &merge);
+                if let Candidate::Merge(parent, _) = &merge {
+                    self.merging = Some(parent.clone());
+                }
                 act(view, at, merge)
             }
             None => Decision::Hold(held),
@@ -230,6 +236,13 @@ impl Policy {
     /// Addendum 7). `None` for the actor and for any other decision.
     pub(crate) fn partner_merge(&self) -> Option<&str> {
         self.partner.as_deref()
+    }
+
+    /// The parent of the last decision's merge candidate, whatever held it: the pair whose halves
+    /// this instance shields while it is co-located and merged (GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 13 (2)). `None` when the last decision had no merge candidate.
+    pub(crate) fn merge_pair(&self) -> Option<&str> {
+        self.merging.as_deref()
     }
 
     /// Whether the last decision's candidate was a split, not a merge or none: a hold it ended in

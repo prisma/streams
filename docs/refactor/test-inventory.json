@@ -563,7 +563,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "60a4fdf58b17e5acc3a145893710f56ce1dbcfbe233c725a2df202978ce472d0",
+    "function_sha256": "d893d361515bd81d31f580f88d196d00a38db71fec187c461005c60477283f81",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -5258,6 +5258,17 @@
     "scenarios": []
   },
   {
+    "name": "a_target_holding_its_half_at_its_ring_home_merges_without_a_pin_or_a_return",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "909a183975460a3956d4ae30a7c82ae8bcaac52c286fb4a9f1ecd9b69f63cc9c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_shield.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_thousand_parked_claims_reserve_zero_bytes",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6934,6 +6945,17 @@
     "scenarios": [
       "HIS-019"
     ]
+  },
+  {
+    "name": "count_balance_does_not_move_a_targets_half_before_the_merge",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a67ac482fdf8b99c0720f8032faac27d2e7f3f493907fd5842a1f81f0e4c27ad",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/topology_colocation_shield.rs",
+    "scenarios": []
   },
   {
     "name": "create_replay_never_loses_the_initial_body",

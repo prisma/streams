@@ -145,6 +145,29 @@ fn a_recent_override_holds_a_merge() {
     );
 }
 
+/// **The merge candidate's pair is reported whatever holds it** (`Policy::merge_pair`, the pair
+/// whose halves a holder shields, GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)): none before
+/// the quiet sustain; `""` once the pair is the candidate, a young override holding it; none once
+/// the leaves are no pair.
+#[test]
+fn the_merge_candidates_pair_is_reported_whatever_holds_it() {
+    let (mut policy, mut view) = (Policy::default(), cold_pair(10, 10));
+    assert_eq!(
+        tick(&mut policy, &mut view, T0),
+        Decision::Hold(Hold::Steady)
+    );
+    assert_eq!(policy.merge_pair(), None, "not yet quiet");
+    view.youngest_override_ms = Some(QUIET - 59_999);
+    assert_eq!(
+        tick(&mut policy, &mut view, QUIET),
+        Decision::Hold(Hold::OverrideRecent)
+    );
+    assert_eq!(policy.merge_pair(), Some(""), "a young override holds it");
+    view.leaves = vec![leaf("", "a", 10)];
+    assert_ne!(tick(&mut policy, &mut view, QUIET + 1), merge(""));
+    assert_eq!(policy.merge_pair(), None, "no pair");
+}
+
 #[test]
 fn the_owner_of_the_zero_child_merges() {
     let (mut policy, mut view) = (Policy::default(), cold_pair(10, 10));

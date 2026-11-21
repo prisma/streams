@@ -444,12 +444,11 @@ mod tests {
     /// §22 C2 (GATE-DECISION-s22-3b-step4-2026-11-21 §2.2 and Addendum 1): the ownership view is
     /// published whole by exactly four calls, the tick and three that take their ring from
     /// `Standing::ring_of`; and one entry is set beside the published ring by exactly the
-    /// interim's three, which the join replaces with whole publications. A fifth of either fails
-    /// here first.
+    /// interim's two (a co-location writes no entry, GATE-DECISION-s22-join-2026-11-20 Addendum 13),
+    /// which the join replaces with whole publications. A fifth or a third fails here first.
     #[test]
     fn the_ownership_view_has_exactly_its_known_production_writers() {
         let expected = [
-            ("set_override", "fleet/colocate.rs", "pin"),
             ("set_override", "fleet/moves.rs", "evacuate"),
             ("set_override", "topology/split/birth.rs", "born"),
             ("set_view", "fleet/handoff.rs", "mirror"),

@@ -303,7 +303,7 @@ impl FleetRead {
             active,
             lags,
             reserved,
-            sources: state.fleet.standing().topology_sources(),
+            sources: state.fleet.standing().unmovable(),
             overrides,
             aged_before_ms: now_ms()
                 .saturating_sub(window.as_millis().try_into().unwrap_or(i64::MAX)),
@@ -311,8 +311,8 @@ impl FleetRead {
     }
 
     /// The move `me` would make over `prefixes` (see [`pick`]). A member's reserved shards count as
-    /// shards it holds, and neither they nor a source of the live topology intent ever move
-    /// (S4-DESIGN §4.4).
+    /// shards it holds, and neither they nor what `Standing::unmovable` names (a source of the live
+    /// topology intent, a shielded half) ever move (S4-DESIGN §4.4; Addendum 13 (2)).
     fn plan(
         &self,
         prefixes: &[String],

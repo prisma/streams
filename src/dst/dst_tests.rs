@@ -401,6 +401,8 @@ mod topology_cancel;
 mod topology_colocation;
 #[path = "tests/topology_colocation_load.rs"]
 mod topology_colocation_load;
+#[path = "tests/topology_colocation_shield.rs"]
+mod topology_colocation_shield;
 
 #[path = "tests/topology_convergence.rs"]
 mod topology_convergence;

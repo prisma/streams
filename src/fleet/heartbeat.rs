@@ -525,8 +525,9 @@ impl AppState {
     /// at the tick: the most wedged shard it serves (prefix, ms) and its
     /// effective lag in seconds.
     pub(crate) fn fleet_pressure(&self) -> (String, i64, u64) {
-        // A source of the live topology intent is never a lag move's shard (S4-DESIGN §4.4).
-        let sources = self.fleet.standing().topology_sources();
+        // A source of the live topology intent, or a shielded half, is never a lag move's shard
+        // (S4-DESIGN §4.4; Addendum 13 (2)).
+        let sources = self.fleet.standing().unmovable();
         let engines = self.shards.engines_by_prefix().into_iter();
         let (wedge_prefix, wedge_max_ms) = wedge_of(
             engines.map(|(prefix, engine)| (prefix, engine.wedge_ms())),
@@ -539,10 +540,11 @@ impl AppState {
     /// The shard the lag move gives up: the most stalled shard this runtime holds (possession
     /// first, keyed by the shard whose sealer stalls, never re-derived from a stream hash), else,
     /// with no committed backlog anywhere (shed before commit), the wedged one `fleet_pressure`
-    /// named. A source of the live topology intent is never it (S4-DESIGN §4.4).
+    /// named. A source of the live topology intent, or a shielded half, is never it (S4-DESIGN
+    /// §4.4; Addendum 13 (2)).
     pub(crate) fn lag_victim(&self, wedge_prefix: &str, wedge_max_ms: i64) -> Option<String> {
         let held = self.shards.held_prefixes();
-        let sources = self.fleet.standing().topology_sources();
+        let sources = self.fleet.standing().unmovable();
         let wedge = (wedge_prefix, wedge_max_ms);
         lag_victim_of(&self.shards.shard_stalls(), held, &sources, wedge)
     }
