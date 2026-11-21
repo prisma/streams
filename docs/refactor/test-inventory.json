@@ -2431,6 +2431,18 @@
     "scenarios": []
   },
   {
+    "name": "a_merges_pause_and_its_phases_three_runs",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a timing measurement, run under the machine's lock\"]"
+    ],
+    "function_sha256": "f245bed946d08bd4282ae2572d82188669ec7b5a2f9daae47dec1a56cc7f5b15",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_pause.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -9612,6 +9624,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/admission_maintenance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "paced_writers_through_a_quiet_pairs_merge_are_every_one_acked_and_stored",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3119c426562f851db2490dbe7ff9ff56bb85d4c89a30bf0f698cd7b06610ea6d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_pause.rs",
     "scenarios": []
   },
   {
