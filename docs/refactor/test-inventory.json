@@ -574,9 +574,11 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "c7d5faaaec66105122d58e7bf5684c0caac0b3e1512188408fc22c3097b3c15d",
+    "function_sha256": "c3f2382e998f88d94a6675b22fc7f76e3b8a5e5d37f4ed5498fe038869427820",
     "mechanisms": [],
-    "configuration": [],
+    "configuration": [
+      "// The failpoint that makes a move that is not giver first fence its writer (Addendum 9's"
+    ],
     "file": "src/dst/tests/topology_colocation_load.rs",
     "scenarios": []
   },

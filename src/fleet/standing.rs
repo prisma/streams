@@ -73,6 +73,9 @@ pub(crate) struct Standing {
     /// Tests: an instance the topology policy's view shows not accepting (`skew_view`).
     #[cfg(test)]
     view_skew: Mutex<Option<String>>,
+    /// Tests: the failpoint `hold_moves_of_open_leaves` (C3's control), armed with its hold.
+    #[cfg(test)]
+    moved_open_hold: Mutex<Option<std::time::Duration>>,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -145,6 +148,8 @@ impl Default for Standing {
             view_pause: ViewPause(Mutex::new(None)),
             #[cfg(test)]
             view_skew: Mutex::new(None),
+            #[cfg(test)]
+            moved_open_hold: Mutex::new(None),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
@@ -286,6 +291,24 @@ impl Standing {
         if let Ok(mut slot) = self.view_pause.0.lock() {
             *slot = Some(point);
         }
+    }
+
+    /// Tests, a failpoint (C3's control for a move that is not giver first,
+    /// GATE-DECISION-s22-join-2026-11-20 Addendum 9): every view publication that gives elsewhere a
+    /// leaf whose engine is still open here waits `hold` first, the revalidation lock held, so a
+    /// target that learns of the move at its own tick opens the leaf while this instance still
+    /// serves it. A planned move never meets it: its giver closes the engine before it writes.
+    #[cfg(test)]
+    pub(crate) fn hold_moves_of_open_leaves(&self, hold: std::time::Duration) {
+        if let Ok(mut slot) = self.moved_open_hold.lock() {
+            *slot = Some(hold);
+        }
+    }
+
+    /// Tests: the failpoint's hold, if armed (`hold_moves_of_open_leaves`).
+    #[cfg(test)]
+    pub(crate) fn moved_open_hold(&self) -> Option<std::time::Duration> {
+        self.moved_open_hold.lock().ok().and_then(|slot| *slot)
     }
 
     /// Tests: the pause the next view publication takes, if one is armed.

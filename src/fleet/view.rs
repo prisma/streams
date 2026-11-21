@@ -37,6 +37,9 @@ pub(super) async fn published(
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
+    // Tests only, a failpoint: a move of a leaf still open here is held (C3's control).
+    #[cfg(test)]
+    held_while_open(state, &map).await;
     // Publish only a complete successful authority read. This synchronous replacement cannot
     // expose a mixed ring/map. In the interim every document's ring is today's rule over the
     // pass's candidates (`record`).
@@ -47,6 +50,24 @@ pub(super) async fn published(
     state.peer.set_peers(peers.clone());
     state.fleet.standing().mark_progress();
     Ok((overrides, version))
+}
+
+/// Tests only, the failpoint `Standing::hold_moves_of_open_leaves`: when it is armed and `map`
+/// gives elsewhere a leaf whose engine is open here, wait its hold before the view is published.
+#[cfg(test)]
+async fn held_while_open(state: &AppState, map: &HashMap<String, String>) {
+    let Some(hold) = state.fleet.standing().moved_open_hold() else {
+        return;
+    };
+    let me = state.config.cli.instance_name.as_str();
+    let open_elsewhere = |(leaf, to): (&String, &String)| to != me && state.shards.is_open(leaf);
+    if map.iter().any(open_elsewhere) {
+        tracing::info!(
+            ?hold,
+            "failpoint: the publication of a move of a leaf open here is held"
+        );
+        tokio::time::sleep(hold).await;
+    }
 }
 
 /// Read `fleet/overrides.json` and publish its entries with its own ring (§22 C2), under the

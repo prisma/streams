@@ -510,6 +510,14 @@ async fn scenario(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_colocation_move_does_not_fence_its_writer() {
     let (fleet, data, rigs, streams) = cell().await;
+    // The failpoint that makes a move that is not giver first fence its writer (Addendum 9's
+    // control R-g2b): each giver's tick holds a view that moves a leaf it still has open, so the
+    // target opens it first. A planned handoff closes the giver's engine before its write and
+    // never meets it.
+    for giver in &rigs[..2] {
+        let hold = Duration::from_secs(6);
+        giver.state.fleet.standing().hold_moves_of_open_leaves(hold);
+    }
     let shared: Shared = (
         Arc::new(AtomicBool::new(false)),
         Arc::default(),
