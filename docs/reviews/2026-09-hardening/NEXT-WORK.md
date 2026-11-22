@@ -3137,6 +3137,41 @@ convergence DST's grow deadline is derived from its waits (340 s). Its follow-up
   - Measured next, without load: whether the unparked flush returns under steady appends and
     after how long, and the parked flush's delta with a pre-flush of 0, 200 ms and 2 s (Addendum 4
     (a)); D3 is re-ruled on them, which also sets 3b's `PRE_FLUSH`.
+  - **The flush under the park misses even after the unparked flush finished**
+    (GATE-DECISION-s22-join-2026-11-20 Addendum 28; #181's one CI red, run 45041068006,
+    `fleet_handoff::a_returned_child_moves_without_fencing_its_writer`, "a child returns home").
+    Package 6's 40 traces (`~/.streams-k2/analysis/pr181-returned-child/`): 45 lines "missed its
+    bound", every one `step=flush` (base 25, tip 20). Paired with the unparked flush before each:
+
+    | unparked flush (step 0) | parked flush missed | moved |
+    |---|---|---|
+    | did not finish in 2 s | 18 | 1 |
+    | finished | 27 | 39 |
+
+    (The pairing is by log order across leaves; treat it as approximate.)
+    - With the unparked flush finished, the flush under the park still missed 300 ms in about 4
+      of 10 tries, on a 20 ms store, with two appenders a stream. A planned move then starts at
+      the second or third tick. One return took 25.9 s on an idle machine.
+    - A join's returns, count balance and co-location all go through this step; a wave of them
+      under real append load stretches by the miss rate, and a pin stands meanwhile (Addendum
+      25). For an evacuable request the same miss is `Evacuate`, which fences. On a drain every
+      miss spends the 32 s handoff phase, past which the drainer evacuates: the path to a fenced
+      writer on scale-in, under a no-shed bar.
+    - It joins D3's open re-ruling (above; the 3b ruling, Addendum 4). Missing, from package 1, by
+      hook and not by wall clock: where a parked flush that follows a finished unparked one spends
+      its time (WAL flush, memtable to L0, manifest write), and its distribution at 20 ms an op.
+      No bound is changed before that figure: raising `FLUSH` moves the 0.6 s park-to-release
+      line and spends the hold Addendum 26 gave to the commit.
+    - Not a hold on the join's build or push: a reading its scouting leg makes. Package 6 counts
+      from the leg's logs, by member and step, "missed its bound" lines, `Moved`, `Kept`,
+      `Evacuate`, and first attempt to `Moved` for each move
+      (`analysis/tuning-2026-11-03/handoff-attempts.py`). Come back from the leg if misses at
+      `step=flush` exceed one for every two `Moved` over a step, any planned move takes over 30 s
+      from its first attempt to `Moved`, or any `Evacuate` with `step=flush` or `step=park` on a
+      scale-in, or a drain reaches its 32 s phase bound.
+    - The handoff DSTs' `MoveWait` counts the moves that did not start apart (a line of 8, the
+      last one's step named; Addendum 28 §2), with 30 s the backstop. A second CI red of this
+      shape is evidence for this item, not a rerun.
 
 ## 25. Follow-ups from the stream-count seed (2026-11-19)
 
