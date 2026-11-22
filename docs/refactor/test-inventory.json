@@ -2497,6 +2497,17 @@
     "scenarios": []
   },
   {
+    "name": "a_moves_held_waiters_wait_for_a_forward_place",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "aaf902b6a68971298fbb057cd12aae542eabde94d812d7faaa5ac65f4c1a55b0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_paced.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_non_closing_duplicate_releases_its_own_intent",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -7909,6 +7920,20 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/runtime_open_gate.rs",
+    "scenarios": []
+  },
+  {
+    "name": "held_waiters_past_their_bound_are_answered_409_and_none_twice",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "466db2d5cf598a245b21ddfc0dbecb99de104e078801bf0cb719f101e1deab5f",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_append_after_resolve(name);",
+      "crate::failpoints::release_append_after_resolve(name);"
+    ],
+    "file": "src/dst/tests/fleet_handoff_paced.rs",
     "scenarios": []
   },
   {

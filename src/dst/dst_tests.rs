@@ -41,6 +41,8 @@ mod fleet_handoff;
 mod fleet_handoff_cases;
 #[path = "tests/fleet_handoff_drain.rs"]
 mod fleet_handoff_drain;
+#[path = "tests/fleet_handoff_paced.rs"]
+mod fleet_handoff_paced;
 #[path = "tests/fleet_handoff_reads.rs"]
 mod fleet_handoff_reads;
 #[path = "tests/fleet_moves.rs"]

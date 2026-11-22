@@ -22,7 +22,7 @@ impl ShardDirectory {
     /// move, or that `resolve` then has to open `prefix` for, waits on its owner (module comment).
     pub(super) async fn owner_after_handoff(&self, prefix: &str) -> Option<String> {
         if self.inner.handoffs.holds(prefix) {
-            crate::admission::park::waits_on_owner();
+            crate::admission::park::waits_on_move(prefix);
         }
         self.inner.handoffs.wait(prefix).await;
         let owner = self.inner.ownership.foreign_owner(prefix);

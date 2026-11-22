@@ -132,7 +132,7 @@ struct Inner {
     /// `inflight`, each held by a `ParkedTicket`).
     parked: AtomicI64,
     /// Forwards to a stream's owner waiting for its answer (`forwards`).
-    forwards: AtomicI64,
+    forwards: forwards::Places,
     /// Requests waiting on a move or a shard's open, out of the write gate (`waiting`).
     waiting: AtomicI64,
     judged: write_slots::Judged,
@@ -278,7 +278,7 @@ impl AdmissionController {
                 inflight: AtomicI64::new(0),
                 inflight_peak: AtomicI64::new(0),
                 parked: AtomicI64::new(0),
-                forwards: AtomicI64::new(0),
+                forwards: forwards::Places::default(),
                 waiting: AtomicI64::new(0),
                 judged: write_slots::Judged::default(),
                 active_peak: AtomicI64::new(0),

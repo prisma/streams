@@ -138,7 +138,7 @@ OWNERS = (
           'admission:: dst_tests::write_gate_burst:: dst_tests::parked_waits:: dst_tests::queue_overload:: '
           'dst_tests::fair_shed::'),
     owner('admission_forwards', 'src/admission/forwards.rs',
-          'admission::forwards:: '
+          'admission::forwards:: dst_tests::fleet_handoff_paced:: '
           'dst_tests::forward_to_owner::forwards_to_a_silent_owner_leave_the_non_owners_own_streams_served'),
     # The pre-auth survival bound (edge change #239): four times the cap, at
     # most what two fifths of the RSS shed line holds.
@@ -321,7 +321,7 @@ OWNERS = (
     owner('http_serve_http2_bounds', 'src/http/serve/http2_bounds.rs', 'http::serve::'),
     owner('http_read', 'src/http/read.rs', 'dst_tests::reads_raw:: dst_tests::reads_history:: dst_tests::read_application:: dst_tests::read_page_limits:: dst_tests::reads_applied_history:: dst_tests::sse_delivery:: dst_tests::reads_engine_closed::'),
     owner('http_telemetry_append', 'src/http/telemetry_append.rs', 'security_workload:: reserved_streams_append'),
-    owner('http_forward', 'src/http/forward.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership:: dst_tests::fleet_handoff_reads::'),
+    owner('http_forward', 'src/http/forward.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_paced:: ' 'http::forward:: dst_tests::forward_to_owner:: dst_tests::forward_hops:: dst_tests::seal_fence_relay:: dst_tests::livefeed_ownership:: dst_tests::fleet_handoff_reads::'),
     owner('queue_cleanup', 'src/shard/transaction/queue/cleanup.rs', 'shard::'),
     owner('transaction_append', 'src/shard/transaction/append.rs', 'shard::'),
     owner('record', 'src/shard/record.rs', 'shard::'),
@@ -470,8 +470,8 @@ OWNERS = (
     owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
-    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain::'),
-    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::parked_waits::writes_'),
+    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),
+    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced:: dst_tests::parked_waits::writes_'),
     owner('fleet_moves', 'src/fleet/moves.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '

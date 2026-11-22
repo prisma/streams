@@ -70,6 +70,10 @@ struct Request {
     verdict: OnceLock<Verdict>,
     /// Its place among the requests waiting on a move or an open (`waits_on_owner`).
     waiting: OnceLock<super::waiting::WaitingPlace>,
+    /// The prefix of the planned move it waited on holding that place (`waits_on_move`).
+    moved_from: OnceLock<String>,
+    /// The tally of that move's released waiters, kept until it is answered (`keep_tally`).
+    tally: OnceLock<Arc<super::forwards::ReleaseTally>>,
     /// Its place in the write gate's count (`write_slots`), returned when it is answered.
     slot: super::write_slots::Slot,
 }
@@ -106,6 +110,8 @@ impl InflightTicket {
             coverage: AtomicU64::new(0),
             verdict: OnceLock::new(),
             waiting: OnceLock::new(),
+            moved_from: OnceLock::new(),
+            tally: OnceLock::new(),
             slot,
         };
         let response = REQUEST.scope(request, handler).await;
@@ -160,6 +166,34 @@ pub(crate) fn waits_on_owner() {
             request.slot.waits();
         }
     });
+}
+
+/// The served request waits on the planned move holding `prefix` (Addendum 18 of
+/// GATE-DECISION-s22-join-2026-11-20): it takes a waiting place as `waits_on_owner` does, and, while
+/// it holds one, a forward it then needs waits for a place (`AdmissionController::forward_place`).
+/// Outside a served request, nothing.
+pub(crate) fn waits_on_move(prefix: &str) {
+    waits_on_owner();
+    let _marked = REQUEST.try_with(|request| {
+        if request.waiting.get().is_some() {
+            drop(request.moved_from.set(prefix.to_string()));
+        }
+    });
+}
+
+/// The prefix of the planned move the served request waited on holding a waiting place, if it
+/// did; `None` otherwise and outside a served request.
+pub(super) fn moved_from() -> Option<String> {
+    REQUEST
+        .try_with(|request| request.moved_from.get().cloned())
+        .ok()
+        .flatten()
+}
+
+/// The served request keeps `tally` until it is answered or dropped. A request asks for one
+/// forward place, so it joins one tally once.
+pub(super) fn keep_tally(tally: Arc<super::forwards::ReleaseTally>) {
+    let _kept = REQUEST.try_with(|request| drop(request.tally.set(tally)));
 }
 
 /// The served request meets the write gate at `line` (`write_slots::Slot::meet_gate`): whether it

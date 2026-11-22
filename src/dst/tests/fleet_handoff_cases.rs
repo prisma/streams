@@ -487,7 +487,7 @@ pub(super) async fn stream_in_00(rig: &HttpRig) -> String {
 /// [`stream_in_00`] under names `<stem>-<n>`. A test that arms a failpoint by stream name takes a
 /// stem of its own: the failpoints are process-wide, and every rig's first name in `00` is the
 /// same, so a second test parking that name would release this one's.
-async fn stream_in_00_as(rig: &HttpRig, stem: &str) -> String {
+pub(super) async fn stream_in_00_as(rig: &HttpRig, stem: &str) -> String {
     for n in 0..400 {
         let name = format!("{stem}-{n}");
         let (status, _, body) =
@@ -512,7 +512,7 @@ async fn stream_in_00_as(rig: &HttpRig, stem: &str) -> String {
 }
 
 /// Wait, bounded, until a fault store's hold has parked an operation.
-async fn engaged(counter: &std::sync::atomic::AtomicU64) {
+pub(super) async fn engaged(counter: &std::sync::atomic::AtomicU64) {
     let t0 = tokio::time::Instant::now();
     while counter.load(std::sync::atomic::Ordering::SeqCst) == 0 {
         assert!(t0.elapsed() < Duration::from_secs(10), "the hold engages");

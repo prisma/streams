@@ -309,7 +309,8 @@ async fn serve(state: &AppState, request: Request, next: Next) -> Response {
     let Some(body) = lock(&slot).replay() else {
         return answer;
     };
-    let Some(_waiting) = state.admission.enter_forward() else {
+    // A request released from a planned move's hold waits for a place (Addendum 18).
+    let Some(_waiting) = state.admission.forward_place().await else {
         return answer;
     };
     crate::admission::park::forwarding();

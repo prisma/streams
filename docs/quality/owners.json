@@ -1507,6 +1507,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_handoff_paced",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A planned move's held waiters wait for a forward place (Addendum 18 of GATE-DECISION-s22-join-2026-11-20, an amendment to edge #266's E7): a ring of two members on one store, the move's overrides write held while 300 appends to ten streams of 00 park on the giver's hold, more than its 128 forward places. Asserted by counts: no held waiter is answered 409, every append acked and stored once at the target, the giver's forwards waiting never past 128; and with the target's appends parked past the waiters' one-second bound, the waiters past it are answered 409, none hangs and none is stored twice.",
+      "syntax": "path = \"tests/fleet_handoff_paced.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_handoff_reads",
       "path": "src/dst/dst_tests.rs",
       "reason": "F6's peer read hop on real rigs (addendum 2026-11-18): a read at a planned move's stale target is served there once the giver's 409 names it, and a burst of such reads refreshes the target once; compiler and the full DST suite exercise the module.",
