@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/quality/mutation_driver.py --measure-sizes",
-  "commit": "ae407e6177edaf3f37192c2aa9fa32483e1a55c1",
+  "commit": "ac3283b181e3b2f2e8791d0e13bca66ba80dbc75",
   "measured_on": "2026-11-22",
   "owners": {
     "admission_body": 14,
