@@ -5264,7 +5264,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "909a183975460a3956d4ae30a7c82ae8bcaac52c286fb4a9f1ecd9b69f63cc9c",
+    "function_sha256": "07994f9250e829142ecef5428c45b0db008fd1cd3f6b9fc9db7e989068b7e9dc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation_shield.rs",
@@ -6953,7 +6953,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a67ac482fdf8b99c0720f8032faac27d2e7f3f493907fd5842a1f81f0e4c27ad",
+    "function_sha256": "10fe0d3c5ca474ab54b9763cd3925599df01a21cdf7bb3a29a8771974fec8c49",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation_shield.rs",

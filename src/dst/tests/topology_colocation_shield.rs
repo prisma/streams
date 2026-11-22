@@ -41,12 +41,23 @@ fn quick(cli: &mut crate::config::CliArgs) {
     cli.shards_per_instance_max = 6;
 }
 
-/// `instance` over `data` on the scout's settings, its loop never splitting.
+/// The partner's merge sustain in case 2: long enough that the target shields the pair, and its
+/// count balance gets its chance, before the partner names the pair and hands its half.
+const PARTNER_SUSTAIN_SECS: u64 = 60;
+
+/// `quick`, with the partner's long merge sustain ([`PARTNER_SUSTAIN_SECS`]).
+fn slow_partner(cli: &mut crate::config::CliArgs) {
+    quick(cli);
+    cli.shard_merge_sustain_secs = PARTNER_SUSTAIN_SECS;
+}
+
+/// `instance` over `data` on the scout's settings and `cli`, its loop never splitting.
 async fn member(
     fleet: &Arc<dyn ObjectStore>,
     data: &Arc<dyn ObjectStore>,
     (instance, runtime): (&'static str, RigRuntime),
     leaves: &[&str],
+    cli: fn(&mut crate::config::CliArgs),
 ) -> HttpRig {
     let on = On {
         data: data.clone(),
@@ -56,16 +67,26 @@ async fn member(
         fleet: scout,
     };
     let leaves = leaves.iter().map(|leaf| (*leaf).to_string()).collect();
-    policy_rig_on(fleet.clone(), on, quick, split_double, leaves)
+    policy_rig_on(fleet.clone(), on, cli, split_double, leaves)
         .await
         .0
 }
 
 /// Three members over the stored topology `leaves`, with a settled desired count of three and no
-/// overrides: every leaf is at its ring home.
-async fn cell(leaves: &[&str]) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>, [HttpRig; 3]) {
+/// overrides: every leaf is at its ring home. `streams-3`, each case's partner, runs `partner`.
+async fn cell(
+    leaves: &[&str],
+    partner: fn(&mut crate::config::CliArgs),
+) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>, [HttpRig; 3]) {
     let (fleet, data) = (seeded().await, mem());
-    let a = member(&fleet, &data, ("streams-1", RigRuntime::first()), leaves).await;
+    let a = member(
+        &fleet,
+        &data,
+        ("streams-1", RigRuntime::first()),
+        leaves,
+        quick,
+    )
+    .await;
     store_topology(&a).await;
     let settled = crate::shard::now_ms() - 120_000;
     let desired = format!(r#"{{"count":3,"epoch":2,"reason":"test","computed_at_ms":{settled}}}"#);
@@ -76,6 +97,7 @@ async fn cell(leaves: &[&str]) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>, [
         &data,
         ("streams-2", RigRuntime::incarnation(1)),
         leaves,
+        quick,
     )
     .await;
     let c = member(
@@ -83,6 +105,7 @@ async fn cell(leaves: &[&str]) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>, [
         &data,
         ("streams-3", RigRuntime::incarnation(2)),
         leaves,
+        partner,
     )
     .await;
     (fleet, data, [a, b, c])
@@ -144,7 +167,7 @@ fn bound() -> Duration {
 /// 379af787f: `streams-2` pins `0` every pass, return-home drops it, `streams-3` waits, no merge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_target_holding_its_half_at_its_ring_home_merges_without_a_pin_or_a_return() {
-    let (fleet, data, rigs) = cell(&["0", "1"]).await;
+    let (fleet, data, rigs) = cell(&["0", "1"], quick).await;
     let (home_named, returned) = watched((&fleet, &data), "", "0", bound()).await;
     assert_eq!(
         (home_named, returned),
@@ -161,19 +184,47 @@ async fn a_target_holding_its_half_at_its_ring_home_merges_without_a_pin_or_a_re
 /// fair share** (Addendum 13 (2), its second case). Three members over `000 001 01 100 101 11`, no
 /// overrides: the ring gives `000`, `101` and `11` to `streams-2` (three against a share of two),
 /// `001` and `100` to `streams-3`, and `01` to `streams-1`. The deepest pair `00` is split:
-/// `streams-2`, its actor, is the target (3 + 2 <= 6) and writes nothing; `streams-3` hands `001`
-/// to it. `streams-2`'s count balance would move its first shard, `000`, to `streams-1` once its
-/// first cooldown after boot has passed; its shield keeps it until the merge. Asserted as above for
+/// `streams-2`, its actor, is the target (3 + 2 <= 6) and writes nothing; `streams-3`, the partner,
+/// hands `001` to it once its own 60 s merge sustain has passed. Meanwhile `streams-2` shields the
+/// pair, and once it does its count balance is let past its first hold (the rig's clock advanced
+/// past one move cooldown; no override is young): it would move its first shard, `000`, to
+/// `streams-1`, and its shield keeps it, so it moves its next, `101`, there. Asserted as above for
 /// the pair `00`: no entry names `000`, no half returned home, the merge of `00` within three
-/// cooldowns, the halves' writes exactly the handoff of `001` (no count move of `000`), no fence.
+/// cooldowns of the handoff, the halves' writes exactly the handoff of `001` (no count move of
+/// `000`), no fence; and count balance's move of `101` to `streams-1`, so it ran and chose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn count_balance_does_not_move_a_targets_half_before_the_merge() {
-    let (fleet, data, rigs) = cell(&["000", "001", "01", "100", "101", "11"]).await;
-    let (home_named, returned) = watched((&fleet, &data), "00", "000", bound()).await;
+    let (fleet, data, rigs) = cell(&["000", "001", "01", "100", "101", "11"], slow_partner).await;
+    let target = &rigs[1];
+    let t0 = tokio::time::Instant::now();
+    while !target.state.fleet.standing().shielded("000") {
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "the target shields the pair"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    target
+        .clock
+        .advance_monotonic(Duration::from_secs(MOVE_COOLDOWN_SECS + 1));
+    let partner_bound = Duration::from_secs(PARTNER_SUSTAIN_SECS) + bound();
+    let (home_named, returned) = watched((&fleet, &data), "00", "000", partner_bound).await;
     assert_eq!(
         (home_named, returned),
         (false, Vec::<String>::new()),
         "(an entry named the ring-home half, the halves returned home before the merge)"
+    );
+    // Count balance ran with the shield up and chose: its first movable shard, `101`, went to
+    // `streams-1`. So `000` stayed because the shield kept it, not because count balance never ran.
+    let events = document(&fleet, "overrides").await["pending_events"].clone();
+    let counted = |event: &serde_json::Value| {
+        let to = &event["fields"]["to"];
+        event["event_type"] == "rebalance_move" && event["shard"] == "101" && to == "streams-1"
+    };
+    let moved_101 = events.as_array().into_iter().flatten().any(counted);
+    assert!(
+        moved_101,
+        "count balance moved 101 with the shield up: {events}"
     );
     moved_onto_then_pruned(&fleet, "00", &[("001", "streams-2")]).await;
     let [a, b, c] = rigs;
