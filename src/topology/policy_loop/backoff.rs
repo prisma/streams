@@ -8,6 +8,10 @@
 //! A rollback reaches the policy two ways: the split entry refuses `rolled_back` (its start
 //! failed), or the split started and its actor ended the cell's intent `RolledBack` later, which
 //! the policy reads on its next pass (counted once per operation).
+//!
+//! A merge that rolls back waits the same way (GATE-DECISION-s22-join-2026-11-20 Addendum 17: a
+//! source that never settles must not make a merge every pass), under its own key
+//! ([`merge_key`]), so a merge's wait and a split's never share a prefix's entry.
 
 use std::collections::BTreeMap;
 
@@ -16,6 +20,11 @@ pub(crate) const MAX_MS: i64 = 10 * 60 * 1_000;
 
 /// The split entry's refusal of a split that rolled back.
 const ROLLED_BACK: &str = "rolled_back";
+
+/// The backoff's key for a merge into `parent`: apart from a split's of a leaf of that prefix.
+pub(crate) fn merge_key(parent: &str) -> String {
+    format!("merge {parent}")
+}
 
 /// The waits, per prefix.
 #[derive(Debug, Default)]
@@ -39,16 +48,17 @@ impl Backoff {
             .insert(prefix.to_owned(), (wait, now_ms.saturating_add(wait)));
     }
 
-    /// The split entry refused a split of `prefix` with `code` at `now_ms`: a `rolled_back`
-    /// refusal is a rollback ([`Self::rolled_back`]), any other refusal waits for nothing here.
+    /// The split or merge entry refused the operation under `prefix` (a split's prefix, or a
+    /// merge's [`merge_key`]) with `code` at `now_ms`: a `rolled_back` refusal is a rollback
+    /// ([`Self::rolled_back`]), any other refusal waits for nothing here.
     pub(crate) fn refused(&mut self, prefix: &str, code: &str, now_ms: i64, cooldown_ms: i64) {
         if code == ROLLED_BACK {
             self.rolled_back(prefix, now_ms, cooldown_ms);
         }
     }
 
-    /// The cell's intent records that operation `op_id`, a split of `prefix`, rolled back:
-    /// [`Self::rolled_back`], once per operation.
+    /// The cell's intent records that operation `op_id`, a split of `prefix` or a merge under its
+    /// [`merge_key`], rolled back: [`Self::rolled_back`], once per operation.
     pub(crate) fn intent_rolled_back(
         &mut self,
         op_id: &str,
@@ -63,7 +73,8 @@ impl Backoff {
         self.rolled_back(prefix, now_ms, cooldown_ms);
     }
 
-    /// Whether a split of `prefix` waits at `now_ms`.
+    /// Whether the operation under `prefix` (a split's prefix, or a merge's [`merge_key`]) waits at
+    /// `now_ms`.
     pub(crate) fn holds(&self, prefix: &str, now_ms: i64) -> bool {
         self.waits
             .get(prefix)
@@ -78,7 +89,33 @@ impl Backoff {
 
 #[cfg(test)]
 mod tests {
-    use super::{Backoff, MAX_MS};
+    use super::{Backoff, MAX_MS, merge_key};
+
+    /// **A rolled-back merge waits under its own key** (GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 17): a merge into `0` that rolled back holds the next merge into `0` for one
+    /// cooldown, then twice that, and neither holds a split of a leaf `0` nor is held by one.
+    #[test]
+    fn a_rolled_back_merge_waits_under_its_own_key() {
+        let mut b = Backoff::default();
+        let merge = merge_key("0");
+        assert_eq!(merge, "merge 0");
+        b.rolled_back(&merge, 0, 1_000);
+        assert_eq!(
+            (b.holds(&merge, 999), b.holds(&merge, 1_000)),
+            (true, false)
+        );
+        assert!(!b.holds("0", 0), "a split of the leaf 0 waits for nothing");
+        b.refused(&merge, "rolled_back", 1_000, 1_000);
+        assert_eq!(
+            (b.holds(&merge, 2_999), b.holds(&merge, 3_000)),
+            (true, false)
+        );
+        b.rolled_back("1", 0, 1_000);
+        assert!(
+            !b.holds(&merge_key("1"), 0),
+            "a split's wait holds no merge"
+        );
+    }
 
     /// **Each rollback of a prefix doubles its wait from one cooldown, up to ten minutes, and a
     /// publish ends it.** A cooldown of 1,000 ms: rolled back at 0, the prefix waits until 1,000

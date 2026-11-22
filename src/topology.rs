@@ -19,6 +19,8 @@ pub(crate) mod policy_loop;
 pub(crate) mod reclaim;
 pub(crate) mod recover;
 pub(crate) mod revalidate;
+// A source log settled below its L0 line before a split or a merge parks it (F5 1b; Addendum 17).
+mod settle;
 // The split's sentinel helper.
 pub(crate) mod sentinel;
 // The topology's CAS writes: the claimant's roll forward publishes through them.

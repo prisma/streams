@@ -87,6 +87,9 @@ pub(crate) struct Published {
     /// The phases the merge timed, in the order they ended (`Phases`): Preparing, the quiesce and
     /// the park, then the pause's steps, `M`'s open and the sources' drain.
     pub phases: Vec<(String, Duration)>,
+    /// The counts it noted, in order: Preparing's settle wait (`settle_ms`) and each source's L0
+    /// when it settled (`l0 <source>`, GATE-DECISION-s22-join-2026-11-20 Addendum 17).
+    pub notes: Vec<(String, u64)>,
 }
 
 /// A merge's timings by phase (GATE-DECISION-s22-join-2026-11-20 Addendum 9 (1)), with the split's
@@ -95,12 +98,17 @@ pub(crate) struct Published {
 /// `open <M>` and `drain`; and the pause, from the park to the release.
 struct Phases(std::sync::Mutex<Timing>);
 
-/// When the current phase started, when both sources parked, the pause, and the phases so far.
+/// What `Phases` hands the publish: the pause, the phases timed in order, and the counts noted.
+type Taken = (Duration, Vec<(String, Duration)>, Vec<(String, u64)>);
+
+/// When the current phase started, when both sources parked, the pause, the phases so far and
+/// the counts noted.
 struct Timing {
     since: std::time::Instant,
     parked: Option<std::time::Instant>,
     pause: Duration,
     taken: Vec<(String, Duration)>,
+    notes: Vec<(String, u64)>,
 }
 
 impl Phases {
@@ -111,6 +119,7 @@ impl Phases {
             parked: None,
             pause: Duration::ZERO,
             taken: Vec::new(),
+            notes: Vec::new(),
         };
         Self(std::sync::Mutex::new(timing))
     }
@@ -147,23 +156,34 @@ impl Phases {
         }
     }
 
-    /// The pause and the phases recorded so far, in order.
-    fn taken(&self) -> (Duration, Vec<(String, Duration)>) {
+    /// The count `label` is `count`, for the phase line after the phases.
+    fn note(&self, label: &str, count: u64) {
+        if let Ok(mut timing) = self.0.lock() {
+            timing.notes.push((label.to_string(), count));
+        }
+    }
+
+    /// The pause, the phases recorded so far, in order, and the counts noted.
+    fn taken(&self) -> Taken {
         self.0
             .lock()
-            .map(|timing| (timing.pause, timing.taken.clone()))
+            .map(|timing| (timing.pause, timing.taken.clone(), timing.notes.clone()))
             .unwrap_or_default()
     }
 }
 
-/// A published merge's phases, `name=ms`, space-separated, in order: its log line's `phases`.
+/// A published merge's phases, `name=ms`, then its counts, `label=count`, space-separated, in
+/// order: its log line's `phases`.
 pub(crate) fn shown_phases(published: &Published) -> String {
-    let parts: Vec<String> = published
+    let phases = published
         .phases
         .iter()
-        .map(|(name, took)| format!("{name}={}", took.as_millis()))
-        .collect();
-    parts.join(" ")
+        .map(|(name, took)| format!("{name}={}", took.as_millis()));
+    let notes = published
+        .notes
+        .iter()
+        .map(|(label, count)| format!("{label}={count}"));
+    phases.chain(notes).collect::<Vec<_>>().join(" ")
 }
 
 /// The two sources, in prefix order (`…0`, `…1`), with their homes, and the merged leaf's.
@@ -304,7 +324,7 @@ async fn run(
         dir, store, pair, ..
     } = *op;
     let [(left, _), (right, _)] = &pair.sources;
-    let prepared = prepare(dir, store, pair).await;
+    let prepared = prepare(dir, store, pair, op.phases).await;
     let prepared = match prepared {
         Ok(()) => actor.still_owned("the pause").await,
         Err(e) => Err(e),
@@ -334,12 +354,15 @@ async fn run(
         None => None,
     };
     op.phases.parked();
+    // Tests only: the park is reached only once both barriers parked, as the split's; a test that
+    // went away is no reason to stop the merge.
     #[cfg(test)]
-    if let Some(point) = left.gc_state().gate.take_pause() {
-        // Tests only: a test that went away is no reason to stop the merge.
-        if point.reached.send(()).is_ok() {
-            drop(point.go.await);
-        }
+    if let Some(point) = barriers
+        .as_ref()
+        .and_then(|_| left.gc_state().gate.take_pause())
+        && point.reached.send(()).is_ok()
+    {
+        drop(point.go.await);
     }
     let copied = match (&prepared, &barriers) {
         (Ok(()), Some(_)) => copy(op).await,
@@ -467,9 +490,26 @@ async fn begin(
     Ok((topology.version, home, held))
 }
 
-/// Preparing, unpaused: each source folds what it can, its collection stands down and its
-/// touched-queue mark starts; `M`'s lists are made from the merged sentinel and PUT.
-async fn prepare(dir: &ShardDirectory, store: &dyn ObjectStore, pair: &Pair) -> Result<(), String> {
+/// Preparing, unpaused: both sources' logs settle first (`settle`, as a split's parent does:
+/// GATE-DECISION-s22-join-2026-11-20 Addendum 17), so the pause's checkpoint does not wait for a
+/// compaction, and past its bound the merge rolls back before the park; then each source folds
+/// what it can, its collection stands down and its touched-queue mark starts; `M`'s lists are made
+/// from the merged sentinel and PUT.
+async fn prepare(
+    dir: &ShardDirectory,
+    store: &dyn ObjectStore,
+    pair: &Pair,
+    phases: &Phases,
+) -> Result<(), String> {
+    let settling = std::time::Instant::now();
+    for (source, _) in &pair.sources {
+        let settled = super::settle::settled(source)
+            .await
+            .map_err(|why| format!("{}: {why}", source.prefix))?;
+        let l0 = u64::try_from(settled.l0).unwrap_or(u64::MAX);
+        phases.note(&format!("l0 {}", source.prefix), l0);
+    }
+    phases.note("settle_ms", super::settle::elapsed_ms(settling));
     for (source, _) in &pair.sources {
         for _ in 0..8 {
             let Ok(FoldReport { more: true, .. }) = source.fold_once().await else {
@@ -747,12 +787,13 @@ async fn publish(
         // A newer topology no longer has the source's prefix as a leaf (the variant's meaning).
         dir.retire(&source.prefix, RetirementReason::Split, |_, _| true);
     }
-    let (pause, phases) = phases.taken();
+    let (pause, phases, notes) = phases.taken();
     Ok(Published {
         version: next.version,
         merged: (pair.prefix.clone(), pair.home, engine),
         pause,
         phases,
+        notes,
     })
 }
 

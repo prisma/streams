@@ -909,7 +909,8 @@ async fn source_opener(
 /// its phases are exactly `prepare`, `quiesce`, `park`, `flush` and `checkpoint` of each source,
 /// `lists`, `clones`, `'T'`, `births`, `cas`, `open 00` and `drain`, each a nonzero time; its pause
 /// (park to release) is nonzero and no longer than the phases from the park to the CAS plus `M`'s
-/// open; and its log line's `phases` reads `name=ms` for each, in that order.
+/// open; and its log line's `phases` reads `name=ms` for each, in that order, then the settle's
+/// notes (Addendum 17): `l0 000`, `l0 001` and `settle_ms`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_published_merge_carries_its_phases_by_name_and_in_order() {
     let Rig { state, parent, .. } = rig().await;
@@ -956,12 +957,23 @@ async fn a_published_merge_carries_its_phases_by_name_and_in_order() {
         "the pause {:?} against its phases {paused:?}",
         published.pause
     );
+    let labels: Vec<&str> = published.notes.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["l0 000", "l0 001", "settle_ms"],
+        "the settle's notes"
+    );
     let line = crate::topology::merge::shown_phases(&published);
     let parts: Vec<String> = expected
         .iter()
         .zip(&published.phases)
         .map(|(name, (_, took))| format!("{name}={}", took.as_millis()))
+        .chain(published.notes.iter().map(|(l, n)| format!("{l}={n}")))
         .collect();
-    assert_eq!(line, parts.join(" "), "the log line's phases");
+    assert_eq!(
+        line,
+        parts.join(" "),
+        "the log line's phases, then its notes"
+    );
     engine_shutdown(&state).await;
 }

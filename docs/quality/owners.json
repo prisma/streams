@@ -1171,6 +1171,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::merge_compacting",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "A merge of a compacting source (GATE-DECISION-s22-join-2026-11-20 Addenda 11, 12 and 17; F5 1b's H1 for the merge): the merge does not park while a source is unsettled, and past the settle bound it rolls back before the park.",
+      "syntax": "path = \"tests/merge_compacting.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::merge_finish_k",
       "path": "src/dst/dst_tests.rs",
       "reason": "The merge-past-'T' DSTs (S6 §7.2, §7.4): a merge never rolls back once it attempted its 'T' (a leaf unopened after the publish stays published, a failed publish leaves the intent live).",

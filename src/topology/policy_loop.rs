@@ -19,7 +19,7 @@ use crate::tasks::{Cancellation, TaskResult, TaskSupervisor};
 mod backoff;
 pub(crate) mod room;
 
-use backoff::Backoff;
+use backoff::{Backoff, merge_key};
 
 /// The heartbeat's `split_refused` while a split waits for an instance (Q4).
 pub(crate) const INSTANCE_FULL: &str = "instance_full";
@@ -216,9 +216,10 @@ fn split_refused(decision: &Decision, split: bool) -> Option<&'static str> {
 /// `decision`, after the split or merge entry's answer to the operation it names. A refused
 /// merge holds, by its refusal's code, and the next pass decides again; the partner of a merge
 /// (`partner`, `Policy::partner_merge`) co-locates its own half instead. A split of a prefix whose
-/// last split rolled back waits out its backoff (`backoff`), and a `rolled_back` refusal starts or
-/// doubles it. Once this runtime's planned drain has begun it starts none of them (F6's drain
-/// addendum, G5): the pass holds steady.
+/// last split rolled back, and a merge into a parent whose last merge rolled back, wait out their
+/// backoff (`backoff`), and a `rolled_back` refusal starts or doubles it. Once this runtime's
+/// planned drain has begun it starts none of them (F6's drain addendum, G5): the pass holds
+/// steady.
 async fn act(
     cell: &Cell,
     view: &View,
@@ -233,11 +234,16 @@ async fn act(
         return colocate(cell, view, parent).await;
     }
     if let Decision::Merge { parent } = &decision {
+        let key = merge_key(parent);
+        if backoff.holds(&key, view.now_ms) {
+            return Decision::Hold(super::policy::Hold::Cooldown);
+        }
         return match (cell.merge)(parent.clone()).await {
             Ok(()) => decision,
             Err(Refused(NOT_RING_OWNER)) => colocate(cell, view, parent).await,
             Err(refused) => {
                 tracing::info!(?refused, parent, "topology merge refused");
+                backoff.refused(&key, refused.0, view.now_ms, cell.limits.cooldown_ms);
                 Decision::Hold(hold_for(refused.0))
             }
         };
@@ -327,25 +333,38 @@ fn resident(view: &View, me: &str) -> u32 {
 }
 
 /// Whether a topology operation is under way: the cell's intent is not terminal, or it cannot
-/// be read (fail closed, S4 §4.4). And a split the intent records as rolled back: its operation id
-/// and its parent's prefix (`backoff`).
+/// be read (fail closed, S4 §4.4). And an operation the intent records as rolled back: its id and
+/// its backoff key (`backoff`), a split's parent prefix or a merge's parent (`merge_key`).
 async fn intent_now(store: &dyn object_store::ObjectStore) -> (bool, Option<(String, String)>) {
     match super::intent::read(store).await {
         Ok(None) => (false, None),
         Ok(Some(held)) => {
             let intent = held.intent;
-            let rolled_back =
-                intent.kind == "split" && intent.state == super::intent::State::RolledBack;
-            let source = intent.sources.first().map(|(prefix, _)| prefix.clone());
-            let split = source
-                .filter(|_| rolled_back)
-                .map(|prefix| (intent.op_id.clone(), prefix));
-            (!intent.is_terminal(), split)
+            let rolled_back = rolled_back_key(&intent).map(|key| (intent.op_id.clone(), key));
+            (!intent.is_terminal(), rolled_back)
         }
         Err(error) => {
             tracing::warn!(%error, "topology intent unreadable; every operation holds");
             (true, None)
         }
+    }
+}
+
+/// The backoff key of the operation `intent` records as rolled back: a split's parent prefix (its
+/// one source), or a merge's parent (its first source's prefix less its last bit); none for any
+/// other intent.
+fn rolled_back_key(intent: &super::intent::Intent) -> Option<String> {
+    if intent.state != super::intent::State::RolledBack {
+        return None;
+    }
+    let source = intent.sources.first().map(|(prefix, _)| prefix.as_str())?;
+    match intent.kind.as_str() {
+        "split" => Some(source.to_owned()),
+        "merge" => source
+            .char_indices()
+            .last()
+            .map(|(at, _)| merge_key(&source[..at])),
+        _ => None,
     }
 }
 
@@ -672,24 +691,30 @@ mod tests {
     }
 
     /// A Preparing intent holds every operation, a terminal one none, and an intent that does
-    /// not decode holds them all (fail closed); a cell that never wrote one holds none. Only a
-    /// split's rolled-back intent names its operation and its parent (F1d's backoff), not a
-    /// merge's.
+    /// not decode holds them all (fail closed); a cell that never wrote one holds none. A
+    /// rolled-back intent names its operation and its backoff key (F1d's backoff): a split's
+    /// parent, and a merge's parent under its own key (GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 17); a published one names none.
     #[tokio::test(crate = "crate::test_rt")]
     async fn only_a_preparing_or_unreadable_intent_is_live() {
         let store = InMemory::new();
         assert_eq!(intent_now(&store).await, (false, None), "no intent");
         let path = Path::from("topology/intent.json");
         let split = Some(("op-1".to_string(), String::new()));
-        for (state, kind, now) in [
-            (State::Preparing, "split", (true, None)),
-            (State::Reclaimed, "split", (false, None)),
-            (State::RolledBack, "split", (false, split)),
-            (State::RolledBack, "merge", (false, None)),
+        let merge = Some(("op-1".to_string(), "merge 010".to_string()));
+        let halves = || vec![("0100".to_string(), 3), ("0101".to_string(), 4)];
+        for (state, kind, sources, now) in [
+            (State::Preparing, "split", None, (true, None)),
+            (State::Reclaimed, "split", None, (false, None)),
+            (State::RolledBack, "split", None, (false, split)),
+            (State::RolledBack, "merge", Some(halves()), (false, merge)),
+            (State::Reclaimed, "merge", Some(halves()), (false, None)),
         ] {
+            let base = intent(state);
             let held = Intent {
                 kind: kind.into(),
-                ..intent(state)
+                sources: sources.unwrap_or_else(|| base.sources.clone()),
+                ..base
             };
             let body = serde_json::to_vec(&held).unwrap();
             store.put(&path, PutPayload::from(body)).await.unwrap();

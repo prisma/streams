@@ -280,7 +280,9 @@ async fn preparing_stands_collection_down_the_undo_resumes_it_an_idle_pair_drain
         prefix: "0".to_string(),
         home: 4,
     };
-    super::prepare(&dir, &*store, &pair).await.unwrap();
+    super::prepare(&dir, &*store, &pair, &super::Phases::new())
+        .await
+        .unwrap();
     for (source, _) in &pair.sources {
         let gate = &source.gc_state().gate;
         assert!(

@@ -79,7 +79,7 @@ pub(super) async fn rig_named(instance: Option<&str>) -> Rig {
 }
 
 /// The rig `rigged` over `store`: its topology stored, a stream in each half of `00`.
-async fn rig_over(store: Arc<dyn object_store::ObjectStore>, rigged: (State, Addr)) -> Rig {
+pub(super) async fn rig_over(store: Arc<dyn ObjectStore>, rigged: (State, Addr)) -> Rig {
     let (state, addr) = rigged;
     let topology = crate::topology::model::Topology {
         version: 1,

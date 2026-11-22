@@ -564,7 +564,7 @@ async fn prepare(
     parent: &Arc<ShardEngine>,
     children: &[Child],
 ) -> Result<Prepared, String> {
-    let settled = settle::settled(parent).await?;
+    let settled = super::settle::settled(parent).await?;
     fold_ahead(
         || async { parent.fold_once().await.is_ok_and(|report| report.more) },
         PREPARING_FOLDS,
@@ -578,7 +578,7 @@ async fn prepare(
         return Err("a planned move holds the parent".to_string());
     }
     gate.start_marking();
-    let seen = settle::compacted_views(parent);
+    let seen = warm::compacted_views(parent);
     let log = log_reads(parent, None).await?;
     let rows = &log.rows;
     // Tests only: a point after Preparing read the parent's log.
@@ -597,7 +597,7 @@ async fn prepare(
         put_lists(store, parent, child, &lists, lineage::reference_list_path).await?;
         put.push(lists);
     }
-    let settled = settle::warmed(parent, settled, seen).await?;
+    let settled = warm::warmed(parent, settled, seen).await?;
     Ok(Prepared {
         lists: put,
         runs,
@@ -611,7 +611,7 @@ struct Prepared {
     lists: Vec<Lists>,
     runs: Runs,
     /// How Preparing's wait for a settled log ended (`settle`).
-    settled: settle::Settled,
+    settled: super::settle::Settled,
 }
 
 /// Preparing's fold ahead (S4-DESIGN §6.2 step 0.3): `fold` runs while it answers that rows are
@@ -933,7 +933,7 @@ pub(crate) use birth::Birth;
 mod phases;
 use phases::Phases;
 mod reads;
-mod settle;
+mod warm;
 use reads::{LogReads, log_reads};
 
 #[cfg(test)]

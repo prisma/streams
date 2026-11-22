@@ -310,7 +310,7 @@ fn assert_compacting_window(seen: &Window, l0_at_park: usize, phases: &str) {
 
 /// Waits, at most 30 s, until a split of `parent` has started: its intent is stored, so its
 /// Preparing runs.
-async fn started(parent: &Engine) {
+pub(super) async fn started(parent: &Engine) {
     let started = std::time::Instant::now();
     loop {
         let intent = crate::topology::intent::read(&**parent.data_store()).await;
@@ -379,7 +379,7 @@ const REFUSED_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
 /// a poll jittered over 2.5 to 7.5 s, which a test landing a compaction inside Preparing's bound
 /// must not wait for. Claims are exclusive; the coordinator, its commit tick and the writer's
 /// manifest poll stay the product's.
-async fn fast_worker(
+pub(super) async fn fast_worker(
     parent: &Engine,
     store: Arc<dyn object_store::ObjectStore>,
 ) -> slatedb::CompactionWorker {
@@ -397,7 +397,7 @@ async fn fast_worker(
 
 /// `wait`, with `worker` running beside it (driven here, not spawned); once `wait` ends the worker
 /// is stopped, within `HELD_WAIT`.
-async fn while_running<T>(
+pub(super) async fn while_running<T>(
     worker: &slatedb::CompactionWorker,
     wait: impl std::future::Future<Output = T>,
 ) -> T {

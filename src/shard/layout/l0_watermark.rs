@@ -225,8 +225,9 @@ impl crate::shard::ShardEngine {
         l0_count(&self.db.manifest())
     }
 
-    /// The L0 count a split's Preparing waits below before it parks (`topology::split::settle`,
-    /// GATE-DECISION-f5-checkpoint-compaction-2026-11-17): the shed's release mark, half the line.
+    /// The L0 count a split's or a merge's Preparing waits below before it parks
+    /// (`topology::settle`, GATE-DECISION-f5-checkpoint-compaction-2026-11-17): the shed's release
+    /// mark, half the line.
     pub(crate) fn l0_settle_line(&self) -> usize {
         self.layout.l0.marks().low
     }

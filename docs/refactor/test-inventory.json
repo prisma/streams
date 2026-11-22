@@ -2243,6 +2243,17 @@
     "scenarios": []
   },
   {
+    "name": "a_merge_of_a_compacting_source_parks_only_after_the_compaction",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "086a63d9fcd15c70b8e5933c7a592b782ba61454e9e6a1c4fcdd4b257b253d46",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_compacting.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_merge_of_a_retired_half_is_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2251,6 +2262,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merge_of_a_source_compacting_past_the_bound_rolls_back_before_the_park",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "6d04116ac93e91e7fdb4f2022128af7a7dce7f89a1979128d87968d2c2ceeec5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_compacting.rs",
     "scenarios": []
   },
   {
@@ -3235,7 +3257,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4bc15cb2027e0ed20d740419b205ef0f01e816a1cce0d365c3693d1519e5f0f8",
+    "function_sha256": "ec963b328a99fd4eae79b57b31fa521164ca57443c41c2f2a2a75d688a88f8f3",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/merge_finish_k.rs",

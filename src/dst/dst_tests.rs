@@ -57,6 +57,8 @@ mod fleet_topology;
 mod l0_watermark;
 #[path = "tests/merge_claim_traffic.rs"]
 mod merge_claim_traffic;
+#[path = "tests/merge_compacting.rs"]
+mod merge_compacting;
 #[path = "tests/merge_finish_k.rs"]
 mod merge_finish_k;
 #[path = "tests/merge_k.rs"]

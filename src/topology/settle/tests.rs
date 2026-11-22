@@ -62,6 +62,6 @@ async fn a_log_at_its_line_is_unsettled_past_the_bound() {
     );
     assert_eq!(
         refused,
-        "the parent's log did not settle within 200ms: 4 L0 tables, its line 4"
+        "the log did not settle within 200ms: 4 L0 tables, its line 4"
     );
 }

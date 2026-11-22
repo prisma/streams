@@ -195,7 +195,7 @@ OWNERS = (
           'dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts '
           'dst_tests::merge_k::a_merge_waits dst_tests::merge_k::a_merge_past '
           'dst_tests::merge_k::a_merge_serves dst_tests::split_generations::a_quiesced_ '
-          'dst_tests::fleet_birth::a_merges_child'),
+          'dst_tests::fleet_birth::a_merges_child dst_tests::merge_compacting::'),
     owner('topology_recover', 'src/topology/recover.rs', 'topology::recover dst_tests::open_fence:: dst_tests::split_k::'),
     # A split's children born on its actor (GATE-DECISION-f2-children-on-actor A2): its unit test and
     # the two-member birth DSTs, each a few seconds.
@@ -209,10 +209,16 @@ OWNERS = (
           'topology::split::phases dst_tests::split_start::a_published_split_carries'),
     owner('topology_split_reads', 'src/topology/split/reads.rs',
           'dst_tests::split_start::a_published_split_carries dst_tests::split_k:: dst_tests::queue_split::a_trim_ dst_tests::split_pause::'),
-    # Preparing's settle wait (F5 part 1b, GATE-DECISION-f5-checkpoint-compaction-2026-11-17): its
-    # unit tests, the two compacting-parent DSTs and the split_start DST that pins its notes.
-    owner('topology_split_settle', 'src/topology/split/settle.rs',
-          'topology::split::settle dst_tests::split_compacting:: dst_tests::split_start::a_published_split_carries'),
+    # Preparing's settle wait (F5 part 1b, GATE-DECISION-f5-checkpoint-compaction-2026-11-17; the
+    # merge's, GATE-DECISION-s22-join-2026-11-20 Addendum 17): its unit tests, the compacting-parent
+    # and compacting-source DSTs and the split_start DST that pins the split's notes.
+    owner('topology_settle', 'src/topology/settle.rs',
+          'topology::settle dst_tests::split_compacting:: dst_tests::merge_compacting:: '
+          'dst_tests::split_start::a_published_split_carries'),
+    # The split's warm check after its parent settled (F5 part 1b): the compacting-parent DSTs and
+    # the split_start DST that pins its warm_reads.
+    owner('topology_split_warm', 'src/topology/split/warm.rs',
+          'dst_tests::split_compacting:: dst_tests::split_start::a_published_split_carries'),
     owner('topology_split_birth', 'src/topology/split/birth.rs',
           'topology::split::birth dst_tests::fleet_birth::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),
