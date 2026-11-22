@@ -218,7 +218,7 @@ OWNERS = (
     # The split's warm check after its parent settled (F5 part 1b): the compacting-parent DSTs and
     # the split_start DST that pins its warm_reads.
     owner('topology_split_warm', 'src/topology/split/warm.rs',
-          'dst_tests::split_compacting:: dst_tests::split_start::a_published_split_carries'),
+          'topology::split::warm:: dst_tests::split_compacting:: dst_tests::split_start::a_published_split_carries'),
     owner('topology_split_birth', 'src/topology/split/birth.rs',
           'topology::split::birth dst_tests::fleet_birth::'),
     owner('topology_ops', 'src/topology/ops.rs', 'topology::ops dst_tests::split_k:: dst_tests::split_override:: dst_tests::merge_k::the_merge_route dst_tests::merge_k::a_merge_on_an_instance_past_its_ceiling_starts dst_tests::merge_k::a_merge_waits'),

@@ -29,14 +29,16 @@ pub(super) fn compacted_views(parent: &crate::shard::ShardEngine) -> BTreeSet<u1
 /// Preparing's warm check, last before the park: `parent`'s manifest refreshed, its L0 settled
 /// again if a flush brought it to its line (within what is left of `SETTLE`), and its log read
 /// again while its compacted tables differ from `seen`, those Preparing's read saw, at most
-/// `WARM_READS` times. `settled` with the reads it made.
+/// `WARM_READS` times. `settled` with the reads it made. The loop's own range bounds the check
+/// too, so no decision reads the log more than `WARM_READS + 1` times (#181's TIMEOUT survivor
+/// read it without end).
 pub(super) async fn warmed(
     parent: &crate::shard::ShardEngine,
     mut settled: Settled,
     mut seen: BTreeSet<u128>,
 ) -> Result<Settled, String> {
     let line = parent.l0_settle_line();
-    loop {
+    for _ in 0..=WARM_READS {
         parent
             .db
             .refresh_manifest()
@@ -48,12 +50,56 @@ pub(super) async fn warmed(
             settled.ms = elapsed_ms(settled.started);
         }
         let now = compacted_views(parent);
-        if now == seen || settled.warm_reads == WARM_READS {
-            settled.l0 = parent.l0_now();
-            return Ok(settled);
+        if warm(&now, &seen, settled.warm_reads) {
+            break;
         }
         seen = now;
         drop(super::reads::log_reads(parent, None).await?);
         settled.warm_reads += 1;
+    }
+    settled.l0 = parent.l0_now();
+    Ok(settled)
+}
+
+/// Whether the warm check parks now: the compacted tables (`now`) are those its last read saw
+/// (`seen`), or it has read the log again `WARM_READS` times (`reads`).
+fn warm(now: &BTreeSet<u128>, seen: &BTreeSet<u128>, reads: usize) -> bool {
+    now == seen || reads == WARM_READS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WARM_READS, warm};
+    use std::collections::BTreeSet;
+
+    /// **The warm check reads the log again at most `WARM_READS` times** (F5 part 1b; #181's
+    /// TIMEOUT survivor, `||` made `&&`, which reads for as long as the tables change). Tables
+    /// that change at every look stop it after exactly `WARM_READS` reads; tables as its last
+    /// read saw them stop it at once, and changed ones under the bound read again. The test
+    /// drives the check's own loop over at most `WARM_READS + 2` looks, so a check that never
+    /// stops fails here by assertion, not by the leg's timeout.
+    #[test]
+    fn the_warm_check_stops_at_its_bound_when_the_tables_never_settle() {
+        let views = |look: usize| BTreeSet::from([u128::try_from(look).unwrap()]);
+        let (mut seen, mut reads) = (views(0), 0);
+        for look in 1..=WARM_READS + 2 {
+            if warm(&views(look), &seen, reads) {
+                break;
+            }
+            seen = views(look);
+            reads += 1;
+        }
+        assert_eq!(
+            reads, WARM_READS,
+            "tables that never settle: the warm check reads the log again WARM_READS times, then parks"
+        );
+        assert!(
+            warm(&views(1), &views(1), 0),
+            "tables as read: it parks at once"
+        );
+        assert!(
+            !warm(&views(2), &views(1), 0),
+            "changed tables under the bound: it reads again"
+        );
     }
 }
