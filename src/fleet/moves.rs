@@ -171,7 +171,7 @@ impl Overrides {
         }
         for key in &handed {
             let change = super::handoff::Change::Return;
-            let outcome = super::handoff::hand_off(&state.fleet, key, change, false).await;
+            let outcome = super::handoff::hand_off_paced(&state.fleet, key, change, false).await;
             tracing::info!(shard = %key, ?outcome, "rebalancer: returned a shard to its rendezvous owner");
         }
         replaced
@@ -197,7 +197,7 @@ impl Overrides {
         version: Option<UpdateVersion>,
     ) -> bool {
         let change = super::handoff::Change::To(to.clone());
-        match super::handoff::hand_off(&state.fleet, prefix, change, true).await {
+        match super::handoff::hand_off_paced(&state.fleet, prefix, change, true).await {
             super::handoff::Outcome::Moved => {
                 tracing::info!("rebalancer: moved shard {prefix} -> {to} giver first");
                 true

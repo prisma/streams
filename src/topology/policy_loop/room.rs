@@ -25,7 +25,7 @@ pub(crate) async fn moved_for_room(cell: &Cell, view: &View, prefix: &str) -> De
     // Giver first (F6): this instance holds `prefix` and hands it off before the overrides name
     // `target`.
     let change = crate::fleet::handoff::Change::To(target.clone());
-    let outcome = crate::fleet::handoff::hand_off(&cell.fleet, prefix, change, false).await;
+    let outcome = crate::fleet::handoff::hand_off_paced(&cell.fleet, prefix, change, false).await;
     if outcome == crate::fleet::handoff::Outcome::Moved {
         tracing::info!(prefix, %target, "topology split refused for room: moving the shard to an instance with room");
         return Decision::Hold(Hold::OverrideRecent);

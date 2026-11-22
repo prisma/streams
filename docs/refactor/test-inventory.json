@@ -2566,6 +2566,32 @@
     "scenarios": []
   },
   {
+    "name": "a_move_commits_within_its_hold_on_a_600_ms_store",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a9dd28f493eae3b7b0a518defab13eee40415ebac7edc86a9d6b739d044acb46",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/fleet_handoff_bound.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_move_past_its_commits_bound_is_not_tried_again_at_every_pass",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e5ec644b42b552ccb792f5cb5ce67c0770cebc31640839e7ad16c3c8e2beca66",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::CLEAN"
+    ],
+    "file": "src/dst/tests/fleet_handoff_bound.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_moves_held_waiters_wait_for_a_forward_place",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -5720,6 +5746,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_won_cas_is_the_move_when_the_read_after_it_misses_the_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8ad3edd1c54df97b58a7d80af76a68fc258efa0af9bf199881a4e9f67be10b3c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_bound.rs",
     "scenarios": []
   },
   {

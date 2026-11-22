@@ -307,6 +307,13 @@ impl Standing {
         }
     }
 
+    /// The count the tick's last pass read (`None` before its first): with the view's members, the
+    /// epoch of the planned moves' back-off (`handoff::backoff`).
+    pub(crate) fn pass_count(&self) -> Option<u64> {
+        let candidates = self.candidates.lock().ok()?;
+        candidates.as_ref().map(super::record::Candidates::count)
+    }
+
     /// Tests: the tick's last pass read `count` with `names` its candidates.
     #[cfg(test)]
     pub(crate) fn note_pass(&self, count: u64, names: &[&str]) {
@@ -626,6 +633,19 @@ mod tests {
         assert_eq!(standing.ring_of(), Some(both));
         standing.note_pass(3, &["streams-3"]);
         assert_eq!(standing.ring_of(), Some(vec!["streams-3".to_string()]));
+    }
+
+    /// The count of the back-off's epoch is the tick's last pass's: none before a pass, then the
+    /// count each pass read (99472c14d's survivors `Standing::pass_count` as `None`, `Some(0)` and
+    /// `Some(1)`).
+    #[test]
+    fn the_pass_count_is_the_last_passs() {
+        let standing = Standing::default();
+        assert_eq!(standing.pass_count(), None, "no pass yet");
+        standing.note_pass(3, &["streams-1", "streams-2", "streams-3"]);
+        assert_eq!(standing.pass_count(), Some(3));
+        standing.note_pass(2, &["streams-1", "streams-2"]);
+        assert_eq!(standing.pass_count(), Some(2));
     }
 
     /// A drain has begun from its first handoff and once it is announced, each alone; a planned

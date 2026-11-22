@@ -282,7 +282,9 @@ routing key and are routed server-side to internal child streams
 Shard moves are published to `fleet/overrides.json` (CAS) and win over
 the rendezvous ring while the target is live. Splits survive scaler
 crashes: the append path re-seals and publishes the missing transition
-itself (`resume_split`).
+itself (`resume_split`). A fleet store slower than about 0.9 s an operation
+commits no planned move: every placement stands until it recovers, and a
+giver closes a shard for a try at most about once a minute.
 
 The same document's `members` is the ring of record (§22): a list of
 `{"name": "streams-N"}` entries. Until the join lands, the fleet tick keeps

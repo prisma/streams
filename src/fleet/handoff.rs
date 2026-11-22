@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, timeout};
+use tokio::time::{Instant, timeout, timeout_at};
 
 use super::{AppState, FleetDocument, Overrides};
 use crate::shard::ShardEngine;
@@ -36,8 +36,10 @@ const FLUSH: Duration = Duration::from_millis(300);
 pub(crate) const QUEUE: Duration = Duration::from_millis(100);
 /// Step 5: the engine's close, to its verdict (D1).
 const CLOSE: Duration = Duration::from_millis(300);
-/// Step 6: the overrides CAS, its three tries together (D4).
-const CAS: Duration = Duration::from_millis(400);
+/// Steps 6 and 7 end this long before the hold does, for the mirror and the wake: the commit's three
+/// tries share the hold's remainder less this (GATE-DECISION-s22-join-2026-11-20 Addendum 26 (a);
+/// it was a fixed 400 ms, so no move committed on a store slower than that).
+const MARGIN: Duration = Duration::from_millis(200);
 /// Moves waiting for the runner at once.
 const QUEUED: usize = 16;
 /// One planned move's bound, end to end: step 0's flush, then the hold from the park, which
@@ -63,6 +65,9 @@ pub(crate) enum Outcome {
     /// Nothing was held: another move or a split holds the engine, a live intent names it, or a
     /// park or flush missed its bound.
     NotStarted,
+    /// Nothing was held: the last move of this shard ended by its commit's bound and the back-off
+    /// has not run out (Addendum 26 (c)).
+    BackedOff,
     /// A lag victim's park or flush missed its bound (D4, H4): the caller evacuates it by today's
     /// CAS and retirement.
     Evacuate,
@@ -74,6 +79,9 @@ pub(crate) struct Request {
     change: Change,
     /// A lag victim: a park or flush past its bound is answered [`Outcome::Evacuate`].
     evacuable: bool,
+    /// A planner's move, paced by the back-off ([`hand_off_paced`]); a drain's or a co-location's
+    /// is not.
+    paced: bool,
     done: oneshot::Sender<Outcome>,
 }
 
@@ -93,7 +101,22 @@ pub(crate) async fn hand_off(
     if fleet.standing().drain_begun() {
         return not_started(fleet.standing(), "drain");
     }
-    queued(fleet, prefix, change, evacuable).await
+    queued(fleet, prefix, change, (evacuable, false)).await
+}
+
+/// [`hand_off`] for return-home, count balance, the lag move and the room move: a shard whose last
+/// move ended by its commit's bound is not tried again until its back-off runs out
+/// ([`Outcome::BackedOff`]; Addendum 26 (c)).
+pub(crate) async fn hand_off_paced(
+    fleet: &super::FleetRepository,
+    prefix: &str,
+    change: Change,
+    evacuable: bool,
+) -> Outcome {
+    if fleet.standing().drain_begun() {
+        return not_started(fleet.standing(), "drain");
+    }
+    queued(fleet, prefix, change, (evacuable, true)).await
 }
 
 /// A planned drain's move of `prefix` by `change`, giver first (G1); its end.
@@ -102,7 +125,7 @@ pub(crate) async fn drained(
     prefix: &str,
     change: Change,
 ) -> Outcome {
-    queued(fleet, prefix, change, false).await
+    queued(fleet, prefix, change, (false, false)).await
 }
 
 /// One move through this runtime's runner; its end.
@@ -110,7 +133,7 @@ async fn queued(
     fleet: &super::FleetRepository,
     prefix: &str,
     change: Change,
-    evacuable: bool,
+    (evacuable, paced): (bool, bool),
 ) -> Outcome {
     let Some(queue) = fleet.standing().handoffs() else {
         return not_started(fleet.standing(), "runner");
@@ -121,6 +144,7 @@ async fn queued(
         prefix,
         change,
         evacuable,
+        paced,
         done,
     };
     if queue.try_send(request).is_err() {
@@ -139,6 +163,8 @@ pub(crate) fn start(state: Arc<AppState>, tasks: &TaskSupervisor) {
         "fleet-handoff",
         Policy::Critical,
         move |cancel| async move {
+            // In process: a restart clears it (Addendum 26 (c)).
+            let mut paces = backoff::Paces::default();
             loop {
                 let request = tokio::select! {
                     _ = cancel.cancelled() => return TaskResult::Done,
@@ -149,7 +175,7 @@ pub(crate) fn start(state: Arc<AppState>, tasks: &TaskSupervisor) {
                 };
                 let outcome = tokio::select! {
                     _ = cancel.cancelled() => return TaskResult::Done,
-                    outcome = run(&state, &request) => outcome,
+                    outcome = paced(&state, &request, &mut paces) => outcome,
                 };
                 if request.done.send(outcome).is_err() {
                     tracing::debug!(shard = %request.prefix, ?outcome, "handoff: its caller left");
@@ -162,8 +188,31 @@ pub(crate) fn start(state: Arc<AppState>, tasks: &TaskSupervisor) {
     }
 }
 
-/// One move, steps 0 to 7, 9 and 10 (rev 2).
-async fn run(state: &AppState, request: &Request) -> Outcome {
+/// One move under the back-off: a paced request for a shard still backed off is answered
+/// [`Outcome::BackedOff`] with nothing held; a commit that ended by its bound backs the shard off,
+/// and a move that ended `Moved` clears it. The view's members and count are the back-off's epoch.
+async fn paced(state: &AppState, request: &Request, paces: &mut backoff::Paces) -> Outcome {
+    let prefix = request.prefix.as_str();
+    let epoch = (
+        state.ownership.ring_active(),
+        state.fleet.standing().pass_count(),
+    );
+    paces.at_epoch(epoch);
+    if request.paced && paces.holds(prefix, Instant::now()) {
+        tracing::debug!(shard = %prefix, "handoff: backed off after its commit's bound");
+        state
+            .fleet
+            .standing()
+            .note_attempt(Outcome::BackedOff, "backoff");
+        return Outcome::BackedOff;
+    }
+    let (outcome, committed) = run(state, request).await;
+    paces.ended(prefix, request.paced, (outcome, committed), Instant::now());
+    outcome
+}
+
+/// One move, steps 0 to 7, 9 and 10 (rev 2), and how its commit ended, if it reached one.
+async fn run(state: &AppState, request: &Request) -> (Outcome, Option<Committed>) {
     let prefix = request.prefix.as_str();
     let Some(engine) = state.shards.open(prefix) else {
         return without_engine(state, request).await;
@@ -183,13 +232,13 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
         .return_home_skips(prefix, i64::MAX, 0)
         || !gate.claim_move()
     {
-        return not_started(state.fleet.standing(), "claim");
+        return (not_started(state.fleet.standing(), "claim"), None);
     }
     let claim = Claim(Arc::clone(&engine));
     // Step 2: park.
     let started = Instant::now();
     let Ok(Ok(barrier)) = timeout(PARK, engine.barrier()).await else {
-        return missed(state, request, "park");
+        return (missed(state, request, "park"), None);
     };
     let parked_at = Instant::now();
     let until = parked_at + HOLD;
@@ -200,13 +249,13 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     let flushed = flushed && !state.fleet.standing().take_parked_flush_miss();
     if !flushed {
         barrier.resume();
-        return missed(state, request, "flush");
+        return (missed(state, request, "flush"), None);
     }
     let flushed_at = Instant::now();
     // Step 4: the directory's hold, the resident out of the serving map, the queue released.
     let Some((mark, resident)) = state.shards.begin_handoff(prefix, until) else {
         barrier.resume();
-        return not_started(state.fleet.standing(), "hold");
+        return (not_started(state.fleet.standing(), "hold"), None);
     };
     barrier.hand_off();
     answered(&engine).await;
@@ -214,12 +263,9 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
     let fenced = !close(state, prefix, &engine, resident.as_ref()).await;
     let closed_at = Instant::now();
     drop(claim);
-    // Steps 6 and 7, or 10.
-    let outcome = if commit(state, prefix, &request.change).await {
-        Outcome::Moved
-    } else {
-        Outcome::Kept
-    };
+    // Steps 6 and 7, or 10, within the hold's remainder.
+    let committed = commit(state, prefix, &request.change, deadline(until)).await;
+    let outcome = committed.outcome();
     drop(mark);
     state.livefeed.wake_all_sessions();
     let phases = Phases {
@@ -230,7 +276,7 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
         fenced,
     };
     phases.report(state, prefix, outcome);
-    outcome
+    (outcome, Some(committed))
 }
 
 /// One planned move's phases: to the park, the flush under it, from the flush to the close's
@@ -267,20 +313,21 @@ impl Phases {
 
 /// D6: the prefix has no engine here. Its hold keeps any open from starting while the document
 /// changes, then the waiters resolve on the new mirror.
-async fn without_engine(state: &AppState, request: &Request) -> Outcome {
+async fn without_engine(state: &AppState, request: &Request) -> (Outcome, Option<Committed>) {
     let prefix = request.prefix.as_str();
-    let Some((mark, resident)) = state.shards.begin_handoff(prefix, Instant::now() + HOLD) else {
-        return not_started(state.fleet.standing(), "hold");
+    let until = Instant::now() + HOLD;
+    let Some((mark, resident)) = state.shards.begin_handoff(prefix, until) else {
+        return (not_started(state.fleet.standing(), "hold"), None);
     };
     if let Some(raced) = resident {
         // An open finished after the caller looked: it is closed as the move's.
         raced.begin_close();
     }
-    let moved = commit(state, prefix, &request.change).await;
+    let committed = commit(state, prefix, &request.change, deadline(until)).await;
     drop(mark);
-    let end = if moved { Outcome::Moved } else { Outcome::Kept };
+    let end = committed.outcome();
     state.fleet.standing().note_attempt(end, "commit");
-    end
+    (end, Some(committed))
 }
 
 /// A park or flush past its bound: a lag victim is evacuated (H4); any other move does not start.
@@ -338,42 +385,91 @@ async fn close(
     clean
 }
 
-/// Steps 6 and 7: write `change` for `prefix` and mirror the document, within [`CAS`]. Each try
-/// first mirrors the document it read: one that already places the shard elsewhere (this write
-/// landed with its answer lost, or another writer moved it) is the move done (D5).
-async fn commit(state: &AppState, prefix: &str, change: &Change) -> bool {
-    let tries = async {
-        for _ in 0..3 {
-            if let Some(moved) = try_once(state, prefix, change).await {
-                return moved;
-            }
-        }
-        false
-    };
-    timeout(CAS, tries).await.unwrap_or(false)
+/// How a move's commit (steps 6 and 7) ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Committed {
+    Moved,
+    /// Three tries lost to another writer, or the document unreadable: the move is `Kept`.
+    Kept,
+    /// The commit's bound ran out first: the move is `Kept`, and backed off (Addendum 26 (c)).
+    Bound,
 }
 
-/// One try of [`commit`]: whether the move is done, or `None` to try again (an unreadable
-/// document, or a CAS another writer won).
-async fn try_once(state: &AppState, prefix: &str, change: &Change) -> Option<bool> {
-    let (doc, version) = state.fleet.read_overrides().await.ok()?;
+impl Committed {
+    fn outcome(self) -> Outcome {
+        if self == Self::Moved {
+            Outcome::Moved
+        } else {
+            Outcome::Kept
+        }
+    }
+}
+
+/// The commit's deadline under a hold that ends at `until`: its remainder less [`MARGIN`].
+fn deadline(until: Instant) -> Instant {
+    until.checked_sub(MARGIN).unwrap_or(until)
+}
+
+/// How one try of [`commit`] ended.
+enum Try {
+    /// The document read already places the shard elsewhere (D5).
+    Placed,
+    /// This try's CAS won: the document it wrote.
+    Written(Overrides),
+    /// An unreadable document, or a CAS another writer won.
+    Again,
+}
+
+/// Steps 6 and 7: write `change` for `prefix` and mirror the document, by `deadline`. Each try
+/// first mirrors the document it read: one that already places the shard elsewhere (this write
+/// landed with its answer lost, or another writer moved it) is the move done (D5). A won CAS is
+/// the move (Addendum 26 (a)): the view is read again for the forward header's version (step 8)
+/// while the deadline allows, and otherwise mirrored from the document just written.
+async fn commit(state: &AppState, prefix: &str, change: &Change, deadline: Instant) -> Committed {
+    let tries = async {
+        for _ in 0..3 {
+            match try_once(state, prefix, change).await {
+                Try::Again => {}
+                ended => return ended,
+            }
+        }
+        Try::Again
+    };
+    match timeout_at(deadline, tries).await {
+        Err(_) => Committed::Bound,
+        Ok(Try::Again) => Committed::Kept,
+        Ok(Try::Placed) => Committed::Moved,
+        Ok(Try::Written(next)) => {
+            let read = timeout_at(deadline, super::view::refreshed(state)).await;
+            if !matches!(read, Ok(Some(_))) {
+                mirror(state, &next, None, prefix).await;
+            }
+            Committed::Moved
+        }
+    }
+}
+
+/// One try of [`commit`].
+async fn try_once(state: &AppState, prefix: &str, change: &Change) -> Try {
+    let Ok((doc, version)) = state.fleet.read_overrides().await else {
+        return Try::Again;
+    };
     if mirror(state, &doc, version.as_ref(), prefix).await {
-        return Some(true);
+        return Try::Placed;
     }
     let next = changed(state, doc, prefix, change).await;
-    let body = serde_json::to_vec(&next).ok()?;
-    if !state
+    let Ok(body) = serde_json::to_vec(&next) else {
+        return Try::Again;
+    };
+    if state
         .fleet
         .replace_document(FleetDocument::Overrides, body, version)
         .await
     {
-        return None;
+        Try::Written(next)
+    } else {
+        Try::Again
     }
-    // The document as stored, with its new version for the forward header (step 8).
-    if super::view::refreshed(state).await.is_none() {
-        return Some(mirror(state, &next, None, prefix).await);
-    }
-    Some(placed_elsewhere(state, prefix))
 }
 
 /// `doc` with `change` applied to `prefix`, the entries naming no stored leaf dropped (`stale`).
@@ -422,5 +518,195 @@ struct Claim(Arc<ShardEngine>);
 impl Drop for Claim {
     fn drop(&mut self) {
         self.0.gc_state().gate.release_move();
+    }
+}
+
+mod backoff {
+    //! The back-off of a planned move whose commit ran out of its bound
+    //! (GATE-DECISION-s22-join-2026-11-20 Addendum 26 (c)).
+    //!
+    //! A store too slow for a move's commit to fit its hold fails every try after the engine is
+    //! closed: each costs a close and a reopen and moves nothing. Such a shard is not tried again at
+    //! the next pass: the next try waits twice the gap since the last (at least one pass), at most a
+    //! minute. Per shard and in process; a move of the shard that ends `Moved`, a change of the view's
+    //! members or count, and a restart clear it. Return-home, count balance, the lag move and the room
+    //! move are paced by it ([`super::hand_off_paced`]); a drain and a co-location are not.
+
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::{Committed, Outcome};
+
+    /// The longest a shard is backed off.
+    const CEILING: Duration = Duration::from_secs(60);
+    /// The shortest gap a back-off doubles: one pass of the fleet tick.
+    const PASS: Duration = super::super::planning::TICK_PERIOD;
+
+    /// The view the back-offs were recorded under: its ring's members and the count its pass read.
+    pub(super) type Epoch = (Vec<String>, Option<u64>);
+
+    /// One shard's back-off: when it was last tried, and until when it is not tried again.
+    #[derive(Clone, Copy, Debug)]
+    struct Pace {
+        tried: Instant,
+        until: Instant,
+    }
+
+    /// The back-offs of this runtime's planned moves.
+    #[derive(Debug, Default)]
+    pub(super) struct Paces {
+        epoch: Option<Epoch>,
+        // mt-lint: allow(name-keyed-map): shard prefix -> its planned move's back-off
+        leaves: HashMap<String, Pace>,
+    }
+
+    impl Paces {
+        /// The view is now `epoch`: a change of its members or its count clears every back-off.
+        pub(super) fn at_epoch(&mut self, epoch: Epoch) {
+            if self.epoch.as_ref() != Some(&epoch) {
+                self.leaves.clear();
+                self.epoch = Some(epoch);
+            }
+        }
+
+        /// Whether `prefix` is backed off at `now`.
+        pub(super) fn holds(&self, prefix: &str, now: Instant) -> bool {
+            self.leaves.get(prefix).is_some_and(|pace| now < pace.until)
+        }
+
+        /// `prefix`'s move ran out of its commit's bound at `now`: the next try waits twice the gap
+        /// since its last (one pass when it had none, never less), at most [`CEILING`].
+        pub(super) fn kept(&mut self, prefix: &str, now: Instant) {
+            let since = |pace: &Pace| now.saturating_duration_since(pace.tried);
+            let gap = self.leaves.get(prefix).map_or(PASS, since).max(PASS);
+            let wait = gap.saturating_mul(2).min(CEILING);
+            let pace = Pace {
+                tried: now,
+                until: now + wait,
+            };
+            self.leaves.insert(prefix.to_string(), pace);
+        }
+
+        /// `prefix` moved: its back-off clears.
+        pub(super) fn moved(&mut self, prefix: &str) {
+            self.leaves.remove(prefix);
+        }
+
+        /// `prefix`'s move ended `end` at `now`: a paced move whose commit ran out of its bound backs
+        /// it off, a move that ended `Moved` clears it, and any other end leaves it as it was.
+        pub(super) fn ended(
+            &mut self,
+            prefix: &str,
+            paced: bool,
+            end: (Outcome, Option<Committed>),
+            now: Instant,
+        ) {
+            match end {
+                (_, Some(Committed::Bound)) if paced => self.kept(prefix, now),
+                (Outcome::Moved, _) => self.moved(prefix),
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{CEILING, Committed, Outcome, PASS, Paces};
+        use std::time::Duration;
+        use tokio::time::Instant;
+
+        fn epoch(members: &[&str], count: u64) -> super::Epoch {
+            let members = members.iter().map(|name| (*name).to_string()).collect();
+            (members, Some(count))
+        }
+
+        /// A first bound backs a shard off for two passes; each later one for twice the gap since the
+        /// shard's last try, never less than two passes, never more than a minute; another shard is
+        /// not backed off.
+        #[test]
+        fn a_shard_backs_off_twice_the_gap_since_its_last_try_up_to_a_minute() {
+            let mut paces = Paces::default();
+            let t0 = Instant::now();
+            paces.kept("0", t0);
+            let first = 2 * PASS;
+            let before = |at: Instant, by: Duration| at.checked_sub(by).unwrap();
+            let held = |paces: &Paces, at: Instant| (paces.holds("0", at), paces.holds("1", at));
+            assert_eq!(
+                held(&paces, before(t0 + first, Duration::from_millis(1))),
+                (true, false)
+            );
+            assert_eq!(held(&paces, t0 + first), (false, false));
+            let t1 = t0 + Duration::from_secs(10);
+            paces.kept("0", t1);
+            assert!(
+                paces.holds("0", t1 + Duration::from_millis(19_999)),
+                "twice a 10 s gap"
+            );
+            assert!(!paces.holds("0", t1 + Duration::from_secs(20)));
+            paces.kept("0", t1 + Duration::from_millis(500));
+            assert!(paces.holds(
+                "0",
+                t1 + Duration::from_millis(500) + first - Duration::from_millis(1)
+            ));
+            assert!(
+                !paces.holds("0", t1 + Duration::from_millis(500) + first),
+                "a pass at least"
+            );
+            let t2 = t1 + Duration::from_secs(300);
+            paces.kept("0", t2);
+            assert!(paces.holds("0", t2 + CEILING - Duration::from_millis(1)));
+            assert!(!paces.holds("0", t2 + CEILING), "a minute at most");
+        }
+
+        /// A move that ended `Moved` clears its shard's back-off and no other; a change of the view's
+        /// members, or of its count, clears every one; the same view clears none.
+        #[test]
+        fn a_back_off_clears_on_a_move_and_on_a_change_of_members_or_count() {
+            let now = Instant::now();
+            let mut paces = Paces::default();
+            paces.at_epoch(epoch(&["streams-1", "streams-2"], 2));
+            paces.kept("0", now);
+            paces.kept("1", now);
+            paces.moved("0");
+            assert_eq!(
+                (paces.holds("0", now), paces.holds("1", now)),
+                (false, true)
+            );
+            paces.at_epoch(epoch(&["streams-1", "streams-2"], 2));
+            assert!(paces.holds("1", now), "the same view");
+            paces.at_epoch(epoch(&["streams-1", "streams-2"], 3));
+            assert!(!paces.holds("1", now), "a change of count");
+            paces.kept("1", now);
+            paces.at_epoch(epoch(&["streams-1"], 3));
+            assert!(!paces.holds("1", now), "a change of members");
+        }
+
+        /// How a move ends decides its shard's back-off: a paced move whose commit ran out of its
+        /// bound backs it off and an unpaced one does not; `Moved` clears it, whether or not paced;
+        /// any other end, a bound's `Kept` included, leaves it as it was (the survivors of
+        /// `paced`'s match on 99472c14d).
+        #[test]
+        fn a_moves_end_backs_its_shard_off_clears_it_or_leaves_it() {
+            let now = Instant::now();
+            let bound = (Outcome::Kept, Some(Committed::Bound));
+            let mut paces = Paces::default();
+            paces.ended("0", false, bound, now);
+            assert!(!paces.holds("0", now), "an unpaced move is not backed off");
+            paces.ended("0", true, bound, now);
+            assert!(paces.holds("0", now), "a paced move past its bound");
+            for other in [
+                (Outcome::Kept, Some(Committed::Kept)),
+                (Outcome::Kept, None),
+                (Outcome::NotStarted, None),
+                (Outcome::Evacuate, None),
+            ] {
+                paces.ended("0", true, other, now);
+                assert!(paces.holds("0", now), "{other:?} leaves the back-off");
+            }
+            paces.ended("0", false, (Outcome::Moved, Some(Committed::Moved)), now);
+            assert!(!paces.holds("0", now), "Moved clears it");
+        }
     }
 }

@@ -472,8 +472,9 @@ OWNERS = (
     # The tick's return-home and lag move: each test fails when its move is skipped, its mirror
     # is skipped, or the reservation and intent checks are dropped.
     # F6, a planned move hands off giver first: the runner, the hold and the overrides version
-    # are reached through the handoff DSTs; the tags' decisions have their own unit tests.
-    owner('fleet_handoff', 'src/fleet/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
+    # are reached through the handoff DSTs; the tags' decisions have their own unit tests. The
+    # commit's bound and the back-off (Addendum 26) by fleet_handoff_bound and the back-off's units.
+    owner('fleet_handoff', 'src/fleet/handoff.rs', 'fleet::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_bound:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),

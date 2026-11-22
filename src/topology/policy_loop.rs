@@ -293,7 +293,7 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
         Step::Hand { half, to } => {
             match hand_off(&cell.fleet, &half, Change::To(to), false).await {
                 Outcome::Moved => Decision::Hold(Hold::OverrideRecent),
-                Outcome::Kept | Outcome::NotStarted | Outcome::Evacuate => {
+                Outcome::Kept | Outcome::NotStarted | Outcome::BackedOff | Outcome::Evacuate => {
                     Decision::Hold(Hold::Steady)
                 }
             }

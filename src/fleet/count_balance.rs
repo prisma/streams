@@ -391,7 +391,7 @@ async fn pass(state: &AppState, me: &str, pacing: &mut Pacing) {
     }
     // Giver first (F6): parked, flushed and closed here before the overrides name `to`.
     let change = super::handoff::Change::To(to.clone());
-    let outcome = super::handoff::hand_off(&state.fleet, &prefix, change, false).await;
+    let outcome = super::handoff::hand_off_paced(&state.fleet, &prefix, change, false).await;
     tracing::info!(shard = %prefix, %to, ?outcome, "count balance: a shard past the fair share");
     if outcome == super::handoff::Outcome::Moved {
         pacing.moved(now);
