@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! A move's release on a target that has just opened (Addendum 16 of the s22 join ruling,
 //! 2026-11-22, after Addendum 27 (a) of the forward-wedge ruling): package 4's cold-engine
 //! diagnosis (`store_first_creates`) shaped as the 40,000 step's scale-out. The ramp touches each

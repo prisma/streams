@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! A merge's pause, measured (GATE-DECISION-s22-join-2026-11-20 Addenda 9 §1 and 10):
 //! `split_pause`'s twin for the merge. A loaded parent on a store is split into `0` and `1`, left
 //! quiet, and merged back while a paced writer appends to a stream of each half; each run prints
