@@ -189,7 +189,7 @@ pub(crate) async fn pass(cell: &Cell, policy: &mut Policy, seen: &mut Seen) -> D
     }
     let decided = policy.decide(&view, &cell.limits);
     if let Some(parent) = policy.merge_pair() {
-        shield(cell, &view, parent);
+        shield(cell, parent);
     }
     let partner = policy.partner_merge();
     let decision = act(cell, &view, decided, partner, &mut seen.backoff).await;
@@ -299,19 +299,13 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
 /// ([`PERIOD`], 10 s), so it lapses after three passes that do not renew it (Addendum 13 (2)).
 const SHIELD_LAPSE: Duration = Duration::from_secs(30);
 
-/// Shield the halves of `parent` this instance holds in `view` from its own count balance, lag move
-/// and return-home for [`SHIELD_LAPSE`] (GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)):
-/// each pass whose merge candidate the pair is renews it, so it lapses once the pair is merged or
-/// is a candidate no more. Nothing is written to the overrides document for it.
-fn shield(cell: &Cell, view: &View, parent: &str) {
-    let held = |half: &String| {
-        let mine = |leaf: &Leaf| leaf.prefix == *half && leaf.owner == cell.me;
-        view.leaves.iter().any(mine)
-    };
-    let halves: Vec<String> = [format!("{parent}0"), format!("{parent}1")]
-        .into_iter()
-        .filter(held)
-        .collect();
+/// Shield both halves of `parent` from this instance's own count balance, lag move and return-home
+/// for [`SHIELD_LAPSE`] (GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)): each pass whose merge
+/// candidate the pair is renews it, so it lapses once the pair is merged or is a candidate no more.
+/// Those moves take only shards this instance holds, so a half held elsewhere is shielded to no
+/// effect until it is handed here, when it must be. Nothing is written to the overrides document.
+fn shield(cell: &Cell, parent: &str) {
+    let halves = [format!("{parent}0"), format!("{parent}1")];
     cell.fleet.standing().shield(&halves, SHIELD_LAPSE);
 }
 

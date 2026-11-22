@@ -7,8 +7,8 @@
 //! giver first (`fleet::handoff`); on the target it writes nothing, because its view already gives
 //! it its own half, by an entry or by the ring (Addendum 13 (1): a pin there named the leaf's ring
 //! home, a no-op that return-home drops). While the pair is its policy's merge candidate each
-//! holder shields the halves it holds from its own count balance, lag move and return-home, in its
-//! own process (`Standing::shield`, Addendum 13 (2)); nothing is written for that. The merge, once
+//! holder shields both halves from its own count balance, lag move and return-home, in its own
+//! process (`Standing::shield`, Addendum 13 (2)); nothing is written for that. The merge, once
 //! the last move's cooldown has passed, finds both halves on one instance. After the merge the
 //! halves are no leaves; the next beat that sees them, or the next write of the document, drops
 //! their entries (`stale`).

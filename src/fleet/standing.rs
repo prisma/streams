@@ -357,22 +357,27 @@ impl Standing {
     /// its return-home ([`Standing::shielded`]) leave them where they are meanwhile. It lives in
     /// this process only: nothing is written to the overrides document for it.
     pub(crate) fn shield(&self, halves: &[String], lapse: std::time::Duration) {
-        let now = tokio::time::Instant::now();
+        let until = tokio::time::Instant::now() + lapse;
         if let Ok(mut marks) = self.shielded.lock() {
-            marks.retain(|_, until| *until > now);
             for half in halves {
-                marks.insert(half.clone(), now + lapse);
+                marks.insert(half.clone(), until);
             }
         }
     }
 
-    /// Whether `prefix` is shielded now (`shield`). A poisoned lock reads as no shield.
-    pub(crate) fn shielded(&self, prefix: &str) -> bool {
+    /// The live shields, each lapsed one dropped first: the one place a lapse is judged, so every
+    /// reader sees what it leaves. `None` on a poisoned lock, which reads as no shield.
+    fn shields(&self) -> Option<std::sync::MutexGuard<'_, BTreeMap<String, tokio::time::Instant>>> {
+        let mut marks = self.shielded.lock().ok()?;
         let now = tokio::time::Instant::now();
-        let live = |marks: &BTreeMap<String, tokio::time::Instant>| {
-            marks.get(prefix).is_some_and(|until| *until > now)
-        };
-        self.shielded.lock().is_ok_and(|marks| live(&marks))
+        marks.retain(|_, until| *until > now);
+        Some(marks)
+    }
+
+    /// Whether `prefix` is shielded now (`shield`).
+    pub(crate) fn shielded(&self, prefix: &str) -> bool {
+        self.shields()
+            .is_some_and(|marks| marks.contains_key(prefix))
     }
 
     /// The shards no move of this instance's own may take: the live topology intent's sources
@@ -380,10 +385,8 @@ impl Standing {
     /// it.
     pub(crate) fn unmovable(&self) -> Vec<String> {
         let mut unmovable = self.topology_sources();
-        let now = tokio::time::Instant::now();
-        if let Ok(marks) = self.shielded.lock() {
-            let live = marks.iter().filter(|(_, until)| **until > now);
-            unmovable.extend(live.map(|(prefix, _)| prefix.clone()));
+        if let Some(marks) = self.shields() {
+            unmovable.extend(marks.keys().cloned());
         }
         unmovable
     }
