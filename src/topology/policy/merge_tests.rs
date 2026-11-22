@@ -206,6 +206,27 @@ fn a_merges_partner_is_named_only_when_peer_acts_alone_holds_it() {
     assert_eq!(policy.partner_merge(), None, "neither half's holder");
 }
 
+/// **An instance holding another leaf, listed before the pair, is not the pair's partner**: over
+/// `0` (on `b`, listed first), `10` (on `a`) and `11` (on `c`), `b` holds neither half of the merge
+/// `1`, so it is not named its partner; once `b` holds `11` it is.
+#[test]
+fn an_instance_holding_only_another_leaf_is_not_the_partner() {
+    let mut view = cell(vec![
+        leaf("0", "b", 1),
+        leaf("10", "a", 10),
+        leaf("11", "c", 10),
+    ]);
+    view.me = "b".to_owned();
+    let mut policy = Policy::default();
+    tick(&mut policy, &mut view, T0);
+    let peer_acts = Decision::Hold(Hold::PeerActs);
+    assert_eq!(tick(&mut policy, &mut view, QUIET), peer_acts);
+    assert_eq!(policy.partner_merge(), None, "neither half's holder");
+    view.leaves[2].owner = "b".to_owned();
+    assert_eq!(tick(&mut policy, &mut view, QUIET), peer_acts);
+    assert_eq!(policy.partner_merge(), Some("1"), "the holder of 11");
+}
+
 #[test]
 fn the_deepest_pair_merges_first() {
     let mut view = cell(vec![
