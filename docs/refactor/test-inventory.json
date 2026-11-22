@@ -5481,6 +5481,17 @@
     "scenarios": []
   },
   {
+    "name": "a_wait_names_the_moves_that_did_not_start",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e2d27373169bc6e36999e63432347c53d4def28a7b012a37daf15dc9949b93af",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_wait_on_twenty_streams_parks_once_and_too_many_subscriptions_are_refused",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

@@ -45,6 +45,8 @@ mod tags;
 pub(crate) mod view;
 pub(crate) use heartbeat::Heartbeat;
 pub(crate) use repository::{FleetDocument, FleetRepository};
+#[cfg(test)]
+pub(crate) use standing::Attempts;
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]

@@ -91,7 +91,7 @@ pub(crate) async fn hand_off(
     evacuable: bool,
 ) -> Outcome {
     if fleet.standing().drain_begun() {
-        return Outcome::NotStarted;
+        return not_started(fleet.standing(), "drain");
     }
     queued(fleet, prefix, change, evacuable).await
 }
@@ -113,7 +113,7 @@ async fn queued(
     evacuable: bool,
 ) -> Outcome {
     let Some(queue) = fleet.standing().handoffs() else {
-        return Outcome::NotStarted;
+        return not_started(fleet.standing(), "runner");
     };
     let (done, end) = oneshot::channel();
     let prefix = prefix.to_string();
@@ -124,7 +124,7 @@ async fn queued(
         done,
     };
     if queue.try_send(request).is_err() {
-        return Outcome::NotStarted;
+        return not_started(fleet.standing(), "queue");
     }
     end.await.unwrap_or(Outcome::Kept)
 }
@@ -183,26 +183,30 @@ async fn run(state: &AppState, request: &Request) -> Outcome {
         .return_home_skips(prefix, i64::MAX, 0)
         || !gate.claim_move()
     {
-        return Outcome::NotStarted;
+        return not_started(state.fleet.standing(), "claim");
     }
     let claim = Claim(Arc::clone(&engine));
     // Step 2: park.
     let started = Instant::now();
     let Ok(Ok(barrier)) = timeout(PARK, engine.barrier()).await else {
-        return missed(request, "park");
+        return missed(state, request, "park");
     };
     let parked_at = Instant::now();
     let until = parked_at + HOLD;
     // Step 3: flush the delta under the park.
-    if !matches!(timeout(FLUSH, engine.flush_memtable()).await, Ok(Ok(()))) {
+    let flushed = matches!(timeout(FLUSH, engine.flush_memtable()).await, Ok(Ok(())));
+    // Tests only: the failpoint `Standing::miss_parked_flushes` fails it once it ended.
+    #[cfg(test)]
+    let flushed = flushed && !state.fleet.standing().take_parked_flush_miss();
+    if !flushed {
         barrier.resume();
-        return missed(request, "flush");
+        return missed(state, request, "flush");
     }
     let flushed_at = Instant::now();
     // Step 4: the directory's hold, the resident out of the serving map, the queue released.
     let Some((mark, resident)) = state.shards.begin_handoff(prefix, until) else {
         barrier.resume();
-        return Outcome::NotStarted;
+        return not_started(state.fleet.standing(), "hold");
     };
     barrier.hand_off();
     answered(&engine).await;
@@ -255,7 +259,9 @@ impl Phases {
             end = ?end,
             "handoff"
         );
-        state.fleet.standing().record_handoff(self, Instant::now());
+        let standing = state.fleet.standing();
+        standing.record_handoff(self, Instant::now());
+        standing.note_attempt(end, "commit");
     }
 }
 
@@ -264,7 +270,7 @@ impl Phases {
 async fn without_engine(state: &AppState, request: &Request) -> Outcome {
     let prefix = request.prefix.as_str();
     let Some((mark, resident)) = state.shards.begin_handoff(prefix, Instant::now() + HOLD) else {
-        return Outcome::NotStarted;
+        return not_started(state.fleet.standing(), "hold");
     };
     if let Some(raced) = resident {
         // An open finished after the caller looked: it is closed as the move's.
@@ -272,17 +278,27 @@ async fn without_engine(state: &AppState, request: &Request) -> Outcome {
     }
     let moved = commit(state, prefix, &request.change).await;
     drop(mark);
-    if moved { Outcome::Moved } else { Outcome::Kept }
+    let end = if moved { Outcome::Moved } else { Outcome::Kept };
+    state.fleet.standing().note_attempt(end, "commit");
+    end
 }
 
 /// A park or flush past its bound: a lag victim is evacuated (H4); any other move does not start.
-fn missed(request: &Request, step: &str) -> Outcome {
+fn missed(state: &AppState, request: &Request, step: &'static str) -> Outcome {
     tracing::info!(shard = %request.prefix, step, "handoff: missed its bound; nothing held");
-    if request.evacuable {
+    let end = if request.evacuable {
         Outcome::Evacuate
     } else {
         Outcome::NotStarted
-    }
+    };
+    state.fleet.standing().note_attempt(end, step);
+    end
+}
+
+/// A move that did not start at `step`, noted as its attempt's end (Addendum 28).
+fn not_started(standing: &super::standing::Standing, step: &'static str) -> Outcome {
+    standing.note_attempt(Outcome::NotStarted, step);
+    Outcome::NotStarted
 }
 
 /// H2: the released committer answers every queued operation before the close begins: wait

@@ -63,6 +63,10 @@ pub(crate) struct Standing {
     tags: super::tags::Tags,
     /// The last planned move's phases and the instant its hold ended.
     last_handoff: Mutex<Option<(super::handoff::Phases, tokio::time::Instant)>>,
+    /// Every planned move's attempt as it ended, the moves that did not start apart
+    /// (GATE-DECISION-s22-join-2026-11-20 Addendum 28). In process only, on no endpoint and no
+    /// metric: the handoff DSTs' wait reads it.
+    attempts: Mutex<Attempts>,
     /// The halves this instance's policy is co-locating or about to merge, each with the instant
     /// its shield lapses (`shield`).
     // mt-lint: allow(name-keyed-map): shard prefix (a merge candidate's half) -> its shield's lapse
@@ -76,6 +80,10 @@ pub(crate) struct Standing {
     /// Tests: the failpoint `hold_moves_of_open_leaves` (C3's control), armed with its hold.
     #[cfg(test)]
     moved_open_hold: Mutex<Option<std::time::Duration>>,
+    /// Tests: how many more flushes under a planned move's park the failpoint
+    /// `miss_parked_flushes` fails.
+    #[cfg(test)]
+    parked_flush_misses: AtomicU64,
     /// The beats the tick's latest heartbeat read returned, and when, in milliseconds from
     /// `origin` plus one: the topology policy reads the cell from here, not from the store.
     cached: Mutex<(u64, Arc<[super::Heartbeat]>)>,
@@ -113,6 +121,17 @@ pub(crate) struct DocTimes {
     pub age_ms: Option<u64>,
 }
 
+/// A runtime's planned-move attempts so far (`Standing::note_attempt`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Attempts {
+    /// Every attempt that ended.
+    pub(crate) ended: u64,
+    /// Those of them that ended `NotStarted`.
+    pub(crate) not_started: u64,
+    /// How the last one ended, and the step it ended at.
+    pub(crate) last: Option<(super::handoff::Outcome, &'static str)>,
+}
+
 /// Tests: the slot of the tick's view pause.
 #[cfg(test)]
 struct ViewPause(Mutex<Option<crate::topology::gate::PausePoint>>);
@@ -143,6 +162,7 @@ impl Default for Standing {
             handoffs_fenced: AtomicU64::new(0),
             tags: super::tags::Tags::default(),
             last_handoff: Mutex::new(None),
+            attempts: Mutex::new(Attempts::default()),
             shielded: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             view_pause: ViewPause(Mutex::new(None)),
@@ -150,6 +170,8 @@ impl Default for Standing {
             view_skew: Mutex::new(None),
             #[cfg(test)]
             moved_open_hold: Mutex::new(None),
+            #[cfg(test)]
+            parked_flush_misses: AtomicU64::new(0),
             cached: Mutex::new((0, Arc::from([]))),
             docs: Mutex::new(FleetDocs::default()),
             topology: Mutex::new((None, 0)),
@@ -186,6 +208,24 @@ impl Standing {
         if let Ok(mut last) = self.last_handoff.lock() {
             *last = Some((phases, released));
         }
+    }
+
+    /// A planned move's attempt ended `end` at `step` (Addendum 28).
+    pub(super) fn note_attempt(&self, end: super::handoff::Outcome, step: &'static str) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            attempts.ended += 1;
+            attempts.not_started += u64::from(end == super::handoff::Outcome::NotStarted);
+            attempts.last = Some((end, step));
+        }
+    }
+
+    /// Tests: the planned moves' attempts so far.
+    #[cfg(test)]
+    pub(crate) fn attempts(&self) -> Attempts {
+        self.attempts
+            .lock()
+            .map(|attempts| *attempts)
+            .unwrap_or_default()
     }
 
     /// Tests: the last planned move's phases and the instant its hold ended.
@@ -309,6 +349,25 @@ impl Standing {
     #[cfg(test)]
     pub(crate) fn moved_open_hold(&self) -> Option<std::time::Duration> {
         self.moved_open_hold.lock().ok().and_then(|slot| *slot)
+    }
+
+    /// Tests, a failpoint (GATE-DECISION-s22-join-2026-11-20 Addendum 28): the next `misses`
+    /// flushes under a planned move's park fail their bound once they end, as one past `FLUSH`
+    /// does (`fleet::handoff`, step 3).
+    #[cfg(test)]
+    pub(crate) fn miss_parked_flushes(&self, misses: u64) {
+        self.parked_flush_misses.store(misses, Ordering::Relaxed);
+    }
+
+    /// Tests: whether the failpoint `miss_parked_flushes` fails this flush under the park, and
+    /// if so one fewer after it.
+    #[cfg(test)]
+    pub(crate) fn take_parked_flush_miss(&self) -> bool {
+        let fewer = |misses: u64| misses.checked_sub(1);
+        let misses = &self.parked_flush_misses;
+        misses
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, fewer)
+            .is_ok()
     }
 
     /// Tests: the pause the next view publication takes, if one is armed.
@@ -551,7 +610,7 @@ impl Standing {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocTimes, Standing, Viewed, ViewedBeat};
+    use super::{Attempts, DocTimes, Standing, Viewed, ViewedBeat};
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
@@ -587,6 +646,29 @@ mod tests {
         fresh.note_handoff_fenced();
         fresh.note_handoff_fenced();
         assert_eq!(fresh.handoffs_fenced(), 2);
+    }
+
+    /// A planned move's attempts are counted as they end, those that did not start apart, with
+    /// the last one's end and step (Addendum 28); the failpoint fails as many flushes under the
+    /// park as it was armed with, then none.
+    #[test]
+    fn a_planned_moves_attempts_are_counted_by_end_and_step() {
+        use super::super::handoff::Outcome;
+        let standing = Standing::default();
+        assert_eq!(standing.attempts(), Attempts::default());
+        standing.note_attempt(Outcome::NotStarted, "flush");
+        standing.note_attempt(Outcome::Evacuate, "park");
+        standing.note_attempt(Outcome::NotStarted, "claim");
+        standing.note_attempt(Outcome::Moved, "commit");
+        let counted = Attempts {
+            ended: 4,
+            not_started: 2,
+            last: Some((Outcome::Moved, "commit")),
+        };
+        assert_eq!(standing.attempts(), counted);
+        standing.miss_parked_flushes(2);
+        let misses = [(); 3].map(|()| standing.take_parked_flush_miss());
+        assert_eq!(misses, [true, true, false]);
     }
 
     /// The next beat publishes the split demand the latest tick set.

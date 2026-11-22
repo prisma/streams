@@ -24,56 +24,9 @@ use tokio::time::Instant;
 
 pub(super) const BOUND: Duration = Duration::from_secs(30);
 
-/// A wait for one of `giver`'s planned moves, which fails as soon as the move cannot land
-/// rather than at [`BOUND`]: a giver whose fleet runs no handoff runner moves nothing, and a
-/// giver that has ended three planned moves since the wait began, without the waited state,
-/// hands off but lands nothing (a CAS lost to another writer ends one move `Kept`; three in a row
-/// do not happen in these rigs). Without it, every handoff DST waited out its 30 s bound under a
-/// runner or a commit that never lands, and together they outlasted the mutation leg's limit.
-struct MoveWait {
-    t0: Instant,
-    seen: Option<Instant>,
-    ended: u32,
-    /// How long the wait may take: [`BOUND`], or a test's own derived bound.
-    bound: Duration,
-}
-
-impl MoveWait {
-    fn begin(giver: &crate::http::AppState) -> Self {
-        Self::begin_within(giver, BOUND)
-    }
-
-    /// A wait bounded by `bound` rather than [`BOUND`].
-    fn begin_within(giver: &crate::http::AppState, bound: Duration) -> Self {
-        let seen = giver.fleet.standing().last_handoff().map(|(_, at)| at);
-        Self {
-            t0: Instant::now(),
-            seen,
-            ended: 0,
-            bound,
-        }
-    }
-
-    /// One poll of the wait for `what`, which has not happened yet.
-    fn pending(&mut self, giver: &crate::http::AppState, what: &str) {
-        let standing = giver.fleet.standing();
-        assert!(
-            standing.runs_handoffs(),
-            "{what}: the giver runs no handoff runner"
-        );
-        let last = standing.last_handoff().map(|(_, at)| at);
-        if last.is_some() && last != self.seen {
-            self.seen = last;
-            self.ended += 1;
-        }
-        assert!(
-            self.ended < 3,
-            "{what}: {} planned moves ended, none landed",
-            self.ended
-        );
-        assert!(self.t0.elapsed() < self.bound, "{what}");
-    }
-}
+#[path = "fleet_handoff_wait.rs"]
+mod wait;
+use wait::MoveWait;
 
 /// How long a planned move may hold an append (`shard::transaction::barrier::HOLD`).
 pub(super) const HOLD: Duration = Duration::from_secs(2);

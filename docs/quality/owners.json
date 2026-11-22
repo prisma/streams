@@ -4715,6 +4715,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::wait",
+      "path": "src/dst/tests/fleet_handoff.rs",
+      "reason": "The handoff DSTs' wait for a planned move (MoveWait), which gives up as soon as the move cannot land and names why: its moves that ended (Moved or Kept) on a line of 3, those that did not start on their own line of 8 with the last one's step, every attempt it sees printed, 30 s the backstop (GATE-DECISION-s22-join-2026-11-20 Addendum 28), and its own test of the moves that did not start; a submodule of fleet_handoff so the handoff owners' filters select it, since that file had 1 line of headroom. Compiled and executed with DST.",
+      "syntax": "path = \"fleet_handoff_wait.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::desired",
       "path": "src/dst/tests/fleet_controller.rs",
       "reason": "The desired-count scenarios (the count is the cores in use over the scale-out target when the fleet grows and over the scale-in ceiling when it shrinks) use the controller scenarios' private heartbeat and document helpers, and their module path keeps them inside the fleet mutation owner's filter; the file they would grow has 43 lines of headroom. Compiled and executed with DST.",
