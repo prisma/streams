@@ -492,11 +492,17 @@ async fn merged_rows(pair: &Pair) -> Result<Vec<Row>, String> {
     Ok(merged.into_iter().collect())
 }
 
-/// A source's sentinel rows, read now.
+/// A source's sentinel rows, read now, with the sentinel's scan options
+/// (`open_index::sentinel_scan_opts`, as the split's, the open's and the trim's): 1 MiB ahead,
+/// sixteen fetches at once, cached, so `prepare`'s read leaves the blocks cached and the pause's
+/// `lists` fetches only the tables its flush wrote. SlateDB's defaults fetch one block a GET,
+/// uncached: a lived-in half's sentinel tables, its sealed streams' index tombstones among them,
+/// took 24 and 40 s a scan pair at the scout's drain (Addendum 14 of GATE-DECISION-s22-join).
 async fn sentinel_rows(source: &ShardEngine) -> Result<Rows, String> {
+    let options = crate::shard::open_index::sentinel_scan_opts();
     let mut scan = source
         .db
-        .scan_prefix(&SENTINEL[..], ..)
+        .scan_prefix_with_options(&SENTINEL[..], .., &options)
         .await
         .map_err(|e| format!("sentinel scan: {e}"))?;
     let mut rows = Rows::new();

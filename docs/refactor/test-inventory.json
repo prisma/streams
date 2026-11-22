@@ -2443,6 +2443,29 @@
     "scenarios": []
   },
   {
+    "name": "a_merges_prepare_and_lists_at_20000_and_40000_sealed_streams_20_ms_away",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
+      "#[ignore = \"a measurement at the 40,000 step's sizes, run under the machine's lock\"]"
+    ],
+    "function_sha256": "9e2562a2af90ca501e77856598aae7c9df7be13c44388a29922b6a4eb3c08005",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_pause.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_merges_prepare_and_lists_make_at_most_64_gets_at_1000_and_8000_sealed_streams",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8737d3c225a0553bf1175ef8f9f560446c9bd1131c81f3a85123bca193d6873d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/merge_pause.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_message_whose_envelope_will_not_open_fails_alone_and_never_holds_the_queue",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

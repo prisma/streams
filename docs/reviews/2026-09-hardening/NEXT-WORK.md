@@ -3071,6 +3071,12 @@ A5). Two older gaps it does not close, each waiting for its own ruling:
     reopens only on evidence that identity plus index exceed 0.4 s on a flushed shard with fix 1.
   - A leg that sees any move over 0.9 / 0.6 / 1.5 s, `handoff_fenced` above 0, or a shed in a
     move's seconds brings the numbers back to the owner.
+  - **Latest measurement (2026-11-22, `store_first_creates::a_cold_engines_first_commits_by_task`,
+    Addendum 15 of GATE-DECISION-s22-join-2026-11-20):** a lazily opened leaf on a 20 ms store
+    under 700 requests at once answered them at p50 808 ms. The SlateDB open was about 540 ms of
+    it (67%), and one task made 18 manifest-class round trips in series (398 ms) beside the WAL
+    replay. The maintenance load took about 130 ms, the first group's cold loads about 110 ms and
+    the WAL PUT about 22 ms. The fork's build item is that serial manifest chain.
 
 ## 23. Follow-ups from fix D, a split child's first seal lands under its born home's root (2026-11-19)
 
@@ -3216,3 +3222,25 @@ delegation):
   (about 2,048 handles with unsealed data). The split had its log reads (F5) and its warmed tails
   (fix 2); the merge has neither. Any raise of `SHARD_MERGE_LINE_PCT` or `HANDLE_MAX_RESIDENT` is
   re-measured with `merge_pause` first.
+
+## 31. Follow-ups from the merge's lists and the scout's opens (2026-11-22)
+
+- **The folds' and gc's scans read at SlateDB's defaults** (GATE-DECISION-s22-join-2026-11-20,
+  Addendum 14). `seal::fold`'s `scan_unfolded` (the directory and `'O'` prefixes) and the other
+  `scan_prefix(.., ..)` sites under `shard/seal/` (`gc`, `purge`, `release`, `open`) fetch one
+  4 KiB block a GET, one at a time and uncached, as the merge's sentinel scans did before
+  `sentinel_scan_opts`. Off the pause they hold no writer, but they cost the same per block: they
+  are the 19 s of the scout's merge `0` `prepare` that is not its lists (59.4 s against 40.4 s), a
+  merge that starts a minute late. Each such site moves to read-ahead and concurrent fetches with
+  its own count test, as F5's and the merge's did.
+- **A merge's `prepare` passes 64 GETs at the 40,000 step's sizes** (Addendum 20). With the
+  sentinel scans' read-ahead, halves of sealed streams, cold, 20 ms away, make 77 `prepare` GETs
+  and 11 `lists` GETs (131 ms) at 20,000 sealed streams, and 165 and 18 (196 ms) at 40,000; the
+  pause is 818 and 895 ms (`merge_pause`'s header). `lists`, on the pause, is within its bound
+  (64 GETs, under 250 ms), so nothing more is owed for it. `prepare` still grows with the halves'
+  tables, but it runs before the park and holds no writer: it delays the merge's start, as the
+  folds' scans above do, and no write waits on it.
+- **Every request pays one conditional descriptor GET once its 5 s entry lapses** (Addendum 15).
+  On the scout that is 700 to 1,140 a second on each instance in steady state (1,085,168 answers of
+  `304` over the leg); at an hourly touch every touch is such a read. It is not billed as a `200`,
+  but it is a store round trip on the request path of every write. Not for #149.
