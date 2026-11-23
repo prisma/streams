@@ -655,6 +655,9 @@ impl ShardDirectory {
         // Both guards are released: closing an engine must never happen
         // under a lock that a request path can be waiting on.
         tracing::info!(shard = %prefix, reason = reason.as_str(), "shard retired");
+        if matches!(reason, RetirementReason::OwnershipMoved) {
+            self.inner.handoffs.note_yielded();
+        }
         engine.begin_close();
         RetireOutcome::Retired(engine)
     }

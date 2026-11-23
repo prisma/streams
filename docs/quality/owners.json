@@ -361,6 +361,14 @@
       "syntax": "path = \"tests/fixture_split.rs\""
     },
     {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_members",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "The membership of record in a rig (§22 step 5, GATE-DECISION-s22-join-2026-11-20 Addendum 3): a rig waits for the join to converge (every member listed with its own boot id, no pin left) or seeds a processless peer's listing as its join would have written it; setup only; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fixture_members.rs\""
+    },
+    {
       "category": "macro-dsl",
       "count": 1,
       "owner": "crate::counts_do_not_sum",
@@ -1557,7 +1565,7 @@
       "count": 1,
       "owner": "crate::fleet_rejoin",
       "path": "src/dst/dst_tests.rs",
-      "reason": "A stopped ordinal that boots again while its peer holds its old draining beat (Addendum 20 (a), section 22): two real fleet members, the peer's read of the beat held; each opens the leaf its own view gives it and fences the other once, pinned until the join; compiler and the full DST suite exercise the module.",
+      "reason": "A stopped ordinal that boots again while its peer holds its old draining beat (Addendum 20 (a), section 22): two real fleet members, the peer's read of the beat held; with the join the newcomer owns nothing until its CAS, so neither is fenced and the holder never yields the leaf at its tick; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/fleet_rejoin.rs\""
     },
     {
@@ -1575,6 +1583,22 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "The membership of record in its interim (section 22 step 4, Addendum 14): real fleet members through a count rise and a drop and a member stale on one reader, an older cell's document listed once, a fresh cell's document created once (by one of two members at once), and a members write whose answer was lost; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/fleet_record.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_join",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "§22's join (GATE-DECISION-s22-addendum-2026-11-19 C5-C8, C13, §9; GATE-DECISION-tla049-r1-r3-2026-11-20 R1-R3): a scale-out moves nothing, a joiner waits for its holders' pins or joins past JOIN_PHASE counted, a restart rejoins in place, a count drop mid-join, a scale-out by three, a refreshing peer, a restart after a drain, and an idle fleet's writes; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_join.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_join_boot",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "§22's join at boot (GATE-DECISION-s22-join-2026-11-20 §2, Addenda 1-3): the upgrade from unstamped listings, a boot killed between its stamp and its first beat, and an unlisted boot beating with its tick held; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_join_boot.rs\""
     },
     {
       "category": "macro-dsl",
@@ -4711,6 +4735,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Usage-route authorization scenarios; a ?streamId= is served only for an incarnation of the URL's name, under a prefix grant and an every-name grant, over real HTTP against an enforce-mode rig with a rollup; compiled and executed with DST.",
       "syntax": "path = \"tests/security_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::brownout",
+      "path": "src/dst/tests/fleet_controller.rs",
+      "reason": "Item 40's brownout requirement in both boot orders (Addendum 26 of GATE-DECISION-s22-join-2026-11-20): at 600 ms an operation of the fleet store, two members boot in a named order, the join lists both and its pin returns within the hold, then for 12 s neither leaves the other's ring and each keeps its heartbeat cadence and completes passes; moved out of fleet_controller.rs, which has no headroom.",
+      "syntax": "path = \"fleet_brownout.rs\""
     },
     {
       "category": "by-path-module",

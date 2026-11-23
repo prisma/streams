@@ -171,3 +171,18 @@ async fn a_prune_over_a_stale_read_loses_its_cas_and_writes_nothing() {
     assert!(!super::write_pruned(&fleet, &*store, read, version).await);
     assert_eq!(named(&stored(&store).await), ["0", "00", "01"]);
 }
+
+/// **A pin (an entry stamped 0, `join::PIN_MS`) is an ordinary entry to the stale prune** (the join
+/// ruling §5): over the boot leaves `0` and `1`, a pin for `1` is kept and a pin for `2` (no leaf)
+/// dropped, as any entry would be; and the document carrying it validates.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_pin_is_pruned_as_any_entry() {
+    let store = two_leaves().await;
+    let mut doc = overrides(&["1", "2"]);
+    for entry in doc.entries.values_mut() {
+        entry.ms = crate::fleet::join::PIN_MS;
+    }
+    let kept = pruned(doc, &*store).await;
+    assert_eq!(named(&kept), ["1"]);
+    assert!(crate::fleet::repository::validate_overrides(&kept).is_ok());
+}

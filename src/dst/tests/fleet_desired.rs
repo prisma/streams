@@ -445,10 +445,11 @@ async fn the_planner_reads_no_in_flight_shorter_than_the_window() {
 }
 
 /// r09's shutdown (`fleet_controller::r09_fleet_cancels_entered_documents_...`): within 4 s the
-/// supervisor cancels every task cooperatively (none aborted) and the fleet task finishes; given
-/// `withdrawn`, the last beat stored for `streams-1` names exactly that withdrawal (the held
-/// overrides read: the heartbeat's prune of a stale override is raced against its cancel, so the
-/// withdrawing beat is sent; #251 amendment R3-d, C2).
+/// supervisor cancels every task cooperatively (none aborted) and the fleet task finishes. Given
+/// `withdrawn` (the held overrides read), the process was cancelled before its boot's decision:
+/// its heartbeat could not read the overrides document, so it never beat, and no beat of this boot
+/// exists, not even a withdrawing one (GATE-DECISION-s22-join-2026-11-20 Addendum 3; before §22's
+/// join the last beat named that withdrawal).
 pub(super) async fn cancelled_cleanly(
     tasks: &crate::tasks::TaskSupervisor,
     fleet: &std::sync::Arc<dyn object_store::ObjectStore>,
@@ -466,8 +467,10 @@ pub(super) async fn cancelled_cleanly(
     assert!(finished, "the fleet task finishes: {report:?}");
     if let Some(withdrawn) = withdrawn {
         let path = Path::from("fleet/streams-1.json");
-        let bytes = fleet.get(&path).await.unwrap().bytes().await.unwrap();
-        let last: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(last["withdrawn"], withdrawn, "the last beat: {last}");
+        let beat = fleet.get(&path).await;
+        assert!(
+            matches!(beat, Err(object_store::Error::NotFound { .. })),
+            "a boot cancelled before its decision ({withdrawn}) has no beat"
+        );
     }
 }

@@ -13,9 +13,10 @@ use super::{AppState, Overrides};
 
 /// Read `fleet/overrides.json` and publish it with its ring over this pass's `candidates` (§22 C1,
 /// C2) as the ownership view, and `peers` as the peer map, under the revalidation lock: the
-/// overrides document and its version for the tick's rebalancer. In the interim the read document
-/// is first made to list the pass's ordinal set (`record::listed`, Addendum 14). A failed read
-/// publishes nothing (the last good view is kept).
+/// overrides document and its version for the tick's rebalancer. Between the read and the
+/// publication the pass makes its one membership write (`join::pass`: a pin, a stamp, a restart's
+/// decision or a join, C5), and the view is published from the document as written with no await
+/// after the CAS's answer. A failed read publishes nothing (the last good view is kept).
 pub(super) async fn published(
     state: &AppState,
     candidates: &super::record::Candidates,
@@ -23,8 +24,10 @@ pub(super) async fn published(
 ) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
     let _one = state.shards.revalidation().lock().await;
     let read = state.fleet.read_overrides().await?;
-    let me = state.config.cli.instance_name.as_str();
-    let (overrides, version) = super::record::listed(&state.fleet, me, candidates, read).await;
+    let candidates = &candidates
+        .clone()
+        .with_boot(&state.runtime.identity.boot_id);
+    let (overrides, version) = super::join::pass(state, candidates, read).await;
     // Tests only: a tick held between its read and its publication, the lock still held.
     #[cfg(test)]
     if let Some(point) = state.fleet.standing().take_view_pause()
@@ -40,10 +43,9 @@ pub(super) async fn published(
     // Tests only, a failpoint: a move of a leaf still open here is held (C3's control).
     #[cfg(test)]
     held_while_open(state, &map).await;
-    // Publish only a complete successful authority read. This synchronous replacement cannot
-    // expose a mixed ring/map. In the interim every document's ring is today's rule over the
-    // pass's candidates (`record`).
-    let ring = candidates.today();
+    // Publish only a complete successful authority read, its ring and entries from the one
+    // document. This synchronous replacement cannot expose a mixed ring/map.
+    let ring = candidates.ring(overrides.members.as_deref());
     state.fleet.standing().set_candidates(candidates);
     state.ownership.set_view(ring, map);
     state.fleet.standing().tags().set(tag_of(version.as_ref()));
@@ -68,6 +70,25 @@ async fn held_while_open(state: &AppState, map: &HashMap<String, String>) {
         );
         tokio::time::sleep(hold).await;
     }
+}
+
+/// Publish `document`, one this runtime just wrote, whole: its entries with its own ring over the
+/// tick's last candidates (§22 C2; before the first pass, the ring this instance last published).
+/// The writes that named one entry beside the published ring (a split's birth, a co-location,
+/// the lag move's evacuation) publish their document so (GATE-DECISION-s22-3b-step4-2026-11-21,
+/// Addendum 1: the join ends `set_override`).
+pub(crate) fn installed(
+    fleet: &super::FleetRepository,
+    ownership: &crate::ownership::OwnershipService,
+    document: &Overrides,
+) {
+    let map: HashMap<String, String> = document
+        .entries
+        .iter()
+        .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
+        .collect();
+    let ring = fleet.standing().ring_of(document);
+    ownership.set_view(ring.unwrap_or_else(|| ownership.ring_active()), map);
 }
 
 /// Read `fleet/overrides.json` and publish its entries with its own ring (§22 C2), under the
@@ -107,7 +128,7 @@ async fn published_here(state: &AppState) -> Option<String> {
         .iter()
         .map(|(prefix, entry)| (prefix.clone(), entry.to.clone()))
         .collect();
-    let ring = state.fleet.standing().ring_of();
+    let ring = state.fleet.standing().ring_of(&overrides);
     state
         .ownership
         .set_view(ring.unwrap_or_else(|| state.ownership.ring_active()), map);

@@ -44,6 +44,10 @@ pub(crate) struct Handoffs {
     /// drain gave up when its handoff phase ran out. A late close of a move's own engine is
     /// counted apart, on the fleet standing (`handoffs_fenced`).
     fenced: std::sync::atomic::AtomicU64,
+    /// Shards retired here because their ownership moved (`RetirementReason::OwnershipMoved`): a
+    /// tick that found another owner and yielded, not a planned move, which closes its engine
+    /// itself (GATE-DECISION-s22-join-2026-11-20 Addendum 27). In process only.
+    yielded: std::sync::atomic::AtomicU64,
 }
 
 /// One prefix's hold: its deadline and its end, once known.
@@ -73,6 +77,18 @@ impl Handoffs {
     /// Writers fenced ahead of a planned move so far (G6).
     pub(crate) fn fenced(&self) -> u64 {
         self.fenced.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A shard here was retired because its ownership moved: a tick's yield (Addendum 27).
+    pub(crate) fn note_yielded(&self) {
+        self.yielded
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Tests: the tick yields so far.
+    #[cfg(test)]
+    pub(crate) fn yielded(&self) -> u64 {
+        self.yielded.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Hold `prefix` until `until` at the latest; `None` while another move holds it.

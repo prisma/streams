@@ -312,7 +312,12 @@ async fn a_drain_whose_handoff_phase_runs_out_announces_and_counts_the_fence() {
 /// `streams-1`'s drain on `state` with the production budget, ending within `within`, the bound of
 /// the test that runs it: a drain still going then fails by assertion.
 async fn drained_within(state: &crate::http::AppState, within: Duration) -> DrainOutcome {
-    let drained = drain(state, "streams-1", BUDGET);
+    drained_as(state, "streams-1", within).await
+}
+
+/// [`drained_within`] for the member `name`.
+async fn drained_as(state: &crate::http::AppState, name: &str, within: Duration) -> DrainOutcome {
+    let drained = drain(state, name, BUDGET);
     tokio::time::timeout(within, drained)
         .await
         .expect("the drain ends within the test's bound")
@@ -414,8 +419,8 @@ async fn moves_towards_an_unannounced_drainer_are_handed_off_again() {
     stopped([a, b]).await;
 }
 
-/// A cell of three members over [`LEAVES`] with no overrides, each started once the one before it
-/// beats, and every view naming all three.
+/// A cell of three members over [`LEAVES`] with no overrides, listed with their boot ids before
+/// they boot, each started once the one before it beats, and every view naming all three.
 async fn three_member_cell() -> [HttpRig; 3] {
     use object_store::{ObjectStoreExt, PutPayload, path::Path};
     let fleet = super::fixture_storage::mem();
@@ -428,12 +433,14 @@ async fn three_member_cell() -> [HttpRig; 3] {
         .await
         .unwrap();
     let data = super::fixture_storage::mem();
+    let names = ["streams-1", "streams-2", "streams-3"];
+    let runtimes = [0, 1, 2].map(super::fixture_runtime::RigRuntime::incarnation);
+    // Setup only (the join ruling, Addendum 23 §2 (b)): the three are listed with their boot ids
+    // before they boot, so the cell starts converged and the drain is the only sequence.
+    let listed: Vec<_> = names.into_iter().zip(&runtimes).collect();
+    super::fixture_members::seed_members(&fleet, &listed).await;
     let mut rigs = Vec::new();
-    for (n, name) in ["streams-1", "streams-2", "streams-3"]
-        .into_iter()
-        .enumerate()
-    {
-        let runtime = super::fixture_runtime::RigRuntime::incarnation(u64::try_from(n).unwrap());
+    for (name, runtime) in names.into_iter().zip(runtimes) {
         rigs.push(balance_member(&fleet, &data, name, runtime).await);
         let beat = Path::from(format!("fleet/{name}.json"));
         let t0 = Instant::now();
@@ -456,49 +463,86 @@ async fn three_member_cell() -> [HttpRig; 3] {
         .put(&Path::from("fleet/urls.json"), PutPayload::from(urls))
         .await
         .unwrap();
+    // Each view names all three, and a tick since the URLs were written gave each its peers'
+    // (a seeded cell's rings are whole at its first view, before any tick read `fleet/urls.json`;
+    // a member without a peer's URL answers `409` where it would forward).
+    let knows = |rig: &HttpRig| {
+        let me = rig.state.ownership.instance().to_string();
+        rig.state.ownership.ring_active().len() == 3
+            && names
+                .iter()
+                .all(|name| *name == me || rig.state.peer.has_peer(name))
+    };
     let t0 = Instant::now();
-    while rigs
-        .iter()
-        .any(|rig| rig.state.ownership.ring_active().len() < 3)
-    {
-        assert!(t0.elapsed() < BOUND, "every view names all three members");
+    while !rigs.iter().all(knows) {
+        assert!(
+            t0.elapsed() < BOUND,
+            "every view names all three members and their URLs"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // §22's join (the join ruling, Addendum 3): all three listed with their boot ids and every pin
+    // returned, so the views agree on the ring's owners before the scenario.
+    let members: Vec<&HttpRig> = rigs.iter().collect();
+    super::fixture_members::joined(&fleet, &members, Duration::from_secs(60)).await;
     rigs.try_into().unwrap_or_else(|_| unreachable!())
 }
 
-/// A leaf the ring of all three gives `streams-1` and the ring without it gives `streams-2`.
+/// A leaf the ring of all three gives `streams-3` and the ring of the count of two gives
+/// `streams-2`.
 fn drained_to_the_second() -> &'static str {
     let all = ["streams-1", "streams-2", "streams-3"].map(String::from);
-    let rest = &all[1..];
+    let counted = &all[..2];
     for leaf in LEAVES {
         let pick = |members: &[String]| crate::ownership::ring_pick(leaf, members);
-        if pick(&all) == 0 && pick(rest) == 0 {
+        if pick(&all) == 2 && pick(counted) == 1 {
             return leaf;
         }
     }
-    panic!("no leaf streams-1 holds and streams-2 inherits")
+    panic!("no leaf streams-3 holds and streams-2 inherits")
+}
+
+/// The scale-in's count: `desired.json` rewritten to two over `state`'s fleet store, as the
+/// controller's shrink publishes it.
+async fn scaled_in_to_two(state: &crate::http::AppState) {
+    let body = br#"{"count":2,"epoch":2,"reason":"test","computed_at_ms":0}"#.to_vec();
+    let t0 = Instant::now();
+    loop {
+        let (_, version) = state.fleet.read_desired_state().await.unwrap();
+        let document = crate::fleet::FleetDocument::Desired;
+        if state
+            .fleet
+            .replace_document(document, body.clone(), version)
+            .await
+        {
+            return;
+        }
+        assert!(t0.elapsed() < BOUND, "the count of two is written");
+    }
 }
 
 /// **A peer whose view the drain overtook is answered after one replay at most** (G10). A cell of
-/// three: `streams-1` drains the leaf it holds to `streams-2` and announces, and `streams-2`
-/// prunes the entry the move wrote (a no-op once `streams-1` left the ring; aged past the return
-/// window here, as its passing would). `streams-3`'s view is then set back to what it was before
-/// the drain, as if its tick had not run since: an append through it, naming `streams-1`, is acked
-/// after at most one `409` and one replay.
+/// three, scaled in to two (GATE-DECISION-s22-join-2026-11-20 Addendum 25: C6(b) keeps an entry
+/// whose home is an ordinal within the count, so the drained member is the one the count leaves
+/// out): `streams-3` drains the leaf it holds to `streams-2` and announces, the count drops to
+/// two, and `streams-2` prunes the entry the move wrote (a no-op once `streams-3` is beyond the
+/// count and unlisted; aged past the return window here, as its passing would). `streams-1`'s
+/// view is then set back to what it was before the drain, as if its tick had not run since: an
+/// append through it, naming `streams-3`, is acked after at most one `409` and one replay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay() {
     let [a, b, c] = three_member_cell().await;
     let leaf = drained_to_the_second();
     let mut taken = 0;
-    let stream = stream_in(&a.state, a.addr, leaf, &mut taken).await;
+    let stream = stream_in(&c.state, c.addr, leaf, &mut taken).await;
     assert_eq!(
-        drained_within(&a.state, BOUND).await,
+        drained_as(&c.state, "streams-3", BOUND).await,
         DrainOutcome::HandedOff
     );
+    scaled_in_to_two(&b.state).await;
     aged_past_the_window(&b.state, leaf).await;
     let t0 = Instant::now();
-    while a
+    while b
         .state
         .fleet
         .read_overrides()
@@ -514,26 +558,26 @@ async fn a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // streams-3's view as it stood before the drain, as if its tick had not run since: all three
+    // streams-1's view as it stood before the drain, as if its tick had not run since: all three
     // members, no entry for the leaf.
     let before = ["streams-1", "streams-2", "streams-3"]
         .map(String::from)
         .to_vec();
-    c.state
+    a.state
         .ownership
         .set_view(before, std::collections::HashMap::new());
-    let stale = c.state.ownership.effective_owner(leaf);
+    let stale = a.state.ownership.effective_owner(leaf);
     assert_eq!(
         stale.as_deref(),
-        Some("streams-1"),
-        "streams-3 still names streams-1"
+        Some("streams-3"),
+        "streams-1 still names streams-3"
     );
     let members = [
         ("streams-1", a.addr),
         ("streams-2", b.addr),
         ("streams-3", c.addr),
     ];
-    let (status, by, replays) = appended_through(members, c.addr, &stream).await;
+    let (status, by, replays) = appended_through(members, a.addr, &stream).await;
     assert_eq!(
         (status, replays <= 1),
         (204, true),

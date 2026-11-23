@@ -39,13 +39,12 @@ impl Refresh {
         })
     }
 
-    /// Read the overrides and publish them with the ring over the fleet tick's last candidates, in
-    /// the interim every document's ring (§22 C2); before the tick's first pass, with the view's
-    /// current active members, which it keeps exactly (so it never creates a view an instance
-    /// awaiting its first one lacks).
+    /// Read the overrides and publish them with the document's own ring over the fleet tick's last
+    /// candidates (§22 C2); before the tick's first pass, with the view's current active members,
+    /// which it keeps exactly (so it never creates a view an instance awaiting its first one lacks).
     async fn refreshed(&self) -> anyhow::Result<()> {
         let (overrides, _) = self.fleet.read_overrides().await?;
-        let ring = self.fleet.standing().ring_of();
+        let ring = self.fleet.standing().ring_of(&overrides);
         let map = overrides
             .entries
             .into_iter()
@@ -442,10 +441,12 @@ mod tests {
     }
 
     /// **An install's refresh pairs a newer document's entries with that document's ring** (§22
-    /// C2, GATE-DECISION-s22-3b-step4-2026-11-21 §2.2), not with the ring last published. The view
-    /// last published is `streams-1` alone, no override; the fleet tick's last pass read a count of
-    /// two with both members live. The stored document now lists both and moves `10` to
-    /// `streams-2`: the refresh publishes both members as the ring, beside that entry.
+    /// C1, C2, GATE-DECISION-s22-3b-step4-2026-11-21 §2.2), not with the ring last published nor
+    /// with today's rule over the last pass. The view last published is `streams-1` alone, no
+    /// override; the fleet tick's last pass read a count of two with both members live, so today's
+    /// rule is both. The stored document now lists `streams-2` alone, stamped with a boot id the
+    /// reader holds no evidence against, and moves `10` to it: the refresh publishes `streams-2` as
+    /// the ring (R1), beside that entry (owed again by the join, Fable 2026-11-20).
     #[tokio::test(crate = "crate::test_rt")]
     async fn an_installs_refresh_pairs_a_newer_documents_entries_with_its_own_ring() {
         let fleet_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -453,14 +454,14 @@ mod tests {
         let ownership = fleet.ownership("streams-1".to_string());
         ownership.set_view(vec!["streams-1".to_string()], Default::default());
         fleet.standing().note_pass(2, &["streams-1", "streams-2"]);
-        let newer = br#"{"entries":{"10":{"to":"streams-2","ms":0}},"members":[{"name":"streams-1"},{"name":"streams-2"}]}"#;
+        let newer = br#"{"entries":{"10":{"to":"streams-2","ms":0}},"members":[{"name":"streams-2","boot_id":"b-2"}]}"#;
         let path = object_store::path::Path::from("fleet/overrides.json");
         fleet_store.put(&path, newer.to_vec().into()).await.unwrap();
         let refresh = super::Refresh::of(&fleet, &ownership).unwrap();
         refresh.refreshed().await.unwrap();
-        let both = vec!["streams-1".to_string(), "streams-2".to_string()];
+        let listed = vec!["streams-2".to_string()];
         let moved = vec![("10".to_string(), "streams-2".to_string())];
         let overrides: Vec<(String, String)> = ownership.overrides().into_iter().collect();
-        assert_eq!((ownership.ring_active(), overrides), (both, moved));
+        assert_eq!((ownership.ring_active(), overrides), (listed, moved));
     }
 }

@@ -14,7 +14,7 @@ pub(super) const PASS_DEADLINE: Duration = Duration::from_millis(PASS_DEADLINE_M
 /// A peer keeps its place in the ring while its heartbeat is younger than
 /// this on the reader's clock: fifteen beats of its own publisher
 /// (`fleet::heartbeat`). This is process liveness only.
-const RING_LIVENESS_MS: i64 = 30_000;
+pub(super) const RING_LIVENESS_MS: i64 = 30_000;
 
 /// A candidate's controller must have completed a pass (published its
 /// ownership view from a complete authority read) within this long of its
@@ -25,7 +25,7 @@ const RING_LIVENESS_MS: i64 = 30_000;
 /// reads) adds a period and a deadline. The age is the publisher's own
 /// monotonic measure, so neither host skew nor a stepped wall clock moves
 /// the judgement.
-const PROGRESS_DEADLINE_MS: u64 = 3 * PASS_DEADLINE_MS + 2 * TICK_PERIOD_MS;
+pub(super) const PROGRESS_DEADLINE_MS: u64 = 3 * PASS_DEADLINE_MS + 2 * TICK_PERIOD_MS;
 
 /// What the ring planner reads from one published heartbeat: separate
 /// facts, never inferred from traffic (an idle instance keeps its place).
@@ -42,6 +42,8 @@ pub(super) struct Candidacy {
     draining: bool,
     /// The shards it holds in reserve for its own live split (S4-DESIGN §4.4).
     reserved_shards: u32,
+    /// The incarnation it is a beat of (§22 R1: evidence counts only against that boot id).
+    boot: u64,
 }
 
 impl super::Heartbeat {
@@ -55,11 +57,17 @@ impl super::Heartbeat {
             withdrawn: self.withdrawn.is_some(),
             draining: self.draining,
             reserved_shards: self.reserved_shards,
+            boot: super::record::boot_of(&self.boot_id),
         }
     }
 }
 
 impl Candidacy {
+    /// The incarnation this is a beat of, and whether it qualifies the instance for the ring.
+    pub(super) fn judged(&self, is_self: bool) -> (u64, bool) {
+        (self.boot, member(is_self, Some(self)))
+    }
+
     /// The shards it holds in reserve for its own live split, which the rebalancers count as held.
     pub(super) fn reserved_shards(&self) -> u32 {
         self.reserved_shards
@@ -110,19 +118,18 @@ pub(super) fn another_member(
 /// filter. This instance is running (its own tick is asking), so its liveness is not judged, and
 /// it is kept when the listing missed its heartbeat. The ring is made from them and the overrides
 /// document (`record::Candidates::ring`); today's rule, the first `count` ordinals among them or
-/// all of them unfiltered, is `record::Candidates::today`.
+/// all of them unfiltered, is `record::Candidates::today`. Each held beat is kept with its boot id
+/// and its judgement, the evidence a listed member leaves a ring on (§22 R1).
 // mt-lint: allow(name-keyed-map): fleet instance -> its published candidacy
 pub(super) fn active_members(
     count: u64,
     instance: &str,
     candidacies: &HashMap<String, Candidacy>,
 ) -> super::record::Candidates {
-    let qualified = candidacies
+    let held = candidacies
         .iter()
-        .filter(|(name, candidacy)| member(name.as_str() == instance, Some(candidacy)))
-        .map(|(name, _)| name.clone());
-    let unlisted_self = (!candidacies.contains_key(instance)).then(|| instance.to_string());
-    super::record::Candidates::new(count, qualified.chain(unlisted_self).collect())
+        .map(|(name, candidacy)| (name.clone(), candidacy.judged(name.as_str() == instance)));
+    super::record::Candidates::held(count, instance, held.collect())
 }
 
 /// One candidate's ring membership (see `active_members`).

@@ -338,24 +338,27 @@ async fn the_tick_lists_its_members_only_to_discover_them() {
     }
 }
 
-/// A desired count beyond this runtime's FLEET_MAX (a peer configured larger
-/// published it, or FLEET_MIN exceeds FLEET_MAX) names its ordinals in the
-/// pass that reads it: the first pass's ring holds every live member the
-/// count names, and so does the ring of the first pass that reads a rise.
-/// Each ring is the one its pass published: the next pass waits at its
-/// overrides read.
+/// A desired count beyond this runtime's FLEET_MAX (a peer configured larger published it, or
+/// FLEET_MIN exceeds FLEET_MAX) names its ordinals in the pass that reads it: the first pass's ring
+/// holds every live member the count names. Under §22's join a rise no longer makes a member by
+/// itself (the join ruling, Addendum 3, re-aimed): the first pass that reads the rise reads the new
+/// ordinal's beat by name (C7's prospective set depends on it), from the store's trace; and once the
+/// document lists the ordinal, as its join would (`streams-7` is a seeded beat with no process),
+/// the next publication names it. Each ring is the one its pass published: the next pass waits at
+/// its overrides read. The heartbeat's own read of the document at boot (Addendum 3) is the first
+/// read the gate answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_count_beyond_fleet_max_names_its_members_in_the_pass_that_reads_it() {
     let (inner, gated, trace) = Gated::over_mem();
-    gated.answered.store(1, Ordering::SeqCst);
+    gated.answered.store(2, Ordering::SeqCst);
     seed_count(&inner, 5).await;
     for peer in ["streams-2", "streams-5"] {
         peer_heartbeat(&inner, peer, 0, 0.0).await;
     }
-    let rig = tick_over(trace, |_| {}).await;
+    let rig = tick_over(trace.clone(), |_| {}).await;
     assert_eq!(rig.state.config.cli.fleet_max, 4);
     let ring = || rig.state.ownership.ring_active();
-    gated.asked(2).await;
+    gated.asked(3).await;
     assert_eq!(
         ring(),
         ["streams-1", "streams-2", "streams-5"],
@@ -364,12 +367,20 @@ async fn a_count_beyond_fleet_max_names_its_members_in_the_pass_that_reads_it() 
 
     peer_heartbeat(&inner, "streams-7", 0, 0.0).await;
     seed_count(&inner, 7).await;
-    gated.answered.store(3, Ordering::SeqCst);
-    gated.asked(4).await;
+    gated.answered.store(4, Ordering::SeqCst);
+    gated.asked(5).await;
+    let by_name = reads(&trace, "fleet/streams-7.json");
+    assert!(
+        by_name.contains(&TraceOutcome::Ok),
+        "the first pass that read the rise reads the new ordinal's beat by name: {by_name:?}"
+    );
+    super::super::fixture_members::seed_joined(&inner, "streams-7", "").await;
+    gated.answered.store(5, Ordering::SeqCst);
+    gated.asked(6).await;
     assert_eq!(
         ring(),
         ["streams-1", "streams-2", "streams-5", "streams-7"],
-        "the ring of the first pass that read the rise"
+        "the next publication once the document lists it"
     );
     stop(rig).await;
 }

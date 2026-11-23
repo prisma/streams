@@ -166,14 +166,14 @@ impl Pair {
             .put(&Path::from("fleet/desired.json"), PutPayload::from(desired))
             .await
             .unwrap();
-        let b = member(
-            &fleet,
-            cell,
-            ("streams-2", leaves),
-            RigRuntime::incarnation(1),
-            b_ticks,
-        )
-        .await;
+        let (first, second) = (RigRuntime::first(), RigRuntime::incarnation(1));
+        if b_ticks {
+            // Setup only (the join ruling, Addendum 23 §2 (b)): both listed with their boot ids
+            // before they boot, so the cell starts converged and the join returns nothing.
+            let seeded = [("streams-1", &first), ("streams-2", &second)];
+            super::fixture_members::seed_members(&fleet, &seeded).await;
+        }
+        let b = member(&fleet, cell, ("streams-2", leaves), second, b_ticks).await;
         if !b_ticks {
             beat_of_held(&fleet).await;
         }
@@ -181,14 +181,7 @@ impl Pair {
             let both = ["streams-1", "streams-2"].map(str::to_string).to_vec();
             b.state.ownership.set_view(both, Default::default());
         }
-        let a = member(
-            &fleet,
-            cell,
-            ("streams-1", leaves),
-            RigRuntime::first(),
-            true,
-        )
-        .await;
+        let a = member(&fleet, cell, ("streams-1", leaves), first, true).await;
         store_topology(&a).await;
         b.state
             .peer
@@ -220,6 +213,11 @@ impl Pair {
         {
             assert!(t0.elapsed() < BOUND, "both views name both members");
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // §22's join (the join ruling, Addendum 3): with both ticks running, the second boot joins by
+        // coverage and its leaves return to it giver first; wait for that before the layout.
+        if b_ticks {
+            super::fixture_members::joined(&fleet, &[&a, &b], Duration::from_secs(30)).await;
         }
         let owner = |p: &str| a.state.ownership.effective_owner(p);
         assert_eq!(
@@ -728,6 +726,10 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
         assert!(t0.elapsed() < BOUND, "every view names the three members");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Setup only (the join ruling, Addendum 23 §2 (a)): the cold boot's pin of `""` returns to
+    // its ring home, the actor, before the actor splits it.
+    let members: Vec<&HttpRig> = rigs.iter().collect();
+    super::fixture_members::joined(&fleet, &members, Duration::from_secs(60)).await;
     let actor = &rigs[0];
     let move_ms =
         i64::try_from(actor.state.config.fleet.rebalance_move_cooldown_secs).unwrap() * 1000;

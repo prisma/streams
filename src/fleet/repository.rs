@@ -106,6 +106,14 @@ impl FleetRepository {
         Ok(())
     }
 
+    /// This instance's previous beat, one GET before its first beat (§22 C13): `None` when absent,
+    /// unreadable or not a beat (a joiner, by C13's table).
+    pub(crate) async fn read_previous_beat(&self, instance: &str) -> Option<Heartbeat> {
+        let read = self.read_bytes(&format!("fleet/{instance}.json")).await;
+        let (body, _) = read.ok().flatten()?;
+        serde_json::from_slice(&body).ok()
+    }
+
     /// The members' heartbeats, each read by name and revalidated, and
     /// listed only to find the members no desired count names (`members`).
     /// An incomplete/invalid snapshot is an error, so the controller retains
@@ -278,7 +286,7 @@ impl FleetRepository {
     }
 
     /// [`Self::replace_document`], answering the version it wrote when it committed: a writer that
-    /// must publish what it wrote needs no read of it (§22 step 4, `record::listed`).
+    /// must publish what it wrote needs no read of it (§22: `join::pass`).
     pub(crate) async fn replaced_document(
         &self,
         doc: FleetDocument,
@@ -457,7 +465,7 @@ fn validate_desired(doc: &Desired) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_overrides(doc: &Overrides) -> anyhow::Result<()> {
+pub(super) fn validate_overrides(doc: &Overrides) -> anyhow::Result<()> {
     anyhow::ensure!(
         doc.entries.len() <= MAX_MEMBERS,
         "override map exceeds item budget"

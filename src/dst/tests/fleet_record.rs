@@ -1,12 +1,11 @@
 #![cfg(test)]
-//! The membership of record in its interim (§22 step 4; GATE-DECISION-s22-addendum-2026-11-19 C1-C4,
-//! C17; GATE-DECISION-meas-full-forward-wedge-2026-11-19 Addendum 14). Until the join lands, the
-//! fleet tick keeps the overrides document's `members` equal to the ordinal set within the count it
-//! read, by one CAS, and every view's ring is the listed members its own beats qualify: the set
-//! today's rule computes on that reader. These pin that through a count rise and a drop and a
-//! listed member stale on one reader (Addendum 14 condition 1, GATE-DECISION-s22-3b-step4-2026-11-21
-//! §2.1), the first write of an older cell's document (C17), a fresh cell's document created once,
-//! by one of two members at once (§2.4), and a write whose answer was lost (C4).
+//! The membership of record (§22 steps 4 and 5; GATE-DECISION-s22-addendum-2026-11-19 C1-C5,
+//! C17; GATE-DECISION-s22-join-2026-11-20). Every view's ring is the document's members less those
+//! its own beats hold evidence against, and only a join CAS adds a member. These pin a count rise
+//! (the newcomer joins once pinned) and a drop (the interim's removal half, today's class until the
+//! leave), a listed member stale on one reader, the first listing of an older cell's document and
+//! of a fresh cell's (C17: the writer stamps itself), two members creating one at once, and a write
+//! whose answer was lost (C4).
 
 use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_runtime::RigRuntime;
@@ -78,13 +77,10 @@ async fn stored(fleet: &Arc<dyn ObjectStore>) -> (Option<Vec<String>>, Option<St
     let e_tag = got.meta.e_tag.clone();
     let body = got.bytes().await.unwrap();
     let doc: crate::fleet::Overrides = serde_json::from_slice(&body).unwrap();
-    let members = doc.members.map(|listed| {
-        assert!(
-            listed.iter().all(|member| member.boot_id.is_none()),
-            "{listed:?}"
-        );
-        listed.into_iter().map(|member| member.name).collect()
-    });
+    // The join stamps each member's boot id (R1a); these read the names only.
+    let members = doc
+        .members
+        .map(|listed| listed.into_iter().map(|member| member.name).collect());
     (members, e_tag)
 }
 
@@ -188,14 +184,14 @@ async fn across_a_colocate(readers: &[&HttpRig], today: &[&str]) {
     assert_eq!(entry, Some(to), "the move's entry is in the view");
 }
 
-/// **The record lists today's ring through a count rise and a count drop** (Addendum 14,
-/// condition 1). Two live members on a count of one: the document lists `streams-1` and both views'
-/// ring is `streams-1`. The count rises to two: the document lists both and both rings are both.
-/// At that steady count the holder of `1` hands it to the other giver first, as a co-location's
-/// holder does, and both rings stay both before, while and after (`across_a_colocate`).
-/// The count drops to one: the document lists `streams-1` again (written by `streams-1`;
-/// `streams-2`, outside today's ring, writes nothing) and both rings are `streams-1`. No sample
-/// shows a ring today's rule would not give at that count.
+/// **The record follows a count rise by a join and a drop by the removal half** (Addendum 14
+/// condition 1, as the join changes it). Two live members on a count of one: the document lists
+/// `streams-1` (stamped by its C17 write) and both views' ring is `streams-1`. The count rises to
+/// two: `streams-1` pins, `streams-2` joins by its CAS, and both rings become both. At that steady
+/// count the holder of `1` hands it to the other giver first, as a co-location's holder does, and
+/// both rings stay both before, while and after (`across_a_colocate`). The count drops to
+/// one: `streams-1`'s next pin CAS unlists `streams-2` (the removal half, today's class until the
+/// leave) and both rings are `streams-1`. No sample shows a ring outside these.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn the_record_lists_todays_ring_through_a_count_rise_and_a_drop() {
     let (data, fleet) = (mem(), mem());
@@ -219,6 +215,11 @@ async fn the_record_lists_todays_ring_through_a_count_rise_and_a_drop() {
         &[one, both],
     )
     .await;
+    // Setup only (the join ruling, Addenda 23 §2 (a) and 25 (i)): the rise settles before the
+    // co-location picks the holder of `1`, so both views name the same one and nothing moves after.
+    // `streams-2` wins both leaves, and the load-aware return gives a home back no more than its
+    // fair share, so one of the rise's pins may stand on `streams-1`.
+    super::fixture_members::settled(&fleet, &[&a, &b], BOUND).await;
     across_a_colocate(&[&a, &b], both).await;
     desired(&fleet, 1, 3).await;
     settled(
@@ -238,9 +239,10 @@ async fn the_record_lists_todays_ring_through_a_count_rise_and_a_drop() {
 /// document has no `members`, and the count is two; `streams-1` boots alone. Its first pass lists
 /// `streams-1` and `streams-2`, and its ring stays `streams-1` throughout (today's rule:
 /// `streams-2` has no beat). Five more passes write nothing: the document's ETag is unchanged (an
-/// idle cell's request count, C16's measure for this step). The entries and outbox a write keeps
-/// are `record::listed`'s clone; an entry here would be rewritten by return-home (a no-op entry)
-/// and an event by the outbox drain, either of which moves the ETag.
+/// idle cell's request count, C16's measure). `streams-2` stays listed unstamped (it is no
+/// "unlisted ordinal", so no pin is written for it). The entries and outbox a write keeps are
+/// `join::plan`'s clone; an entry here would be rewritten by return-home (a no-op entry) and an
+/// event by the outbox drain, either of which moves the ETag.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_older_cells_document_is_listed_once_by_a_member_of_todays_ring() {
     let (data, fleet) = (mem(), mem());
@@ -286,45 +288,31 @@ async fn a_members_write_whose_answer_was_lost_is_found_by_the_next_read() {
     stop(a).await;
 }
 
-/// A seeded beat of `name` from the boot "seed", `age_ms` old, as a peer's tick reads it.
-async fn seeded_beat(fleet: &Arc<dyn ObjectStore>, name: &str, age_ms: i64) {
-    let ts = crate::shard::now_ms() - age_ms;
-    let beat = format!(
-        r#"{{"instance":"{name}","boot_id":"seed","ts_ms":{ts},"rps":0.0,"cpu_pct":0.0,"inflight":0,"owned_shards":[],"draining":false,"url":""}}"#
-    );
-    let path = Path::from(format!("fleet/{name}.json"));
-    fleet.put(&path, PutPayload::from(beat)).await.unwrap();
-}
-
-/// **A listed member whose beat is stale on one reader** (condition 1's case, §2.1). Count two,
-/// both listed. `streams-2`'s beats never land (its PUTs are held) and its seeded beat ages past the
-/// ring's liveness, so `streams-1`'s ring is today's without it, while `streams-2`'s own ring is
-/// today's with it (a member never judges its own liveness). `members` is unchanged throughout:
-/// no reader writes for a liveness judgement.
+/// **A listed member whose beat is stale on one reader** (condition 1's case, §2.1; R1). Count
+/// two: both boot, `streams-2` joins and both are listed with their boot ids. `streams-2`'s beats
+/// then stop landing (its PUTs are held) and its last beat ages past the ring's liveness on
+/// `streams-1`: evidence of its listed boot, so `streams-1`'s ring drops it, while `streams-2`'s own
+/// ring keeps itself (listed with its own boot id). `members` is unchanged throughout: no reader
+/// writes for a liveness judgement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_listed_member_stale_on_one_reader_leaves_that_readers_ring_alone() {
     let (data, fleet) = (mem(), mem());
     desired(&fleet, 2, 1).await;
-    // Live for eight more seconds: long enough for both views to count it first.
-    seeded_beat(&fleet, "streams-2", 22_000).await;
     let silent = FaultStore::new(fleet.clone(), 0x5141, FaultProfile::clean());
-    let beats = "fleet/streams-2.json";
-    let _held = silent.hold_class_under(StoreOp::Put, ObjClass::Fleet, beats, u64::MAX);
-    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
-    let b = member(
-        &data,
-        silent.clone(),
-        "streams-2",
-        RigRuntime::incarnation(1),
-    )
-    .await;
+    let (first, second) = (RigRuntime::first(), RigRuntime::incarnation(1));
+    // Setup only (the join ruling, Addendum 23 §2 (b)): both listed with their boot ids before
+    // they boot, so the cell starts converged and the join writes nothing after `listed_tag`.
+    let listed = [("streams-1", &first), ("streams-2", &second)];
+    super::fixture_members::seed_members(&fleet, &listed).await;
+    let a = member(&data, fleet.clone(), "streams-1", first).await;
+    let b = member(&data, silent.clone(), "streams-2", second).await;
     let (one, two, both): (&[&str], &[&str], &[&str]) =
         (&["streams-1"], &["streams-2"], &["streams-1", "streams-2"]);
     // `two`: today's rule on `streams-2` at a pass that has not yet read `streams-1`'s first beat
     // (a beat waits one period, as a pass does, so `streams-2`'s first pass can run before
     // `streams-1`'s first beat lands): its candidates are itself alone.
     settled(
-        "both live",
+        "both listed",
         &fleet,
         &[&a, &b],
         (both, both),
@@ -332,10 +320,12 @@ async fn a_listed_member_stale_on_one_reader_leaves_that_readers_ring_alone() {
     )
     .await;
     let (_, listed_tag) = stored(&fleet).await;
+    let beats = "fleet/streams-2.json";
+    let _held = silent.hold_class_under(StoreOp::Put, ObjClass::Fleet, beats, u64::MAX);
     let t0 = tokio::time::Instant::now();
     while a.state.ownership.ring_active() != names(one) {
         assert!(
-            t0.elapsed() < BOUND,
+            t0.elapsed() < Duration::from_secs(45),
             "streams-2's beat goes stale on streams-1"
         );
         assert_eq!(
@@ -370,9 +360,12 @@ async fn a_fresh_cells_document_is_created_listing_the_ordinals_in_one_write() {
     stop(a).await;
 }
 
-/// **Two members creating a fresh cell's document at once end with one document** (§2.4). Both
-/// boot on an empty fleet store at a count of two: one create lands, the other is refused and its
-/// read finds the document listed. Both rings are today's, and the document was written once.
+/// **Two members creating a fresh cell's document at once end with one document** (§2.4, as the join
+/// changes it). Both boot on an empty fleet store at a count of two: one create lands, listing its
+/// writer stamped and the other unstamped; the other's create is refused and its read finds the
+/// document. That one finds itself listed unstamped with no young beat (C13, the join ruling §2):
+/// it unlists, and joins by coverage once the creator pins. Both end listed with their boot ids,
+/// both rings are both, and idle passes then write nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn two_members_creating_a_fresh_cells_document_at_once_end_with_one() {
     let (data, fleet) = (mem(), mem());
@@ -398,8 +391,128 @@ async fn two_members_creating_a_fresh_cells_document_at_once_end_with_one() {
         &[one, two, both, &[]],
     )
     .await;
+    let settled_writes = overrides_writes(&trace);
     tokio::time::sleep(Duration::from_secs(6)).await;
-    assert_eq!(overrides_writes(&trace), 1);
+    assert_eq!(
+        overrides_writes(&trace),
+        settled_writes,
+        "no write on idle passes"
+    );
+    for rig in [a, b] {
+        stop(rig).await;
+    }
+}
+
+/// The cell of two at its fair share (the join ruling, Addendum 25): `streams-1` alone, then the
+/// count rises to two and `streams-2` joins. `streams-2` wins both leaves; the load-aware return
+/// gives it back one, so one pin stands on `streams-1`, whichever the passes returned first. The
+/// members and the pin.
+async fn at_the_fair_share(
+    data: &Arc<dyn ObjectStore>,
+    fleet: &Arc<dyn ObjectStore>,
+) -> (HttpRig, HttpRig, (String, String)) {
+    desired(fleet, 1, 1).await;
+    let a = member(data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    let one: &[&str] = &["streams-1"];
+    settled("a count of one", fleet, &[&a], (one, one), &[one, &[]]).await;
+    desired(fleet, 2, 2).await;
+    let b = member(data, fleet.clone(), "streams-2", RigRuntime::incarnation(1)).await;
+    let pins = super::fixture_members::settled(fleet, &[&a, &b], BOUND).await;
+    let [pin] = <[(String, String); 1]>::try_from(pins).expect("one pin stands at the fair share");
+    assert_eq!(pin.1, "streams-1", "the giver keeps the pin");
+    (a, b, pin)
+}
+
+/// Fenced engines and handoffs ended by a fence, per rig: none in either scenario below.
+fn fences(rigs: &[&HttpRig]) -> Vec<(u64, u64)> {
+    let fenced = |rig: &&HttpRig| {
+        let handoffs = rig.state.fleet.standing().handoffs_fenced();
+        (rig.state.shards.fenced_ahead(), handoffs)
+    };
+    rigs.iter().map(fenced).collect()
+}
+
+/// **A join's pin at the fair share stands, and the next ring change lifts it** (the join ruling,
+/// Addendum 25 (i)-(iii)). Settled at two with one pin standing ([`at_the_fair_share`]), the pin
+/// is judged again every pass and kept for three more. The count then rises to three and
+/// `streams-3` boots: over three `0` is `streams-2`'s and `1` is `streams-3`'s. Until `streams-3`
+/// is listed the pin stands as C7 has it (its holder's, the prospective ring another's); then the
+/// shares change and it is lifted by a return, giver first: every view gives each leaf its home
+/// over three, no pin is left and nothing is fenced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_join_pin_at_the_fair_share_stands_until_the_next_ring_change_lifts_it() {
+    let (data, fleet) = (mem(), mem());
+    let (a, b, pin) = at_the_fair_share(&data, &fleet).await;
+    let stood = super::fixture_members::pins(&fleet).await;
+    tokio::time::sleep(Duration::from_millis(6_500)).await;
+    let kept = super::fixture_members::settled(&fleet, &[&a, &b], BOUND).await;
+    let one = vec![pin.clone()];
+    assert_eq!((stood, kept), (one.clone(), one), "three passes keep it");
+    desired(&fleet, 3, 3).await;
+    let c = member(
+        &data,
+        fleet.clone(),
+        "streams-3",
+        RigRuntime::incarnation(2),
+    )
+    .await;
+    let t0 = tokio::time::Instant::now();
+    let mut held_until_listed = true;
+    loop {
+        let (members, _) = stored(&fleet).await;
+        let listed = members
+            .unwrap_or_default()
+            .iter()
+            .any(|name| name == "streams-3");
+        let pins = super::fixture_members::pins(&fleet).await;
+        if !listed {
+            held_until_listed &= pins.contains(&pin);
+        }
+        // Every view gives each leaf its home over three.
+        let homed = |rig: &&HttpRig| {
+            let owner = |leaf: &str| rig.state.ownership.effective_owner(leaf);
+            (owner("0"), owner("1")) == (Some("streams-2".into()), Some("streams-3".into()))
+        };
+        if listed && pins.is_empty() && [&a, &b, &c].iter().all(homed) {
+            break;
+        }
+        assert!(t0.elapsed() < BOUND, "{pin:?} is lifted: {pins:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        (held_until_listed, fences(&[&a, &b, &c])),
+        (true, vec![(0, 0); 3]),
+        "(the pin stood until streams-3 was listed, fences)"
+    );
+    for rig in [a, b, c] {
+        stop(rig).await;
+    }
+}
+
+/// **A join's pin is dropped when its holder becomes the ring's home** (the join ruling,
+/// Addendum 25 (iii); C6(b)). Settled at two with one pin standing on `streams-1`
+/// ([`at_the_fair_share`]); the count drops to one. Over the counted ring of one the pinned leaf's
+/// home is its holder, so the entry is a no-op and is dropped: the leaf never leaves `streams-1`,
+/// no pin is left, and nothing is fenced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_join_pin_is_dropped_when_its_holder_becomes_the_rings_home() {
+    let (data, fleet) = (mem(), mem());
+    let (a, b, pin) = at_the_fair_share(&data, &fleet).await;
+    let leaf = pin.0.as_str();
+    desired(&fleet, 1, 3).await;
+    let t0 = tokio::time::Instant::now();
+    let mut stayed = true;
+    while !super::fixture_members::pins(&fleet).await.is_empty() {
+        stayed &= a.state.shards.is_open(leaf);
+        assert!(t0.elapsed() < BOUND, "the pin of {leaf} is dropped");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stayed &= a.state.shards.is_open(leaf);
+    assert_eq!(
+        (stayed, fences(&[&a, &b])),
+        (true, vec![(0, 0); 2]),
+        "(the pinned leaf stayed on streams-1, fences)"
+    );
     for rig in [a, b] {
         stop(rig).await;
     }

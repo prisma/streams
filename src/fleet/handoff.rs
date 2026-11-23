@@ -274,6 +274,7 @@ async fn run(state: &AppState, request: &Request) -> (Outcome, Option<Committed>
         close: closed_at.duration_since(flushed_at),
         release: parked_at.elapsed(),
         fenced,
+        h1_kept: committed == Committed::KeptByH1,
     };
     phases.report(state, prefix, outcome);
     (outcome, Some(committed))
@@ -289,15 +290,19 @@ pub(crate) struct Phases {
     pub(crate) release: Duration,
     /// Whether the close did not end clean, so the move was a takeover by fence (E5).
     pub(crate) fenced: bool,
+    /// Whether H1 kept the move: the document gave the leaf to no listed other instance.
+    pub(crate) h1_kept: bool,
 }
 
 impl Phases {
     /// One line per planned move, with stable keys the rig and the measurement legs read
-    /// (`handoff shard=<p> fenced=<bool> park_ms= flush_ms= close_ms= release_ms= end=`).
+    /// (`handoff shard=<p> fenced=<bool> h1_kept=<bool> park_ms= flush_ms= close_ms= release_ms=
+    /// end=`).
     fn report(self, state: &AppState, prefix: &str, end: Outcome) {
         tracing::info!(
             shard = %prefix,
             fenced = self.fenced,
+            h1_kept = self.h1_kept,
             park_ms = self.park.as_millis(),
             flush_ms = self.flush.as_millis(),
             close_ms = self.close.as_millis(),
@@ -326,6 +331,9 @@ async fn without_engine(state: &AppState, request: &Request) -> (Outcome, Option
     let committed = commit(state, prefix, &request.change, deadline(until)).await;
     drop(mark);
     let end = committed.outcome();
+    if committed == Committed::KeptByH1 {
+        tracing::info!(shard = %prefix, h1_kept = true, ?end, "handoff: without an engine");
+    }
     state.fleet.standing().note_attempt(end, "commit");
     (end, Some(committed))
 }
@@ -393,6 +401,8 @@ enum Committed {
     Kept,
     /// The commit's bound ran out first: the move is `Kept`, and backed off (Addendum 26 (c)).
     Bound,
+    /// H1: nothing was written, and the move is `Kept`.
+    KeptByH1,
 }
 
 impl Committed {
@@ -416,6 +426,8 @@ enum Try {
     Placed,
     /// This try's CAS won: the document it wrote.
     Written(Overrides),
+    /// H1: the document gives the shard to no listed other instance; nothing was written.
+    KeptByH1,
     /// An unreadable document, or a CAS another writer won.
     Again,
 }
@@ -439,6 +451,7 @@ async fn commit(state: &AppState, prefix: &str, change: &Change, deadline: Insta
         Err(_) => Committed::Bound,
         Ok(Try::Again) => Committed::Kept,
         Ok(Try::Placed) => Committed::Moved,
+        Ok(Try::KeptByH1) => Committed::KeptByH1,
         Ok(Try::Written(next)) => {
             let read = timeout_at(deadline, super::view::refreshed(state)).await;
             if !matches!(read, Ok(Some(_))) {
@@ -457,6 +470,17 @@ async fn try_once(state: &AppState, prefix: &str, change: &Change) -> Try {
     if mirror(state, &doc, version.as_ref(), prefix).await {
         return Try::Placed;
     }
+    if !gives_to_a_listed_other(
+        &doc,
+        prefix,
+        change,
+        state.config.cli.instance_name.as_str(),
+    ) {
+        let why = "handoff: the document lists no other target (H1); nothing written";
+        tracing::info!(shard = %prefix, ?change, "{why}");
+        state.fleet.standing().note_h1_kept();
+        return Try::KeptByH1;
+    }
     let next = changed(state, doc, prefix, change).await;
     let Ok(body) = serde_json::to_vec(&next) else {
         return Try::Again;
@@ -469,6 +493,23 @@ async fn try_once(state: &AppState, prefix: &str, change: &Change) -> Try {
         Try::Written(next)
     } else {
         Try::Again
+    }
+}
+
+/// H1 (GATE-DECISION-tla049-r1-r3-2026-11-20 §3): whether the document `doc` lets `change` give
+/// `prefix` to a listed instance other than the giver `me`, judged over its members: `To(to)` needs
+/// `to` listed; `Return` needs the home over the members to be another. An older cell's document
+/// (no `members`) is judged as before. Otherwise nothing is written and the move ends `Kept`.
+fn gives_to_a_listed_other(doc: &Overrides, prefix: &str, change: &Change, me: &str) -> bool {
+    let Some(listed) = doc.members.as_deref() else {
+        return true;
+    };
+    let names: Vec<String> = listed.iter().map(|member| member.name.clone()).collect();
+    match change {
+        Change::To(to) => to != me && names.contains(to),
+        Change::Return => {
+            !names.is_empty() && names[crate::ownership::ring_pick(prefix, &names)] != me
+        }
     }
 }
 
@@ -493,8 +534,8 @@ async fn mirror(
     let entries = doc.entries.iter().map(|(p, e)| (p.clone(), e.to.clone()));
     {
         let _one = state.shards.revalidation().lock().await;
-        // The tick's last candidates' ring, every document's ring in the interim (§22 C2).
-        let ring = state.fleet.standing().ring_of();
+        // The document's own ring over the tick's last candidates (§22 C2).
+        let ring = state.fleet.standing().ring_of(doc);
         let active = ring.unwrap_or_else(|| state.ownership.ring_active());
         state.ownership.set_view(active, entries.collect());
         let tag = super::view::tag_of(version);
@@ -708,5 +749,52 @@ mod backoff {
             paces.ended("0", false, (Outcome::Moved, Some(Committed::Moved)), now);
             assert!(!paces.holds("0", now), "Moved clears it");
         }
+    }
+}
+
+#[cfg(test)]
+mod h1_tests {
+    use super::{Change, gives_to_a_listed_other};
+    use crate::fleet::{Member, Overrides};
+
+    /// H1's table (the join ruling §6): a move is written only when the document gives the leaf to
+    /// a listed instance other than the giver: `To` this instance, an unlisted name, or nobody
+    /// listed writes nothing; `Return` writes only when the home over the members is another; an
+    /// older cell's document (no members) is judged as before.
+    #[test]
+    fn a_move_is_written_only_to_a_listed_other_instance() {
+        let member = |name: &str| Member {
+            name: name.to_string(),
+            boot_id: None,
+        };
+        let listed = |names: &[&str]| Overrides {
+            members: Some(names.iter().copied().map(member).collect()),
+            ..Overrides::default()
+        };
+        let to = |name: &str| Change::To(name.to_string());
+        let two = listed(&["streams-1", "streams-2"]);
+        let cases = [
+            (&two, to("streams-1"), false),
+            (&two, to("streams-2"), true),
+            (&two, to("streams-9"), false),
+            (&listed(&[]), to("streams-2"), false),
+            (&listed(&["streams-1"]), Change::Return, false),
+            (&Overrides::default(), to("streams-9"), true),
+        ];
+        for (doc, change, want) in cases {
+            let got = gives_to_a_listed_other(doc, "00", &change, "streams-1");
+            assert_eq!(got, want, "{change:?}");
+        }
+        let home = |doc: &Overrides| {
+            let names: Vec<String> = doc
+                .members
+                .iter()
+                .flatten()
+                .map(|m| m.name.clone())
+                .collect();
+            names[crate::ownership::ring_pick("00", &names)].clone()
+        };
+        let returned = gives_to_a_listed_other(&two, "00", &Change::Return, "streams-1");
+        assert_eq!(returned, home(&two) != "streams-1");
     }
 }

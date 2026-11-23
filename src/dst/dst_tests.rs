@@ -47,6 +47,10 @@ mod fleet_handoff_drain;
 mod fleet_handoff_paced;
 #[path = "tests/fleet_handoff_reads.rs"]
 mod fleet_handoff_reads;
+#[path = "tests/fleet_join.rs"]
+mod fleet_join;
+#[path = "tests/fleet_join_boot.rs"]
+mod fleet_join_boot;
 #[path = "tests/fleet_moves.rs"]
 mod fleet_moves;
 #[path = "tests/fleet_record.rs"]
@@ -196,6 +200,9 @@ mod fixture_http;
 
 #[path = "tests/fixture_livefeed.rs"]
 mod fixture_livefeed;
+
+#[path = "tests/fixture_members.rs"]
+mod fixture_members;
 
 #[path = "tests/fixture_requests.rs"]
 mod fixture_requests;

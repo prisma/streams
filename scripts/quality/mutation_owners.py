@@ -464,7 +464,9 @@ OWNERS = (
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
     # The membership of record and its interim writer (§22 step 4, Addendum 14): its unit tests and
     # the record DSTs (a count rise and drop, an older document, a lost write answer), each ~10-20 s.
-    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record::'),
+    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record:: dst_tests::fleet_join::'),
+    # §22's join: its units, and the join DSTs (a scale-out, a waiting joiner, a restart in place).
+    owner('fleet_join', 'src/fleet/join.rs', 'fleet::join:: dst_tests::fleet_join:: dst_tests::fleet_join_boot::'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
@@ -477,7 +479,7 @@ OWNERS = (
     owner('fleet_handoff', 'src/fleet/handoff.rs', 'fleet::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_bound:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
-    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),
+    owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: shard::task_lifecycle_tests::a_retirement_because_ownership_moved_is_counted_as_a_tick_yield dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),
     owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced:: dst_tests::parked_waits::writes_'),
     owner('fleet_moves', 'src/fleet/moves.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
@@ -485,7 +487,10 @@ OWNERS = (
           'dst_tests::fleet_count_balance::return_home_counts_its_homes_reserved_shards '
           'dst_tests::fleet_topology::a_live_intents_source_is_never_the_lag_moves_shard '
           'dst_tests::topology_colocation::return_home_skips_a_live_intents_sources '
-          'dst_tests::topology_colocation_shield::'),
+          'dst_tests::topology_colocation_shield:: '
+          # C6(a)'s gate and C6(b)'s no-op (§22's join, Addendum 6).
+          'dst_tests::fleet_join::a_leaf_named_by_an_entry_is_returned_only_by_its_holder '
+          'dst_tests::fleet_join::a_split_childs_no_op_entry_then_a_scale_out_moves_nothing'),
     owner('fleet_count_balance', 'src/fleet/count_balance.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::count_balance:: dst_tests::fleet_controller::count_balance::'),
     # The CAS over an in-memory fleet store (owner 2026-11-10: "Approve (1)+(2)"); the policy's
@@ -502,7 +507,8 @@ OWNERS = (
     # -> ()) and heartbeat.rs:354:23 (delete !).
     owner('fleet_heartbeat', 'src/fleet/heartbeat.rs',
           'fleet:: dst_tests::fleet_controller:: dst_tests::fleet_drain:: dst_tests::fleet_topology:: '
-          'dst_tests::fleet_handoff_drain::a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it'),
+          'dst_tests::fleet_handoff_drain::a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it '
+          'dst_tests::fleet_join_boot::'),
     # Each shard's load in the beat: the rates and each engine's load are unit tests; the
     # busiest stream's measure from live tails is the hot-entity DST (30 s wait).
     owner('fleet_shard_load', 'src/fleet/heartbeat/shard_load.rs',

@@ -6,9 +6,8 @@
 //! again on one read in `PEER_READ_TICKS`). The two views disagreed: each member opened the shards
 //! its own view gave it and fenced the other, whose view named itself, with no yield.
 //!
-//! This pins today's unsynchronised ring at a join. §22's join must turn it around (the newcomer
-//! owns nothing until coverage and the CAS), and its DSTs must cover this interleaving and both
-//! halves of it.
+//! §22's join turns it around: the newcomer owns nothing until coverage and its CAS, so this pins
+//! both halves of that interleaving gone (no fence on either member, no yield at the tick).
 
 use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::hreq;
@@ -117,17 +116,17 @@ async fn append_until(what: &str, path: &str, rigs: &[&HttpRig], fenced: impl Fn
     }
 }
 
-/// **A stopped ordinal that boots again fences its peer, and is fenced back** (Addendum 20 (a)).
-/// `streams-1` holds `streams-2`'s draining beat of the stopped boot, so its view is the ring of
-/// itself, and it serves `0`. Its read of `streams-2`'s beat is held from then on (a held member
-/// is read on one read in `PEER_READ_TICKS`; the hold keeps that read from landing). `streams-2`
-/// boots again: its view names both members and gives it `0`, and it opens `0`. `streams-1`'s next
-/// append meets the fence while its own view still names it the owner: one writer fenced ahead of
-/// a move, on `streams-1`. `streams-1` then opens `0` again for an append its view still serves,
-/// and fences `streams-2`, whose view names `streams-2`: one writer fenced ahead, on `streams-2`.
-/// No yield, no move: each took `0` from the other once. Today's behaviour, pinned until the join.
+/// **A stopped ordinal that boots again moves nothing** (Addendum 20 (a), as the join turns it; the
+/// join ruling §1 item 7). `streams-1` holds `streams-2`'s draining beat of the stopped boot, so its
+/// view is the ring of itself, and it serves `0`. Its read of `streams-2`'s beat is held from then
+/// on (a held member is read on one read in `PEER_READ_TICKS`; the hold keeps that read from
+/// landing). `streams-2` boots again: its listing, if any, is not its own boot's, and its previous
+/// beat is draining, so it is a joiner and owns nothing until its join CAS, which waits for
+/// `streams-1`'s pins (C5, C7, C13). `0` then reaches it only by a handoff, giver first. Both halves
+/// of the old interleaving are gone: no engine is fenced ahead on either member, and `streams-1`
+/// never yields `0` at its tick (it closes `0` only as a handoff's giver).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_stopped_ordinal_that_boots_again_fences_its_peer_and_is_fenced_back() {
+async fn a_stopped_ordinal_that_boots_again_moves_nothing() {
     let (data, fleet) = (mem(), after_the_scale_in().await);
     let held = FaultStore::new(fleet.clone(), 0x2020, FaultProfile::clean());
     let a = member(&data, held.clone(), "streams-1", RigRuntime::first()).await;
@@ -153,32 +152,24 @@ async fn a_stopped_ordinal_that_boots_again_fences_its_peer_and_is_fenced_back()
     b.state
         .peer
         .set_peer("streams-1", &format!("http://{}", a.addr));
-    let view = |rig: &HttpRig| (rig.state.ownership.ring_active(), owner(rig));
+    let json = [("content-type", "application/json")];
+    let handed = |rig: &HttpRig| rig.state.fleet.standing().last_handoff().is_some();
+    let mut yielded = false;
     let t0 = tokio::time::Instant::now();
-    while !(owner(&b).as_deref() == Some("streams-2") && b.state.shards.is_open("0")) {
-        let seen = (view(&b), b.state.shards.is_open("0"), view(&a));
-        assert!(
-            t0.elapsed() < BOUND,
-            "streams-2 opens 0 under its own view: {seen:?}"
-        );
-        let json = [("content-type", "application/json")];
-        let _ = hreq(b.addr, "POST", &path, &json, br#"[{"n":1}]"#).await;
+    while t0.elapsed() < Duration::from_secs(10) {
+        for rig in [&a, &b] {
+            let _ = hreq(rig.addr, "POST", &path, &json, br#"[{"n":1}]"#).await;
+        }
+        // A tick yield: streams-1 lost `0` with no handoff of its own behind it.
+        yielded |= !a.state.shards.is_open("0") && !handed(&a);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let fenced = |rig: &HttpRig| rig.state.shards.fenced_ahead();
-    append_until("streams-1 meets the fence", &path, &[&a], || fenced(&a) > 0).await;
-    let first = (fenced(&a), fenced(&b), owner(&a));
-    append_until("streams-2 is fenced back", &path, &[&a, &b], || {
-        fenced(&b) > 0
-    })
-    .await;
-    let second = (fenced(&a), fenced(&b), owner(&b));
     let read_held = engaged.load(std::sync::atomic::Ordering::SeqCst) > 0;
     held.release_hold();
-    let names = |name: &str| Some(name.to_string());
     assert_eq!(
-        (first, second, read_held),
-        ((1, 0, names("streams-1")), (1, 1, names("streams-2")), true)
+        (fenced(&a), fenced(&b), yielded, read_held),
+        (0, 0, false, true)
     );
     for rig in [&a, &b] {
         let report = rig.tasks.shutdown(Duration::from_secs(3)).await;

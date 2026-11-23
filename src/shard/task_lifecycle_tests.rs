@@ -479,3 +479,25 @@ async fn a_retired_shards_log_line_names_its_reason() {
     ];
     assert_eq!(log.causes(), labels.map(|l| format!("{l:?}")));
 }
+
+/// A retirement because the shard's ownership moved is a tick's yield, and the directory counts it
+/// (GATE-DECISION-s22-join-2026-11-20 Addendum 27); a retirement for another reason is not.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_retirement_because_ownership_moved_is_counted_as_a_tick_yield() {
+    use crate::shard_directory::RetirementReason::{FleetEviction, OwnershipMoved};
+    let mut counted = Vec::new();
+    for (seed, reason) in (10u64..).zip([OwnershipMoved, FleetEviction]) {
+        let (engine, _store) = fixture_named(&format!("retire-yield-{seed}"), seed).await;
+        let directory = serving(&engine);
+        let open = directory.open_or_wait(&engine.prefix, Duration::from_secs(1));
+        assert!(matches!(open.await, crate::sharddir::OpenOutcome::Ready(_)));
+        let before = directory.tick_yields();
+        let retired = directory.retire(&engine.prefix, reason, |_, _| true);
+        assert!(matches!(
+            retired,
+            crate::shard_directory::RetireOutcome::Retired(_)
+        ));
+        counted.push(directory.tick_yields() - before);
+    }
+    assert_eq!(counted, [1, 0], "(ownership moved, fleet eviction)");
+}

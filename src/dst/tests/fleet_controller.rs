@@ -2,6 +2,8 @@
 use super::fixture_http::{HttpRig, HttpRigOptions, cold_sealer, engine_shutdown, http_rig_build};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
+use crate::dst::fault_store::{FaultProfile, FaultStore};
+use crate::dst::{ObjClass, StoreOp};
 use crate::shard::now_ms;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
 use std::sync::{
@@ -10,6 +12,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[path = "fleet_brownout.rs"]
+mod brownout;
 #[path = "fleet_count_balance.rs"]
 mod count_balance;
 #[path = "fleet_desired.rs"]
@@ -544,6 +548,10 @@ async fn a_lagging_owner_moves_its_shard_only_to_an_active_member() {
             // No seal retires the faked byte below and refreshes progress.
             seal: Some(cold_sealer),
             prefixes: super::fixture_http::two_bit(),
+            // The count held at the seeded two: on the loaded test host's cores the controller
+            // would raise it, and streams-1 would pin 00 for an ordinal that never boots (the
+            // join's C7) before the lag moves it. Setup only.
+            cli: |cli| cli.fleet_max = 2,
             ..Default::default()
         },
     )
@@ -676,21 +684,16 @@ async fn seed_ring_of_one(store: &Arc<dyn ObjectStore>) {
     }
 }
 
-/// Item 40, the owner's contract: process liveness and controller progress
-/// are separate facts. The heartbeat has its own supervised task, so a fleet
-/// tick stuck in a coordination read (a wedged controller, or a store that
-/// never answers that document) keeps publishing its liveness every beat,
-/// while the progress it publishes stays at the tick's last completed pass:
-/// peers see a live process whose controller is not progressing.
+/// Item 40, the owner's contract: process liveness and controller progress are separate facts. The
+/// heartbeat has its own supervised task, so a fleet tick stuck in a coordination read (a wedged
+/// controller, or a store that never answers that document) keeps publishing its liveness every
+/// beat, while the progress it publishes stays at the tick's last completed pass: peers see a live
+/// process whose controller is not progressing. The park is armed after the first beat (§22).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
     let inner = mem();
     seed_ring_of_one(&inner).await;
-    let store = Arc::new(HeldDocument::held(
-        inner.clone(),
-        "fleet/overrides.json",
-        false,
-    ));
+    let store = FaultStore::new(inner.clone(), 0x40, FaultProfile::clean());
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
@@ -705,12 +708,15 @@ async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
         rig.state.clone(),
         &rig.tasks
     ));
-    settled(Duration::from_secs(5), || {
-        store.entered.load(Ordering::SeqCst) > 0
-    })
-    .await;
+    let beat = Path::from("fleet/streams-1.json");
+    let first_beat = async || inner.head(&beat).await.is_ok();
+    super::fleet_join::until("the member's first beat", first_beat).await;
+    let held = "fleet/overrides.json";
+    let entered = store.hold_class_under(StoreOp::Get, ObjClass::Fleet, held, u64::MAX);
+    let parked = || entered.load(Ordering::SeqCst) > 0;
+    settled(Duration::from_secs(5), parked).await;
     assert_eq!(
-        store.entered.load(Ordering::SeqCst),
+        entered.load(Ordering::SeqCst),
         1,
         "the tick must reach the held overrides read"
     );
@@ -728,7 +734,7 @@ async fn a_stuck_tick_keeps_its_heartbeat_but_not_its_progress() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(
-        store.entered.load(Ordering::SeqCst),
+        entered.load(Ordering::SeqCst),
         1,
         "the tick must stay parked in the held read for the whole window"
     );
@@ -809,69 +815,6 @@ async fn a_held_heartbeat_does_not_stop_the_tick() {
         "a held heartbeat PUT must cancel cooperatively: {report:?}"
     );
     engine_shutdown(&rig.state).await;
-}
-
-/// Item 40, the owner's brownout requirement: a slow store stretches every
-/// fleet pass to several tick periods, and that is not a stuck controller.
-/// The heartbeat keeps its own cadence, the progress deadline is derived
-/// from the budgets a pass may use, so neither instance ever leaves the
-/// other's ring.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_store_brownout_slows_the_tick_without_churning_the_ring() {
-    let inner = mem();
-    seed_ring_of_two(&inner, &[]).await;
-    let rigs = start_two(Arc::new(HeldDocument {
-        delay: Duration::from_millis(600),
-        ..HeldDocument::held(inner.clone(), "", false)
-    }))
-    .await;
-    let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
-    let both = || {
-        rigs.iter()
-            .all(|rig| rig.state.ownership.ring_active() == ring)
-    };
-    settled(Duration::from_secs(16), both).await;
-    assert!(
-        both(),
-        "both instances must converge on the two-member ring"
-    );
-    let mut beats = std::collections::BTreeMap::new();
-    let window = tokio::time::Instant::now() + Duration::from_secs(12);
-    while tokio::time::Instant::now() < window {
-        assert!(both(), "a brownout must not churn the ring");
-        for instance in ["streams-1", "streams-2"] {
-            let path = Path::from(format!("fleet/{instance}.json"));
-            let bytes = inner.get(&path).await.unwrap().bytes().await.unwrap();
-            let beat: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            beats.insert(
-                (instance, beat["ts_ms"].as_i64()),
-                beat["progress_age_ms"].as_u64(),
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    for instance in ["streams-1", "streams-2"] {
-        let ages: Vec<Option<u64>> = beats
-            .iter()
-            .filter(|((name, _), _)| *name == instance)
-            .map(|(_, age)| *age)
-            .collect();
-        assert!(
-            ages.len() >= 5,
-            "{instance} must keep its heartbeat cadence through the brownout: {} beats in 12 s",
-            ages.len()
-        );
-        let passes = ages.windows(2).filter(|pair| pair[1] < pair[0]).count();
-        assert!(
-            passes >= 1,
-            "{instance}'s controller must keep completing passes: {ages:?}"
-        );
-    }
-    for rig in &rigs {
-        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
-        assert!(report.aborted.is_empty(), "{report:?}");
-        engine_shutdown(&rig.state).await;
-    }
 }
 
 /// `streams-1` and `streams-2`, each its own runtime with its fleet loop

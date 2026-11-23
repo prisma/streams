@@ -1,27 +1,28 @@
-//! The membership of record (§22, GATE-DECISION-s22-addendum-2026-11-19 C1-C4, C17) and the
-//! interim rule that keeps it until the join and the leave land
-//! (GATE-DECISION-meas-full-forward-wedge-2026-11-19, Addendum 14).
+//! The membership of record (§22, GATE-DECISION-s22-addendum-2026-11-19 C1-C4, C17; the join's
+//! R1, GATE-DECISION-tla049-r1-r3-2026-11-20 §2.2).
 //!
-//! The overrides document's `members` names the ring of record. Once the join lands, a view's ring
-//! is the listed members that qualify by the reader's beats (`planning::member`: live, progressing,
-//! not withdrawn, not draining), computed from the one document read that gives the view its
-//! entries (C1, C2), and no listed member qualifying, the listed members unfiltered (C3).
+//! The overrides document's `members` names the ring of record, each member with the boot id that
+//! joined (R1a stamps it). A view's ring is computed from the one document read that gives the
+//! view its entries (C1, C2): **the listed members, less those the reader holds evidence against**
+//! (R1). Evidence is a held beat **of the listed boot id** that is stale, progress-stale, draining
+//! or withdrawn (`planning::member`). No beat held, a beat of another boot, a GET that answered
+//! absent: none is evidence, and the member is in the ring. So the ring is a function of one
+//! document and the held beats, with no read order in it. This instance is in its own ring only
+//! when the document lists its name with its own boot id (R1b, C4); until then (an unlisted
+//! joiner, or a restart whose R1a CAS has not landed, C13) its publications leave it out.
 //!
-//! **The interim** (Addendum 14): until the join lands, the tick keeps `members` equal to the
-//! ordinal set within the count it read (`streams-1`..=`streams-count`), by one CAS of the overrides
-//! document from [`listed`], its one write path, written only by an instance that today's rule puts
-//! in its own ring (C17). Over a document listing that set, the listed members a reader's beats
-//! qualify, in ordinal order, else all of them, are exactly today's rule
-//! ([`Candidates::today`]); over any other document the interim's ring is today's rule too. So in
-//! the interim every ring is `today()` over the pass's candidates, whatever document it is paired
-//! with, and no code computes a ring from `members` (PR #173's survivor `record.rs:105:29`, that
-//! arm replaced by `today()`, was equivalent and the arm is removed). The join brings its own C1
-//! arm.
-//! The join replaces the add half; removal stays today's rule until the leave lands.
+//! A listed member with no boot id (the step 4 interim wrote members so, Addendum 14) is judged
+//! by name, as today's rule judged it, until it stamps its own boot id on its next pass
+//! (`join::pass`). No listed member surviving the evidence, the listed members within the count
+//! are the ring unfiltered (C3's fallback, today's bootstrap); a document listing nobody gives no
+//! ring (`awaits_view`) until a join commits. A document without `members` (an older cell's, C17)
+//! gives today's rule until a member of today's ring lists it.
+//!
+//! The interim's add half is gone (the join, Addendum 14: one writer per half): only a join CAS
+//! adds a member. Its removal half, a listed name beyond the count leaving at the next pass of a
+//! member of the ring, stays until the leave lands (scale-in keeps today's class).
 
-use object_store::UpdateVersion;
-
-use super::{FleetDocument, FleetRepository, Member, Overrides};
+use super::Member;
 
 /// The ordinal names within `count`: `streams-1`..=`streams-count`, one at least.
 pub(super) fn ordinal(count: u64) -> Vec<String> {
@@ -30,48 +31,81 @@ pub(super) fn ordinal(count: u64) -> Vec<String> {
         .collect()
 }
 
-/// Whether `members` names exactly `names`, in order; boot ids are not read (the interim, §2.1).
-fn names_exactly(members: &[Member], names: &[String]) -> bool {
-    let mut listed: Vec<&String> = members.iter().map(|member| &member.name).collect();
-    let mut wanted: Vec<&String> = names.iter().collect();
-    listed.sort();
-    wanted.sort();
-    listed == wanted
+/// `name`'s place in the ordinal order: its index, then (for a name outside the pattern) after
+/// every ordinal, by name. Every ring is in this order (the join ruling, Addendum 23 §3).
+// mt-lint: allow(name-param-shared-core): a fleet instance name's ring order; no tenant or stream identity
+pub(super) fn ordinal_key(name: &str) -> (u64, &str) {
+    let index = name
+        .strip_prefix("streams-")
+        .and_then(|index| index.parse::<u64>().ok());
+    (index.unwrap_or(u64::MAX), name)
 }
 
-/// The members a document must list for `want` (the ordinal set within the count), or `None` when
-/// it already names exactly that set. Names are compared as a set, and an entry whose name stays
-/// keeps its boot id exactly as read (GATE-DECISION-s22-join-2026-11-20 §1 item 3), so an interim
-/// writer and a join writer in one cell never undo each other's stamps.
-fn relisted(members: Option<&[Member]>, want: Vec<String>) -> Option<Vec<Member>> {
-    let read = members.unwrap_or_default();
-    if members.is_some() && names_exactly(read, &want) {
-        return None;
-    }
-    let kept = |name: String| {
-        let stamped = read.iter().find(|member| member.name == name).cloned();
-        stamped.unwrap_or(Member {
-            name,
-            boot_id: None,
-        })
-    };
-    Some(want.into_iter().map(kept).collect())
+/// Whether the fleet instance `instance` is an ordinal within `count` (C5, C8, C11).
+pub(super) fn within_count(instance: &str, count: u64) -> bool {
+    instance
+        .strip_prefix("streams-")
+        .and_then(|index| index.parse::<u64>().ok())
+        .is_some_and(|index| (1..=count.max(1)).contains(&index))
 }
 
-/// One pass's candidates (C3): every instance whose beat qualifies on the reader's clock, the
-/// reader kept, with the count the pass read. The ring is made from them and a document.
+/// A boot id as the planner compares it: the first eight bytes of its `crypto::hash16`, an
+/// algorithm the code fixes (the join ruling §7). Never written or sent; both sides of every
+/// comparison are hashed in the comparing process. Two boot ids that collide in 64 bits would let
+/// one boot's beat count as evidence against the other's listing: accepted at that width.
+pub(super) fn boot_of(boot_id: &str) -> u64 {
+    let digest = crate::crypto::hash16(boot_id.as_bytes());
+    let mut first = [0u8; 8];
+    first.copy_from_slice(&digest[..8]);
+    u64::from_le_bytes(first)
+}
+
+/// One pass's candidates (C3) and its held beats (R1): every beat the pass read with its boot id
+/// and whether it qualifies, the reader kept, with the count the pass read and the reader's own
+/// name and boot. The ring is made from them and a document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Candidates {
     count: u64,
-    /// Sorted, without duplicates.
+    /// The qualified names, sorted, without duplicates.
     names: Vec<String>,
+    /// Every held beat by name, sorted: its boot and whether it qualifies.
+    held: Vec<(String, (u64, bool))>,
+    /// The reader, and its boot once known (`with_boot`).
+    me: String,
+    my_boot: Option<u64>,
 }
 
 impl Candidates {
+    /// Candidates qualified by name alone, with no beats held (unit tests and today's rule).
     pub(super) fn new(count: u64, mut names: Vec<String>) -> Self {
         names.sort();
         names.dedup();
-        Self { count, names }
+        Self {
+            count,
+            names,
+            ..Self::default()
+        }
+    }
+
+    /// A pass's candidates from its held beats (`planning::active_members`): `me` is kept when the
+    /// listing missed its beat.
+    pub(super) fn held(count: u64, me: &str, mut held: Vec<(String, (u64, bool))>) -> Self {
+        held.sort_by(|a, b| a.0.cmp(&b.0));
+        let qualified = held.iter().filter(|(_, (_, ok))| *ok).map(|(name, _)| name);
+        let missed = held
+            .iter()
+            .all(|(name, _)| name != me)
+            .then(|| me.to_string());
+        let mut candidates = Self::new(count, qualified.cloned().chain(missed).collect());
+        candidates.held = held;
+        candidates.me = me.to_string();
+        candidates
+    }
+
+    /// The same, the reader's own boot id known (R1b).
+    pub(super) fn with_boot(mut self, boot_id: &str) -> Self {
+        self.my_boot = Some(boot_of(boot_id));
+        self
     }
 
     /// The count the pass read.
@@ -86,6 +120,20 @@ impl Candidates {
             .is_ok()
     }
 
+    /// The held beat of the fleet instance `instance`: its boot and whether it qualifies.
+    pub(super) fn beat_of(&self, instance: &str) -> Option<(u64, bool)> {
+        let at = self
+            .held
+            .binary_search_by(|held| held.0.as_str().cmp(instance));
+        at.ok().map(|at| self.held[at].1)
+    }
+
+    /// Whether the pass read this instance's own beat of this boot (R3's third clause).
+    pub(super) fn read_own_beat(&self) -> bool {
+        self.my_boot
+            .is_some_and(|boot| self.beat_of(&self.me).is_some_and(|(held, _)| held == boot))
+    }
+
     /// Today's ring (the rule before §22): the ordinal names within the count that qualify, else
     /// all of them unfiltered.
     pub(super) fn today(&self) -> Vec<String> {
@@ -97,52 +145,64 @@ impl Candidates {
             .collect();
         if active.is_empty() { ordinal } else { active }
     }
-}
 
-/// The interim's one write path (Addendum 14), under the revalidation lock the tick holds: the
-/// document `read` at `version` as this pass's view must be published from. A document that already
-/// names the ordinal set within `candidates`' count (as a set, boot ids unread), or an instance
-/// today's rule leaves out of its own ring (C17: only a member of today's ring writes), is
-/// returned as read, unwritten. Otherwise one CAS lists that set ([`relisted`]: an entry whose
-/// name stays keeps its boot id as read, a new one has none), the entries and outbox kept: a committed CAS answers the document as written at the version the store gave, so
-/// the pass reads the document once, as before. A lost CAS, or a CAS whose answer was lost (C4), is
-/// followed by one read that finds what is stored; an unreadable document leaves the one read,
-/// whose ring is then today's rule.
-pub(super) async fn listed(
-    fleet: &FleetRepository,
-    me: &str,
-    candidates: &Candidates,
-    read: (Overrides, Option<UpdateVersion>),
-) -> (Overrides, Option<UpdateVersion>) {
-    let (document, version) = &read;
-    let writes = candidates.today().iter().any(|name| name == me);
-    if !writes {
-        return read;
-    }
-    let want = ordinal(candidates.count());
-    let Some(members) = relisted(document.members.as_deref(), want) else {
-        return read;
-    };
-    let mut next = document.clone();
-    next.members = Some(members);
-    let Ok(body) = serde_json::to_vec(&next) else {
-        return read;
-    };
-    let written = fleet
-        .replaced_document(FleetDocument::Overrides, body, version.clone())
-        .await;
-    tracing::info!(
-        written = written.is_some(),
-        count = candidates.count(),
-        "fleet members listed"
-    );
-    match written {
-        // The document as written, at the version the store answered: no read of it, so the pass
-        // reads the document once, as before step 4.
-        Some(written) if written.e_tag.is_some() || written.version.is_some() => {
-            (next, Some(written))
+    /// The ring of a document listing `members` (C1, C3 under R1): the listed members this reader
+    /// holds no evidence against; none, the listed members within the count unfiltered. A
+    /// document without `members` gives [`Candidates::today`] (C17). Always in the ordinal order,
+    /// whatever order the document lists: `ring_pick` breaks an equal score by position, so two
+    /// orders of one set could name two owners for one leaf (the join ruling, Addendum 23 §3).
+    pub(super) fn ring(&self, members: Option<&[Member]>) -> Vec<String> {
+        let Some(listed) = members else {
+            return self.today();
+        };
+        let mut kept: Vec<&str> = listed
+            .iter()
+            .filter(|member| self.in_ring(member))
+            .map(|member| member.name.as_str())
+            .collect();
+        if kept.is_empty() {
+            let within = listed
+                .iter()
+                .filter(|member| within_count(&member.name, self.count));
+            kept = within.map(|member| member.name.as_str()).collect();
         }
-        _ => fleet.read_overrides().await.unwrap_or(read),
+        kept.sort_by_key(|name| ordinal_key(name));
+        kept.into_iter().map(str::to_string).collect()
+    }
+
+    /// Whether `member` is in this reader's ring (R1, R1b).
+    fn in_ring(&self, member: &Member) -> bool {
+        let listed = member.boot_id.as_deref().map(boot_of);
+        if member.name == self.me {
+            // Never by the listing alone: an unstamped listing of its own name is another boot's
+            // until it stamps it (the join ruling §2).
+            let mine = listed.is_some() && listed == self.my_boot;
+            // A member never judges its own liveness, but leaves its own ring when its own beat of
+            // this boot withdrew, drains or stopped progressing: today's rule for itself.
+            let own = self.my_boot.and_then(|boot| {
+                let held = self.beat_of(&self.me);
+                held.filter(|(held, _)| *held == boot)
+            });
+            return mine && own.is_none_or(|(_, qualifies)| qualifies);
+        }
+        match (listed, self.beat_of(&member.name)) {
+            (Some(boot), Some((held, qualifies))) if boot == held => qualifies,
+            (Some(_), _) => true,
+            (None, beat) => beat.is_some_and(|(_, qualifies)| qualifies),
+        }
+    }
+
+    /// Whether the document lists this reader with its own boot id (R1b): it is a member.
+    pub(super) fn is_member(&self, members: Option<&[Member]>) -> bool {
+        let mine = |member: &&Member| member.name == self.me;
+        members
+            .and_then(|listed| listed.iter().find(mine))
+            .is_some_and(|member| member.boot_id.as_deref().map(boot_of) == self.my_boot)
+    }
+
+    /// The reader's name.
+    pub(super) fn me(&self) -> &str {
+        &self.me
     }
 }
 
@@ -153,6 +213,126 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    /// `name`'s beat of boot `boot` as `planning::active_members` holds it.
+    fn beat(name: &str, boot: &str, qualifies: bool) -> (String, (u64, bool)) {
+        (name.to_string(), (super::boot_of(boot), qualifies))
+    }
+
+    fn member(name: &str, boot: Option<&str>) -> Member {
+        Member {
+            name: name.to_string(),
+            boot_id: boot.map(str::to_string),
+        }
+    }
+
+    /// **R1, the ring from one document and the held beats** (GATE-DECISION-tla049-r1-r3 §2.2):
+    /// a listed member leaves only on a held beat of its listed boot that does not qualify; no
+    /// beat, or a beat of another boot, is no evidence. The model's `RingRec` with `RingRule`
+    /// "evidence" and M1's incarnations.
+    #[test]
+    fn a_listed_member_leaves_a_ring_only_on_evidence_of_its_listed_boot() {
+        let held = vec![
+            beat("streams-1", "a1", true),
+            beat("streams-2", "b-old", false),
+            beat("streams-3", "c1", false),
+        ];
+        let me = Candidates::held(2, "streams-1", held).with_boot("a1");
+        let listed = [
+            member("streams-1", Some("a1")),
+            member("streams-2", Some("b-new")),
+            member("streams-3", Some("c1")),
+            member("streams-4", Some("d1")),
+        ];
+        assert_eq!(
+            me.ring(Some(&listed)),
+            names(&["streams-1", "streams-2", "streams-4"])
+        );
+    }
+
+    /// R1b and C13: this instance is in its own ring only when it is listed with its own boot id;
+    /// a restart whose R1a CAS has not landed, or a joiner, leaves itself out.
+    #[test]
+    fn an_instance_is_in_its_own_ring_only_listed_with_its_own_boot() {
+        let me = Candidates::held(2, "streams-1", vec![beat("streams-1", "a2", true)]);
+        let me = me.with_boot("a2");
+        let theirs = [
+            member("streams-1", Some("a1")),
+            member("streams-2", Some("b1")),
+        ];
+        let mine = [
+            member("streams-1", Some("a2")),
+            member("streams-2", Some("b1")),
+        ];
+        assert_eq!(me.ring(Some(&theirs)), names(&["streams-2"]));
+        assert!(!me.is_member(Some(&theirs)));
+        assert_eq!(me.ring(Some(&mine)), names(&["streams-1", "streams-2"]));
+        assert!(me.is_member(Some(&mine)));
+        assert!(me.read_own_beat());
+    }
+
+    /// The upgrade from the interim (step 4 listed no boot ids): a listed member without one is
+    /// judged by name, today's rule, until it stamps its own; this instance unstamped is neither
+    /// in its own ring nor a member (C13 decides it, `join::plan`; the join ruling §2).
+    #[test]
+    fn a_listed_member_without_a_boot_id_is_judged_by_name() {
+        let held = vec![
+            beat("streams-1", "a1", true),
+            beat("streams-2", "b1", false),
+            beat("streams-3", "c1", true),
+        ];
+        let me = Candidates::held(3, "streams-1", held).with_boot("a1");
+        let listed = [
+            member("streams-1", None),
+            member("streams-2", None),
+            member("streams-3", None),
+        ];
+        assert_eq!(me.ring(Some(&listed)), names(&["streams-3"]));
+        assert!(!me.is_member(Some(&listed)));
+    }
+
+    /// **A ring is in the ordinal order, whatever order the document lists** (the join ruling,
+    /// Addendum 23 §3). `streams-112789` and `streams-349192` score equal for the leaf `0`, so
+    /// `ring_pick` takes whichever is listed first: the two listings of one set give one ring and
+    /// the same owner for every leaf, the tie included.
+    #[test]
+    fn a_ring_is_in_ordinal_order_so_a_tie_has_one_owner() {
+        let (low, high) = ("streams-112789", "streams-349192");
+        let held = vec![beat(low, "l1", true), beat(high, "h1", true)];
+        let me = Candidates::held(400_000, "streams-9", held).with_boot("z");
+        let ascending = [member(low, Some("l1")), member(high, Some("h1"))];
+        let descending = [member(high, Some("h1")), member(low, Some("l1"))];
+        let (up, down) = (me.ring(Some(&ascending)), me.ring(Some(&descending)));
+        assert_eq!((&up, &down), (&names(&[low, high]), &names(&[low, high])));
+        for leaf in ["", "0", "1", "00", "01", "10", "11"] {
+            let pick = |ring: &[String]| ring[crate::ownership::ring_pick(leaf, ring)].clone();
+            assert_eq!(pick(&up), pick(&down), "one owner for {leaf:?}");
+        }
+        let raw = |list: &[&str]| {
+            let ring = names(list);
+            ring[crate::ownership::ring_pick("0", &ring)].clone()
+        };
+        assert_ne!(raw(&[low, high]), raw(&[high, low]), "the leaf 0 is a tie");
+    }
+
+    /// C3's fallback and C17: every listed member judged dead gives the listed members within the
+    /// count unfiltered; a document listing nobody gives no ring; one without `members` gives
+    /// today's rule.
+    #[test]
+    fn the_ring_falls_back_as_c3_and_c17_rule() {
+        let held = vec![
+            beat("streams-2", "b1", false),
+            beat("streams-3", "c1", false),
+        ];
+        let me = Candidates::held(2, "streams-9", held).with_boot("z");
+        let listed = [
+            member("streams-2", Some("b1")),
+            member("streams-3", Some("c1")),
+        ];
+        assert_eq!(me.ring(Some(&listed)), names(&["streams-2"]));
+        assert_eq!(me.ring(Some(&[])), Vec::<String>::new());
+        assert_eq!(me.ring(None), ordinal(2));
     }
 
     /// C17 (§2.1): a document is read back byte-identical by an instance that does not write it:
@@ -173,165 +353,14 @@ mod tests {
         assert_eq!(older.members, None);
     }
 
-    fn stamped(name: &str, boot_id: Option<&str>) -> Member {
-        Member {
-            name: name.to_string(),
-            boot_id: boot_id.map(str::to_string),
-        }
-    }
-
-    /// GATE-DECISION-s22-join-2026-11-20 §1 item 3: a document whose names already are the
-    /// ordinal set, in any order and with a stamped entry, is not written by the interim writer,
-    /// so it stays byte-identical as stored.
+    /// Boot ids compare by value; ordinals within the count by index.
     #[test]
-    fn the_interim_writer_leaves_a_stamped_document_with_the_ordinal_names_alone() {
-        let document = r#"{"entries":{},"members":[{"name":"streams-2"},{"name":"streams-1","boot_id":"b1"}]}"#;
-        let read: crate::fleet::Overrides = serde_json::from_str(document).unwrap();
-        assert_eq!(super::relisted(read.members.as_deref(), ordinal(2)), None);
-        assert_eq!(serde_json::to_string(&read).unwrap(), document);
-    }
-
-    /// Item 3: a change of the name set keeps every stamped entry whose name stays, exactly as
-    /// read; a new name has no boot id, and a name beyond the count goes.
-    #[test]
-    fn a_names_change_keeps_each_stamped_boot_id() {
-        let one = [stamped("streams-1", Some("b1"))];
-        let grown = vec![stamped("streams-1", Some("b1")), stamped("streams-2", None)];
-        assert_eq!(super::relisted(Some(&one), ordinal(2)), Some(grown));
-        let three = [
-            stamped("streams-1", Some("b1")),
-            stamped("streams-2", Some("b2")),
-            stamped("streams-3", None),
-        ];
-        let shrunk = vec![
-            stamped("streams-1", Some("b1")),
-            stamped("streams-2", Some("b2")),
-        ];
-        assert_eq!(super::relisted(Some(&three), ordinal(2)), Some(shrunk));
-        let fresh = vec![stamped("streams-1", None)];
-        assert_eq!(super::relisted(None, ordinal(1)), Some(fresh));
-    }
-
-    /// A store over memory that counts the overrides document's reads and, with `bare`, answers a
-    /// write with neither an ETag nor a version (no store this crate runs on does; the seam for
-    /// `listed`'s guard).
-    #[derive(Debug)]
-    struct Answers {
-        inner: std::sync::Arc<dyn object_store::ObjectStore>,
-        bare: bool,
-        reads: std::sync::atomic::AtomicU64,
-    }
-
-    impl std::fmt::Display for Answers {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "answers")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl object_store::ObjectStore for Answers {
-        async fn put_opts(
-            &self,
-            path: &object_store::path::Path,
-            body: object_store::PutPayload,
-            opts: object_store::PutOptions,
-        ) -> object_store::Result<object_store::PutResult> {
-            let mut written = self.inner.put_opts(path, body, opts).await?;
-            if self.bare {
-                (written.e_tag, written.version) = (None, None);
-            }
-            Ok(written)
-        }
-        async fn put_multipart_opts(
-            &self,
-            path: &object_store::path::Path,
-            opts: object_store::PutMultipartOptions,
-        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-            self.inner.put_multipart_opts(path, opts).await
-        }
-        async fn get_opts(
-            &self,
-            path: &object_store::path::Path,
-            opts: object_store::GetOptions,
-        ) -> object_store::Result<object_store::GetResult> {
-            if path.as_ref() == "fleet/overrides.json" {
-                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            self.inner.get_opts(path, opts).await
-        }
-        fn delete_stream(
-            &self,
-            paths: futures_util::stream::BoxStream<
-                'static,
-                object_store::Result<object_store::path::Path>,
-            >,
-        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
-        {
-            self.inner.delete_stream(paths)
-        }
-        fn list(
-            &self,
-            prefix: Option<&object_store::path::Path>,
-        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
-        {
-            self.inner.list(prefix)
-        }
-        async fn list_with_delimiter(
-            &self,
-            prefix: Option<&object_store::path::Path>,
-        ) -> object_store::Result<object_store::ListResult> {
-            self.inner.list_with_delimiter(prefix).await
-        }
-        async fn copy_opts(
-            &self,
-            from: &object_store::path::Path,
-            to: &object_store::path::Path,
-            opts: object_store::CopyOptions,
-        ) -> object_store::Result<()> {
-            self.inner.copy_opts(from, to, opts).await
-        }
-    }
-
-    /// `listed` on a fresh cell of one over a store answering `bare`: the version it answers, the
-    /// stored document's ETag, and the overrides reads it made.
-    async fn listed_over(bare: bool) -> (Option<String>, Option<String>, u64) {
-        use object_store::ObjectStoreExt as _;
-        let inner: std::sync::Arc<dyn object_store::ObjectStore> =
-            std::sync::Arc::new(object_store::memory::InMemory::new());
-        let answers = std::sync::Arc::new(Answers {
-            inner: inner.clone(),
-            bare,
-            reads: std::sync::atomic::AtomicU64::new(0),
-        });
-        let store: std::sync::Arc<dyn object_store::ObjectStore> = answers.clone();
-        let fleet = crate::fleet::FleetRepository::new(Some(store));
-        let candidates = Candidates::new(1, names(&["streams-1"]));
-        let read = (crate::fleet::Overrides::default(), None);
-        let (written, version) = super::listed(&fleet, "streams-1", &candidates, read).await;
-        assert_eq!(written.members.map(|listed| listed.len()), Some(1));
-        let path = object_store::path::Path::from("fleet/overrides.json");
-        let stored = inner.head(&path).await.unwrap().e_tag;
-        let reads = answers.reads.load(std::sync::atomic::Ordering::SeqCst);
-        (version.and_then(|version| version.e_tag), stored, reads)
-    }
-
-    /// A committed write is published at the version the store answered, with no read of the
-    /// document (PR #173's survivors `record.rs:163`, the guard as `false` and its `||` as `&&`:
-    /// the memory store answers an ETag and no version).
-    #[tokio::test(crate = "crate::test_rt")]
-    async fn a_committed_members_write_answers_its_version_without_a_read() {
-        let (answered, stored, reads) = listed_over(false).await;
-        assert!(stored.is_some());
-        assert_eq!((answered, reads), (stored, 0));
-    }
-
-    /// A write the store answered with neither an ETag nor a version is read back, so the next CAS
-    /// is anchored on the stored version (the survivor guard as `true` would answer none).
-    #[tokio::test(crate = "crate::test_rt")]
-    async fn a_members_write_answered_without_a_version_is_read_back() {
-        let (answered, stored, reads) = listed_over(true).await;
-        assert!(stored.is_some());
-        assert_eq!((answered, reads), (stored, 1));
+    fn boot_ids_and_ordinals_compare_as_written() {
+        assert_eq!(super::boot_of("b1"), super::boot_of("b1"));
+        assert_ne!(super::boot_of("b1"), super::boot_of("b2"));
+        let within = ["streams-1", "streams-2", "streams-3", "streams-x", "other"]
+            .map(|name| super::within_count(name, 2));
+        assert_eq!(within, [true, true, false, false, false]);
     }
 
     /// Today's ring: the qualified ordinals within the count, in ordinal order; none qualifying,
@@ -442,16 +471,16 @@ mod tests {
     }
 
     /// §22 C2 (GATE-DECISION-s22-3b-step4-2026-11-21 §2.2 and Addendum 1): the ownership view is
-    /// published whole by exactly four calls, the tick and three that take their ring from
-    /// `Standing::ring_of`; and one entry is set beside the published ring by exactly the
-    /// interim's two (a co-location writes no entry, GATE-DECISION-s22-join-2026-11-20 Addendum 13),
-    /// which the join replaces with whole publications. A fifth or a third fails here first.
+    /// published whole by exactly five calls, the tick and four that take their ring from
+    /// `Standing::ring_of` (`installed` serves a split's birth and the lag move's evacuation, each
+    /// publishing the document it wrote; a co-location writes no entry, GATE-DECISION-s22-join-
+    /// 2026-11-20 Addendum 13); and no production call sets one entry beside it. A sixth fails here
+    /// first.
     #[test]
     fn the_ownership_view_has_exactly_its_known_production_writers() {
         let expected = [
-            ("set_override", "fleet/moves.rs", "evacuate"),
-            ("set_override", "topology/split/birth.rs", "born"),
             ("set_view", "fleet/handoff.rs", "mirror"),
+            ("set_view", "fleet/view.rs", "installed"),
             ("set_view", "fleet/view.rs", "published"),
             ("set_view", "fleet/view.rs", "published_here"),
             ("set_view", "topology/revalidate.rs", "refreshed"),

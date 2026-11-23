@@ -442,6 +442,7 @@ async fn a_split_pair_whose_actor_is_full_is_merged_on_its_partner() {
         leaves(),
     )
     .await;
+    super::fixture_members::joined(&fleet, &[&a, &b], Duration::from_secs(60)).await;
     // The ring gives `00 01` to streams-1 and `10 11` to streams-2; aged moves (count balance's)
     // left 01 on streams-2 and 10, 11 on streams-1.
     let layout = [
@@ -533,9 +534,22 @@ pub(super) async fn pinned(fleet: &Arc<dyn ObjectStore>, layout: &[(&str, &str)]
             )
         })
         .collect();
-    let doc = serde_json::json!({ "entries": entries }).to_string();
+    with_entries(fleet, serde_json::Value::Object(entries)).await;
+}
+
+/// Replace the overrides document's entries with `entries`, its `members` kept as stored (§22's
+/// join, the join ruling Addendum 3: the members of record are the joins', not the test's).
+async fn with_entries(fleet: &Arc<dyn ObjectStore>, entries: serde_json::Value) {
+    let mut doc = document(fleet, "overrides").await;
+    if !doc.is_object() {
+        doc = serde_json::Value::Object(serde_json::Map::new());
+    }
+    doc["entries"] = entries;
     fleet
-        .put(&Path::from("fleet/overrides.json"), PutPayload::from(doc))
+        .put(
+            &Path::from("fleet/overrides.json"),
+            PutPayload::from(doc.to_string()),
+        )
         .await
         .unwrap();
 }
@@ -592,6 +606,7 @@ async fn a_split_pair_with_no_room_on_either_side_asks_for_an_instance_and_is_me
         leaves(),
     )
     .await;
+    super::fixture_members::joined(&fleet, &[&a, &b], Duration::from_secs(60)).await;
     pinned(&fleet, &layout, now).await;
     laid_out(&a, &layout).await;
 
@@ -664,6 +679,7 @@ async fn return_home_skips_a_live_intents_sources() {
         leaves(),
     )
     .await;
+    super::fixture_members::joined(&fleet, &[&a, &b], Duration::from_secs(60)).await;
     let snapshot = a.state.shards.prefixes();
     let live = Intent {
         kind: "merge".to_string(),
@@ -697,14 +713,8 @@ async fn return_home_skips_a_live_intents_sources() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(seen(), "both beats read the live intent");
-    let moved = format!(
-        r#"{{"entries":{{"00":{{"to":"streams-2","ms":{}}}}}}}"#,
-        now - 400_000
-    );
-    fleet
-        .put(&Path::from("fleet/overrides.json"), PutPayload::from(moved))
-        .await
-        .unwrap();
+    let moved = format!(r#"{{"00":{{"to":"streams-2","ms":{}}}}}"#, now - 400_000);
+    with_entries(&fleet, serde_json::from_str(&moved).unwrap()).await;
     laid_out(&a, &[("00", "streams-2"), ("01", "streams-1")]).await;
     // Renewed every second for 20 s (a live actor's lease), the override is never returned.
     let overridden =
@@ -821,6 +831,7 @@ async fn room_cell() -> (
             .peer
             .set_peer("streams-2", &format!("http://{}", b.addr));
     }
+    super::fixture_members::joined(&fleet, &[&a, &b], Duration::from_secs(60)).await;
     laid_out(&a, &[("0", "streams-1"), ("1", "streams-1")]).await;
     (fleet, data, a, b)
 }

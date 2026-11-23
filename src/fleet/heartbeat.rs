@@ -30,6 +30,10 @@ mod shard_load;
 
 /// How often this instance publishes its heartbeat.
 pub(super) const PERIOD: Duration = Duration::from_secs(2);
+/// Periods a listed boot may wait for its decision before it is warned and reports unready: the
+/// three passes the join ruling allows an unstamped listing (`join::UNSTAMPED_PASSES`), one
+/// period each.
+const UNDECIDED_PERIODS: u32 = super::join::UNSTAMPED_PASSES;
 /// Commits older than this no longer describe the durable-write cost; the
 /// store's WAL-PUT summary covers the same window.
 const ACK_WINDOW_MS: i64 = 15_000;
@@ -225,6 +229,64 @@ pub(super) fn start(state: Arc<AppState>, instance: String, tasks: &TaskSupervis
     }
 }
 
+/// Everything before the first beat (the join ruling, Addenda 2 and 3): C13's verdict (this
+/// instance's previous beat, read once, decides whether a listing of another boot or an unstamped
+/// one is a restart in place, `fleet::join::in_place`), the drain marker every tick revalidates
+/// (created if absent, `repository::drains`), and this task's own read of the overrides document.
+/// A boot whose name is not listed beats at once, with no tick involved. A listed one (with another
+/// boot id, or unstamped) holds its beat until a read of the document shows its decision, which the
+/// tick's pass writes and records (`fleet::join::pass`). A document it cannot read is no beat: it
+/// asks again each period.
+async fn before_the_first_beat(state: &AppState, instance: &str) {
+    let previous = state.fleet.read_previous_beat(instance).await;
+    let young = super::join::in_place(previous.as_ref(), crate::shard::now_ms());
+    state.fleet.standing().decide_boot(young);
+    state.fleet.create_drain_marker().await;
+    if !listed_at_boot(state, instance).await {
+        state.fleet.standing().allow_beats();
+    }
+    held_until_decided(state).await;
+    // Tests only: a first beat held between its release and its write.
+    #[cfg(test)]
+    if let Some(point) = state.fleet.standing().take_first_beat_pause()
+        && point.reached.send(()).is_ok()
+    {
+        drop(point.go.await);
+    }
+}
+
+/// Whether the overrides document lists `instance`, read by this task once it answers.
+async fn listed_at_boot(state: &AppState, instance: &str) -> bool {
+    loop {
+        if let Ok((document, _)) = state.fleet.read_overrides().await {
+            let listed = document.members.iter().flatten();
+            return listed.into_iter().any(|member| member.name == instance);
+        }
+        tokio::time::sleep(PERIOD).await;
+    }
+}
+
+/// Wait until this boot may beat. A listed boot whose decision is not in the document after
+/// [`UNDECIDED_PERIODS`] periods is warned, counted and reports unready (`/health` answers
+/// `503 fleet boot undecided`) until it is.
+async fn held_until_decided(state: &AppState) {
+    let standing = state.fleet.standing();
+    let wait = UNDECIDED_PERIODS * PERIOD;
+    if tokio::time::timeout(wait, standing.beats_allowed())
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    tracing::warn!(
+        periods = UNDECIDED_PERIODS,
+        "fleet boot listed and undecided: no beat until its decision is in the document"
+    );
+    standing.note_undecided_boot(true);
+    standing.beats_allowed().await;
+    standing.note_undecided_boot(false);
+}
+
 /// Publish a beat every period until cancelled, then a last, withdrawing
 /// one.
 async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> TaskResult {
@@ -236,14 +298,15 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
     );
     let mut beats = tokio::time::interval(PERIOD);
     beats.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // The interval's first tick is immediate; the first beat waits a period
-    // so its rates cover one. Meanwhile the drain marker every tick
-    // revalidates is created if absent (`repository::drains`).
+    // The interval's first tick is immediate; then everything before the first beat (C13's
+    // verdict, the drain marker, the hold until this boot's decision), and the first beat follows
+    // at once.
     beats.tick().await;
     tokio::select! {
         _ = cancel.cancelled() => return TaskResult::Done,
-        () = state.fleet.create_drain_marker() => {}
+        () = before_the_first_beat(&state, &instance) => {}
     }
+    beats.reset_immediately();
     let mut intent = crate::topology::intent::Watch::default();
     loop {
         tokio::select! {
@@ -508,7 +571,7 @@ impl AppState {
     /// (a planned drain's only once it is announced) or lost a Critical loop,
     /// or a shard directory that reports a cell failure, never opened a
     /// shard, or could not close one.
-    fn withdrawal(&self) -> Option<String> {
+    pub(super) fn withdrawal(&self) -> Option<String> {
         let tasks = self.tasks.readiness_reason();
         if tasks.as_deref() == Some(crate::tasks::DRAINING) {
             // A cell failure says more than the drain that is under way. Until the drain is

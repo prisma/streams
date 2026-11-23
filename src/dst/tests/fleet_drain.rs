@@ -112,6 +112,10 @@ async fn a_planned_drain_hands_every_shard_to_its_peer_before_the_stop() {
     })
     .await;
     assert!(converged, "both rings must hold both instances first");
+    // §22 (the join ruling, Addendum 23 §2 (a)): the second to join owns its leaves only once its
+    // pins have returned, so the stream is created once the join has converged.
+    let members = [&draining, &peer];
+    super::fixture_members::joined(&fleet, &members, Duration::from_secs(60)).await;
     let (name, _) = stream_owned_by(&draining).await;
 
     let done = AtomicBool::new(false);
@@ -399,8 +403,11 @@ async fn probe_health(addr: std::net::SocketAddr) -> Option<(u16, String)> {
 #[derive(Debug)]
 struct RiggedFleet {
     inner: Arc<dyn ObjectStore>,
-    /// A coordination document whose reads never answer.
+    /// A coordination document whose reads never answer, once `park_armed` is set.
     parked: Option<&'static str>,
+    /// Whether `parked` parks yet: armed once the peer has joined (§22: a boot whose own read of
+    /// the document is parked writes no beat, so the park waits for the first beats and the join).
+    park_armed: Arc<AtomicBool>,
     /// A coordination document whose writes always lose their CAS.
     pinned: Option<&'static str>,
     /// While set, every read and listing fails (an unreachable store).
@@ -455,7 +462,7 @@ impl ObjectStore for RiggedFleet {
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
-        if self.parked == Some(path.as_ref()) {
+        if self.parked == Some(path.as_ref()) && self.park_armed.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
         }
         self.inner.get_opts(path, opts).await
@@ -504,19 +511,24 @@ async fn a_drain_a_live_peer_never_reads_times_out_and_names_it() {
     let (data, fleet) = (mem(), mem());
     seed_ring(&fleet, 2).await;
     let draining = start(&data, &fleet, 0, "streams-1").await;
+    let park_armed = Arc::new(AtomicBool::new(false));
     let parked: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
         inner: fleet.clone(),
         parked: Some("fleet/overrides.json"),
         pinned: None,
         unreachable: Arc::default(),
+        park_armed: park_armed.clone(),
     });
     let peer = start(&data, &parked, 1, "streams-2").await;
+    // §22 (the join ruling, Addendum 3; as Item 40's stuck tick, Addendum 7 (2)): the peer's park is
+    // armed once both are listed with their boot ids, so the peer's tick parks after its join.
+    let both = [&draining, &peer];
+    super::fixture_members::published(&fleet, &both, Duration::from_secs(60)).await;
+    park_armed.store(true, Ordering::SeqCst);
+    let beat = Path::from("fleet/streams-2.json");
+    let armed_at = fleet.get(&beat).await.unwrap().bytes().await.unwrap();
     let beating = tokio::time::timeout(Duration::from_secs(10), async {
-        while fleet
-            .head(&Path::from("fleet/streams-2.json"))
-            .await
-            .is_err()
-        {
+        while fleet.get(&beat).await.unwrap().bytes().await.unwrap() == armed_at {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -556,6 +568,7 @@ async fn a_sole_member_within_the_count_has_no_peer_to_hand_off_to() {
     let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
         inner: seeded,
         parked: None,
+        park_armed: Arc::default(),
         pinned: Some("fleet/desired.json"),
         unreachable: Arc::default(),
     });
@@ -602,6 +615,7 @@ async fn reachable_until_told(data: &Arc<dyn ObjectStore>) -> (HttpRig, Arc<Atom
     let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
         inner: seeded,
         parked: None,
+        park_armed: Arc::default(),
         pinned: Some("fleet/desired.json"),
         unreachable: unreachable.clone(),
     });
@@ -700,6 +714,7 @@ async fn a_drain_beyond_the_count_is_read_by_its_peer() {
     let fleet: Arc<dyn ObjectStore> = Arc::new(RiggedFleet {
         inner: seeded,
         parked: None,
+        park_armed: Arc::default(),
         pinned: Some("fleet/desired.json"),
         unreachable: Arc::default(),
     });

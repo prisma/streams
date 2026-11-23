@@ -268,6 +268,8 @@ pub(super) fn moved_document(
 /// `fleet::handoff`).
 struct FleetRead {
     active: Vec<String>,
+    /// The count read (C11).
+    count: u64,
     // mt-lint: allow(name-keyed-map): fleet instance -> its fresh lag
     lags: HashMap<String, u64>,
     /// Each member's shards held in reserve for its own live split, and the prefixes the live
@@ -296,11 +298,14 @@ impl FleetRead {
         let (desired, _) = state.fleet.read_desired_state().await.ok()?;
         let count = desired.map_or(1, |desired| desired.count);
         let (overrides, _) = state.fleet.read_overrides().await.ok()?;
-        // The ring over these candidates: in the interim, today's rule (§22 C3, `record`).
-        let active = planning::active_members(count, me, &candidacies).today();
+        // The ring of the document read, over these candidates (§22 C1-C3).
+        let candidates = planning::active_members(count, me, &candidacies);
+        let candidates = candidates.with_boot(&state.runtime.identity.boot_id);
+        let active = candidates.ring(overrides.members.as_deref());
         let window = Duration::from_secs(state.config.fleet.rebalance_return_secs);
         Some(Self {
             active,
+            count,
             lags,
             reserved,
             sources: state.fleet.standing().unmovable(),
@@ -330,10 +335,13 @@ impl FleetRead {
             &owners,
             &self.active,
             me,
+            // C11: no move names a listed member beyond the count.
             |member| {
-                self.lags
-                    .get(member)
-                    .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
+                super::record::within_count(member, self.count)
+                    && self
+                        .lags
+                        .get(member)
+                        .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
             },
             // An override to a non-member is void (every reader ignores it),
             // so its shard moves as one with none; so does one past the return window.
@@ -648,6 +656,7 @@ mod tests {
         };
         let read = FleetRead {
             active: members(2),
+            count: 2,
             lags: [("streams-2".to_owned(), 0)].into_iter().collect(),
             reserved: std::collections::HashMap::new(),
             sources: Vec::new(),
@@ -684,6 +693,7 @@ mod tests {
         let entries = |ms_00| [("00", ms_00), ("01", 1_000), ("10", 1_000), ("11", 1_000)];
         let read = |ms_00: i64| FleetRead {
             active: members(2),
+            count: 2,
             lags: [("streams-2".to_owned(), 0)].into_iter().collect(),
             reserved: std::collections::HashMap::new(),
             sources: Vec::new(),
@@ -721,6 +731,7 @@ mod tests {
         let source = twos[0].clone();
         let read = |reserved: u32| FleetRead {
             active: active.clone(),
+            count: 2,
             lags: [("streams-1".to_owned(), 0), ("streams-2".to_owned(), 0)]
                 .into_iter()
                 .collect(),

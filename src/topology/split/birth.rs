@@ -48,17 +48,15 @@ impl Birth {
             return false;
         }
         let _one = dir.revalidation().lock().await;
-        if !self.committed(children).await {
+        let Some(written) = self.committed(children).await else {
             tracing::warn!(
                 op_id,
                 ?children,
                 "a topology operation's new leaves are born on the ring: the overrides CAS was lost {TRIES} times"
             );
             return false;
-        }
-        for child in children {
-            self.ownership.set_override(child, &self.me);
-        }
+        };
+        crate::fleet::view::installed(&self.fleet, &self.ownership, &written);
         true
     }
 
@@ -83,30 +81,26 @@ impl Birth {
         elsewhere.is_empty() || self.born(dir, &elsewhere, op_id).await
     }
 
-    /// Up to [`TRIES`] reads and CASes of the overrides document with `children`'s entries: whether
-    /// one committed.
-    async fn committed(&self, children: &[&str]) -> bool {
+    /// Up to [`TRIES`] reads and CASes of the overrides document with `children`'s entries: the
+    /// document as one committed it.
+    async fn committed(&self, children: &[&str]) -> Option<Overrides> {
         for _ in 0..TRIES {
-            if self.written(children).await {
-                return true;
+            if let Some(written) = self.written(children).await {
+                return Some(written);
             }
         }
-        false
+        None
     }
 
-    /// One read of the overrides document and its CAS with `children`'s entries: whether it
-    /// committed.
-    async fn written(&self, children: &[&str]) -> bool {
-        let Ok((overrides, version)) = self.fleet.read_overrides().await else {
-            return false;
-        };
+    /// One read of the overrides document and its CAS with `children`'s entries: the document as
+    /// written, when it committed.
+    async fn written(&self, children: &[&str]) -> Option<Overrides> {
+        let (overrides, version) = self.fleet.read_overrides().await.ok()?;
         let born = with_children(overrides, children, &self.me, crate::shard::now_ms());
-        let Ok(body) = serde_json::to_vec(&born) else {
-            return false;
-        };
-        self.fleet
-            .replace_document(FleetDocument::Overrides, body, version)
-            .await
+        let body = serde_json::to_vec(&born).ok()?;
+        let document = FleetDocument::Overrides;
+        let committed = self.fleet.replace_document(document, body, version).await;
+        committed.then_some(born)
     }
 }
 

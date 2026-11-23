@@ -14,6 +14,30 @@ use super::planning::{Candidacy, Reservations as _};
 use super::{AppState, FleetDocument, Overrides, pick_move_target, return_home_allowed};
 use crate::shard::now_ms;
 
+/// C6(b): the home of `prefix` over `active` with every ordinal within `count` and every member
+/// `overrides` lists (the join ruling, Addendum 6). Rendezvous over a superset of every reader's
+/// ring over that document: an entry whose holder wins here is a no-op over the document's own
+/// ring, so dropping it changes no owner.
+fn counted_home(active: &[String], overrides: &Overrides, count: u64, prefix: &str) -> String {
+    let mut counted = active.to_vec();
+    let ordinals = super::record::ordinal(count).into_iter();
+    counted.extend(ordinals.filter(|name| !active.contains(name)));
+    let listed = overrides
+        .members
+        .iter()
+        .flatten()
+        .map(|member| &member.name);
+    let unseen: Vec<String> = listed
+        .filter(|name| !counted.contains(name))
+        .cloned()
+        .collect();
+    counted.extend(unseen);
+    // In ordinal order, as every ring (the join ruling, Addendum 23 §3): a rendezvous tie goes to
+    // the first, so a superset in its sources' order could name another home than the ring's.
+    counted.sort_by(|a, b| super::record::ordinal_key(a).cmp(&super::record::ordinal_key(b)));
+    counted[crate::ownership::ring_pick(prefix, &counted)].clone()
+}
+
 /// The outbox bound every writer of the overrides document keeps (§12.4).
 const MAX_PENDING_EVENTS: usize = 64;
 
@@ -24,6 +48,8 @@ pub(super) struct Tick<'a> {
     me: &'a str,
     /// The ring's active members this tick published (§22 C3: the ring, not the candidates).
     active: Vec<String>,
+    /// The count the tick's pass read (C6(b), C8, C11).
+    count: u64,
     /// Fresh peers' (cpu, effective absorb lag): the health test of both moves.
     // mt-lint: allow(name-keyed-map): fleet instance -> its fresh load
     peer_load: &'a HashMap<String, (f64, u64)>,
@@ -40,11 +66,9 @@ impl AppState {
     pub(super) fn moves<'a>(
         &'a self,
         me: &'a str,
-        // Unread, and kept: `fleet::start`'s scope has approved growth rows and is frozen exactly,
-        // so even dropping this argument there is a stale row only the owner updates. The moves
-        // plan over the ring (§22 C3), never over the candidates. NEXT-WORK records its removal for
-        // the next time those rows are opened (GATE-DECISION-s22-3b-step4-2026-11-21 §2.3).
-        _candidates: &'a super::record::Candidates,
+        // The moves plan over the ring (§22 C3), never over the candidates; of these only the
+        // count is read (C6(b), C8, C11).
+        candidates: &'a super::record::Candidates,
         // mt-lint: allow(name-keyed-map): fleet instance -> its fresh load
         peer_load: &'a HashMap<String, (f64, u64)>,
         // mt-lint: allow(name-keyed-map): fleet instance -> its candidacy
@@ -54,6 +78,7 @@ impl AppState {
             state: self,
             me,
             active: self.ownership.ring_active(),
+            count: candidates.count(),
             peer_load,
             candidacies,
         }
@@ -61,10 +86,15 @@ impl AppState {
 }
 
 impl Tick<'_> {
-    /// Return-home's plan: the entries of `overrides` to drop this tick. An override drops once
-    /// the rendezvous owner is fresh and healthy again and the entry has aged past the hysteresis
-    /// window, otherwise moves are sticky and an instance that lagged once is drained forever
-    /// (ladder p3: streams-2 owned nothing by D3).
+    /// Return-home's plan: the entries of `overrides` to drop this tick, by who may remove one
+    /// (§22 C6): (a) the instance it names, by a planned move, giver first, returning the shard to
+    /// its ring home once that home is a ring member within the count, fresh and healthy (C8, J5;
+    /// R1d), past the hysteresis window (a pin has none, C7); (b) the instance it names, as a
+    /// no-op, when it is the home over the ring with every ordinal within the count; (c) anyone,
+    /// when it names an instance the document does not list (an older cell's document: no ring
+    /// member); (d) the stale-leaf prune (`stale`). Nobody removes or rewrites an entry naming
+    /// another listed member, whatever its beats say. Otherwise moves are sticky and an instance
+    /// that lagged once is drained forever (ladder p3: streams-2 owned nothing by D3).
     pub(super) fn returns(&self, overrides: &Overrides) -> Vec<String> {
         let return_secs: i64 = self.state.config.fleet.rebalance_return_secs as i64;
         let mut drop_keys: Vec<String> = Vec::new();
@@ -80,23 +110,37 @@ impl Tick<'_> {
             if self.active.is_empty() {
                 continue;
             }
+            if self.void(overrides, &entry.to) {
+                drop_keys.push(prefix.clone()); // C6(c)
+                continue;
+            }
+            if entry.to != self.me {
+                continue; // only the instance an entry names removes or rewrites it
+            }
+            if counted_home(&self.active, overrides, self.count, prefix) == self.me {
+                drop_keys.push(prefix.clone()); // C6(b): a no-op over the counted ordinals
+                continue;
+            }
             let home = self.active[crate::ownership::ring_pick(prefix, &self.active)].clone();
-            if home == entry.to {
-                drop_keys.push(prefix.clone()); // override is a no-op
-                continue;
-            }
-            // Only the instance an entry names hands its shard back, giver first (F6); an entry
-            // naming no member is void, and anyone may drop it.
-            if entry.to != self.me && self.active.contains(&entry.to) {
-                continue;
-            }
-            if !self.takes_back(&home, &pending_returns) {
+            if home == self.me
+                || !super::record::within_count(&home, self.count)
+                || !self.takes_back(&home, &pending_returns)
+            {
                 continue;
             }
             *pending_returns.entry(home).or_insert(0) += 1;
             drop_keys.push(prefix.clone());
         }
         drop_keys
+    }
+
+    /// C6(c): whether an entry naming `to` is void: the document lists members and not `to`, or
+    /// (an older cell's document) `to` is no ring member.
+    fn void(&self, overrides: &Overrides, to: &str) -> bool {
+        match overrides.members.as_deref() {
+            Some(listed) => listed.iter().all(|member| member.name != to),
+            None => !self.active.iter().any(|name| name == to),
+        }
     }
 
     /// Whether `home` is healthy and may take one more shard back on top of `pending_returns`.
@@ -133,7 +177,10 @@ impl Tick<'_> {
         wedge_max_ms: i64,
     ) -> Option<(String, String)> {
         let threshold_secs = self.state.config.fleet.rebalance_lag_secs;
-        let unreserved = self.candidacies.unreserved(&self.active);
+        // C11: no planned move names a listed member beyond the count.
+        let counted = |name: &&String| super::record::within_count(name, self.count);
+        let within: Vec<String> = self.active.iter().filter(counted).cloned().collect();
+        let unreserved = self.candidacies.unreserved(&within);
         let target = pick_move_target(self.peer_load, &unreserved, self.me, threshold_secs);
         if target.is_none() {
             let (_, _, my_lag) = self.state.fleet_pressure();
@@ -228,7 +275,7 @@ impl Overrides {
         }
         let (_, _, my_lag) = state.fleet_pressure();
         tracing::info!("rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)");
-        state.ownership.set_override(prefix, to);
+        super::view::installed(&state.fleet, &state.ownership, &next);
         // A wedged shard stops serving at once: the new owner fences the log on its first routed
         // request.
         state.shards.retire(
@@ -278,7 +325,55 @@ pub(super) fn returned(mut overrides: Overrides, drop_keys: &[String], now_ms: i
 
 #[cfg(test)]
 mod tests {
-    use super::{home_healthy, returned};
+    use super::{counted_home, home_healthy, returned};
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn listing(list: &[&str]) -> Overrides {
+        let member = |name: &&str| crate::fleet::Member {
+            name: (*name).to_string(),
+            boot_id: None,
+        };
+        let members = Some(list.iter().map(member).collect());
+        Overrides {
+            members,
+            ..Overrides::default()
+        }
+    }
+
+    /// C6(b)'s no-op is judged over the ring, every ordinal within the count and every listed
+    /// member (Addendum 6): `10` is `streams-2`'s over `[1, 2]`, and `streams-3`'s once `streams-3`
+    /// is counted, or listed beyond a count of two.
+    #[test]
+    fn a_no_op_is_judged_over_the_ring_the_ordinals_and_the_listed() {
+        let (ring, one) = (names(&["streams-1", "streams-2"]), names(&["streams-1"]));
+        let unlisted = Overrides::default();
+        let three = listing(&["streams-1", "streams-2", "streams-3"]);
+        let two = listing(&["streams-1", "streams-2"]);
+        let homes = [
+            counted_home(&ring, &unlisted, 2, "10"),
+            counted_home(&ring, &unlisted, 3, "10"),
+            counted_home(&ring, &three, 2, "10"),
+            counted_home(&one, &two, 1, "10"),
+        ];
+        assert_eq!(homes, ["streams-2", "streams-3", "streams-3", "streams-2"]);
+    }
+
+    /// The counted ring is in ordinal order (Addendum 23 §3): `streams-112789` and `streams-349192`
+    /// tie on the leaf `0`, and the home is the lower ordinal whatever order the ring and the
+    /// listing give them in.
+    #[test]
+    fn a_counted_home_is_judged_in_ordinal_order_so_a_tie_has_one_home() {
+        let (low, high) = ("streams-112789", "streams-349192");
+        let homes = [
+            counted_home(&names(&[low, high]), &Overrides::default(), 0, "0"),
+            counted_home(&names(&[high, low]), &Overrides::default(), 0, "0"),
+            counted_home(&names(&[high]), &listing(&[low]), 0, "0"),
+        ];
+        assert_eq!(homes, [low, low, low]);
+    }
 
     #[test]
     fn a_home_is_healthy_by_its_fresh_lag_or_as_this_unstalled_instance() {

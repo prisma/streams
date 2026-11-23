@@ -163,27 +163,13 @@ impl OwnershipService {
         self.inner.view.write().unwrap().overrides = map.into_iter().collect();
     }
 
-    // The interim's (§22 step 4, GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 1): it sets one
-    // newer entry beside the ring last published, which changes nothing while every ring is
-    // today's rule over the reader's beats. Its production callers are exactly the lag move, a
-    // merge's co-location and a split's birth (pinned by
-    // `fleet::record::tests::the_ownership_view_has_exactly_its_known_production_writers`). The
-    // join's commit ends it: each of the three publishes its own document whole through
-    // `Standing::ring_of`, and this method is removed. (A line comment above the item, not its
-    // doc: a doc line is inside the item's `unwrap_used` exception scope and would grow it.)
-    /// One override, as the rebalancer installs it the moment its CAS
-    /// wins (the mirror catches up next tick).
-    #[expect(
-        clippy::unwrap_used,
-        reason = "OwnershipService::set_override; a poisoned publication may contain a partial active/override pair; recovering that view could grant authority to the wrong instance"
-    )]
+    /// Tests: one override beside the published ring (the join removed the production
+    /// `set_override`: every writer publishes its document whole, `fleet::view::installed`).
+    #[cfg(test)]
     pub(crate) fn set_override(&self, prefix: &str, to: &str) {
-        self.inner
-            .view
-            .write()
-            .unwrap()
-            .overrides
-            .insert(prefix.to_string(), to.to_string());
+        let mut overrides = self.overrides();
+        overrides.insert(prefix.to_string(), to.to_string());
+        self.set_overrides(overrides);
     }
 
     /// Publish a complete fleet observation with no mixed ring/override window.
@@ -232,7 +218,6 @@ mod tests {
         assert!(catch_unwind(AssertUnwindSafe(|| failed.ring_active())).is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| failed.overrides())).is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| failed.view())).is_err());
-        assert!(catch_unwind(AssertUnwindSafe(|| failed.set_override("00", "b"))).is_err());
         assert!(
             catch_unwind(AssertUnwindSafe(
                 || failed.set_view(names(&["b"]), HashMap::new())

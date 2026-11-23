@@ -333,9 +333,9 @@ async fn a_split_with_no_destination_asks_for_an_instance_and_splits_once_one_be
     assert!(asked.lock().unwrap().is_empty());
     assert_eq!(leaves(&rig.state), [""]);
 
-    // The instance the count asked for: `streams-2`, which the tick reads as soon as the count
-    // names it. The ring keeps the one leaf on `streams-1` (rendezvous over "" picks it).
-    peer(&fleet, "streams-2").await;
+    // The instance the count asked for: `streams-2`, a beat with no process, listed as its join
+    // would list it (§22, Addendum 3 (A)). The ring keeps `""` on `streams-1` (rendezvous picks it).
+    super::fixture_members::joined_peer(&fleet, "streams-2").await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while leaves(&rig.state).len() < 2 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;

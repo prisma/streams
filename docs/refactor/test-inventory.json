@@ -121,6 +121,17 @@
     "scenarios": []
   },
   {
+    "name": "a_boot_killed_between_its_stamp_and_its_first_beat_is_recovered_by_the_next",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ecd53fbc28549ec92eae774952cb6910feac71272871d66fced21fc46ad3598c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_boot_names_the_boot_it_replaced_and_learns_it_was_superseded",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -129,6 +140,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fence_yield.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_boot_whose_document_read_is_parked_writes_no_beat",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "774b4549cfbd36d5e8eb529274b6e006d144630f2245f988f432aca6c259f408",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
     "scenarios": []
   },
   {
@@ -158,7 +180,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "b9c315c5f0f7fdfa7e0ad53974a7e4ddb2459f20d03129426f4b04c045fcaffe",
+    "function_sha256": "0c9ac7ebf8b0024ec6309e27ca21ad7fec756b47843bb64a536676cfd6db6b4c",
     "mechanisms": [],
     "configuration": [
       "let desired = r#\"{\"count\":6,\"epoch\":1,\"reason\":\"seed\",\"computed_at_ms\":0}\"#;"
@@ -571,6 +593,17 @@
     "scenarios": []
   },
   {
+    "name": "a_cold_join_over_a_20_ms_store_converges",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8870978795e81b1fff28087e772d74ca4fa16c52701c12d638ee38561ac19265",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_cold_pair_split_across_two_instances_is_colocated_and_merged",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -701,7 +734,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "06ef4f15d83a919b0dcad3c9380aa379af2c717a9c7fdd7e2604f5320c86e6e6",
+    "function_sha256": "552cc9a4337cfbc5da803363cc972a061825ee6e437021236da612863448c8e7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_reads.rs",
@@ -712,7 +745,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "9b31b03059824d9d5512b1cc021947f2b71d41d948f37fe3d80ab7fee5f5bd45",
+    "function_sha256": "ef5c336493eab903de9b12402c0e5a37507c3179cbdaad45390cbb7b7b979791",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -723,10 +756,21 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5b0b960447a5c9bf3157e188ab5654dfc4c8fe17d15aae0beba4b77c767a2dad",
+    "function_sha256": "429a6b95317d906e45908e3a11942e705e803a57d823fd9e31a72a560ba79b1a",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_count_that_drops_while_a_member_joins_moves_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "66bd8e978f4856b23a1ee6fef24b4da2d61d1c4e8c54ebe07b651f9b70fccb26",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
     "scenarios": []
   },
   {
@@ -1009,7 +1053,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6525efb08434a5d7d00200d5f3179e25d54bd6f5b86ab329778b5a93437e3993",
+    "function_sha256": "a07bf7536d841742c57b7e864738844e3af811231be31ee53f2df37d0c7bc90c",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -1031,7 +1075,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "6cb582e3187776bde6df790e7a994d6845bb44bc1eff3dafc5f9e4a144d039d0",
+    "function_sha256": "ee57263ec586b70f96df96672ab6935627136fa1396242cc30100e9ce6eb23c7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -1602,7 +1646,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8f063faa97cc183eaa5cbb23be751f252d88cddb610cfcaccbd4fb2a2730e592",
+    "function_sha256": "cfaf54f75572b64cc601794ec1c49469561f837caebab2ad50f94c30e42fc038",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -1704,7 +1748,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "18acbcd6b6b80ed7781d153543ace5ea05edb8ae367c7d2c2e4a0dffda536f59",
+    "function_sha256": "f4530b5973889e656e81e208c219d5dc78ae04d137ebf88c8c66be4c095baf1d",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -1801,6 +1845,50 @@
     ]
   },
   {
+    "name": "a_join_pin_at_the_fair_share_stands_until_the_next_ring_change_lifts_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "efcbade83bcce4ac1cae40ac3c661d725460f9834eab774998756be6c25e71ee",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_join_pin_is_dropped_when_its_holder_becomes_the_rings_home",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "465563c79e75f3782477b4727a8cd53c6ff9bb14ad69c013b47d047d2624389c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_record.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_joiner_past_its_phase_joins_and_the_unpinned_move_is_counted",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8fca7a63bb373b98cad7fff0aa1b38b75e596aba788d2b837a32e2ed235b1128",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_joiner_waits_for_a_holder_that_has_not_pinned",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ad19a9a47135a17a6bb6f046f6dc9bb436ace102aff34c40875295373367d35b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_keyed_read_follows_the_lineage_when_the_clocks_disagree",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
@@ -1838,7 +1926,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3553f400dbb464b5a936b62f260bcc276e341b0c8f3b21d85741f1b43f9e1918",
+    "function_sha256": "06ad9234de82fb084effe1b42422c171ba2c68ab0a270daf142b4c077beb2335",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -1962,6 +2050,17 @@
     "scenarios": []
   },
   {
+    "name": "a_leaf_named_by_an_entry_is_returned_only_by_its_holder",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "55feeb5916b1d2c82d188d37792ed068991a6031233dcb7113e230768ed23c28",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_leaf_the_balancer_moved_here_splits_here_under_load",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -1977,7 +2076,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "aa9ec3b9d9b6b0d698947131b6d8343f6ebeab7331eb0104bfc93b4ca9446cc2",
+    "function_sha256": "fa16eb4c3a21891f5a0d9fcccbedbc3db805be8467631eaa14427345abd41d11",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_record.rs",
@@ -2110,7 +2209,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "702c8e8a93a390d7a7a5cbd2289b8d9037bf018c4d82cb035746bb8428347fbc",
+    "function_sha256": "b93390f7e0c31ce713c2a59d77ce70b1884049deda35a56d14a15bef0155c6e9",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -2179,7 +2278,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a4f39bb607833c4e6c2a67ad009c218ed50fe78f12c0d9443e63e1dfad251bdc",
+    "function_sha256": "c1bbcc47f019c466f9edeeaec49b23f252a593e73e6ae415cc2f3093359969ed",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -2570,7 +2669,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a9dd28f493eae3b7b0a518defab13eee40415ebac7edc86a9d6b739d044acb46",
+    "function_sha256": "5d4d4b544c49040bf06af37c69329b8e6539c6c953984179d217e3ec243b60d3",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN"
@@ -2583,7 +2682,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e5ec644b42b552ccb792f5cb5ce67c0770cebc31640839e7ad16c3c8e2beca66",
+    "function_sha256": "ccdd767336c88902015b876a066efc89e815f1114d041e43333420142a2f262e",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN"
@@ -2934,11 +3033,22 @@
     "scenarios": []
   },
   {
+    "name": "a_peer_that_refreshes_before_its_tick_opens_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "dbc6140eaed0c45cafcd4e7459eb8888a17cbd00f1a57be34c3ae2c4529e70c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "502060a02b4d1d2ff97acac799a5dfe973cdef99c0d47f37f5e50369abf541c4",
+    "function_sha256": "8eb0317344ff8b979bead9cf6dff31309b9634a574c04ccf1aa2a22b774ecb11",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_drain.rs",
@@ -2988,7 +3098,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "951f2d22b17f241d9d2e1588f35278bd12553529c6f9a8dc2dff69effcb8a61b",
+    "function_sha256": "37840c575a38c25ec00147a042c711168471fae3fd869f0d544da2bd25fecfda",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -3970,6 +4080,28 @@
     "scenarios": []
   },
   {
+    "name": "a_restart_after_a_planned_drain_rejoins_and_a_count_drop_moves_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "0606eebf8e2afd3ea4bfb46caeda736e216bf42b61f4dc7ade4acd5331fed00e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_restart_in_place_rejoins_without_pins",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5d3d66f02ca3f1eb958d1b96974002b702742b87d9b7062b40bcb4d48612cbc0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_restart_re_emits_only_the_unacknowledged_and_the_rollup_bills_it_once",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4098,6 +4230,17 @@
     "scenarios": []
   },
   {
+    "name": "a_return_held_at_its_cas_during_a_scale_out_by_three_moves_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "fa5cbec904ff387ddab55b68d5334f065756eb9e86b8f81f57f0274acaa3f835",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_return_home_reports_its_document_only_when_its_cas_commits",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -4139,7 +4282,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "3b6861a552ac098be00b9c83fe4af88efd5fa5c8c6c105103eb45734cfe35a2f",
+    "function_sha256": "c86251467d33ba083500aa790f3f34285fdc3a02f0eae122a11c42bd510b63e6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
@@ -4250,6 +4393,28 @@
       "crate::failpoints::release_consumer_saga_before_refresh(\"qc18b\");"
     ],
     "file": "src/dst/tests/consumer_saga.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_scale_out_moves_its_shards_without_fencing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3348646468b2cb7f7b7579d8b4bd3107767b2eaa3ea6a11c48ce194c9d05a18c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_scale_out_to_a_slow_peer_moves_its_shards_without_a_yield",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5efa11c4c08eedff4ff612f380fff341d84d1f11832ba887a7e98de805199c75",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
     "scenarios": []
   },
   {
@@ -4493,7 +4658,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "5321a3e31c1ff017f9222362811f880ed8e95139e70161de4c0f06d7f5a724f7",
+    "function_sha256": "725e24157984343c156caab14a3f58de89fcf05b006f716e7f2a73f4c6073bed",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_drain.rs",
@@ -4574,6 +4739,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_born_root.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_split_childs_no_op_entry_then_a_scale_out_moves_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2301349f593da294ffa378af6a6f0976c3bba8d71fcf9fa8926a71190470f5d6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
     "scenarios": []
   },
   {
@@ -4693,7 +4869,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "92a3399b79a5eb18af1c80eb1d675cf1fa891f52a3ef3b7def93bf1fcbd34d33",
+    "function_sha256": "ed49d1c6380a88db7c8ca60c40ff08d76a833f38b8fc10ece4a379025515c3af",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -4704,7 +4880,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "37f69e7df6904da544d2ff9083a21f906dd3062c54f1e71350b721ad1b995dc1",
+    "function_sha256": "be32fca7f625cf6a18072e27626b3374accfe8d699fe1bfb2b059e26cbdd71ef",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -4926,7 +5102,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "31aba7dce6b98ec17ea64318f9e0a6bb64e7d3ad74d3d110879ebe0db138a3c5",
+    "function_sha256": "73d21742ec2ea8b89b5af4d7b53f8eb5a1f26504dac3b0b51ee9f7522831880e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_policy.rs",
@@ -5093,11 +5269,11 @@
     "scenarios": []
   },
   {
-    "name": "a_stopped_ordinal_that_boots_again_fences_its_peer_and_is_fenced_back",
+    "name": "a_stopped_ordinal_that_boots_again_moves_nothing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7210491a6a2288adebcf622b214676368b7d795e6d89ef304567576dd6b3d7b4",
+    "function_sha256": "ddbe92aa7b9b13800aa84d211cafaaf26b6b7fc91dd4a09bec9e156eaf0d34b0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_rejoin.rs",
@@ -5115,14 +5291,25 @@
     "scenarios": []
   },
   {
-    "name": "a_store_brownout_slows_the_tick_without_churning_the_ring",
+    "name": "a_store_brownout_slows_the_tick_without_churning_the_ring_streams_1_first",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "e41cde7e5baa6e09020729dadeb13b1203e80618df5bc5e4066454ca721a16a6",
+    "function_sha256": "e0b9799bf2c5bf2c7a3fc8f847ba1e77579594b47e24fb1bb5c9cfec535a16c8",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/fleet_controller.rs",
+    "file": "src/dst/tests/fleet_brownout.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_store_brownout_slows_the_tick_without_churning_the_ring_streams_2_first",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "363a9f0da11aa2ca861952fbad34e54b2b92774676b3e8a018beebad83caa1e9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_brownout.rs",
     "scenarios": []
   },
   {
@@ -5244,7 +5431,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "4db98539b11b08c904d53ae5588eef525b68d5804d854014c209733e9dd4b16b",
+    "function_sha256": "6fe8d4d5bc9cc988bf99e3844c98d7609f37911a3ef2a936ff11c55e56a0182e",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_controller.rs",
@@ -5753,7 +5940,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "8ad3edd1c54df97b58a7d80af76a68fc258efa0af9bf199881a4e9f67be10b3c",
+    "function_sha256": "67eae1b69a3950ca9692f2749fe9389e880fb2d0451ba0b4a9a9eb1b19fa09c7",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_handoff_bound.rs",
@@ -6294,6 +6481,17 @@
     "scenarios": []
   },
   {
+    "name": "an_idle_fleet_writes_no_membership",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "b9d97bde9f5537a0ae9d86e32edf768123a10da2e971964031f887f4410a1d5a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
+    "scenarios": []
+  },
+  {
     "name": "an_idle_instance_releases_its_caches_and_the_next_read_refills_them",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6595,6 +6793,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/quota_enforcement.rs",
+    "scenarios": []
+  },
+  {
+    "name": "an_unlisted_boot_beats_before_it_joins",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "09cf6fe011e1cb95610f1af790b3fa44b9055e50dd3890d6a0ea7f6d48772387",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
     "scenarios": []
   },
   {
@@ -11346,7 +11555,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "ab1d7e56404c3fbc7537d148fc9bb47617c8be5958ae77b99905461f87e3f05a",
+    "function_sha256": "0be82de3b3ac296d169e4a89099cf78341b645c71c3af016c88d806e4823b2fb",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/topology_colocation.rs",
@@ -11467,6 +11676,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_policy.rs",
+    "scenarios": []
+  },
+  {
+    "name": "scale_out_by_three_pins_each_joiner_apart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "8b2aa9a97259e02d05678b5c15fd8fa140b55597475f9797f81bb65c72b548e2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join.rs",
     "scenarios": []
   },
   {
@@ -12790,7 +13010,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "68509e32e62ceed8cd47f14343c4739b32f359de16a3be355a7decb6e5dae846",
+    "function_sha256": "db6cd268f8599b5c56eab32ebd80cee23c198f6e09526929ea39072ddaa12c76",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_record.rs",
@@ -12926,6 +13146,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/split_k.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_upgrade_from_unstamped_listings_moves_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "838cb1e538d4189d34354446fc029af6d84471e43a9d8217c25dff9e8d4297e3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
     "scenarios": []
   },
   {
@@ -13104,7 +13335,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "20c62241068f1d558b5dac60b1c113900464ef0da27d07889f499d2b27fede36",
+    "function_sha256": "232eec9f7fc672625bd3605b56cf6e52d39e0afefe307764404a0b3574e3ff19",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_record.rs",

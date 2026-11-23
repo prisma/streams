@@ -344,9 +344,10 @@ async fn a_returned_child_moves_without_fencing_its_writer() {
 /// `streams-2` (`fleet_count_balance`).
 pub(super) const LEAVES: [&str; 4] = ["00", "01", "10", "11"];
 
-/// The rig's in-flight cap of 512 and a ring that keeps both members for the scenario.
+/// The rig's in-flight cap of 512, and a count only the scenario moves (as `fleet_join`'s `held`).
 fn balance_members(cli: &mut crate::config::CliArgs) {
     cli.scale_in_secs = 3_600;
+    cli.fleet_max = 1;
     cli.admit_max_inflight = 512;
 }
 

@@ -52,6 +52,11 @@ pub(super) async fn health_axum(State(state): State<Arc<AppState>>) -> Response 
         )
             .into_response();
     }
+    // A listed boot whose decision is not in the document (the join ruling, Addendum 3) writes no
+    // beat and holds nothing: the platform's watchdog treats it as an instance that cannot start.
+    if let Some(reason) = state.fleet.standing().undecided_boot() {
+        return (StatusCode::SERVICE_UNAVAILABLE, reason).into_response();
+    }
     if state.config.cli.billing_required() {
         let spool_ok = state.billing.read_spool_open();
         let rollup_ok = !state.config.cli.runs_rollup() || state.rollup.installed();

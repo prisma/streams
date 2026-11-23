@@ -282,9 +282,12 @@ routing key and are routed server-side to internal child streams
 Shard moves are published to `fleet/overrides.json` (CAS) and win over
 the rendezvous ring while the target is live. Splits survive scaler
 crashes: the append path re-seals and publishes the missing transition
-itself (`resume_split`). A fleet store slower than about 0.9 s an operation
-commits no planned move: every placement stands until it recovers, and a
-giver closes a shard for a try at most about once a minute.
+itself (`resume_split`). An entry stamped 0 is a join's pin; it may stand
+as long as the fair share keeps its leaf on its holder; it is a placement,
+not a pending move; an operator should not wait for it to clear. A fleet
+store slower than about 0.9 s an operation commits no planned move: every
+placement, a join's pin among them, stands until it recovers, and a giver
+closes a shard for a try at most about once a minute.
 
 The same document's `members` is the ring of record (§22): a list of
 `{"name": "streams-N"}` entries. Until the join lands, the fleet tick keeps

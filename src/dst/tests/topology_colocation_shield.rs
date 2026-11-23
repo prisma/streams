@@ -72,42 +72,37 @@ async fn member(
         .0
 }
 
-/// Three members over the stored topology `leaves`, with a settled desired count of three and no
-/// overrides: every leaf is at its ring home. `streams-3`, each case's partner, runs `partner`.
+/// Three members over the stored topology `leaves`, listed with their boot ids before they boot,
+/// with a settled desired count of three and no overrides: every leaf is at its ring home.
+/// `streams-3`, each case's partner, runs `partner`.
 async fn cell(
     leaves: &[&str],
     partner: fn(&mut crate::config::CliArgs),
 ) -> (Arc<dyn ObjectStore>, Arc<dyn ObjectStore>, [HttpRig; 3]) {
     let (fleet, data) = (seeded().await, mem());
-    let a = member(
-        &fleet,
-        &data,
-        ("streams-1", RigRuntime::first()),
-        leaves,
-        quick,
-    )
-    .await;
-    store_topology(&a).await;
+    // The count is three before anyone boots: at `seeded`'s one, `streams-1`'s first pass would
+    // unlist the other two as beyond the count, and they would join again with pins.
     let settled = crate::shard::now_ms() - 120_000;
     let desired = format!(r#"{{"count":3,"epoch":2,"reason":"test","computed_at_ms":{settled}}}"#);
     let path = Path::from("fleet/desired.json");
     fleet.put(&path, PutPayload::from(desired)).await.unwrap();
-    let b = member(
-        &fleet,
-        &data,
-        ("streams-2", RigRuntime::incarnation(1)),
-        leaves,
-        quick,
-    )
-    .await;
-    let c = member(
-        &fleet,
-        &data,
-        ("streams-3", RigRuntime::incarnation(2)),
-        leaves,
-        partner,
-    )
-    .await;
+    let runtimes = [
+        RigRuntime::first(),
+        RigRuntime::incarnation(1),
+        RigRuntime::incarnation(2),
+    ];
+    // Setup only (the join ruling, Addendum 23 §2 (b)): the three are listed with their boot ids
+    // before they boot, so the cell starts converged and no join pin names a half.
+    let listed: Vec<(&str, &RigRuntime)> = ["streams-1", "streams-2", "streams-3"]
+        .into_iter()
+        .zip(&runtimes)
+        .collect();
+    super::fixture_members::seed_members(&fleet, &listed).await;
+    let [first, second, third] = runtimes;
+    let a = member(&fleet, &data, ("streams-1", first), leaves, quick).await;
+    store_topology(&a).await;
+    let b = member(&fleet, &data, ("streams-2", second), leaves, quick).await;
+    let c = member(&fleet, &data, ("streams-3", third), leaves, partner).await;
     (fleet, data, [a, b, c])
 }
 

@@ -98,6 +98,43 @@ pub(crate) struct Standing {
     /// The fleet tick's last pass's candidates (§22 C2): what a publication between ticks makes
     /// its document's ring from. `None` before the first pass.
     candidates: Mutex<Option<super::record::Candidates>>,
+    /// The join's state (§22 C5, C13): C13's verdict on the previous beat, the first pass that
+    /// found something uncovered (the `JOIN_PHASE` clock), and the joins past it.
+    join: Mutex<JoinState>,
+    joins_unpinned: AtomicU64,
+    /// Planned moves H1 kept: the document gave the leaf to no listed other instance.
+    h1_kept: AtomicU64,
+    /// Listed members logged unstamped while live (the join ruling §2).
+    unstamped_listings: AtomicU64,
+    /// The planned moves this runtime recorded (`record_handoff`), since boot.
+    handoffs_recorded: AtomicU64,
+    /// Whether this boot is listed and still undecided past its wait (`heartbeat`), and how many
+    /// boots were (the join ruling, Addendum 3).
+    undecided_boot: AtomicBool,
+    undecided_boots: AtomicU64,
+    /// Whether this boot may beat (the join ruling, Addendum 2): its name is not listed, or its
+    /// C13 decision (the in-place stamp or its unlisting) has landed and been read back.
+    beat_gate: tokio::sync::watch::Sender<bool>,
+    /// Tests: the heartbeat's first beat pauses once allowed, before it is written.
+    #[cfg(test)]
+    first_beat_pause: ViewPause,
+}
+
+/// The join's state this runtime keeps between passes (`fleet::join`).
+#[derive(Debug, Default)]
+struct JoinState {
+    /// C13: whether the previous beat, read before the first beat, allows a restart in place;
+    /// `None` until the heartbeat task has read it.
+    young: Option<bool>,
+    /// Since when a joiner within the count has found something uncovered, on its own clock.
+    uncovered_since: Option<tokio::time::Instant>,
+    /// Each listed peer seen unstamped with live beats: its passes so far (`note_unstamped`).
+    // mt-lint: allow(name-keyed-map): fleet instance -> its passes seen unstamped with live beats
+    unstamped: BTreeMap<String, u32>,
+    /// This boot's membership passes so far (`next_join_pass`).
+    passes: u32,
+    /// The pass whose join CAS was written (`note_joined`); `None` before it.
+    joined_at_pass: Option<u32>,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -177,6 +214,16 @@ impl Default for Standing {
             topology: Mutex::new((None, 0)),
             decision: Mutex::new(String::new()),
             candidates: Mutex::new(None),
+            join: Mutex::new(JoinState::default()),
+            joins_unpinned: AtomicU64::new(0),
+            h1_kept: AtomicU64::new(0),
+            unstamped_listings: AtomicU64::new(0),
+            handoffs_recorded: AtomicU64::new(0),
+            undecided_boot: AtomicBool::new(false),
+            undecided_boots: AtomicU64::new(0),
+            beat_gate: tokio::sync::watch::channel(false).0,
+            #[cfg(test)]
+            first_beat_pause: ViewPause(Mutex::new(None)),
         }
     }
 }
@@ -208,6 +255,13 @@ impl Standing {
         if let Ok(mut last) = self.last_handoff.lock() {
             *last = Some((phases, released));
         }
+        self.handoffs_recorded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Tests: how many planned moves this runtime recorded, since boot.
+    #[cfg(test)]
+    pub(crate) fn handoffs_recorded(&self) -> u64 {
+        self.handoffs_recorded.load(Ordering::Relaxed)
     }
 
     /// A planned move's attempt ended `end` at `step` (Addendum 28).
@@ -321,14 +375,165 @@ impl Standing {
         self.set_candidates(&super::record::Candidates::new(count, names));
     }
 
-    /// The ring every publication between ticks pairs with the entries of the document it read
-    /// (§22 C2): in the interim, today's rule over the tick's last pass's candidates, which is
-    /// every document's ring (`record`; the join gives it the document again). `None` before the
-    /// first pass, when the caller keeps the view's ring (it creates no view an instance awaiting
-    /// its first one lacks).
-    pub(crate) fn ring_of(&self) -> Option<Vec<String>> {
+    /// C13: the heartbeat task read the previous beat, which `young` allows a restart in place.
+    pub(super) fn decide_boot(&self, young: bool) {
+        if let Ok(mut join) = self.join.lock() {
+            join.young = Some(young);
+        }
+    }
+
+    /// C13's verdict, once read.
+    pub(super) fn boot_young(&self) -> Option<bool> {
+        self.join.lock().ok()?.young
+    }
+
+    /// Since when a joiner within the count has found something uncovered (`JOIN_PHASE`).
+    pub(crate) fn join_phase_since(&self) -> Option<tokio::time::Instant> {
+        self.join.lock().ok()?.uncovered_since
+    }
+
+    /// A membership pass begins: its number this boot, from 1.
+    pub(super) fn next_join_pass(&self) -> u32 {
+        let Ok(mut join) = self.join.lock() else {
+            return 0;
+        };
+        join.passes = join.passes.saturating_add(1);
+        join.passes
+    }
+
+    /// This boot's join CAS was written at the current pass: that pass's number.
+    pub(super) fn note_joined(&self) -> u32 {
+        let Ok(mut join) = self.join.lock() else {
+            return 0;
+        };
+        join.joined_at_pass = Some(join.passes);
+        join.passes
+    }
+
+    /// The pass whose join CAS this boot wrote, if it has (the cold-convergence DST).
+    #[cfg(test)]
+    pub(crate) fn joined_at_pass(&self) -> Option<u32> {
+        self.join.lock().ok()?.joined_at_pass
+    }
+
+    /// A joiner's pass found something uncovered with its ordinal within the count (`waiting`), or
+    /// not: the clock starts at the first such pass and restarts when the count leaves it out or
+    /// nothing is uncovered (§3 of the ruling).
+    pub(super) fn note_uncovered(&self, waiting: bool) {
+        if let Ok(mut join) = self.join.lock() {
+            join.uncovered_since = match (waiting, join.uncovered_since) {
+                (true, Some(since)) => Some(since),
+                (true, None) => Some(tokio::time::Instant::now()),
+                (false, _) => None,
+            };
+        }
+    }
+
+    /// Tests: the `JOIN_PHASE` clock started `by` earlier (a DST cannot wait 139 s).
+    #[cfg(test)]
+    pub(crate) fn backdate_join_phase(&self, by: std::time::Duration) {
+        if let Ok(mut join) = self.join.lock() {
+            join.uncovered_since = join.uncovered_since.and_then(|since| since.checked_sub(by));
+        }
+    }
+
+    /// This pass saw `live_unstamped` listed unstamped with live beats: the names that reach
+    /// `join::UNSTAMPED_PASSES` such passes now (each once), counted `unstamped_listings`. A name
+    /// stamped, unlisted or no longer live is forgotten.
+    pub(super) fn note_unstamped(&self, live_unstamped: Vec<String>) -> Vec<String> {
+        let Ok(mut join) = self.join.lock() else {
+            return Vec::new();
+        };
+        join.unstamped
+            .retain(|name, _| live_unstamped.contains(name));
+        let mut reached = Vec::new();
+        for name in live_unstamped {
+            let passes = join.unstamped.entry(name.clone()).or_insert(0);
+            *passes += 1;
+            if *passes == super::join::UNSTAMPED_PASSES {
+                reached.push(name);
+            }
+        }
+        let reached_count = u64::try_from(reached.len()).unwrap_or(u64::MAX);
+        self.unstamped_listings
+            .fetch_add(reached_count, Ordering::Relaxed);
+        reached
+    }
+
+    /// This boot may beat from now on (`fleet::join::pass`): one-way.
+    pub(super) fn allow_beats(&self) {
+        if !self.beat_gate.send_replace(true) {
+            tracing::debug!("fleet: this boot's beats are allowed");
+        }
+    }
+
+    /// This boot is listed and undecided past its wait (`true`, counted), or no longer (`false`).
+    pub(super) fn note_undecided_boot(&self, undecided: bool) {
+        if undecided {
+            self.undecided_boots.fetch_add(1, Ordering::Relaxed);
+        }
+        self.undecided_boot.store(undecided, Ordering::SeqCst);
+    }
+
+    /// Why this instance is not ready, if its boot is listed and undecided past its wait.
+    pub(crate) fn undecided_boot(&self) -> Option<&'static str> {
+        self.undecided_boot
+            .load(Ordering::SeqCst)
+            .then_some("fleet boot undecided: listed, and no decision of this boot in the document")
+    }
+
+    /// Wait until this boot may beat (see `allow_beats`).
+    pub(super) async fn beats_allowed(&self) {
+        let mut allowed = self.beat_gate.subscribe();
+        if allowed.wait_for(|allowed| *allowed).await.is_err() {
+            tracing::debug!("fleet: the beat gate closed");
+        }
+    }
+
+    /// Tests: the heartbeat's first beat answers `point.reached` once allowed, and is written once
+    /// `point.go` resolves (a process killed in that window never writes it).
+    #[cfg(test)]
+    pub(crate) fn pause_first_beat(&self, point: crate::topology::gate::PausePoint) {
+        if let Ok(mut slot) = self.first_beat_pause.0.lock() {
+            *slot = Some(point);
+        }
+    }
+
+    /// Tests: the pause the first beat takes, if one is armed.
+    #[cfg(test)]
+    pub(super) fn take_first_beat_pause(&self) -> Option<crate::topology::gate::PausePoint> {
+        self.first_beat_pause.0.lock().ok()?.take()
+    }
+
+    /// A join committed past `JOIN_PHASE` with a leaf uncovered (E5's `joins_unpinned`).
+    pub(super) fn note_join_unpinned(&self) {
+        self.joins_unpinned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A planned move H1 kept (its count, since boot: `h1_kept`).
+    pub(super) fn note_h1_kept(&self) {
+        self.h1_kept.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Tests: the planned moves H1 kept, since boot.
+    #[cfg(test)]
+    pub(crate) fn h1_kept(&self) -> u64 {
+        self.h1_kept.load(Ordering::Relaxed)
+    }
+
+    /// Tests: the joins committed past `JOIN_PHASE`, since boot.
+    #[cfg(test)]
+    pub(crate) fn joins_unpinned(&self) -> u64 {
+        self.joins_unpinned.load(Ordering::Relaxed)
+    }
+
+    /// The ring of `document`, over the tick's last pass's candidates (§22 C1, C2): what every
+    /// publication between ticks pairs with that document's entries. `None` before the first
+    /// pass, when the caller keeps the view's ring (it creates no view an instance awaiting its
+    /// first one lacks).
+    pub(crate) fn ring_of(&self, document: &super::Overrides) -> Option<Vec<String>> {
         let candidates = self.candidates.lock().ok()?;
-        Some(candidates.as_ref()?.today())
+        Some(candidates.as_ref()?.ring(document.members.as_deref()))
     }
 
     /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides
@@ -616,313 +821,4 @@ impl Standing {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Attempts, DocTimes, Standing, Viewed, ViewedBeat};
-    use std::sync::atomic::AtomicU64;
-    use std::time::{Duration, Instant};
-
-    /// The ring between ticks is the tick's last pass's (§22 C2): none before a pass, then today's
-    /// rule over that pass's candidates, which the next pass replaces (PR #173's survivors
-    /// `Standing::set_candidates` as `()` and `Standing::ring_of` as `None`).
-    #[test]
-    fn the_ring_between_ticks_is_the_last_passs_by_todays_rule() {
-        let standing = Standing::default();
-        assert_eq!(standing.ring_of(), None, "no pass yet");
-        standing.note_pass(2, &["streams-2", "streams-1", "streams-3"]);
-        let both = vec!["streams-1".to_string(), "streams-2".to_string()];
-        assert_eq!(standing.ring_of(), Some(both));
-        standing.note_pass(3, &["streams-3"]);
-        assert_eq!(standing.ring_of(), Some(vec!["streams-3".to_string()]));
-    }
-
-    /// The count of the back-off's epoch is the tick's last pass's: none before a pass, then the
-    /// count each pass read (99472c14d's survivors `Standing::pass_count` as `None`, `Some(0)` and
-    /// `Some(1)`).
-    #[test]
-    fn the_pass_count_is_the_last_passs() {
-        let standing = Standing::default();
-        assert_eq!(standing.pass_count(), None, "no pass yet");
-        standing.note_pass(3, &["streams-1", "streams-2", "streams-3"]);
-        assert_eq!(standing.pass_count(), Some(3));
-        standing.note_pass(2, &["streams-1", "streams-2"]);
-        assert_eq!(standing.pass_count(), Some(2));
-    }
-
-    /// A drain has begun from its first handoff and once it is announced, each alone; a planned
-    /// move's close that did not end clean is counted, once each.
-    #[test]
-    fn a_drain_begins_with_its_handoffs_and_a_fenced_close_is_counted() {
-        let fresh = Standing::default();
-        assert!(!fresh.drain_begun());
-        let handing_off = Standing::default();
-        handing_off.begin_handing_off_all();
-        let announced = Standing::default();
-        announced.begin_draining();
-        assert_eq!(
-            (handing_off.drain_begun(), announced.drain_begun()),
-            (true, true)
-        );
-        assert_eq!(fresh.handoffs_fenced(), 0);
-        fresh.note_handoff_fenced();
-        fresh.note_handoff_fenced();
-        assert_eq!(fresh.handoffs_fenced(), 2);
-    }
-
-    /// A planned move's attempts are counted as they end, those that did not start apart, with
-    /// the last one's end and step (Addendum 28); the failpoint fails as many flushes under the
-    /// park as it was armed with, then none.
-    #[test]
-    fn a_planned_moves_attempts_are_counted_by_end_and_step() {
-        use super::super::handoff::Outcome;
-        let standing = Standing::default();
-        assert_eq!(standing.attempts(), Attempts::default());
-        standing.note_attempt(Outcome::NotStarted, "flush");
-        standing.note_attempt(Outcome::Evacuate, "park");
-        standing.note_attempt(Outcome::NotStarted, "claim");
-        standing.note_attempt(Outcome::Moved, "commit");
-        let counted = Attempts {
-            ended: 4,
-            not_started: 2,
-            last: Some((Outcome::Moved, "commit")),
-        };
-        assert_eq!(standing.attempts(), counted);
-        standing.miss_parked_flushes(2);
-        let misses = [(); 3].map(|()| standing.take_parked_flush_miss());
-        assert_eq!(misses, [true, true, false]);
-    }
-
-    /// The next beat publishes the split demand the latest tick set.
-    #[test]
-    fn the_latest_split_demand_is_what_the_next_beat_reads() {
-        let standing = Standing::default();
-        assert_eq!(standing.split_demand(), 0);
-        standing.set_split_demand(7);
-        assert_eq!(standing.split_demand(), 7);
-        standing.set_split_demand(0);
-        assert_eq!(standing.split_demand(), 0);
-    }
-
-    /// Return-home skips an entry younger than its window, to the millisecond, and any entry
-    /// whose prefix the live intent names as a source, until the beat reads no intent.
-    #[test]
-    fn return_home_skips_a_young_entry_and_a_live_intents_source() {
-        let standing = Standing::default();
-        let window = 300_000;
-        assert!(standing.return_home_skips("00", window - 1, 300));
-        assert!(!standing.return_home_skips("00", window, 300));
-        assert!(!standing.return_home_skips("00", 2_000, 0));
-        standing.set_topology_intent(Some(crate::topology::intent::Live {
-            op_id: "op".to_owned(),
-            kind: "merge".to_owned(),
-            owner: "streams-1".to_owned(),
-            sources: vec!["00".to_owned(), "01".to_owned()],
-        }));
-        assert!(standing.return_home_skips("00", window, 300));
-        assert!(standing.return_home_skips("01", i64::MAX, 300));
-        assert!(!standing.return_home_skips("1", window, 300));
-        standing.set_topology_intent(None);
-        assert!(!standing.return_home_skips("00", window, 300));
-    }
-
-    /// **A shield holds its halves until it lapses, at its instant, and a renewal keeps it**
-    /// (GATE-DECISION-s22-join-2026-11-20 Addendum 13 (2)): `00` and `01` shielded are unmovable
-    /// beside a live intent's source `1`; renewing `00` at 20 s keeps `01`'s mark; at 30 s `01`
-    /// lapses exactly (shielded and unmovable no more) while `00` holds; at 50 s `00` lapses too.
-    #[tokio::test(start_paused = true, crate = "crate::test_rt")]
-    async fn a_shield_holds_its_halves_until_it_lapses_and_a_renewal_keeps_it() {
-        let standing = Standing::default();
-        let lapse = Duration::from_secs(30);
-        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-        standing.set_topology_sources(names(&["1"]));
-        standing.shield(&names(&["00", "01"]), lapse);
-        let sorted = |mut list: Vec<String>| {
-            list.sort();
-            list
-        };
-        assert_eq!(sorted(standing.unmovable()), names(&["00", "01", "1"]));
-        assert!(standing.shielded("00") && !standing.shielded("1"));
-        tokio::time::advance(Duration::from_secs(20)).await;
-        standing.shield(&names(&["00"]), lapse);
-        assert!(standing.shielded("01"), "a renewal keeps the other marks");
-        tokio::time::advance(Duration::from_secs(10)).await;
-        assert_eq!(
-            (standing.shielded("00"), standing.shielded("01")),
-            (true, false),
-            "01 lapses at its instant"
-        );
-        assert_eq!(sorted(standing.unmovable()), names(&["00", "1"]));
-        tokio::time::advance(Duration::from_secs(20)).await;
-        standing.set_topology_intent(None);
-        assert_eq!(
-            (standing.shielded("00"), standing.unmovable()),
-            (false, vec![])
-        );
-    }
-
-    /// **Return-home skips a live split's children** (GATE-DECISION-f2-children-on-actor A4), by
-    /// the predicate the stale prune uses: while the split of `0` is live, `00` and `01` are
-    /// skipped at any age, `1` and `000` are not; a live merge's sources keep their own entries and
-    /// its product `0` is skipped too (§22 C19: the actor's entry for it); with no live intent none
-    /// is skipped.
-    #[test]
-    fn return_home_skips_a_live_splits_children() {
-        let standing = Standing::default();
-        let live = |kind: &str, sources: &[&str]| crate::topology::intent::Live {
-            op_id: "op".to_owned(),
-            kind: kind.to_owned(),
-            owner: "streams-1".to_owned(),
-            sources: sources.iter().map(|s| (*s).to_owned()).collect(),
-        };
-        let old = i64::MAX;
-        standing.set_topology_intent(Some(live("split", &["0"])));
-        let skipped =
-            ["0", "00", "01", "1", "000"].map(|p| standing.return_home_skips(p, old, 300));
-        assert_eq!(skipped, [true, true, true, false, false]);
-        standing.set_topology_intent(Some(live("merge", &["00", "01"])));
-        let skipped = ["00", "01", "000", "0"].map(|p| standing.return_home_skips(p, old, 300));
-        assert_eq!(skipped, [true, true, false, true]);
-        standing.set_topology_intent(None);
-        assert!(!standing.return_home_skips("00", old, 300));
-    }
-
-    fn beat(instance: &str) -> crate::fleet::Heartbeat {
-        let document = format!(
-            r#"{{"instance":"{instance}","ts_ms":1,"rps":0.0,"owned_shards":[],"draining":false,"seq":1}}"#
-        );
-        serde_json::from_str(&document).unwrap()
-    }
-
-    /// The topology policy reads the cell from the tick's latest heartbeat read, aged from
-    /// that read on the monotonic clock.
-    #[test]
-    fn the_cached_beats_are_the_latest_reads_aged_from_it() {
-        assert!(Standing::default().cached_beats().is_none());
-        let standing = Standing {
-            origin: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
-            ..Standing::default()
-        };
-        standing.cache_beats(&[beat("streams-1"), beat("streams-2")]);
-        let (age, beats) = standing.cached_beats().unwrap();
-        assert!(age < 500, "{age}");
-        let names: Vec<&str> = beats.iter().map(|beat| beat.instance.as_str()).collect();
-        assert_eq!(names, ["streams-1", "streams-2"]);
-        *standing.cached.lock().unwrap() = (1_001, beats);
-        let (age, _) = standing.cached_beats().unwrap();
-        assert!((4_000..4_500).contains(&age), "{age}");
-        standing.cache_beats(&[]);
-        assert!(standing.cached_beats().unwrap().1.is_empty());
-    }
-
-    /// The policy reads both documents' times, aged by the older read.
-    #[test]
-    fn the_fleet_documents_times_are_the_latest_reads_aged_by_the_older() {
-        let none = DocTimes {
-            desired_computed_ms: None,
-            youngest_override_ms: None,
-            age_ms: None,
-        };
-        let standing = Standing {
-            origin: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
-            ..Standing::default()
-        };
-        assert_eq!(standing.doc_times(), none);
-        standing.note_desired(Some(7));
-        assert_eq!(
-            standing.doc_times().age_ms,
-            None,
-            "the overrides were not read yet"
-        );
-        standing.note_overrides(None);
-        let times = standing.doc_times();
-        assert_eq!(
-            (times.desired_computed_ms, times.youngest_override_ms),
-            (Some(7), None)
-        );
-        assert!(times.age_ms.unwrap() < 500, "{times:?}");
-        standing.docs.lock().unwrap().desired_read = 1_001;
-        standing.note_overrides(Some(9));
-        let times = standing.doc_times();
-        assert_eq!(times.youngest_override_ms, Some(9));
-        assert!((4_000..4_500).contains(&times.age_ms.unwrap()), "{times:?}");
-        standing.note_desired(None);
-        assert_eq!(standing.doc_times().desired_computed_ms, None);
-    }
-
-    /// The next beat publishes the topology policy's latest pass.
-    #[test]
-    fn the_next_beat_reads_the_topology_policys_latest_pass() {
-        let standing = Standing::default();
-        assert_eq!(
-            (standing.split_refused(), standing.shards_resident()),
-            (None, 0)
-        );
-        standing.set_topology(Some("instance_full"), 7);
-        assert_eq!(
-            (standing.split_refused(), standing.shards_resident()),
-            (Some("instance_full"), 7)
-        );
-        assert_eq!(standing.topology_decision(), "");
-        standing.set_topology_decision("hold=cooldown".into());
-        assert_eq!(standing.topology_decision(), "hold=cooldown");
-        standing.set_topology(None, 3);
-        assert_eq!(
-            (standing.split_refused(), standing.shards_resident()),
-            (None, 3)
-        );
-    }
-
-    #[test]
-    fn progress_ages_from_its_last_mark_and_is_absent_before_the_first() {
-        assert_eq!(Standing::default().progress_age_ms(), None);
-        // Marked one second after an origin five seconds ago.
-        let standing = Standing {
-            origin: Instant::now().checked_sub(Duration::from_secs(5)).unwrap(),
-            progress: AtomicU64::new(1_001),
-            ..Standing::default()
-        };
-        let aged = standing.progress_age_ms().unwrap();
-        assert!((4_000..4_500).contains(&aged), "{aged}");
-        standing.mark_progress();
-        assert!(standing.progress_age_ms().unwrap() < 500);
-    }
-
-    #[test]
-    fn the_view_records_the_beats_of_the_read_it_was_computed_from() {
-        let standing = Standing::default();
-        let beat = |seq| {
-            Viewed::from([(
-                "streams-2".to_string(),
-                ViewedBeat {
-                    boot_id: "b".into(),
-                    seq,
-                },
-            )])
-        };
-        standing.read(beat(7));
-        assert!(standing.viewed().is_empty(), "no view published yet");
-        standing.mark_progress();
-        assert_eq!(standing.viewed(), beat(7));
-        standing.read(beat(8));
-        assert_eq!(standing.viewed(), beat(7), "a read alone publishes nothing");
-    }
-
-    #[tokio::test(crate = "crate::test_rt")]
-    async fn a_drain_marks_every_later_beat_and_asks_for_one_at_once() {
-        let standing = Standing::default();
-        assert_eq!((standing.next_beat(), standing.next_beat()), (1, 2));
-        assert!(!standing.draining());
-        assert_eq!(standing.draining_from(), None);
-        let unasked = tokio::time::timeout(Duration::from_millis(50), standing.beat_requested());
-        assert!(
-            unasked.await.is_err(),
-            "no beat is asked for before a drain"
-        );
-        standing.begin_draining();
-        assert!(standing.draining());
-        assert_eq!(standing.draining_from(), Some(3));
-        assert_eq!(standing.next_beat(), 3);
-        tokio::time::timeout(Duration::from_secs(1), standing.beat_requested())
-            .await
-            .expect("the drain's beat is asked for at once");
-    }
-}
+mod tests;

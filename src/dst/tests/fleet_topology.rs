@@ -214,6 +214,9 @@ async fn stale_halves_open_nothing(target: &str) {
             fleet_store: Some(fleet),
             instance: Some("streams-1".into()),
             prefixes: ["00", "01", "1"].map(str::to_string).to_vec(),
+            // The count is the scenario's (the join ruling, Addendum 23 §2): grown on the test
+            // host's cores, a pin (C7) for the ordinal never booted would open its leaf.
+            cli: |cli| cli.fleet_max = 1,
             ..Default::default()
         },
     )

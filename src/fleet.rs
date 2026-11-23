@@ -29,11 +29,15 @@ mod heartbeat;
 #[cfg(test)]
 pub(crate) use heartbeat::open_unopened_sources;
 mod hysteresis;
+// The join (§22 step 5): membership by CAS of the overrides document in the tick's publication.
+mod join;
+#[cfg(test)]
+pub(crate) use join::JOIN_PHASE;
 // The tick's return-home and lag move.
 mod moves;
 mod outbox;
 mod planning;
-// The membership of record and its interim writer (§22 C1-C4, C17; Addendum 14).
+// The membership of record and its ring (§22 C1-C4, C17; R1).
 mod record;
 /// PR 6.1.1-C: the coordination store lives in its own module; this file is
 /// the fleet loop's home and must not also be the storage layer.
@@ -62,8 +66,8 @@ pub(crate) struct Overrides {
     pub members: Option<Vec<Member>>,
 }
 
-/// One member of record (§22 C1): its name, and the boot id the join stamps (R1a). The interim
-/// writes it absent and no reader uses it (GATE-DECISION-s22-3b-step4-2026-11-21 §2.1).
+/// One member of record (§22 C1): its name, and the boot id the join stamps (R1a). Step 4's interim
+/// wrote it absent; a reader judges a listing by it (R1, `record::Candidates::ring`).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Member {
     pub name: String,

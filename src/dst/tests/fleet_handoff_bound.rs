@@ -38,8 +38,10 @@ async fn peer_beat(store: &Arc<dyn ObjectStore>) {
 }
 
 /// A cell of two by its documents: count 2, both listed, and `entries` naming `streams-1`, each an
-/// hour old (past the return window).
-async fn seeded(store: &Arc<dyn ObjectStore>, entries: &[&str]) {
+/// hour old (past the return window). `streams-1` is listed with `boot` (setup only, the join
+/// ruling, Addendum 23 §2 (b): listed as its join would have listed it, so the scenario is the
+/// move's, not the join's); `streams-2`, a beat with no process, is listed by name.
+async fn seeded(store: &Arc<dyn ObjectStore>, entries: &[&str], boot: &str) {
     let desired = r#"{"count":2,"epoch":1,"reason":"seed","computed_at_ms":0}"#;
     put(store, "fleet/desired.json", desired.to_string()).await;
     let aged = crate::shard::now_ms() - 3_600_000;
@@ -52,7 +54,7 @@ async fn seeded(store: &Arc<dyn ObjectStore>, entries: &[&str]) {
     };
     let member = |name: &str| crate::fleet::Member {
         name: name.to_string(),
-        boot_id: None,
+        boot_id: (name == "streams-1").then(|| boot.to_string()),
     };
     let overrides = crate::fleet::Overrides {
         entries: entries.iter().map(entry).collect(),
@@ -70,11 +72,11 @@ fn held(cli: &mut crate::config::CliArgs) {
     cli.fleet_max = 1;
 }
 
-/// `streams-1` over `fleet`, its fleet started.
-async fn giver(fleet: Arc<dyn ObjectStore>) -> HttpRig {
+/// `streams-1` over `fleet` (as `runtime`), its fleet started.
+async fn giver(fleet: Arc<dyn ObjectStore>, runtime: RigRuntime) -> HttpRig {
     let rig = http_rig_build(
         mem(),
-        RigRuntime::first(),
+        runtime,
         HttpRigOptions {
             fleet_store: Some(fleet),
             instance: Some("streams-1".to_string()),
@@ -143,14 +145,15 @@ async fn closes_of(state: Arc<crate::http::AppState>, window: Duration) -> usize
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_move_past_its_commits_bound_is_not_tried_again_at_every_pass() {
     let inner = mem();
-    seeded(&inner, &["11", LEAF]).await;
+    let runtime = RigRuntime::first();
+    seeded(&inner, &["11", LEAF], &runtime.caps.identity.boot_id).await;
     let slow = FaultPlan {
         latency_pct: 100,
         latency_ms: (1_500, 1_500),
         ..FaultPlan::CLEAN
     };
     let fleet: Arc<dyn ObjectStore> = FaultStore::uniform(inner.clone(), 0xB0F, slow);
-    let rig = giver(fleet).await;
+    let rig = giver(fleet, runtime).await;
     // At 1.5 s an operation the first view takes several passes: the create waits for it.
     let t0 = Instant::now();
     while !rig
@@ -196,9 +199,10 @@ async fn a_move_past_its_commits_bound_is_not_tried_again_at_every_pass() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_won_cas_is_the_move_when_the_read_after_it_misses_the_deadline() {
     let inner = mem();
-    seeded(&inner, &[]).await;
+    let runtime = RigRuntime::first();
+    seeded(&inner, &[], &runtime.caps.identity.boot_id).await;
     let fleet = FaultStore::new(inner.clone(), 0xCA5, FaultProfile::clean());
-    let rig = giver(fleet.clone()).await;
+    let rig = giver(fleet.clone(), runtime).await;
     let leaf = "00";
     let t0 = Instant::now();
     while !rig
@@ -257,13 +261,14 @@ async fn a_won_cas_is_the_move_when_the_read_after_it_misses_the_deadline() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_move_commits_within_its_hold_on_a_600_ms_store() {
     let inner = mem();
-    seeded(&inner, &[]).await;
+    let runtime = RigRuntime::first();
+    seeded(&inner, &[], &runtime.caps.identity.boot_id).await;
     let slow = FaultPlan {
         latency_pct: 100,
         latency_ms: (600, 600),
         ..FaultPlan::CLEAN
     };
-    let rig = giver(FaultStore::uniform(inner.clone(), 0x600, slow)).await;
+    let rig = giver(FaultStore::uniform(inner.clone(), 0x600, slow), runtime).await;
     let leaf = "00";
     let t0 = Instant::now();
     while !rig

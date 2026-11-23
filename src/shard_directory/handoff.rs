@@ -82,6 +82,13 @@ impl ShardDirectory {
     pub(crate) fn fenced_ahead(&self) -> u64 {
         self.inner.handoffs.fenced()
     }
+
+    /// Tests: the shards this instance retired because their ownership moved, its ticks' yields
+    /// (Addendum 27).
+    #[cfg(test)]
+    pub(crate) fn tick_yields(&self) -> u64 {
+        self.inner.handoffs.yielded()
+    }
 }
 
 /// An engine of `prefix` (`incarnation`) closed: count it as fenced ahead of a planned move when

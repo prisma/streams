@@ -89,6 +89,13 @@ async fn entries(rig: &HttpRig) -> BTreeMap<String, (String, i64)> {
         .collect()
 }
 
+/// The count held at the seeded two: the controller reads the host's cores, and on a loaded host it
+/// raises the count, so the holder would pin for ordinals the scenario never boots (the join's
+/// C7). Setup only.
+fn held_at_two(cli: &mut crate::config::CliArgs) {
+    cli.fleet_max = 2;
+}
+
 /// `streams-1` over `fleet` with shard 00 open, its fleet started under the
 /// command line `cli` edits; returns once the tick has published a ring of
 /// `members`.
@@ -207,7 +214,7 @@ async fn a_count_move_waits_out_the_boot_cooldown_then_moves_one_shard() {
         inner,
         fleet: AtomicU64::new(0),
     });
-    let rig = started(fleet.clone(), 2, |_| {}).await;
+    let rig = started(fleet.clone(), 2, held_at_two).await;
     let seeded = entries(&rig).await;
     assert_eq!(seeded.keys().collect::<Vec<_>>(), ["10", "11"]);
     holds(&rig, &seeded, "no move within the boot cooldown").await;
@@ -314,7 +321,7 @@ async fn a_member_within_the_share_reads_nothing_for_the_count_balance() {
         inner,
         fleet: AtomicU64::new(0),
     });
-    let rig = started(fleet.clone(), 2, |_| {}).await;
+    let rig = started(fleet.clone(), 2, held_at_two).await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
     let listed = fleet.fleet.load(Ordering::SeqCst);
     assert!(listed > 0, "the tick's first pass lists the heartbeats");
@@ -336,7 +343,7 @@ async fn a_member_at_half_the_lag_threshold_receives_no_count_move() {
     seed_count(&fleet, 2, 1).await;
     seed_overrides(&fleet, [AGED_MS, AGED_MS]).await;
     beat(&fleet, "streams-2", 30).await;
-    let rig = started(fleet.clone(), 2, |_| {}).await;
+    let rig = started(fleet.clone(), 2, held_at_two).await;
     let seeded = entries(&rig).await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
     holds(&rig, &seeded, "a target at half the threshold").await;
@@ -362,6 +369,9 @@ async fn a_ring_of_one_makes_no_count_move() {
     rig.clock.advance_monotonic(Duration::from_secs(61));
     holds(&rig, &seeded, "a ring of one").await;
     seed_count(&fleet, 2, 2).await;
+    // The seeded `streams-2` has no process: list it as its join would have (the join ruling,
+    // Addendum 3), stamped with its seeded beat's boot id (none: empty).
+    super::super::fixture_members::seed_joined(&fleet, "streams-2", "").await;
     moves_00(&rig, &seeded).await;
     stop(rig).await;
 }
@@ -378,7 +388,7 @@ async fn a_heartbeat_outside_the_ring_receives_no_count_move() {
     seed_overrides(&fleet, [AGED_MS, AGED_MS]).await;
     beat(&fleet, "streams-10", 0).await;
     beat(&fleet, "streams-2", 0).await;
-    let rig = started(fleet, 2, |_| {}).await;
+    let rig = started(fleet, 2, held_at_two).await;
     let seeded = entries(&rig).await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
     moves_00(&rig, &seeded).await;
@@ -393,7 +403,7 @@ async fn a_fresh_override_anywhere_holds_the_count_move() {
     seed_count(&fleet, 2, 1).await;
     seed_overrides(&fleet, [0, AGED_MS]).await;
     beat(&fleet, "streams-2", 0).await;
-    let rig = started(fleet.clone(), 2, |_| {}).await;
+    let rig = started(fleet.clone(), 2, held_at_two).await;
     let fresh = entries(&rig).await;
     rig.clock.advance_monotonic(Duration::from_secs(61));
     holds(&rig, &fresh, "an override younger than the cooldown").await;
@@ -435,7 +445,7 @@ async fn a_count_move_prunes_every_override_that_names_no_leaf() {
     let body = serde_json::to_vec(&overrides).unwrap();
     put(&inner, "fleet/overrides.json", body).await;
     beat(&inner, "streams-2", 0).await;
-    let rig = started(inner, 2, |_| {}).await;
+    let rig = started(inner, 2, held_at_two).await;
     let topology = crate::topology::model::Topology {
         version: 1,
         shards: rig.state.shards.prefixes().shards.clone(),
