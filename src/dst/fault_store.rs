@@ -147,6 +147,11 @@ struct Hold {
     /// Only these paths park, so writes of other DBs on the same store
     /// cannot take the parked slots; `None` parks every path.
     paths: Option<HoldPaths>,
+    /// The first this many matching operations pass before any parks
+    /// ([`FaultStore::hold_under_after`]); 0 for every other hold.
+    let_through: u64,
+    /// Every matching operation the hold has seen, let through or parked.
+    seen: Arc<AtomicU64>,
 }
 
 /// The paths a [`Hold`] parks.
@@ -157,7 +162,14 @@ enum HoldPaths {
 }
 
 impl Hold {
+    /// Whether this operation parks: it matches the hold, and the hold has already let its first
+    /// `let_through` matching operations pass. Each matching operation is counted in `seen`.
     fn parks(&self, op: StoreOp, class: ObjClass, path: &str) -> bool {
+        self.matches(op, class, path)
+            && self.seen.fetch_add(1, Ordering::SeqCst) >= self.let_through
+    }
+
+    fn matches(&self, op: StoreOp, class: ObjClass, path: &str) -> bool {
         self.op == op
             && self.class == class
             && self.paths.as_ref().is_none_or(|paths| match paths {
@@ -443,8 +455,35 @@ impl FaultStore {
             engaged: engaged.clone(),
             max_parked,
             paths,
+            let_through: 0,
+            seen: Arc::default(),
         });
         engaged
+    }
+
+    /// Let the first `let_through` matching operations under `under` pass, and park every later
+    /// one until `release_hold` (GATE-DECISION-s22-join-2026-11-20 Addendum 34): a hold armed
+    /// before a process boots, so its boot's own reads land and its tick's are parked. The
+    /// returned counter counts every matching operation seen, let through or parked.
+    pub(crate) fn hold_under_after(
+        &self,
+        op: StoreOp,
+        class: ObjClass,
+        under: &str,
+        let_through: u64,
+    ) -> Arc<AtomicU64> {
+        let seen = Arc::new(AtomicU64::new(0));
+        *self.st.hold.lock().unwrap() = Some(Hold {
+            op,
+            class,
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            engaged: Arc::default(),
+            max_parked: u64::MAX,
+            paths: Some(HoldPaths::Under(under.to_string())),
+            let_through,
+            seen: seen.clone(),
+        });
+        seen
     }
 
     /// Release the hold, its first parked operation then landing with its response lost (the

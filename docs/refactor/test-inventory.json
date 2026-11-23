@@ -1799,6 +1799,19 @@
     "scenarios": []
   },
   {
+    "name": "a_hold_after_n_lets_the_first_through_and_parks_the_rest",
+    "attributes": [
+      "#[tokio::test(crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "3683ba1dd703d71801c47ce80ab683412710bde6d42dc3d6ae4486c15499200f",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner, 1, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/fault_substrate.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_holder_with_no_engine_moves_its_entry",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -6811,7 +6824,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "09cf6fe011e1cb95610f1af790b3fa44b9055e50dd3890d6a0ea7f6d48772387",
+    "function_sha256": "e686adb69bc57f33a322ee8ac402b8ede7b71df8f60ef518a60ebd9eba4ea8ef",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_join_boot.rs",

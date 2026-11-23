@@ -297,11 +297,18 @@ async fn a_boot_killed_between_its_stamp_and_its_first_beat_is_recovered_by_the_
     }
 }
 
-/// **An unlisted boot beats at once, with no tick involved** (the join ruling, Addenda 2 and 3).
-/// `streams-1` alone is listed at a count of one; the count goes to two and `streams-2` boots. Its
-/// heartbeat reads the document once at boot and finds its name unlisted, so it beats at once.
-/// Its tick is then held at its overrides read (its fleet store parks that GET), so no pass of
-/// its own runs: the beat lands anyway. Released, the tick joins.
+/// **An unlisted boot beats at once, with no tick involved** (the join ruling, Addenda 2 and 3;
+/// strengthened by Addendum 34). `streams-1` alone is listed at a count of one; the count goes to
+/// two and `streams-2` boots over a fleet store armed before its boot to let exactly one read of
+/// the document through, the heartbeat's boot read, and park every later one: every read its tick
+/// makes, from the first. Its heartbeat finds its name unlisted and beats at once, while no pass of
+/// its own tick has run (a pass begins only once the tick has read the document). Released, the
+/// tick joins. If the heartbeat's boot reads of the document changed in number, the beat would
+/// come from the tick (no reads: a pass would have run) or not at all (two: the second parked).
+/// Red, by its assertion, with the heartbeat's boot read replaced by "listed" (`listed_at_boot ->
+/// true`, #183's survivor: the tick's first read is the one let through and its pass releases the
+/// beat) and with the heartbeat's release removed (the join's R-f: its read is let through and
+/// releases nothing, and the tick's reads are parked, so it never beats).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn an_unlisted_boot_beats_before_it_joins() {
     let (data, fleet) = (mem(), mem());
@@ -313,6 +320,8 @@ async fn an_unlisted_boot_beats_before_it_joins() {
     .await;
     desired(&fleet, 2, 2).await;
     let b_fleet = FaultStore::new(fleet.clone(), 0xB0, FaultProfile::clean());
+    let overrides = "fleet/overrides.json";
+    let seen = b_fleet.hold_under_after(StoreOp::Get, ObjClass::Fleet, overrides, 1);
     let b = member(
         &data,
         b_fleet.clone(),
@@ -320,38 +329,27 @@ async fn an_unlisted_boot_beats_before_it_joins() {
         RigRuntime::incarnation(1),
     )
     .await;
-    // The heartbeat's two boot reads (its previous beat and the document) come at once; the tick's
-    // first read waits a tick period. Hold every later read of the document.
-    until("the heartbeat's boot reads", async || {
-        b_fleet.count(StoreOp::Get, ObjClass::Fleet) >= 2
-    })
-    .await;
-    let held = b_fleet.hold_class_under(
-        StoreOp::Get,
-        ObjClass::Fleet,
-        "fleet/overrides.json",
-        u64::MAX,
-    );
-    // The heartbeat's two reads land before the hold; the tick's first read is the first the hold
-    // parks. Wait for it to park before looking for the beat: an unlisted boot beats at once, so its
-    // beat is usually in the store before the tick's first read.
-    until("the tick's read is held", async || {
-        held.load(std::sync::atomic::Ordering::SeqCst) > 0
-    })
-    .await;
     let boot = b.state.runtime.identity.boot_id.clone();
-    until("streams-2 beats with its tick held", async || {
-        beat_boot(&fleet, "streams-2").await.as_deref() == Some(boot.as_str())
+    // Bounded, not `until`: a boot that never beats fails the assertion below, by its text.
+    let waited = tokio::time::Instant::now();
+    let mut beat = false;
+    while !beat && waited.elapsed() < super::fleet_join::BOUND / 3 {
+        beat = beat_boot(&fleet, "streams-2").await.as_deref() == Some(boot.as_str());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let read = |seen: &std::sync::atomic::AtomicU64| seen.load(std::sync::atomic::Ordering::SeqCst);
+    until("streams-2's tick reaches its parked read", async || {
+        read(&seen) >= 2
     })
     .await;
+    let (passes, reads) = (b.state.fleet.standing().join_passes(), read(&seen));
     let unjoined = listed(&fleet).await.len() == 1;
-    let tick_held = held.load(std::sync::atomic::Ordering::SeqCst) > 0;
     b_fleet.release_hold();
     until("streams-2 joins", async || listed(&fleet).await.len() == 2).await;
     assert_eq!(
-        (unjoined, tick_held),
-        (true, true),
-        "(beat before its join, with its tick held)"
+        (beat, passes, unjoined),
+        (true, 0, true),
+        "(streams-2 beat, its tick's passes by then, unjoined) with every tick read of the document parked: {reads} reads seen, one let through"
     );
     for rig in [a, b] {
         stop(rig).await;

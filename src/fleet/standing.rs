@@ -386,6 +386,12 @@ impl Standing {
         }
     }
 
+    /// Tests: this boot's membership passes so far (a pass begins once the tick read the document).
+    #[cfg(test)]
+    pub(crate) fn join_passes(&self) -> u32 {
+        self.join.lock().map_or(0, |join| join.passes)
+    }
+
     /// C13's verdict, once read.
     pub(super) fn boot_young(&self) -> Option<bool> {
         self.join.lock().ok()?.young

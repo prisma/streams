@@ -202,3 +202,35 @@ fn object_classes_match_production_telemetry() {
     assert_eq!(ObjClass::of("stg1/fleet/streams-1.json"), ObjClass::Fleet);
     assert_eq!(ObjClass::of("stg1/topology.json"), ObjClass::Other);
 }
+
+/// A hold armed to let the first operations through (`hold_under_after`, the join ruling
+/// Addendum 34): the first matching GET under the path lands, the second parks until the hold is
+/// released, a GET of another path never parks, and the counter sees each matching one.
+#[tokio::test(crate = "crate::test_rt")]
+async fn a_hold_after_n_lets_the_first_through_and_parks_the_rest() {
+    use object_store::ObjectStoreExt;
+    let inner = mem();
+    for path in ["fleet/overrides.json", "fleet/desired.json"] {
+        inner
+            .put(&ObjPath::from(path), PutPayload::from_static(b"{}"))
+            .await
+            .unwrap();
+    }
+    let store = FaultStore::uniform(inner, 1, FaultPlan::CLEAN);
+    let seen = store.hold_under_after(
+        crate::dst::StoreOp::Get,
+        ObjClass::Fleet,
+        "fleet/overrides",
+        1,
+    );
+    let overrides = ObjPath::from("fleet/overrides.json");
+    assert!(store.get(&overrides).await.is_ok(), "the first lands");
+    let other = store.get(&ObjPath::from("fleet/desired.json")).await;
+    assert!(other.is_ok(), "another path never parks");
+    let wait = std::time::Duration::from_millis(200);
+    let parked = tokio::time::timeout(wait, store.get(&overrides)).await;
+    assert!(parked.is_err(), "the second parks");
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2);
+    store.release_hold();
+    assert!(store.get(&overrides).await.is_ok(), "released, it lands");
+}
