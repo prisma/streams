@@ -615,9 +615,14 @@ async fn a_restart_after_a_planned_drain_rejoins_and_a_count_drop_moves_nothing(
         RigRuntime::incarnation(1),
     )
     .await;
-    until("both listed", async || listed(&fleet).await.len() == 2).await;
+    // Both joined with their own boot ids, not only listed: a fresh cell's first boot lists every
+    // counted ordinal unstamped (C17), so a count of two names would pass before any join, and a
+    // drain of a boot that never joined runs out its whole budget (#183's TIMEOUTs).
+    super::fixture_members::joined(&fleet, &[&a, &b], BOUND).await;
     open_owned(&a).await;
-    let drained = crate::fleet::drain::drain(&b.state, "streams-2", crate::fleet::drain::BUDGET);
+    // A handoff's bound, not the drain's whole budget (as `fleet_drain`'s drains): a drain that
+    // cannot hand off fails here within [`BOUND`] (#183's `in_ring` TIMEOUTs ran out the budget).
+    let drained = crate::fleet::drain::drain(&b.state, "streams-2", BOUND);
     assert!(
         matches!(drained.await, crate::fleet::drain::DrainOutcome::HandedOff),
         "a planned drain"
