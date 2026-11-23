@@ -903,6 +903,12 @@ impl ShardEngine {
         self.seal_once(Trigger::Requested).await
     }
 
+    /// Tests: this engine's flush lock, held until the guard drops, as a flush in flight holds it.
+    #[cfg(test)]
+    pub(crate) async fn hold_flush_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.seal_state().flush_lock.lock().await
+    }
+
     /// A memtable flush another part of the engine asks for (the queue
     /// collector), like every forced flush.
     pub(crate) async fn flush_memtable(&self) -> Result<(), String> {

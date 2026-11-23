@@ -2726,6 +2726,17 @@
     "scenarios": []
   },
   {
+    "name": "a_move_whose_unparked_flush_misses_its_bound_ends_before_the_park",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "baffa1bb0da930818f2d82b86a749c7d890684f179917dc7e4b77c7454111258",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_bound.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_moves_held_waiters_wait_for_a_forward_place",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

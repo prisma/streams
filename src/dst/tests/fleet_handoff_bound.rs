@@ -1,9 +1,11 @@
 //! A planned move's commit under a slow store (GATE-DECISION-s22-join-2026-11-20 Addendum 26). The
 //! commit's three tries share the hold's remainder less 200 ms, not a fixed 400 ms; a won CAS is the
 //! move, whatever the read after it; and a move that ran out of that bound is not tried again at
-//! the next pass, but after twice the gap since its last try, at most a minute.
+//! the next pass, but after twice the gap since its last try, at most a minute. An unparked flush
+//! that misses its bound ends the attempt before the park (GATE-DECISION-s22-3b-step4-2026-11-21
+//! Addendum 5 (ii)).
 
-use super::billing_closure_debts::JSON;
+use super::billing_closure_debts::{JSON, stored};
 use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build, two_bit};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
@@ -300,6 +302,129 @@ async fn a_move_commits_within_its_hold_on_a_600_ms_store() {
         (outcome, mirror.as_deref()),
         (Outcome::Moved, Some("streams-2")),
         "(the move's end, the giver's mirror of 00)"
+    );
+    stop(rig).await;
+}
+
+/// A stream created through `addr` that lands in `leaf`: a name the ring gives another member is
+/// refused `409` and skipped.
+async fn stream_on(
+    state: &Arc<crate::http::AppState>,
+    addr: std::net::SocketAddr,
+    leaf: &str,
+) -> String {
+    for n in 0..400 {
+        let name = format!("p-{n}");
+        let (status, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &[JSON], b"").await;
+        if status == 409 {
+            continue;
+        }
+        assert!(status == 200 || status == 201, "create {name}: {status}");
+        let desc = stored(state, &state.deployment.raw_adapter_sref(&name)).await;
+        if state
+            .shards
+            .prefix_for(&desc.resolve_segment("").shard_route)
+            == leaf
+        {
+            return name;
+        }
+    }
+    panic!("no stream lands in {leaf}");
+}
+
+/// The appends to `stream` through `addr` until `done`, each as (sent, answered).
+async fn appends_until(
+    addr: std::net::SocketAddr,
+    stream: &str,
+    done: &std::sync::atomic::AtomicBool,
+) -> Vec<(Instant, Instant)> {
+    let path = format!("/v1/stream/{stream}");
+    let mut spans = Vec::new();
+    while !done.load(Ordering::SeqCst) {
+        let sent = Instant::now();
+        let (status, _, _) = hreq(addr, "POST", &path, &[JSON], br#"[{"n":1}]"#).await;
+        assert_eq!(status, 204, "an append to {stream}");
+        spans.push((sent, Instant::now()));
+    }
+    spans
+}
+
+/// The instants `engine`'s committer was seen parked, sampled every 2 ms until `done`.
+async fn parks_until(
+    engine: &crate::shard::ShardEngine,
+    done: &std::sync::atomic::AtomicBool,
+) -> Vec<Instant> {
+    let mut seen = Vec::new();
+    while !done.load(Ordering::SeqCst) {
+        if engine.gc_state().gate.parked() {
+            seen.push(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    seen
+}
+
+/// **A missed unparked flush ends the attempt before the park** (GATE-DECISION-s22-3b-step4-2026-11-21
+/// Addendum 5 (ii)). The leaf's flush lock is held past `PRE_FLUSH` (2 s), as a seal's flush at
+/// L0 8 holds it for seconds, while an appender writes to a stream in it. The move of `00` ends
+/// `NotStarted` at `step=pre_flush`: the committer is never parked and no append is held. Red with
+/// the unparked flush skipped past: the attempt parks, misses at `step=flush`, and holds the
+/// appends in flight for the flush's 300 ms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_move_whose_unparked_flush_misses_its_bound_ends_before_the_park() {
+    let inner = mem();
+    let runtime = RigRuntime::first();
+    seeded(&inner, &[], &runtime.caps.identity.boot_id).await;
+    let rig = giver(inner.clone(), runtime).await;
+    let leaf = "00";
+    let t0 = Instant::now();
+    while !rig
+        .state
+        .ownership
+        .ring_active()
+        .iter()
+        .any(|m| m == "streams-2")
+    {
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "the view rings streams-2"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let stream = stream_on(&rig.state, rig.addr, leaf).await;
+    let engine = rig
+        .state
+        .shards
+        .open(leaf)
+        .expect("00 is open on its ring home");
+    let lock = engine.hold_flush_lock().await;
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let moved = async {
+        let change = Change::To("streams-2".to_string());
+        let outcome = hand_off(&rig.state.fleet, leaf, change, false).await;
+        done.store(true, Ordering::SeqCst);
+        outcome
+    };
+    let watched = futures_util::future::join(
+        appends_until(rig.addr, &stream, &done),
+        parks_until(&engine, &done),
+    );
+    let (outcome, (spans, parks)) = futures_util::future::join(moved, watched).await;
+    drop(lock);
+    let held = spans
+        .iter()
+        .filter(|(sent, answered)| parks.iter().any(|at| sent <= at && at <= answered))
+        .count();
+    let last = rig.state.fleet.standing().attempts().last;
+    assert_eq!(
+        (outcome, last, parks.len(), held),
+        (
+            Outcome::NotStarted,
+            Some((Outcome::NotStarted, "pre_flush")),
+            0,
+            0
+        ),
+        "(the move's end, its last attempt, parked samples, appends held)"
     );
     stop(rig).await;
 }

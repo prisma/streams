@@ -218,12 +218,16 @@ async fn run(state: &AppState, request: &Request) -> (Outcome, Option<Committed>
         return without_engine(state, request).await;
     };
     // Step 0: flush unparked, so the flush under the park carries only the delta (D3). One that
-    // does not finish within its bound leaves more to the flush under the park, nothing else.
+    // does not finish within its bound ends the attempt here, before any park: the flush under the
+    // park would wait on the same flush (GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 5 (ii)).
     let pre_flushed = matches!(
         timeout(PRE_FLUSH, engine.flush_memtable()).await,
         Ok(Ok(()))
     );
     tracing::debug!(shard = %prefix, pre_flushed, "handoff: the unparked flush");
+    if !pre_flushed {
+        return (missed(state, request, "pre_flush"), None);
+    }
     // Step 1: claim the engine; no split starts on it while the move holds it.
     let gate = &engine.gc_state().gate;
     if state
@@ -336,7 +340,8 @@ async fn without_engine(state: &AppState, request: &Request) -> (Outcome, Option
     (end, Some(committed))
 }
 
-/// A park or flush past its bound: a lag victim is evacuated (H4); any other move does not start.
+/// An unparked flush, a park or a flush under the park past its bound: a lag victim is evacuated
+/// (H4); any other move does not start.
 fn missed(state: &AppState, request: &Request, step: &'static str) -> Outcome {
     tracing::info!(shard = %request.prefix, step, "handoff: missed its bound; nothing held");
     let end = if request.evacuable {
