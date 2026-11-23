@@ -135,6 +135,8 @@ struct JoinState {
     passes: u32,
     /// The pass whose join CAS was written (`note_joined`); `None` before it.
     joined_at_pass: Option<u32>,
+    /// C18: a pass of this boot read it listed with its own boot id (`note_member`); one-way.
+    member: bool,
 }
 
 /// desired.json's `computed_at_ms` and the youngest override's `ms`, as the latest read of
@@ -395,6 +397,19 @@ impl Standing {
     /// C13's verdict, once read.
     pub(super) fn boot_young(&self) -> Option<bool> {
         self.join.lock().ok()?.young
+    }
+
+    /// C18 (the join ruling, Addendum 33): a pass of this boot read it listed with its own boot
+    /// id: it is a member, and C13's boot-time verdict is not consulted again. One-way.
+    pub(super) fn note_member(&self) {
+        if let Ok(mut join) = self.join.lock() {
+            join.member = true;
+        }
+    }
+
+    /// C18: whether a pass of this boot has read it a member.
+    pub(super) fn decided_member(&self) -> bool {
+        self.join.lock().is_ok_and(|join| join.member)
     }
 
     /// Since when a joiner within the count has found something uncovered (`JOIN_PHASE`).

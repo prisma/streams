@@ -24,6 +24,9 @@ use std::time::Duration;
 /// How long a fleet step (a view, a join, a handoff) may take: several 2 s ticks.
 pub(super) const BOUND: Duration = Duration::from_secs(30);
 
+#[path = "fleet_join_foreign.rs"]
+mod foreign;
+
 /// The cell's leaves: four, so every member of up to five wins some.
 pub(super) const LEAVES: [&str; 4] = ["00", "01", "10", "11"];
 

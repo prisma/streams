@@ -141,6 +141,7 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         leaves: &all,
         may_join,
         young: Some(false),
+        member: false,
         phase_over,
     };
     let waiting = plan(&facts(true, false), &doc, "b2");
@@ -168,6 +169,7 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         leaves: &all,
         may_join: true,
         young: None,
+        member: false,
         phase_over: true,
     };
     assert!(
@@ -180,6 +182,7 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         leaves: &all,
         may_join: true,
         young: None,
+        member: false,
         phase_over: true,
     };
     assert!(
@@ -202,6 +205,7 @@ fn a_listed_instance_decides_stamps_and_lists_as_c13_and_c17_rule() {
         leaves: &all,
         may_join: true,
         young,
+        member: false,
         phase_over: false,
     };
     let restarted = document(
@@ -244,6 +248,7 @@ fn a_listed_instance_decides_stamps_and_lists_as_c13_and_c17_rule() {
         leaves: &all,
         may_join: true,
         young: Some(true),
+        member: false,
         phase_over: false,
     };
     assert_eq!(
@@ -278,6 +283,7 @@ fn a_member_pins_and_unlists_beyond_the_count_in_one_write() {
         leaves: &all,
         may_join: true,
         young: Some(true),
+        member: false,
         phase_over: false,
     };
     let doc = document(
@@ -321,6 +327,7 @@ fn the_removal_half_unlists_only_beyond_the_count_never_on_liveness() {
         leaves: &all,
         may_join: true,
         young: Some(true),
+        member: false,
         phase_over: false,
     };
     let doc = document(
@@ -446,4 +453,113 @@ async fn a_join_cas_answered_without_a_version_or_lost_is_read_back() {
         assert!(stored.is_some());
         assert_eq!((names, version), (vec!["streams-2".to_string()], stored));
     }
+}
+
+/// C18 (the join ruling, Addendum 33): a member found unstamped stamps its own boot id back in
+/// place, whatever C13's boot-time verdict, and keeps every entry and every other listing as
+/// read. Unchanged, each by its own rule: an undecided boot (C13), a listing with another boot id
+/// (R1a), a name removed outright (a joiner, never restamped), a member beyond the count (C13), and
+/// a document without `members` (C17's listing, this writer stamped).
+#[test]
+fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
+    let all = leaves();
+    let c = reader(2, "streams-1", "a1", &["streams-2"]);
+    let facts = |young, member| Facts {
+        candidates: &c,
+        leaves: &all,
+        may_join: true,
+        young,
+        member,
+        phase_over: false,
+    };
+    let what = |young, member, doc: &Overrides| plan(&facts(young, member), doc, "a1").next;
+    let peer = member("streams-2", Some("streams-2"));
+    let unstamped = document(
+        vec![member("streams-1", None), peer.clone()],
+        &[("00", "streams-2")],
+    );
+    let shape = |doc: &Overrides| {
+        let mut entries: Vec<(String, String, i64)> = doc
+            .entries
+            .iter()
+            .map(|(leaf, entry)| (leaf.clone(), entry.to.clone(), entry.ms))
+            .collect();
+        entries.sort();
+        entries
+    };
+    for young in [Some(false), Some(true), None] {
+        let (next, why) = what(young, true, &unstamped).expect("restamped");
+        let restored = vec![member("streams-1", Some("a1")), peer.clone()];
+        assert_eq!(
+            (why, next.members.clone(), shape(&next)),
+            (Write::Restamped, Some(restored), shape(&unstamped)),
+            "a member, C13 verdict {young:?}"
+        );
+    }
+    let why = |young, member, doc: &Overrides| what(young, member, doc).map(|(_, why)| why);
+    assert_eq!(
+        [
+            why(Some(false), false, &unstamped),
+            why(Some(true), false, &unstamped)
+        ],
+        [Some(Write::Unlisted), Some(Write::Stamped)],
+        "an undecided boot: C13"
+    );
+    assert_eq!(
+        why(None, false, &unstamped),
+        None,
+        "undecided, no verdict yet"
+    );
+    let other = document(vec![member("streams-1", Some("z9")), peer.clone()], &[]);
+    assert_eq!(
+        why(Some(false), true, &other),
+        Some(Write::Unlisted),
+        "another boot id: R1a"
+    );
+    let removed = document(vec![peer], &[]);
+    assert_ne!(
+        why(Some(false), true, &removed),
+        Some(Write::Restamped),
+        "a name removed outright joins"
+    );
+    let gone = Overrides {
+        entries: entries(&[("00", "streams-2")]),
+        ..Overrides::default()
+    };
+    let (listed, listed_why) = what(Some(false), true, &gone).expect("C17's listing");
+    assert_eq!(
+        (listed_why, listed.members),
+        (
+            Write::Listed,
+            Some(vec![
+                member("streams-1", Some("a1")),
+                member("streams-2", None)
+            ])
+        ),
+        "no members: C17"
+    );
+    let beyond = reader(1, "streams-2", "b1", &["streams-1"]);
+    let beyond_facts = Facts {
+        candidates: &beyond,
+        leaves: &all,
+        may_join: true,
+        young: Some(false),
+        member: true,
+        phase_over: false,
+    };
+    let past_count = document(
+        vec![
+            member("streams-1", Some("streams-1")),
+            member("streams-2", None),
+        ],
+        &[],
+    );
+    let past = plan(&beyond_facts, &past_count, "b1")
+        .next
+        .map(|(_, why)| why);
+    assert_eq!(
+        past,
+        Some(Write::Unlisted),
+        "a member beyond the count: C13"
+    );
 }

@@ -26,7 +26,8 @@ pub(super) async fn published(
     let read = state.fleet.read_overrides().await?;
     let candidates = &candidates
         .clone()
-        .with_boot(&state.runtime.identity.boot_id);
+        .with_boot(&state.runtime.identity.boot_id)
+        .with_decided(state.fleet.standing().decided_member());
     let (overrides, version) = super::join::pass(state, candidates, read).await;
     // Tests only: a tick held between its read and its publication, the lock still held.
     #[cfg(test)]

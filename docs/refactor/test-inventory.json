@@ -5971,6 +5971,28 @@
     "scenarios": []
   },
   {
+    "name": "a_write_that_drops_a_members_boot_id_is_repaired_in_place",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "1d2523be8807837144fd46957cf8ef8db2c5445011a56c715aac842e53d2ac0a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_foreign.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_write_that_drops_members_is_repaired_in_place_without_a_fence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "df3e6da45eac93c433315e2e9efcfb1a7de09a03a3e31688f2e0b088dc2c5a38",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_foreign.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_writer_fenced_ahead_of_a_move_is_counted_where_it_was_fenced",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

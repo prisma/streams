@@ -4747,6 +4747,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::foreign",
+      "path": "src/dst/tests/fleet_join.rs",
+      "reason": "C18 (GATE-DECISION-s22-join-2026-11-20 Addendum 33): a foreign write of the overrides document, one that drops members or a running member's boot id, is repaired in place by the running members with no member unlisted, no fence and no tick yield, and its entries honoured; three members on fleet_join's rigs; moved beside fleet_join.rs, which has no headroom.",
+      "syntax": "path = \"fleet_join_foreign.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::count_balance",
       "path": "src/dst/tests/fleet_controller.rs",
       "reason": "The count-balance scenarios (edge change #236: an instance past the fair share moves one shard to a member below it only after its boot cooldown, never to a member at half the lag threshold or outside the ring, never in a ring of one, and never while any override is younger than the cooldown, and an instance within the share lists no heartbeats for it) use the controller scenarios' private settling helper, and their module path is selected by the count-balance mutation owner's filter; the file they would grow has 14 lines of headroom. Compiled and executed with DST.",

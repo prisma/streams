@@ -331,3 +331,18 @@ fn the_join_records_the_pass_that_wrote_it() {
         (3, Some(2))
     );
 }
+
+/// C18's flag (the join ruling, Addendum 33): a boot is no member until a pass reads it listed with
+/// its own boot id, and then stays one; C13's boot-time verdict is not touched by it.
+#[test]
+fn a_boot_is_a_member_once_a_pass_reads_it_listed_and_stays_one() {
+    let standing = Standing::default();
+    standing.decide_boot(false);
+    assert!(!standing.decided_member(), "no pass read it yet");
+    standing.note_member();
+    standing.note_member();
+    assert_eq!(
+        (standing.decided_member(), standing.boot_young()),
+        (true, Some(false))
+    );
+}

@@ -22,6 +22,12 @@
 //!   `JoinStep` and the join fallback.
 //! - **an older cell's document** (no `members`, C17) is listed with today's ordinal set by a
 //!   member of today's ring.
+//! - **a member found unstamped** (C18, the join ruling, Addendum 33): a boot that has read itself
+//!   listed with its own boot id, and then reads its listing unstamped (a write that dropped its
+//!   boot id, or one that dropped `members` and was relisted by another), stamps its own boot id
+//!   back in place. It never unlists itself on C13's boot-time verdict after its decision. Not
+//!   covered: an undecided boot (C13), a listing with another boot id (R1a), a name removed
+//!   outright (a joiner), a member beyond the count.
 //!
 //! A committed CAS answers the document as written at the version the store gave, so the pass
 //! reads the document once (C4's read-once); a lost CAS, or one whose answer was lost, is followed
@@ -134,6 +140,8 @@ pub(super) struct Facts<'a> {
     pub(super) may_join: bool,
     /// C13's verdict on the previous beat, once the heartbeat task read it.
     pub(super) young: Option<bool>,
+    /// C18: a pass of this boot already read it listed with its own boot id.
+    pub(super) member: bool,
     /// Whether [`JOIN_PHASE`] has run out since the first pass that found something uncovered.
     pub(super) phase_over: bool,
 }
@@ -145,6 +153,8 @@ pub(super) enum Write {
     Listed,
     /// The upgrade: this instance stamps its boot id on its unstamped listing.
     Stamped,
+    /// C18: a member found unstamped stamps its own boot id back in place.
+    Restamped,
     /// R1a: a restart in place replaces its listed boot id.
     InPlace,
     /// C13: a restart that is not young removes its listing (it joins on a later pass).
@@ -170,6 +180,10 @@ pub(super) fn plan(facts: &Facts<'_>, document: &Overrides, boot_id: &str) -> Pl
     match mine.map(|member| member.boot_id.as_deref()) {
         // An unstamped listing of its own name is another boot's (the join ruling §2): never
         // membership by the listing alone.
+        Some(None) if facts.member && within_count(me, c.count()) => {
+            let next = restamped(document, me, Some(boot_id));
+            Planned::write(Some(next), Write::Restamped)
+        }
         Some(None) => Planned::of_restart(facts, document, boot_id, Write::Stamped),
         Some(Some(_)) if c.is_member(Some(listed)) => Planned::of_member(facts, document, listed),
         Some(Some(_)) => Planned::of_restart(facts, document, boot_id, Write::InPlace),
@@ -323,12 +337,16 @@ pub(super) async fn pass(
 ) -> (Overrides, Option<UpdateVersion>) {
     let standing = state.fleet.standing();
     standing.next_join_pass();
+    if candidates.is_member(read.0.members.as_deref()) {
+        standing.note_member();
+    }
     let leaves = state.shards.prefixes().to_vec();
     let facts = Facts {
         candidates,
         leaves: &leaves,
         may_join: !standing.drain_begun() && state.withdrawal().is_none(),
         young: standing.boot_young(),
+        member: standing.decided_member(),
         phase_over: standing
             .join_phase_since()
             .is_some_and(|since| since.elapsed() >= JOIN_PHASE),

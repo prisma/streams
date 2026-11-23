@@ -9,7 +9,10 @@
 //! absent: none is evidence, and the member is in the ring. So the ring is a function of one
 //! document and the held beats, with no read order in it. This instance is in its own ring only
 //! when the document lists its name with its own boot id (R1b, C4); until then (an unlisted
-//! joiner, or a restart whose R1a CAS has not landed, C13) its publications leave it out.
+//! joiner, or a restart whose R1a CAS has not landed, C13) its publications leave it out. A boot
+//! that has read itself so listed (`Standing::decided_member`) also counts a listing of its name
+//! with no boot id within the count (C18b, the join ruling, Addendum 35), for the passes until its
+//! C18 stamp lands; never a listing with another boot id.
 //!
 //! A listed member with no boot id (the step 4 interim wrote members so, Addendum 14) is judged
 //! by name, as today's rule judged it, until it stamps its own boot id on its next pass
@@ -73,6 +76,8 @@ pub(super) struct Candidates {
     /// The reader, and its boot once known (`with_boot`).
     me: String,
     my_boot: Option<u64>,
+    /// Whether a pass of this boot has read it a member (C18b, `with_decided`).
+    decided: bool,
 }
 
 impl Candidates {
@@ -105,6 +110,13 @@ impl Candidates {
     /// The same, the reader's own boot id known (R1b).
     pub(super) fn with_boot(mut self, boot_id: &str) -> Self {
         self.my_boot = Some(boot_of(boot_id));
+        self
+    }
+
+    /// The same, knowing whether a pass of this boot has read it listed with its own boot id
+    /// (`Standing::decided_member`, C18b).
+    pub(super) fn with_decided(mut self, decided: bool) -> Self {
+        self.decided = decided;
         self
     }
 
@@ -175,8 +187,10 @@ impl Candidates {
         let listed = member.boot_id.as_deref().map(boot_of);
         if member.name == self.me {
             // Never by the listing alone: an unstamped listing of its own name is another boot's
-            // until it stamps it (the join ruling §2).
-            let mine = listed.is_some() && listed == self.my_boot;
+            // until it stamps it (the join ruling §2), unless this boot already read itself a
+            // member and its name is within the count (C18b): C18 stamps it back in place.
+            let unstamped = listed.is_none() && self.decided && within_count(&self.me, self.count);
+            let mine = (listed.is_some() && listed == self.my_boot) || unstamped;
             // A member never judges its own liveness, but leaves its own ring when its own beat of
             // this boot withdrew, drains or stopped progressing: today's rule for itself.
             let own = self.my_boot.and_then(|boot| {
@@ -290,6 +304,42 @@ mod tests {
         ];
         assert_eq!(me.ring(Some(&listed)), names(&["streams-3"]));
         assert!(!me.is_member(Some(&listed)));
+    }
+
+    /// **C18b** (the join ruling, Addendum 35): a boot that has read itself a member counts a
+    /// listing of its own name with no boot id, within the count, as membership in its own ring
+    /// until its C18 stamp lands; an undecided boot does not (R1b), a listing with another boot
+    /// id is never its own (supersession), and a name beyond the count is not counted.
+    #[test]
+    fn a_decided_member_counts_its_own_unstamped_listing_within_the_count() {
+        let held = |me: &str| {
+            let beats = vec![beat(me, "a1", true), beat("streams-2", "b1", true)];
+            Candidates::held(3, me, beats).with_boot("a1")
+        };
+        let unstamped = [member("streams-1", None), member("streams-2", Some("b1"))];
+        let theirs = [
+            member("streams-1", Some("a0")),
+            member("streams-2", Some("b1")),
+        ];
+        let beyond = [member("streams-4", None), member("streams-2", Some("b1"))];
+        let decided = held("streams-1").with_decided(true);
+        let got = (
+            decided.ring(Some(&unstamped)),
+            held("streams-1").ring(Some(&unstamped)),
+            decided.ring(Some(&theirs)),
+            held("streams-4").with_decided(true).ring(Some(&beyond)),
+        );
+        let want = (
+            names(&["streams-1", "streams-2"]),
+            names(&["streams-2"]),
+            names(&["streams-2"]),
+            names(&["streams-2"]),
+        );
+        assert_eq!(got, want);
+        assert!(
+            !decided.is_member(Some(&unstamped)),
+            "C18b is the ring's, not R1b's member"
+        );
     }
 
     /// **A ring is in the ordinal order, whatever order the document lists** (the join ruling,
