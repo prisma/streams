@@ -161,9 +161,6 @@ const base = (n) => `http://127.0.0.1:${PORTS[n]}`;
 const sfetch = async (...a) => {
   try { return await fetch(...a); } catch { return { status: 0, ok: false, text: async () => "", json: async () => ({}), headers: new Map(), body: null }; }
 };
-// Store I/O for fleet control documents (s3lite speaks plain S3).
-const putStore = (path, body) =>
-  sfetch(`http://127.0.0.1:${S3}/${BUCKET}/${path}`, { method: "PUT", body });
 const debug = async (n) =>
   (await (await sfetch(`${base(n)}/v1/debug/load`, { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } })).json());
 
@@ -521,13 +518,46 @@ if (!initialOwner) finish();
 // The shared overrides file is the production steering surface; both
 // moves must converge without data loss for a fresh replay.
 const allPrefixes = ["000", "001", "010", "011", "100", "101", "110", "111"];
+// The steering write every writer of the overrides document makes (RUNBOOK §3.5; the join ruling,
+// Addendum 33): read it, change only `entries`, and write it back conditionally on the version
+// read (If-Match on its ETag), reading again after a lost race. `members` (the ring of record,
+// with boot ids) and every other field are kept as read. A blind PUT of `{ entries }` drops
+// `members`; that write is C18's DST (src/dst/tests/fleet_join_foreign.rs), not a way to steer.
+async function steerTo(path, entries) {
+  const url = `http://127.0.0.1:${S3}/${BUCKET}/${path}`;
+  for (let attempt = 1; attempt <= 50; attempt++) {
+    const got = await sfetch(url);
+    if (![200, 404].includes(got.status)) {
+      console.log(`  [diag] overrides GET status=${got.status}`);
+      await sleep(200);
+      continue;
+    }
+    // An absent document is created only if it is still absent (If-None-Match: *).
+    const etag = got.status === 200 ? got.headers.get("etag") : null;
+    const doc = got.status === 200 ? JSON.parse(await got.text()) : {};
+    doc.entries = entries;
+    const put = await sfetch(url, {
+      method: "PUT",
+      headers: etag ? { "if-match": etag } : { "if-none-match": "*" },
+      body: JSON.stringify(doc),
+    });
+    if ([200, 201].includes(put.status)) return put;
+    if (put.status !== 412) {
+      console.log(`  [diag] overrides PUT status=${put.status}`);
+      return put;
+    }
+    await sleep(50); // a fleet writer's CAS won: read the document again
+  }
+  console.log("  [diag] overrides steering lost 50 races");
+  return { status: 412 };
+}
 async function moveEverythingTo(owner) {
   const entries = Object.fromEntries(
     allPrefixes.map((p) => [p, { to: owner, ms: Date.now() }]),
   );
   // The fleet store is a PrefixStore rooted at FLEET_PREFIX — the
   // real object is {prefix}/fleet/overrides.json in the bucket.
-  const put = await putStore("fleet/fleet/overrides.json", JSON.stringify({ entries }));
+  const put = await steerTo("fleet/fleet/overrides.json", entries);
   if (![200, 201].includes(put.status)) console.log(`  [diag] overrides PUT status=${put.status}`);
   // Wait for REAL convergence: every instance's mirror maps every
   // prefix to the target (each also fences/opens eagerly on its tick).
