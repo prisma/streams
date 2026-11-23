@@ -110,7 +110,7 @@ impl Tick<'_> {
             if self.active.is_empty() {
                 continue;
             }
-            if self.void(overrides, &entry.to) {
+            if void(overrides.members.as_deref(), &self.active, &entry.to) {
                 drop_keys.push(prefix.clone()); // C6(c)
                 continue;
             }
@@ -122,9 +122,7 @@ impl Tick<'_> {
                 continue;
             }
             let home = self.active[crate::ownership::ring_pick(prefix, &self.active)].clone();
-            if home == self.me
-                || !super::record::within_count(&home, self.count)
-                || !self.takes_back(&home, &pending_returns)
+            if !returnable(&home, self.me, self.count) || !self.takes_back(&home, &pending_returns)
             {
                 continue;
             }
@@ -132,15 +130,6 @@ impl Tick<'_> {
             drop_keys.push(prefix.clone());
         }
         drop_keys
-    }
-
-    /// C6(c): whether an entry naming `to` is void: the document lists members and not `to`, or
-    /// (an older cell's document) `to` is no ring member.
-    fn void(&self, overrides: &Overrides, to: &str) -> bool {
-        match overrides.members.as_deref() {
-            Some(listed) => listed.iter().all(|member| member.name != to),
-            None => !self.active.iter().any(|name| name == to),
-        }
     }
 
     /// Whether `home` is healthy and may take one more shard back on top of `pending_returns`.
@@ -323,9 +312,23 @@ pub(super) fn returned(mut overrides: Overrides, drop_keys: &[String], now_ms: i
     overrides
 }
 
+/// C6(c): whether an entry naming `to` is void: the document lists `members` and not `to`, or (an
+/// older cell's document, no `members`) `to` is not in the ring `active`.
+fn void(members: Option<&[super::Member]>, active: &[String], to: &str) -> bool {
+    match members {
+        Some(listed) => listed.iter().all(|member| member.name != to),
+        None => !active.iter().any(|name| name == to),
+    }
+}
+
+/// Whether `me` may return a shard to its ring home `home`: another instance, within the count.
+fn returnable(home: &str, me: &str, count: u64) -> bool {
+    home != me && super::record::within_count(home, count)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{counted_home, home_healthy, returned};
+    use super::{counted_home, home_healthy, returnable, returned, void};
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_string()).collect()
@@ -411,5 +414,42 @@ mod tests {
             .collect();
         let full = returned(doc, &["0".to_owned()], 5_000);
         assert_eq!((full.entries.len(), full.pending_events.len()), (1, 64));
+    }
+
+    /// C6(c): an entry is void when the document lists members and not its target, or, with no
+    /// `members` (an older cell's), when its target is not in the ring (#183's survivors in
+    /// `Tick::void`: the `!` deleted and the `==` as `!=`).
+    #[test]
+    fn an_entry_is_void_only_when_its_target_is_neither_listed_nor_ringed() {
+        let ring = names(&["streams-1", "streams-2"]);
+        let listed = listing(&["streams-1"]);
+        let members = listed.members.as_deref();
+        let got = [
+            void(members, &ring, "streams-1"),
+            void(members, &ring, "streams-2"),
+            void(None, &ring, "streams-2"),
+            void(None, &ring, "streams-3"),
+        ];
+        assert_eq!(
+            got,
+            [false, true, false, true],
+            "(listed, unlisted, ringed, unringed)"
+        );
+    }
+
+    /// A shard goes back only to a home that is another instance within the count (#183's
+    /// survivor in `Tick::returns`: its first `||` as `&&`).
+    #[test]
+    fn a_shard_returns_only_to_another_home_within_the_count() {
+        let got = [
+            returnable("streams-2", "streams-1", 2),
+            returnable("streams-1", "streams-1", 2),
+            returnable("streams-3", "streams-1", 2),
+        ];
+        assert_eq!(
+            got,
+            [true, false, false],
+            "(another within, itself, beyond the count)"
+        );
     }
 }
