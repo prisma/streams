@@ -21,8 +21,18 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// How long a fleet step (a view, a join, a handoff) may take: several 2 s ticks.
+/// How long a fleet step (a view, a handoff, a serve) may take: several 2 s ticks.
 pub(super) const BOUND: Duration = Duration::from_secs(30);
+
+/// How long a wait for a join into a running cell to land may take (GATE-DECISION-s22-join-2026-11-20
+/// Addendum 38 and its ruling): at least three times the worst such landing the gate's own suite
+/// run showed, 6026 ms (6021 ms under a CPU hog), so 3.3x. Not [`BOUND`]: a decision that keeps
+/// every joiner out (#183's TIMEOUT mutants: `r3` as `false`, `uncovered`'s `!=` as `==`,
+/// `of_joiner` as `Default`) fails each of these waits, and at `BOUND` the join DSTs together
+/// outlasted cargo-mutants' limit, while the handoff and serve waits keep `BOUND`'s slack. A fresh
+/// cell's first join (both members booting) is a cold join and waits [`BOUND`]: its worst was
+/// 10.1 s, so 3.0x; the cold join over a slow store (`fleet_join_boot`) keeps its own bound.
+pub(super) const JOIN_BOUND: Duration = Duration::from_secs(20);
 
 #[path = "fleet_join_foreign.rs"]
 mod foreign;
@@ -124,11 +134,20 @@ pub(super) async fn listed(fleet: &Arc<dyn ObjectStore>) -> Vec<String> {
         .collect()
 }
 
-/// Wait, bounded, until `done` holds; `what` names the step.
-pub(super) async fn until(what: &str, mut done: impl AsyncFnMut() -> bool) {
+/// Wait, bounded by [`BOUND`], until `done` holds; `what` names the step.
+pub(super) async fn until(what: &str, done: impl AsyncFnMut() -> bool) {
+    within(BOUND, what, done).await;
+}
+
+/// Wait, bounded by [`JOIN_BOUND`], until a join lands (`done` holds); `what` names it.
+pub(super) async fn until_joined(what: &str, done: impl AsyncFnMut() -> bool) {
+    within(JOIN_BOUND, what, done).await;
+}
+
+async fn within(bound: Duration, what: &str, mut done: impl AsyncFnMut() -> bool) {
     let t0 = tokio::time::Instant::now();
     while !done().await {
-        assert!(t0.elapsed() < BOUND, "{what}");
+        assert!(t0.elapsed() < bound, "{what}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -360,7 +379,7 @@ async fn a_joiner_waits_for_a_holder_that_has_not_pinned() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let held = (listed(&fleet).await, b.state.ownership.ring_active());
     assert!(go_tx.send(()).is_ok());
-    until("streams-2 joins once pinned", async || {
+    until_joined("streams-2 joins once pinned", async || {
         listed(&fleet).await.len() == 2
     })
     .await;
@@ -414,7 +433,7 @@ async fn a_joiner_past_its_phase_joins_and_the_unpinned_move_is_counted() {
         .standing()
         .backdate_join_phase(crate::fleet::JOIN_PHASE);
     // The leaves streams-2 then takes are crash class (E5), counted: not asserted unfenced.
-    until("streams-2 joins past its phase", async || {
+    until_joined("streams-2 joins past its phase", async || {
         listed(&fleet).await.len() == 2
     })
     .await;
@@ -530,7 +549,7 @@ async fn scale_out_by_three_pins_each_joiner_apart() {
         RigRuntime::incarnation(1),
     )
     .await;
-    until("two listed", async || listed(&fleet).await.len() == 2).await;
+    until_joined("two listed", async || listed(&fleet).await.len() == 2).await;
     open_owned(&a).await;
     open_owned(&b).await;
     desired(&fleet, 5, 2).await;
@@ -539,7 +558,7 @@ async fn scale_out_by_three_pins_each_joiner_apart() {
         let name = format!("streams-{n}");
         rigs.push(member(&data, fleet.clone(), &name, RigRuntime::incarnation(n)).await);
     }
-    until("all five listed", async || listed(&fleet).await.len() == 5).await;
+    until_joined("all five listed", async || listed(&fleet).await.len() == 5).await;
     let all: Vec<&HttpRig> = rigs.iter().collect();
     assert!(nothing_fenced(&all).iter().all(|net| *net == (0, 0)));
     for rig in rigs {
@@ -577,7 +596,7 @@ async fn a_peer_that_refreshes_before_its_tick_opens_nothing() {
         RigRuntime::incarnation(1),
     )
     .await;
-    until("streams-2 joins", async || {
+    until_joined("streams-2 joins", async || {
         listed(&fleet).await.contains(&"streams-2".to_string())
     })
     .await;
@@ -635,7 +654,7 @@ async fn a_restart_after_a_planned_drain_rejoins_and_a_count_drop_moves_nothing(
         RigRuntime::incarnation(2),
     )
     .await;
-    until("streams-2 rejoins", async || {
+    until_joined("streams-2 rejoins", async || {
         listed(&fleet).await.len() == 2
     })
     .await;
@@ -750,7 +769,7 @@ async fn a_split_childs_no_op_entry_then_a_scale_out_moves_nothing() {
         RigRuntime::incarnation(1),
     )
     .await;
-    until("streams-2 joins", async || listed(&fleet).await.len() == 2).await;
+    until_joined("streams-2 joins", async || listed(&fleet).await.len() == 2).await;
     // `x`'s return home drops its entry, so only a routed request opens it at `streams-2`.
     let t0 = tokio::time::Instant::now();
     while !b.state.shards.is_open(x) {
@@ -787,7 +806,7 @@ async fn a_return_held_at_its_cas_during_a_scale_out_by_three_moves_nothing() {
         RigRuntime::incarnation(1),
     )
     .await;
-    until("two listed", async || listed(&fleet).await.len() == 2).await;
+    until_joined("two listed", async || listed(&fleet).await.len() == 2).await;
     open_owned(&a).await;
     open_owned(&b).await;
     let engaged =
@@ -804,7 +823,7 @@ async fn a_return_held_at_its_cas_during_a_scale_out_by_three_moves_nothing() {
     .await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     a_fleet.release_hold();
-    until("all five listed", async || listed(&fleet).await.len() == 5).await;
+    until_joined("all five listed", async || listed(&fleet).await.len() == 5).await;
     let all: Vec<&HttpRig> = rigs.iter().collect();
     assert!(nothing_fenced(&all).iter().all(|net| *net == (0, 0)));
     for rig in rigs {
@@ -874,7 +893,7 @@ async fn a_leaf_named_by_an_entry_is_returned_only_by_its_holder() {
         RigRuntime::incarnation(2),
     )
     .await;
-    until("streams-3 joins", async || listed(&fleet).await.len() == 3).await;
+    until_joined("streams-3 joins", async || listed(&fleet).await.len() == 3).await;
     let named = (x.to_string(), "streams-2".to_string());
     let window = tokio::time::Instant::now() + Duration::from_secs(6);
     let mut stood = true;

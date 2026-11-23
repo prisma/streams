@@ -9,7 +9,7 @@ use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use super::fleet_join::{
     BOUND, LEAVES, beat_boot, desired, listed, listed_boot, member, nothing_fenced, open_owned,
-    previous_beat, stop, stored, until,
+    previous_beat, stop, stored, until, until_joined,
 };
 use crate::dst::fault_store::{FaultPlan, FaultProfile, FaultStore};
 use crate::dst::trace_store::{StoreTraceEvent, TraceOutcome, TraceStore};
@@ -345,7 +345,7 @@ async fn an_unlisted_boot_beats_before_it_joins() {
     let (passes, reads) = (b.state.fleet.standing().join_passes(), read(&seen));
     let unjoined = listed(&fleet).await.len() == 1;
     b_fleet.release_hold();
-    until("streams-2 joins", async || listed(&fleet).await.len() == 2).await;
+    until_joined("streams-2 joins", async || listed(&fleet).await.len() == 2).await;
     assert_eq!(
         (beat, passes, unjoined),
         (true, 0, true),
