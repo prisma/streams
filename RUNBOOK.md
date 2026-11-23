@@ -290,14 +290,32 @@ placement, a join's pin among them, stands until it recovers, and a giver
 closes a shard for a try at most about once a minute.
 
 The same document's `members` is the ring of record (§22): a list of
-`{"name": "streams-N"}` entries. Until the join lands, the fleet tick keeps
-it equal to `streams-1`..`streams-<desired count>` (one CAS when the count
-changes, and once when a cell first runs a version that writes it; a fresh
-cell's first tick creates the document), and each instance's ring is the
-listed members its own heartbeat reads judge live, which is the ring the
-desired count gave before. An absent `members` is an older cell's document
-and is read by the old rule until the first write. `boot_id` is absent and
-read by nothing yet. Never edit `members` by hand.
+`{"name": "streams-N", "boot_id": "..."}` entries. An instance is in its
+own ring only while it is listed with its own boot id. A booting instance
+within the desired count joins by one CAS that adds it with its boot id,
+once every leaf it would win is pinned to its holder (or after 139 s
+without that, with a WARN). A restart whose previous beat is still young
+replaces its old boot id in place; otherwise it unlists and joins again.
+A document with no `members` (an older cell's) is listed by a member with
+the ordinals of today's ring.
+
+Every writer of `fleet/overrides.json` keeps that listing. An operator
+or a harness steering shards reads the document, replaces only `entries`,
+and writes it back conditionally on the version it read (`If-Match` with
+the ETag read; `If-None-Match: *` if it was absent). On a `412` it reads
+again and repeats. Never write `{ "entries": ... }` alone, and never edit
+`members` by hand.
+
+A write that drops `members`, or a running member's `boot_id`, is
+repaired in place, and the entries it wrote are honoured. Each running
+member that has already read itself listed stamps its own boot id back on
+its next pass (about 2 s); a dropped `members` is first listed again by
+one member, then each other member stamps itself back on its next pass
+(about 4 s in all). Meanwhile no member leaves its own ring, unlists
+itself, or yields a shard over the write, unless a peer cannot read a
+member's heartbeat in that same pass: that peer may then open a shard the
+member holds, a fence for one pass. Only a boot that has not yet read
+itself listed with its own boot id unlists itself first and then joins.
 
 While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
 has published a ring, of any size), the scaler splits nothing (edge change
