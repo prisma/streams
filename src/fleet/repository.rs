@@ -550,6 +550,33 @@ mod population_tests {
         assert!(repository.read_router_reports().await.is_err());
     }
 
+    /// C13's previous beat (one GET before the first beat): the stored beat when there is one,
+    /// and none when the beat is absent or not a beat, which C13 reads as a joiner (#183's
+    /// survivor `read_previous_beat` as `None`).
+    #[tokio::test(crate = "crate::test_rt")]
+    async fn the_previous_beat_is_the_stored_one_and_none_when_absent_or_not_a_beat() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let repository = FleetRepository::new(Some(store.clone()));
+        assert!(
+            repository.read_previous_beat("streams-1").await.is_none(),
+            "absent"
+        );
+        let beat = r#"{"instance":"streams-1","ts_ms":1795000000123,"rps":0.0,"owned_shards":[],"draining":false,"url":"https://streams-1.invalid"}"#;
+        let path = ObjPath::from("fleet/streams-1.json");
+        store.put(&path, PutPayload::from(beat)).await.unwrap();
+        let read = repository.read_previous_beat("streams-1").await;
+        let seen = read.map(|beat| (beat.instance, beat.ts_ms));
+        assert_eq!(seen, Some(("streams-1".to_string(), 1_795_000_000_123)));
+        store
+            .put(&path, PutPayload::from("not a beat"))
+            .await
+            .unwrap();
+        assert!(
+            repository.read_previous_beat("streams-1").await.is_none(),
+            "not a beat"
+        );
+    }
+
     #[tokio::test(crate = "crate::test_rt")]
     async fn population_object_and_byte_budgets_fail_closed() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
