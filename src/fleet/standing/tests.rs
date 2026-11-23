@@ -346,3 +346,115 @@ fn a_boot_is_a_member_once_a_pass_reads_it_listed_and_stays_one() {
         (true, Some(false))
     );
 }
+
+/// C13's verdict reads back as decided, and nothing before (#183's survivors `boot_young` as
+/// `Some(false)` and `Some(true)`).
+#[test]
+fn a_boots_verdict_reads_back_as_decided() {
+    let (young, old) = (Standing::default(), Standing::default());
+    assert_eq!(young.boot_young(), None);
+    young.decide_boot(true);
+    old.decide_boot(false);
+    assert_eq!(
+        (young.boot_young(), old.boot_young()),
+        (Some(true), Some(false))
+    );
+}
+
+/// The `JOIN_PHASE` clock starts at the first waiting pass, keeps that start while the joiner
+/// waits, and is cleared by a pass that does not wait (#183's survivors `note_uncovered` as `()`
+/// and `join_phase_since` as `None`).
+#[test]
+fn the_join_phase_clock_starts_at_the_first_waiting_pass_and_clears_when_not_waiting() {
+    let standing = Standing::default();
+    assert_eq!(standing.join_phase_since(), None);
+    standing.note_uncovered(true);
+    let started = standing.join_phase_since();
+    standing.note_uncovered(true);
+    let kept = standing.join_phase_since();
+    standing.note_uncovered(false);
+    assert_eq!(
+        (
+            started.is_some(),
+            kept == started,
+            standing.join_phase_since()
+        ),
+        (true, true, None)
+    );
+}
+
+/// A peer listed unstamped while live is reported once, at its `UNSTAMPED_PASSES`-th pass, and
+/// counted; a pass without it forgets it, so its count starts again (#183's survivors in
+/// `note_unstamped`: the returned names, the `+=` and the `==`).
+#[test]
+fn a_peer_unstamped_for_its_passes_is_reported_once_and_forgotten_when_gone() {
+    let standing = Standing::default();
+    let peer = || vec!["streams-2".to_string()];
+    let passes = crate::fleet::join::UNSTAMPED_PASSES;
+    let first: Vec<Vec<String>> = (1..passes)
+        .map(|_| standing.note_unstamped(peer()))
+        .collect();
+    let reached = standing.note_unstamped(peer());
+    let after = standing.note_unstamped(peer());
+    assert_eq!(
+        (
+            first.concat(),
+            reached,
+            after,
+            standing.unstamped_listings()
+        ),
+        (Vec::<String>::new(), peer(), Vec::<String>::new(), 1)
+    );
+    assert!(standing.note_unstamped(Vec::new()).is_empty());
+    let again: Vec<Vec<String>> = (0..passes)
+        .map(|_| standing.note_unstamped(peer()))
+        .collect();
+    assert_eq!(
+        (again.last().cloned(), standing.unstamped_listings()),
+        (Some(peer()), 2),
+        "forgotten, then reported again after its passes"
+    );
+}
+
+/// A boot listed and undecided past its wait is counted and answers why it is not ready, until a
+/// pass finds it decided (#183's survivors `note_undecided_boot` as `()` and `undecided_boot` as
+/// `None`, `Some("")` and `Some("xyzzy")`).
+#[test]
+fn an_undecided_boot_is_counted_and_answers_why_until_decided() {
+    let standing = Standing::default();
+    assert_eq!(standing.undecided_boot(), None);
+    standing.note_undecided_boot(true);
+    let why = standing.undecided_boot();
+    standing.note_undecided_boot(false);
+    assert_eq!(
+        (why, standing.undecided_boot(), standing.undecided_boots()),
+        (
+            Some("fleet boot undecided: listed, and no decision of this boot in the document"),
+            None,
+            1
+        )
+    );
+}
+
+/// The first beat waits until the beats are allowed, and not before (#183's survivor
+/// `beats_allowed` as `()`); allowing them twice is allowing them once.
+#[tokio::test]
+async fn the_first_beat_waits_until_the_beats_are_allowed() {
+    let standing = Standing::default();
+    let early = tokio::time::timeout(Duration::from_millis(100), standing.beats_allowed()).await;
+    standing.allow_beats();
+    standing.allow_beats();
+    let allowed = tokio::time::timeout(Duration::from_secs(5), standing.beats_allowed()).await;
+    assert_eq!((early.is_ok(), allowed.is_ok()), (false, true));
+}
+
+/// A join past `JOIN_PHASE` and a planned move H1 kept are each counted once per note (#183's
+/// survivors `note_join_unpinned` and `note_h1_kept` as `()`).
+#[test]
+fn an_unpinned_join_and_an_h1_kept_move_are_counted() {
+    let standing = Standing::default();
+    standing.note_join_unpinned();
+    standing.note_h1_kept();
+    standing.note_h1_kept();
+    assert_eq!((standing.joins_unpinned(), standing.h1_kept()), (1, 2));
+}

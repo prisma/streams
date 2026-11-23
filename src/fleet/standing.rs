@@ -487,9 +487,7 @@ impl Standing {
 
     /// This boot may beat from now on (`fleet::join::pass`): one-way.
     pub(super) fn allow_beats(&self) {
-        if !self.beat_gate.send_replace(true) {
-            tracing::debug!("fleet: this boot's beats are allowed");
-        }
+        self.beat_gate.send_replace(true);
     }
 
     /// This boot is listed and undecided past its wait (`true`, counted), or no longer (`false`).
@@ -550,6 +548,18 @@ impl Standing {
     #[cfg(test)]
     pub(crate) fn joins_unpinned(&self) -> u64 {
         self.joins_unpinned.load(Ordering::Relaxed)
+    }
+
+    /// Tests: the listed peers that reached `join::UNSTAMPED_PASSES` unstamped passes, since boot.
+    #[cfg(test)]
+    pub(crate) fn unstamped_listings(&self) -> u64 {
+        self.unstamped_listings.load(Ordering::Relaxed)
+    }
+
+    /// Tests: the times this boot was found listed and undecided past its wait, since boot.
+    #[cfg(test)]
+    pub(crate) fn undecided_boots(&self) -> u64 {
+        self.undecided_boots.load(Ordering::Relaxed)
     }
 
     /// The ring of `document`, over the tick's last pass's candidates (§22 C1, C2): what every
