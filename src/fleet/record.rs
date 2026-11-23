@@ -342,6 +342,61 @@ mod tests {
         );
     }
 
+    /// A pass's candidates keep the reader when its listing missed the reader's beat, and the reader
+    /// leaves its own ring only on its own beat of this boot that does not qualify, never on a beat
+    /// of another boot (#183's survivors: `held`'s `!=` and `in_ring`'s `==` on the boot).
+    #[test]
+    fn the_reader_is_a_candidate_without_its_beat_and_judged_only_by_this_boots() {
+        let peer_only = Candidates::held(2, "streams-1", vec![beat("streams-2", "b1", true)]);
+        assert!(
+            peer_only.contains("streams-1"),
+            "the listing missed its beat"
+        );
+        let listed = [
+            member("streams-1", Some("a1")),
+            member("streams-2", Some("b1")),
+        ];
+        let ring = |own: (String, (u64, bool))| {
+            let held = vec![own, beat("streams-2", "b1", true)];
+            Candidates::held(2, "streams-1", held)
+                .with_boot("a1")
+                .ring(Some(&listed))
+        };
+        assert_eq!(
+            (
+                ring(beat("streams-1", "a0", false)),
+                ring(beat("streams-1", "a1", false))
+            ),
+            (names(&["streams-1", "streams-2"]), names(&["streams-2"])),
+            "(an old boot's stopped beat, this boot's)"
+        );
+    }
+
+    /// R3's third clause reads this boot's own beat and nothing else: not a beat of another boot,
+    /// not a pass that missed its beat, not before the boot is known; and the reader is the name it
+    /// was read for (#183's survivors: `read_own_beat` as `true`, `me` as another name).
+    #[test]
+    fn only_a_beat_of_this_boot_is_the_readers_own() {
+        let reader = |held: Vec<(String, (u64, bool))>| Candidates::held(2, "streams-1", held);
+        let peer = beat("streams-2", "b1", true);
+        let got = (
+            reader(vec![beat("streams-1", "a1", true)]).read_own_beat(),
+            reader(vec![beat("streams-1", "a0", true)])
+                .with_boot("a1")
+                .read_own_beat(),
+            reader(vec![peer.clone()]).with_boot("a1").read_own_beat(),
+            reader(vec![beat("streams-1", "a1", false), peer])
+                .with_boot("a1")
+                .read_own_beat(),
+        );
+        assert_eq!(
+            got,
+            (false, false, false, true),
+            "(no boot, old boot, missed, own)"
+        );
+        assert_eq!(reader(Vec::new()).me(), "streams-1");
+    }
+
     /// **A ring is in the ordinal order, whatever order the document lists** (the join ruling,
     /// Addendum 23 §3). `streams-112789` and `streams-349192` score equal for the leaf `0`, so
     /// `ring_pick` takes whichever is listed first: the two listings of one set give one ring and
