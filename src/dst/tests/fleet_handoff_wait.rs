@@ -29,15 +29,16 @@ const NOT_STARTED: u64 = 8;
 /// Every attempt the wait sees end is printed (`MOVEWAIT`). Without it, every handoff DST waited
 /// out its 30 s bound under a runner or a commit that never lands, and together they outlasted the
 /// mutation leg's limit; and one whose moves never started gave up at that bound saying only what
-/// it waited for (#181's CI red). [`BOUND`] stays the backstop.
+/// it waited for (#181's CI red). [`BOUND`] stays the backstop, and its verdict names the attempts
+/// the wait saw end, those backed off among them (Addendum 31): a back-off follows a `Kept`, which
+/// is on [`ENDED`]'s line, so a wait that reaches the backstop on one says so.
 pub(super) struct MoveWait {
     t0: Instant,
     seen: Option<Instant>,
     ended: u32,
-    /// The giver's attempts as the last poll saw them, and those that had not started when the
-    /// wait began.
+    /// The giver's attempts as the last poll saw them, and as they stood when the wait began.
     attempts: Attempts,
-    not_started_before: u64,
+    before: Attempts,
     /// The step the last attempt seen not starting stopped at.
     step: &'static str,
     /// How long the wait may take: [`BOUND`], or a test's own derived bound.
@@ -59,7 +60,7 @@ impl MoveWait {
             seen,
             ended: 0,
             attempts,
-            not_started_before: attempts.not_started,
+            before: attempts,
             step: "none",
             bound,
         }
@@ -97,7 +98,8 @@ impl MoveWait {
                 "{what}: {not_started} planned moves did not start, the last at step={step}"
             ));
         }
-        (self.t0.elapsed() >= self.bound).then(|| what.to_string())
+        (self.t0.elapsed() >= self.bound)
+            .then(|| backstop(what, self.bound, (self.before, self.attempts)))
     }
 
     /// The giver's `attempts` now: each one ended since the last poll printed, and how many have
@@ -113,8 +115,50 @@ impl MoveWait {
             }
         }
         self.attempts = attempts;
-        attempts.not_started - self.not_started_before
+        attempts.not_started - self.before.not_started
     }
+}
+
+/// The backstop's verdict for `what` after `bound`: the attempts that ended between `before` and
+/// `now`, by end, and the last one's (Addendum 31).
+fn backstop(what: &str, bound: Duration, (before, now): (Attempts, Attempts)) -> String {
+    let ended = now.ended - before.ended;
+    let not_started = now.not_started - before.not_started;
+    let backed_off = now.backed_off - before.backed_off;
+    let last = now.last.filter(|_| ended > 0);
+    format!(
+        "{what}: past its {bound:?} backstop; {ended} attempt(s) ended, {not_started} not started, \
+         {backed_off} backed off, the last {last:?}"
+    )
+}
+
+/// **The backstop names the attempts it saw, a back-off among them** (Addendum 31 (a), its first
+/// condition). Red with the backstop's verdict as only what it waited for.
+#[test]
+fn a_backstop_names_the_attempts_it_saw_backed_off_included() {
+    let before = Attempts {
+        ended: 2,
+        not_started: 1,
+        backed_off: 0,
+        last: Some((Outcome::NotStarted, "flush")),
+    };
+    let now = Attempts {
+        ended: 6,
+        not_started: 1,
+        backed_off: 3,
+        last: Some((Outcome::BackedOff, "backoff")),
+    };
+    let bound = Duration::from_secs(30);
+    assert_eq!(
+        backstop("a child returns home", bound, (before, now)),
+        "a child returns home: past its 30s backstop; 4 attempt(s) ended, 0 not started, 3 backed \
+         off, the last Some((BackedOff, \"backoff\"))"
+    );
+    let idle = backstop("x", bound, (before, before));
+    assert_eq!(
+        idle,
+        "x: past its 30s backstop; 0 attempt(s) ended, 0 not started, 0 backed off, the last None"
+    );
 }
 
 /// **A wait names the planned moves that did not start** (Addendum 28, red first). T5's cell, its

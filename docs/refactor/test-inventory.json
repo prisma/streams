@@ -33,6 +33,17 @@
     "scenarios": []
   },
   {
+    "name": "a_backstop_names_the_attempts_it_saw_backed_off_included",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "a27a009af0c8ad4a7101ee9b1d5c34d84df77c74f9f5bf099fab7ec9f58c71d8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_wait.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_barrier_dropped_unreleased_closes_its_engine",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

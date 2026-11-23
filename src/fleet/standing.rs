@@ -165,6 +165,9 @@ pub(crate) struct Attempts {
     pub(crate) ended: u64,
     /// Those of them that ended `NotStarted`.
     pub(crate) not_started: u64,
+    /// Those of them that ended `BackedOff`: a pass that found the shard in its back-off and
+    /// tried nothing (on neither of `MoveWait`'s lines; GATE-DECISION-s22-join-2026-11-20 A31).
+    pub(crate) backed_off: u64,
     /// How the last one ended, and the step it ended at.
     pub(crate) last: Option<(super::handoff::Outcome, &'static str)>,
 }
@@ -269,6 +272,7 @@ impl Standing {
         if let Ok(mut attempts) = self.attempts.lock() {
             attempts.ended += 1;
             attempts.not_started += u64::from(end == super::handoff::Outcome::NotStarted);
+            attempts.backed_off += u64::from(end == super::handoff::Outcome::BackedOff);
             attempts.last = Some((end, step));
         }
     }

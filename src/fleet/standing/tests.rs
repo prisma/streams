@@ -59,9 +59,9 @@ fn a_drain_begins_with_its_handoffs_and_a_fenced_close_is_counted() {
     assert_eq!(fresh.handoffs_fenced(), 2);
 }
 
-/// A planned move's attempts are counted as they end, those that did not start apart, with
-/// the last one's end and step (Addendum 28); the failpoint fails as many flushes under the
-/// park as it was armed with, then none.
+/// A planned move's attempts are counted as they end, those that did not start apart and those
+/// backed off apart (Addendum 31), with the last one's end and step (Addendum 28); the failpoint
+/// fails as many flushes under the park as it was armed with, then none.
 #[test]
 fn a_planned_moves_attempts_are_counted_by_end_and_step() {
     use super::super::handoff::Outcome;
@@ -70,10 +70,12 @@ fn a_planned_moves_attempts_are_counted_by_end_and_step() {
     standing.note_attempt(Outcome::NotStarted, "flush");
     standing.note_attempt(Outcome::Evacuate, "park");
     standing.note_attempt(Outcome::NotStarted, "claim");
+    standing.note_attempt(Outcome::BackedOff, "backoff");
     standing.note_attempt(Outcome::Moved, "commit");
     let counted = Attempts {
-        ended: 4,
+        ended: 5,
         not_started: 2,
+        backed_off: 1,
         last: Some((Outcome::Moved, "commit")),
     };
     assert_eq!(standing.attempts(), counted);
