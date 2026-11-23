@@ -141,8 +141,10 @@ fn yields(rigs: &[HttpRig], watches: &[YieldWatch]) -> Vec<u64> {
 /// document lists the same three with the same boot ids, no listing the product writes lacks one
 /// of them, nothing is fenced or yielded, and every member's view gives `01` to `streams-3`. Red
 /// without C18 (3d3dba96e): a member that finds itself relisted unstamped unlists itself on its
-/// boot-time verdict, and its shards are yielded. Red without C18b: each loser leaves its own ring
-/// for that pass and yields its open shards at its tick.
+/// boot-time verdict, and its shards are yielded; the rigs count no fence then (the fence such an
+/// unlisting costs a live member is #183's LiveFeed cert on 3d3dba96e, "detected newer DB
+/// client"). Red without C18b: each loser leaves its own ring for that pass and yields its open
+/// shards at its tick.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_write_that_drops_members_is_repaired_in_place_without_a_fence() {
     let fleet = mem();
@@ -198,7 +200,8 @@ async fn a_write_that_drops_members_is_repaired_in_place_without_a_fence() {
 /// serving; `streams-3`'s listing written back without its boot id, the others intact. Within
 /// [`BOOT_ID_PASSES`] passes `streams-3` stamps its own boot id back, no listing ever lacks it, and
 /// nothing is fenced or yielded. Red without C18: `streams-3` unlists itself on its boot-time
-/// verdict and rejoins.
+/// verdict and rejoins, and a shard of it is yielded; the rigs count no fence then (the fence
+/// evidence is #183's LiveFeed cert on 3d3dba96e).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_write_that_drops_a_members_boot_id_is_repaired_in_place() {
     let fleet = mem();
