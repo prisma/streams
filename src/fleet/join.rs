@@ -39,6 +39,7 @@ use std::time::Duration;
 use object_store::UpdateVersion;
 
 use super::record::{Candidates, ordinal, ordinal_key, within_count};
+use super::standing::Standing;
 use super::{AppState, FleetDocument, FleetRepository, Member, OverrideEntry, Overrides};
 
 /// How long a joiner waits for its holders' pins before it joins anyway (§3 of the ruling):
@@ -91,7 +92,8 @@ pub(super) fn uncovered(
 
 /// C7: the leaves `me` pins, owners from the document (its `ring` and `entries`): each that the
 /// document gives `me` and `prospective` (the ring with every unlisted ordinal within the count)
-/// would give another, with no entry naming `me` already.
+/// would give another. A leaf with an entry naming `me` already is not among them: `me` is in
+/// `prospective` (it is a member of `ring`), so the entry wins there too and the leaf stays.
 pub(super) fn pins(
     leaves: &[String],
     ring: &[String],
@@ -100,14 +102,8 @@ pub(super) fn pins(
     entries: &Entries,
 ) -> Vec<String> {
     let mine = |leaf: &&String| owner(leaf, ring, entries).as_deref() == Some(me);
-    let pinned = |leaf: &&String| {
-        entries
-            .get(leaf.as_str())
-            .is_some_and(|entry| entry.to == me)
-    };
     let moves = |leaf: &&String| owner(leaf, prospective, entries).as_deref() != Some(me);
-    let pins = leaves.iter().filter(mine).filter(|leaf| !pinned(leaf));
-    pins.filter(moves).cloned().collect()
+    leaves.iter().filter(mine).filter(moves).cloned().collect()
 }
 
 /// C13's young test, on the instance's previous beat read once before its first beat: in place
@@ -291,6 +287,11 @@ impl Planned {
     }
 }
 
+/// R3's first two clauses: no drain begun and no orderly stop begun (no `withdrawal` reason).
+pub(super) fn may_join(drain_begun: bool, withdrawal: Option<&str>) -> bool {
+    !drain_begun && withdrawal.is_none()
+}
+
 /// R3: no drain and no stop begun, not withdrawn, and the pass read this instance's own beat of
 /// this boot.
 fn r3(facts: &Facts<'_>) -> bool {
@@ -344,7 +345,7 @@ pub(super) async fn pass(
     let facts = Facts {
         candidates,
         leaves: &leaves,
-        may_join: !standing.drain_begun() && state.withdrawal().is_none(),
+        may_join: may_join(standing.drain_begun(), state.withdrawal().as_deref()),
         young: standing.boot_young(),
         member: standing.decided_member(),
         phase_over: standing
@@ -352,9 +353,9 @@ pub(super) async fn pass(
             .is_some_and(|since| since.elapsed() >= JOIN_PHASE),
     };
     let planned = plan(&facts, &read.0, &state.runtime.identity.boot_id);
-    unstamped(state, candidates, &read.0);
-    standing
-        .note_uncovered(planned.uncovered_now && within_count(candidates.me(), candidates.count()));
+    unstamped(standing, candidates, &read.0);
+    // Only a joiner within the count waits (`Planned::of_joiner`), so this is its clock alone.
+    standing.note_uncovered(planned.uncovered_now);
     // Released on what this pass read, not on what it wrote: a decision written now is read back,
     // and the beat released, at the next pass.
     released(state, candidates, &read.0);
@@ -386,7 +387,7 @@ pub(super) fn may_beat(candidates: &Candidates, document: &Overrides) -> bool {
 
 /// The listed peers whose entry is still unstamped while their beats are live: each past
 /// [`UNSTAMPED_PASSES`] such passes is logged at WARN and counted (the join ruling §2).
-fn unstamped(state: &AppState, candidates: &Candidates, document: &Overrides) {
+pub(super) fn unstamped(standing: &Standing, candidates: &Candidates, document: &Overrides) {
     let live_unstamped: Vec<String> = document
         .members
         .iter()
@@ -399,7 +400,7 @@ fn unstamped(state: &AppState, candidates: &Candidates, document: &Overrides) {
         })
         .map(|member| member.name.clone())
         .collect();
-    for name in state.fleet.standing().note_unstamped(live_unstamped) {
+    for name in standing.note_unstamped(live_unstamped) {
         let why = "fleet member listed unstamped while its beats are live";
         tracing::warn!(member = %name, passes = UNSTAMPED_PASSES, "{why}");
     }

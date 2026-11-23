@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 
 use super::{
-    Facts, Write, answered, in_place, may_beat, owner, pins, plan, since_rise_ms, uncovered,
+    Facts, Write, answered, in_place, may_beat, may_join, owner, pins, plan, since_rise_ms,
+    uncovered, unstamped,
 };
 use crate::fleet::record::{Candidates, boot_of};
 use crate::fleet::{Heartbeat, Member, OverrideEntry, Overrides};
@@ -561,5 +562,235 @@ fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
         past,
         Some(Write::Unlisted),
         "a member beyond the count: C13"
+    );
+}
+
+/// C13's young bound is exact: a previous beat 11.999 s old stays in place, one 12 s old does not
+/// (#183's survivors in `in_place`: each `+` of its margin as `-`, and `<` as `<=`).
+#[test]
+fn a_restart_is_in_place_below_twelve_seconds_and_not_at_them() {
+    let now = 1_000_000;
+    let beat = |age_ms: i64| {
+        let document =
+            r#"{"instance":"streams-1","ts_ms":0,"rps":0.0,"owned_shards":[],"draining":false}"#;
+        let mut beat: Heartbeat = serde_json::from_str(document).expect("a minimal beat");
+        beat.ts_ms = now - age_ms;
+        beat
+    };
+    let got = (
+        in_place(Some(&beat(11_999)), now),
+        in_place(Some(&beat(12_000)), now),
+    );
+    assert_eq!(got, (true, false), "(11.999 s old, 12 s old)");
+}
+
+/// C7 with an entry naming a name outside the ring: the leaf is the ring's, so the member it rings
+/// to pins it like any leaf it owns, and a leaf already pinned to `me` gets no second entry.
+#[test]
+fn a_member_pins_a_leaf_whose_entry_names_no_member() {
+    let all = leaves();
+    let ring = names(&["streams-1"]);
+    let prospective = names(&["streams-1", "streams-2"]);
+    let moving = pins(&all, &ring, &prospective, "streams-1", &HashMap::new());
+    let first = moving[0].as_str();
+    let stray = entries(&[(first, "streams-9")]);
+    assert_eq!(pins(&all, &ring, &prospective, "streams-1", &stray), moving);
+    let own = entries(&[(first, "streams-1")]);
+    let rest: Vec<String> = moving.iter().skip(1).cloned().collect();
+    assert_eq!(pins(&all, &ring, &prospective, "streams-1", &own), rest);
+}
+
+/// R1a under R3: a young restart that may not join (a drain or a stop begun) writes nothing, not
+/// its boot id in place (#183's survivor: `of_restart`'s guard `facts.may_join` as `true`).
+#[test]
+fn a_young_restart_that_may_not_join_writes_nothing() {
+    let all = leaves();
+    let c = reader(2, "streams-1", "a2", &["streams-2"]);
+    let doc = document(
+        vec![
+            member("streams-1", Some("a1")),
+            member("streams-2", Some("streams-2")),
+        ],
+        &[],
+    );
+    let facts = |may_join| Facts {
+        candidates: &c,
+        leaves: &all,
+        may_join,
+        young: Some(true),
+        member: false,
+        phase_over: false,
+    };
+    let blocked = plan(&facts(false), &doc, "a2");
+    let free = plan(&facts(true), &doc, "a2");
+    assert_eq!(
+        (
+            blocked.next.is_none(),
+            matches!(free.next, Some((_, Write::InPlace)))
+        ),
+        (true, true)
+    );
+}
+
+/// A join's pass reports the joiner still waiting only when it joined past `JOIN_PHASE` with a
+/// leaf uncovered, never when everything was covered (#183's survivor: `of_joiner`'s `!` deleted).
+#[test]
+fn a_covered_join_leaves_no_wait_and_a_late_one_does() {
+    let all = leaves();
+    let c = reader(2, "streams-2", "b2", &["streams-1"]);
+    let facts = |phase_over| Facts {
+        candidates: &c,
+        leaves: &all,
+        may_join: true,
+        young: None,
+        member: false,
+        phase_over,
+    };
+    let doc = document(vec![member("streams-1", Some("streams-1"))], &[]);
+    let late = plan(&facts(true), &doc, "b2");
+    let wanted = uncovered(&all, &names(&["streams-1"]), "streams-2", &HashMap::new());
+    let pinned: Vec<(&str, &str)> = wanted
+        .iter()
+        .map(|leaf| (leaf.as_str(), "streams-1"))
+        .collect();
+    let covered = document(vec![member("streams-1", Some("streams-1"))], &pinned);
+    let now = plan(&facts(false), &covered, "b2");
+    let joined = |planned: &super::Planned| matches!(planned.next, Some((_, Write::Joined { .. })));
+    assert_eq!(
+        (
+            joined(&late),
+            late.uncovered_now,
+            joined(&now),
+            now.uncovered_now
+        ),
+        (true, true, true, false)
+    );
+}
+
+/// R3's first two clauses: a joiner may join only with no drain and no stop begun (#183's survivor
+/// in `pass`: their `&&` as `||`).
+#[test]
+fn a_joiner_may_join_only_with_no_drain_and_no_stop_begun() {
+    let stop = Some("stopping");
+    let got = [
+        may_join(false, None),
+        may_join(true, None),
+        may_join(false, stop),
+        may_join(true, stop),
+    ];
+    assert_eq!(
+        got,
+        [true, false, false, false],
+        "(neither, drain, stop, both)"
+    );
+}
+
+/// A peer listed unstamped while this pass holds a live beat of it is counted once it reaches
+/// `UNSTAMPED_PASSES` passes; this instance's own unstamped listing, a stamped peer and a peer whose
+/// beat is not live are not (#183's survivors: `unstamped` as `()`, and its `&&` and `!=`).
+#[test]
+fn a_live_peer_left_unstamped_is_counted_at_its_passes() {
+    let standing = crate::fleet::standing::Standing::default();
+    let held = vec![
+        // Its own beat not live, so a filter that took this instance would count nothing.
+        ("streams-1".to_string(), (boot_of("a1"), false)),
+        ("streams-2".to_string(), (boot_of("streams-2"), true)),
+        ("streams-3".to_string(), (boot_of("streams-3"), true)),
+        ("streams-4".to_string(), (boot_of("streams-4"), false)),
+    ];
+    let c = Candidates::held(4, "streams-1", held).with_boot("a1");
+    let doc = document(
+        vec![
+            member("streams-1", None),
+            member("streams-2", None),
+            member("streams-3", Some("streams-3")),
+            member("streams-4", None),
+        ],
+        &[],
+    );
+    for _ in 0..super::UNSTAMPED_PASSES {
+        unstamped(&standing, &c, &doc);
+    }
+    assert_eq!(standing.unstamped_listings(), 1, "streams-2 alone");
+}
+
+/// The premise that makes `pins` need no "already pinned to me" filter: a member's prospective ring
+/// holds its whole ring (`Planned::of_member` builds it from `ring.clone()`), so an entry naming
+/// the member keeps its leaf there too. A member whose document already pins one moving leaf to it
+/// writes the other pins only, never a second entry for that leaf.
+#[test]
+fn a_member_writes_no_second_pin_for_a_leaf_pinned_to_it() {
+    let all = leaves();
+    let c = reader(2, "streams-1", "a1", &["streams-2"]);
+    let facts = Facts {
+        candidates: &c,
+        leaves: &all,
+        may_join: true,
+        young: Some(false),
+        member: true,
+        phase_over: false,
+    };
+    let listed = vec![member("streams-1", Some("a1"))];
+    let Some((_, Write::Pinned(moving, _))) =
+        plan(&facts, &document(listed.clone(), &[]), "a1").next
+    else {
+        panic!("a member pins what streams-2 would win");
+    };
+    let held = document(listed, &[(moving[0].as_str(), "streams-1")]);
+    let Some((written, Write::Pinned(again, _))) = plan(&facts, &held, "a1").next else {
+        panic!("the other leaves are still pinned");
+    };
+    assert_eq!(again, moving[1..].to_vec());
+    let kept = &written.entries[&moving[0]];
+    assert_eq!(
+        (kept.to.as_str(), kept.ms),
+        ("streams-1", 1),
+        "the first pin as it was"
+    );
+}
+
+/// The premise that makes the pass's `note_uncovered` need no count check: only a joiner within the
+/// count reports itself waiting (`Planned::of_joiner` returns before any wait when its ordinal is
+/// beyond the count). A joiner beyond the count with leaves uncovered, a member and a restart all
+/// report no wait.
+#[test]
+fn only_a_joiner_within_the_count_reports_a_wait() {
+    let all = leaves();
+    let doc = document(vec![member("streams-1", Some("streams-1"))], &[]);
+    let waits = |c: &Candidates, young, member| {
+        let facts = Facts {
+            candidates: c,
+            leaves: &all,
+            may_join: true,
+            young,
+            member,
+            phase_over: false,
+        };
+        plan(&facts, &doc, "b2").uncovered_now
+    };
+    let within = reader(2, "streams-2", "b2", &["streams-1"]);
+    let beyond = reader(1, "streams-2", "b2", &["streams-1"]);
+    let one = reader(1, "streams-1", "streams-1", &[]);
+    let restart = document(vec![member("streams-2", Some("b1"))], &[]);
+    let restarted = {
+        let facts = Facts {
+            candidates: &within,
+            leaves: &all,
+            may_join: true,
+            young: Some(true),
+            member: false,
+            phase_over: false,
+        };
+        plan(&facts, &restart, "b2").uncovered_now
+    };
+    assert_eq!(
+        (
+            waits(&within, None, false),
+            waits(&beyond, None, false),
+            waits(&one, None, true),
+            restarted
+        ),
+        (true, false, false, false),
+        "(a joiner within the count, beyond it, a member, a restart)"
     );
 }
