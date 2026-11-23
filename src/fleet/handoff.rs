@@ -330,10 +330,8 @@ async fn without_engine(state: &AppState, request: &Request) -> (Outcome, Option
     }
     let committed = commit(state, prefix, &request.change, deadline(until)).await;
     drop(mark);
+    // A move H1 kept is logged and counted where H1 decides it (`Try::KeptByH1`).
     let end = committed.outcome();
-    if committed == Committed::KeptByH1 {
-        tracing::info!(shard = %prefix, h1_kept = true, ?end, "handoff: without an engine");
-    }
     state.fleet.standing().note_attempt(end, "commit");
     (end, Some(committed))
 }
