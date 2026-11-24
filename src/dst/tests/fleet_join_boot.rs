@@ -297,6 +297,64 @@ async fn a_boot_killed_between_its_stamp_and_its_first_beat_is_recovered_by_the_
     }
 }
 
+/// **A boot decides before its first beat is published** (GATE-DECISION-s22-join-2026-11-20
+/// Addendum 39's premise, in the product's own order: `fleet::heartbeat::before_the_first_beat`
+/// takes C13's verdict, then allows the beat). Both members listed; `streams-2` stops and boots
+/// again over a previous boot's beat of its name, and its first beat is held once released. There
+/// its verdict is taken while the store holds only the previous boot's beat; released, the beat it
+/// writes carries its own boot id, the verdict still taken. `fixture_members::joined` fails on the
+/// converse.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_boot_decides_before_its_first_beat_is_published() {
+    let (data, fleet) = (mem(), mem());
+    desired(&fleet, 2, 1).await;
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    let b = member(
+        &data,
+        fleet.clone(),
+        "streams-2",
+        RigRuntime::incarnation(1),
+    )
+    .await;
+    until("both listed", async || listed(&fleet).await.len() == 2).await;
+    stop(b).await;
+    previous_beat(&fleet, "streams-2", 500).await;
+    let next = member(
+        &data,
+        fleet.clone(),
+        "streams-2",
+        RigRuntime::incarnation(2),
+    )
+    .await;
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel::<()>();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    next.state.fleet.standing().pause_first_beat(point);
+    let boot = next.state.runtime.identity.boot_id.clone();
+    tokio::time::timeout(BOUND, reached_rx)
+        .await
+        .expect("released")
+        .expect("the first beat is held");
+    let held = (
+        next.state.fleet.standing().boot_verdict().is_some(),
+        beat_boot(&fleet, "streams-2").await,
+    );
+    assert_eq!(
+        held,
+        (true, Some("before".to_string())),
+        "decided, the previous boot's beat alone"
+    );
+    go_tx.send(()).expect("the first beat waits");
+    until("the first beat is written", async || {
+        beat_boot(&fleet, "streams-2").await.as_deref() == Some(boot.as_str())
+    })
+    .await;
+    assert!(next.state.fleet.standing().boot_verdict().is_some());
+    for rig in [a, next] {
+        stop(rig).await;
+    }
+}
+
 /// **An unlisted boot beats at once, with no tick involved** (the join ruling, Addenda 2 and 3;
 /// strengthened by Addendum 34). `streams-1` alone is listed at a count of one; the count goes to
 /// two and `streams-2` boots over a fleet store armed before its boot to let exactly one read of

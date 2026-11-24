@@ -399,6 +399,13 @@ impl Standing {
         self.join.lock().ok()?.young
     }
 
+    /// Tests: C13's verdict ([`Self::boot_young`]), which a DST holds against this boot's beat in
+    /// the store (GATE-DECISION-s22-join-2026-11-20 Addendum 39).
+    #[cfg(test)]
+    pub(crate) fn boot_verdict(&self) -> Option<bool> {
+        self.boot_young()
+    }
+
     /// C18 (the join ruling, Addendum 33): a pass of this boot read it listed with its own boot
     /// id: it is a member, and C13's boot-time verdict is not consulted again. One-way.
     pub(super) fn note_member(&self) {

@@ -3,7 +3,9 @@
 //! a cell's members arrive by the join, not by the count. A rig that asserts a layout, a ring or a
 //! write count waits for the join to converge first ([`joined`]); a rig whose peer is a seeded beat
 //! with no process behind it seeds that peer's listing as its join would have written it
-//! ([`seed_joined`]). Setup only: no assertion of the tests that use these changes.
+//! ([`seed_joined`]). Setup only: no assertion of the tests that use these changes; the join's
+//! wait also fails on a beat published before its boot's decision, which no correct boot writes
+//! (Addendum 39).
 
 use super::fixture_http::HttpRig;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
@@ -183,11 +185,38 @@ pub(super) async fn published(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig], b
     }
 }
 
+/// Fails if `fleet` holds a beat of `rig`'s own boot while that boot is undecided (C13's verdict
+/// not taken; GATE-DECISION-s22-join-2026-11-20 Addendum 39): the heartbeat takes the verdict
+/// before it allows a beat (`fleet::heartbeat::before_the_first_beat`), so such a beat was
+/// published before its decision. A restart's previous beat carries the previous boot's id and is
+/// in the store before the new boot decides, so only this boot's id counts. The verdict is read
+/// after the beat: one taken before the beat was published is seen.
+async fn decided_before_beating(fleet: &Arc<dyn ObjectStore>, rig: &HttpRig) {
+    let name = rig.state.config.cli.instance_name.as_str();
+    let boot = rig.state.runtime.identity.boot_id.as_str();
+    let Ok(got) = fleet.get(&Path::from(format!("fleet/{name}.json"))).await else {
+        return;
+    };
+    let Ok(body) = got.bytes().await else {
+        return;
+    };
+    let beat: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let own = beat["boot_id"].as_str() == Some(boot);
+    assert!(
+        !own || rig.state.fleet.standing().boot_verdict().is_some(),
+        "{name} published a beat of its boot {boot} before deciding it"
+    );
+}
+
 /// Wait, within `bound`, until `fleet`'s document lists every one of `rigs` with its own boot id
-/// and holds no pin, and every rig's view publishes its entries.
+/// and holds no pin, and every rig's view publishes its entries, failing on a beat published
+/// before its boot's decision ([`decided_before_beating`]).
 pub(super) async fn joined(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig], bound: Duration) {
     let t0 = tokio::time::Instant::now();
     loop {
+        for rig in rigs {
+            decided_before_beating(fleet, rig).await;
+        }
         let read = document(fleet).await;
         if converged(&read, rigs) && views_agree(&read, rigs) {
             return;

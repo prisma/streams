@@ -132,6 +132,17 @@
     "scenarios": []
   },
   {
+    "name": "a_boot_decides_before_its_first_beat_is_published",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4b428030ddd575fbdeeb50248203ddfed98753eef08e1489df7b0fa5fadc8cad",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_boot_killed_between_its_stamp_and_its_first_beat_is_recovered_by_the_next",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
