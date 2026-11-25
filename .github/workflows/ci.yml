@@ -115,16 +115,22 @@ jobs:
           # the summary greps below cannot see an absent line (round-9
           # review certification hardening).
           set -o pipefail
-          # F-G: a lib test binary still alive after 15 minutes is hung
-          # (the whole suite takes ~3); dump every thread's stack and
-          # kill it so the step fails with the stuck frames, not at the
-          # job deadline. The hash keeps pgrep off the watcher itself.
-          scripts/quality/hang_dump.sh 'target/release/deps/streams_slate-[0-9a-f]{16}' 900 &
+          # F-G: a lib test binary still alive after 20 minutes is hung;
+          # dump every thread's stack and kill it so the step fails with
+          # the stuck frames, not at the job deadline. The suite's own
+          # wall is about 900 s on this runner and nothing in it hangs:
+          # 901.6 s (38a8236ce), 897.7 s (b7f69b674), 900.6 s (4f29b0c78,
+          # its PR run; its push run was killed at 901 s). Addendum 47:
+          # the watcher stays at no less than 1.25 times the measured
+          # wall, and past 960 s a set of real-time DSTs moves out before
+          # this number is touched again. The hash keeps pgrep off the
+          # watcher itself.
+          scripts/quality/hang_dump.sh 'target/release/deps/streams_slate-[0-9a-f]{16}' 1200 &
           watcher=$!
           # The real-time co-location DSTs (topology_colocation, _load, _shield: a move cooldown
           # and a merge each, minutes in real time) run in the topology job, not here
           # (GATE-DECISION-s22-join-2026-11-20 Addendum 12 (A): PR #178 ran this step past its
-          # 900 s watcher).
+          # watcher, 900 s then).
           cargo test --release -- --skip post_split_throughput_scales --skip dst::dst_tests::topology_convergence:: --skip dst::dst_tests::topology_colocation 2>&1 | tee /tmp/suite.log
           kill "$watcher" 2>/dev/null || true
           grep -E "^test result" /tmp/suite.log
