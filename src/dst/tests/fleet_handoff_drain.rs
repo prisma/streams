@@ -829,3 +829,94 @@ async fn a_signalled_drain_hands_every_shard_off_before_its_beat_withdraws_it() 
     }
     stopped([a, b]).await;
 }
+
+/// A leaf the ring of all three gives `streams-1` and the ring of `streams-2` and `streams-3`
+/// gives `streams-3`.
+fn held_by_the_first_given_to_the_third() -> &'static str {
+    let all = ["streams-1", "streams-2", "streams-3"].map(String::from);
+    let others = &all[1..];
+    for leaf in LEAVES {
+        let pick = |members: &[String]| crate::ownership::ring_pick(leaf, members);
+        if pick(&all) == 0 && pick(others) == 1 {
+            return leaf;
+        }
+    }
+    panic!("no leaf streams-1 holds that the others' ring gives streams-3")
+}
+
+/// Every member the overrides entry for `leaf` names, read every 10 ms until `stop`.
+async fn targets_named(
+    state: &crate::http::AppState,
+    leaf: &str,
+    stop: &AtomicBool,
+) -> std::collections::BTreeSet<String> {
+    let mut named = std::collections::BTreeSet::new();
+    while !stop.load(Ordering::Relaxed) {
+        if let Ok((document, _)) = state.fleet.read_overrides().await
+            && let Some(entry) = document.entries.get(leaf)
+        {
+            named.insert(entry.to.clone());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    named
+}
+
+/// **A drain hands no shard to a member beyond the count** (C11; GATE-DECISION-s22-join-2026-11-20
+/// Addendum 41 B). A cell of three scaled in to two: once `streams-1`'s own pass has read the count
+/// of two, its view is set back to all three, as if its tick had not published since. Its drain
+/// hands the leaf the ring of `streams-2` and `streams-3` gives `streams-3` to `streams-2`, the one
+/// member within the count: every target its overrides entry names during the drain is `streams-2`,
+/// `streams-3` never opens it, no move is kept by H1 for naming a member the document no longer
+/// lists, and nothing is yielded or fenced. Before C11 the drain aimed it at `streams-3`: its engine
+/// closed clean, H1 kept the move at its commit with nothing written, and the leaf stayed closed
+/// until the views left the announced drainer out. With `streams-3` the one successor the
+/// document does not list, H1's count of one is that move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_drain_hands_no_shard_to_a_member_beyond_the_count() {
+    let [a, b, c] = three_member_cell().await;
+    let leaf = held_by_the_first_given_to_the_third();
+    let mut taken = 0;
+    stream_in(&a.state, a.addr, leaf, &mut taken).await;
+    scaled_in_to_two(&b.state).await;
+    let t0 = Instant::now();
+    while a.state.ownership.ring_active().len() != 2 {
+        assert!(t0.elapsed() < BOUND, "streams-1 publishes the count of two");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let all = ["streams-1", "streams-2", "streams-3"].map(String::from);
+    a.state
+        .ownership
+        .set_view(all.to_vec(), std::collections::HashMap::new());
+    let stop = AtomicBool::new(false);
+    let drained = async {
+        let outcome = drained_within(&a.state, BOUND).await;
+        stop.store(true, Ordering::Relaxed);
+        outcome
+    };
+    let (outcome, named) =
+        futures_util::future::join(drained, targets_named(&a.state, leaf, &stop)).await;
+    assert_eq!(outcome, DrainOutcome::HandedOff);
+    let opened = c.state.shards.is_open(leaf);
+    let standing = a.state.fleet.standing();
+    let attempts = standing.attempts();
+    let successor = std::collections::BTreeSet::from(["streams-2".to_string()]);
+    // How the drainer gave its shards up besides a move: its tick's yields, and writers fenced
+    // (a move's late close, or ahead of a move: an evacuation counts there).
+    let (yields, fenced) = (
+        a.state.shards.tick_yields(),
+        standing.handoffs_fenced() + a.state.shards.fenced_ahead(),
+    );
+    assert_eq!(
+        (named, opened, standing.h1_kept(), yields, fenced),
+        (successor, false, 0, 0, 0),
+        "every target {leaf}'s entry named during the drain, whether streams-3 opened it, the moves \
+         H1 kept for a target the document does not list, the drainer's tick yields, and writers \
+         fenced (the drainer's planned moves: {attempts:?})"
+    );
+    for rig in [a, b, c] {
+        let report = rig.tasks.shutdown(Duration::from_secs(3)).await;
+        assert!(report.aborted.is_empty(), "{report:?}");
+        engine_shutdown(&rig.state).await;
+    }
+}

@@ -1115,6 +1115,17 @@
     "scenarios": []
   },
   {
+    "name": "a_drain_hands_no_shard_to_a_member_beyond_the_count",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "c8a62a816b27f019fabbbe52ea8f514cc01896783fc6f8641a9ccc8bd21b95fa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_drain.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_drain_of_several_shards_hands_each_off_within_its_budget",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"

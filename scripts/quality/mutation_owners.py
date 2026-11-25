@@ -460,6 +460,11 @@ OWNERS = (
     owner('fleet_drain', 'src/fleet/drain.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_drain:: dst_tests::fleet_handoff_drain::'),
     # The drain marker's entries are module tests; the tick's reads of the
     # runtimes it names are the members tests, its write by a drain the rig.
+    # C11, a departing member's successors: the units (the count, R1d, the last member, an older
+    # document) and the drain DST that hands a leaf past a member beyond the count.
+    owner('fleet_drain_successor', 'src/fleet/drain/successor.rs',
+          'fleet::drain::successor:: '
+          'dst_tests::fleet_handoff_drain::a_drain_hands_no_shard_to_a_member_beyond_the_count'),
     owner('fleet_drains', 'src/fleet/repository/drains.rs', 'fleet:: dst_tests::fleet_drain::'),
     owner('fleet_document_tests', 'src/fleet/repository/document_tests.rs', 'fleet::'),
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),

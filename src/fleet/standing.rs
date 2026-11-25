@@ -578,6 +578,13 @@ impl Standing {
         Some(candidates.as_ref()?.ring(document.members.as_deref()))
     }
 
+    /// The members this instance may hand a shard to over `document`, from its last pass's
+    /// candidates (`drain::successors`, C11); none before its first pass.
+    pub(crate) fn successors(&self, document: &super::Overrides) -> Vec<String> {
+        let candidates = self.candidates.lock().ok().and_then(|kept| kept.clone());
+        candidates.map_or_else(Vec::new, |kept| super::drain::successors(&kept, document))
+    }
+
     /// Tests: the fleet tick's next view publication answers `point.reached` after its overrides
     /// read, under the revalidation lock, and publishes once `point.go` resolves.
     #[cfg(test)]

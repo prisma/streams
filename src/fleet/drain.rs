@@ -32,6 +32,9 @@
 //! handoff.
 #[cfg(test)]
 pub(crate) use super::heartbeat::instance_refusals;
+mod successor;
+pub(in crate::fleet) use successor::successors;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -272,17 +275,18 @@ async fn handed_off_all(state: &AppState, instance: &str, handed_by: tokio::time
     true
 }
 
-/// Hand off every shard this runtime still holds to its ring successor, giver first and one at a
-/// time (F6): each is parked, flushed and closed here, then an override names the member the ring
-/// gives it without `instance`, a live member both rings honour (G10). The views that leave
-/// `instance` out once it announces make each entry a no-op that return-home drops.
+/// Hand off every shard this runtime still holds to a successor, giver first and one at a time (F6):
+/// each is parked, flushed and closed here, then an override names the member the ring gives it
+/// among the successors (C11): the document's ring without `instance`, within the desired count,
+/// and holding a live beat of their listed boot both rings honour (G10). The views that leave
+/// `instance` out once it announces make each entry a no-op that return-home drops. With no
+/// successor, or the document unread, nothing is moved: the next look tries again.
 async fn hand_off_held(state: &AppState, instance: &str) {
-    let successors: Vec<String> = state
-        .ownership
-        .ring_active()
-        .into_iter()
-        .filter(|member| member != instance)
-        .collect();
+    let Ok((document, _)) = state.fleet.read_overrides().await else {
+        tracing::warn!(%instance, "drain: the overrides document was not read; no shard is handed off");
+        return;
+    };
+    let successors = state.fleet.standing().successors(&document);
     if successors.is_empty() {
         return;
     }
