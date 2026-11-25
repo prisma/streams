@@ -17,6 +17,9 @@ impl Hold {
             Hold::TopologyAtMax => "topology_at_max",
             Hold::Congested => "congested",
             Hold::BeatsStale => "beats_stale",
+            Hold::MoveNotStarted => "move_not_started",
+            Hold::MoveKept => "move_kept",
+            Hold::MoveBackedOff => "move_backed_off",
         }
     }
 }
@@ -103,6 +106,9 @@ mod tests {
             (Hold::TopologyAtMax, "topology_at_max"),
             (Hold::Congested, "congested"),
             (Hold::BeatsStale, "beats_stale"),
+            (Hold::MoveNotStarted, "move_not_started"),
+            (Hold::MoveKept, "move_kept"),
+            (Hold::MoveBackedOff, "move_backed_off"),
         ];
         for (hold, name) in holds {
             assert_eq!(Decision::Hold(hold).reason(), format!("hold={name}"));

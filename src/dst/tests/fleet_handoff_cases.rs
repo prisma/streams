@@ -855,10 +855,11 @@ async fn the_released_queue_is_waited_for_until_it_drains_or_its_bound() {
     stop(rig).await;
 }
 
-/// **A split refused for room holds `override_recent` when its shard moved, and holds steady when
-/// it did not** (`policy_loop::room::moved_for_room`). Two instances, `streams-2` with room for
-/// `00` and its two children: with `00` claimed by another move the move is not made (steady);
-/// released, the move is made (`override_recent`) and the entry names `streams-2`.
+/// **A split refused for room holds `override_recent` when its shard moved, and `move_not_started`
+/// when it did not** (`policy_loop::room::moved_for_room`). Two instances, `streams-2` with room
+/// for `00` and its two children: with `00` claimed by another move the move is not made
+/// (`move_not_started`); released, the move is made (`override_recent`) and the entry names
+/// `streams-2`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_room_move_holds_override_recent_only_when_it_moved() {
     use crate::topology::policy::{Decision, Hold, Instance, View};
@@ -905,10 +906,10 @@ async fn a_room_move_holds_override_recent_only_when_it_moved() {
     engine.gc_state().gate.release_move();
     drop(engine);
     let moved = policy_loop::room::moved_for_room(&cell, &view, "00").await;
-    let steady = Decision::Hold(Hold::Steady);
+    let not_started = Decision::Hold(Hold::MoveNotStarted);
     assert_eq!(
         (kept, moved),
-        (steady, Decision::Hold(Hold::OverrideRecent))
+        (not_started, Decision::Hold(Hold::OverrideRecent))
     );
     assert_eq!(entry(&rig, "00").await.as_deref(), Some("streams-2"));
     stop(rig).await;

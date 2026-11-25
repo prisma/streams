@@ -125,6 +125,10 @@ pub(crate) enum Hold {
     TopologyAtMax,
     Congested,
     BeatsStale,
+    /// A room move that was not made, by how it ended.
+    MoveNotStarted,
+    MoveKept,
+    MoveBackedOff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
