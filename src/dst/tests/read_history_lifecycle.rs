@@ -1,10 +1,20 @@
 //! Repeated reads of sealed history retain key checks and delete/recreate
 //! isolation.
-use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRigOptions, RigShard, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, wait_all_sealed};
 use std::time::Duration;
+
+/// Engines with no tail ring: every read of the scenario comes from the log or its sealed history.
+fn no_ring() -> RigShard {
+    crate::shard::ShardConfig {
+        tail_ring_bytes: 0,
+        ..Default::default()
+    }
+    .into()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "history lifecycle regression; one stream is read, deleted and recreated to prove the incarnation transition; splitting the scenario would disconnect its before/after assertions"
@@ -15,10 +25,7 @@ async fn history_reads_keep_key_checks_and_delete_recreate_isolation() {
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
-            shard: crate::shard::ShardConfig {
-                tail_ring_bytes: 0,
-                ..Default::default()
-            },
+            shard: no_ring(),
             ..Default::default()
         },
     )

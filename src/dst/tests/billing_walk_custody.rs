@@ -120,7 +120,7 @@ async fn quiesce(state: &State) {
 async fn rig_over(store: &Arc<dyn ObjectStore>, n: u64, shard: ShardConfig) -> HttpRig {
     let opts = HttpRigOptions {
         prefixes: prefixes(),
-        shard,
+        shard: shard.into(),
         ..HttpRigOptions::default()
     };
     http_rig_build(store.clone(), RigRuntime::incarnation(n), opts).await

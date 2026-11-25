@@ -1611,7 +1611,7 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::Pair::loaded",
+      "owner": "crate::Pair::loaded_on",
       "path": "src/dst/tests/fleet_birth.rs",
       "reason": "The loaded pair's peer table (fleet/urls.json) naming both members' listeners, as the fleet stores it; serde macro output is compiled and read by the members.",
       "syntax": "serde_json::json"

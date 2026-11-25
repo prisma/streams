@@ -9,7 +9,7 @@
 //! appends answer `503 shard_moving` (the raw surface's `outcome_unknown`).
 
 use super::billing_closure_debts::{JSON, stored};
-use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRig, HttpRigOptions, RigShard, engine_shutdown, http_rig_build};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -251,7 +251,7 @@ async fn stored_ns_reads_every_page_of_a_stream() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_returned_child_moves_without_fencing_its_writer() {
     let errors = ErrorLines::install();
-    let pair = Pair::loaded().await;
+    let pair = Pair::loaded_on(RigShard::production).await;
     let (status, _) = split_with_a_held_append(&pair).await;
     assert_eq!(status, 204, "the held append");
     let mut taken = 0;

@@ -35,7 +35,8 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
             shard: crate::shard::ShardConfig {
                 tail_ring_bytes: 4 << 20,
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
     )

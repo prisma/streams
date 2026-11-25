@@ -286,7 +286,8 @@ async fn a_fork_reads_its_parent_history_up_to_a_boundary_inside_a_page() {
             shard: crate::shard::ShardConfig {
                 tail_ring_bytes: 0,
                 ..Default::default()
-            },
+            }
+            .into(),
             seal: Some(cold_sealer),
             ..Default::default()
         },
@@ -361,7 +362,8 @@ async fn a_fork_inside_an_unabsorbed_parent_page_reads_to_its_boundary() {
                 shard: crate::shard::ShardConfig {
                     tail_ring_bytes: ring,
                     ..Default::default()
-                },
+                }
+                .into(),
                 seal: Some(cold_sealer),
                 ..Default::default()
             },

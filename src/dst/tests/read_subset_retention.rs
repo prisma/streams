@@ -15,7 +15,8 @@ async fn rig() -> super::fixture_http::HttpRig {
             shard: crate::shard::ShardConfig {
                 tail_ring_bytes: 0,
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
     )

@@ -279,7 +279,7 @@ pub(super) async fn open_cell(spec: CellSpec) -> Cell {
         HttpRigOptions {
             auth_service: Some(svc.clone()),
             cli: spec.cli,
-            shard: spec.shard,
+            shard: spec.shard.into(),
             prefixes: spec.prefixes,
             admission: spec.admission,
             ..Default::default()

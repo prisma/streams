@@ -15,7 +15,7 @@ pub(super) struct HttpRigOptions {
     /// PR 6.1-D: this rig's OWN fleet coordination store, if any.
     pub(super) fleet_store: Option<Arc<dyn ObjectStore>>,
     pub(super) prefixes: Vec<String>,
-    pub(super) shard: crate::shard::ShardConfig,
+    pub(super) shard: RigShard,
     pub(super) per_segment_slots: i64,
     pub(super) max_request_body_bytes: Option<usize>,
     pub(super) admission: Option<crate::config::AdmissionConfig>,
@@ -60,7 +60,7 @@ impl Default for HttpRigOptions {
         Self {
             fleet_store: None,
             prefixes: vec![String::new()],
-            shard: crate::shard::ShardConfig::default(),
+            shard: RigShard::default(),
             per_segment_slots: 0,
             max_request_body_bytes: None,
             admission: None,
@@ -180,7 +180,7 @@ pub(super) async fn http_rig_full(
         RigRuntime::first(),
         HttpRigOptions {
             prefixes,
-            shard: shard_cfg,
+            shard: shard_cfg.into(),
             per_segment_slots,
             ..Default::default()
         },
@@ -290,9 +290,118 @@ pub(super) async fn http_rig_with_auth_service(
     .parts()
 }
 
+/// An edit of an engine's sealer settings.
+type SealEdit = fn(&mut crate::shard::seal::SealSettings);
+
+/// Which settings a rig engine's log opens on, and its sealer's default.
+#[derive(Clone, Copy, Default)]
+enum LogProfile {
+    /// [`rig_log`] and [`fast_sealer`].
+    #[default]
+    Fast,
+    /// [`production_log`] and the sealer as the engine configures it.
+    Production,
+}
+
+/// The configuration of every engine a rig opens, and the profile its log opens on: the rig's fast
+/// one unless the scenario asserts a product duration that passes through a flush, a seal or a
+/// compaction ([`RigShard::production`]).
+#[derive(Clone, Default)]
+pub(super) struct RigShard {
+    config: crate::shard::ShardConfig,
+    profile: LogProfile,
+}
+
+impl RigShard {
+    /// The production profile (GATE-DECISION-s22-3b-step4-2026-11-21 Addendum 8): the log, the
+    /// engine configuration and the sealer of a server that sets nothing.
+    pub(super) fn production() -> Self {
+        Self {
+            config: crate::bootstrap::engine_config(&crate::config::CliArgs::deterministic()),
+            profile: LogProfile::Production,
+        }
+    }
+
+    /// The engine's configuration.
+    fn engine(&self) -> crate::shard::ShardConfig {
+        self.config.clone()
+    }
+
+    /// The log at `path` on this profile.
+    async fn log(&self, path: String, store: &Arc<dyn ObjectStore>) -> anyhow::Result<slatedb::Db> {
+        match self.profile {
+            LogProfile::Fast => rig_log(path, store.clone()).await,
+            LogProfile::Production => production_log(path, store.clone()).await,
+        }
+    }
+
+    /// `engine`'s sealer as the scenario sets it (`edit`), else as this profile has it.
+    fn seal(&self, engine: &crate::shard::ShardEngine, edit: Option<SealEdit>) {
+        let own: SealEdit = match self.profile {
+            LogProfile::Fast => fast_sealer,
+            LogProfile::Production => |_| {},
+        };
+        engine.configure_seal(edit.unwrap_or(own));
+    }
+}
+
+impl From<crate::shard::ShardConfig> for RigShard {
+    fn from(config: crate::shard::ShardConfig) -> Self {
+        Self {
+            config,
+            profile: LogProfile::Fast,
+        }
+    }
+}
+
+impl std::ops::Deref for RigShard {
+    type Target = crate::shard::ShardConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+impl std::ops::DerefMut for RigShard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.config
+    }
+}
+
+/// A rig engine's log at `path` as production opens it: its builder, over `shard_settings` of the
+/// default command line. Three things of the production opener are not in it, none a log setting
+/// but the second: the process's shared block cache (a rig has none), the per-shard offset of the
+/// 60 s flush fail-safe (one shard's phase among sixteen; a rig's log is one), and the opener's own
+/// runtime.
+///
+/// The process's L0 line needs no setting here: it is 32 until boot sets it (`backpressure::L0_LINE`)
+/// and this log's cap is 32, production's relation.
+async fn production_log(path: String, store: Arc<dyn ObjectStore>) -> anyhow::Result<slatedb::Db> {
+    let config = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    );
+    let settings = crate::config::validation::shard_settings(&config.cli, &config.engine);
+    let builder = crate::native_queue::compaction_guard::shard_log_builder(&path, store, settings);
+    Ok(builder.build().await?)
+}
+
 /// A rig engine's log at `path`, on the rig's fast settings, its identity checked as the
 /// production opener checks it (`shard::check_identity`, `compaction_guard::shard_log_builder`): a
 /// refused log is closed again and its open fails.
+///
+/// The fast profile differs from production's (`config::validation::shard_settings` of the default
+/// command line, [`production_log`]) in:
+/// - the L0 cap: SlateDB's default 8, against 32;
+/// - the flush interval: 5 ms, against the 60 s fail-safe behind the group-commit pump, which the
+///   default `ShardConfig` leaves off;
+/// - the manifest poll: 50 ms, against 2 s;
+/// - the table size, the unflushed bound, the codec, the compactor and the collector: SlateDB's
+///   defaults, against production's;
+/// - the sealer: `fast_sealer`, a seal at any unsealed byte every 20 ms.
+///
+/// A duration measured on this profile that passes through a flush, a seal or a compaction is the
+/// rig's, not the product's (a forced flush meets L0 8 and stalls until a compaction lands): a test
+/// that claims a product duration opens its logs on the production profile.
 async fn rig_log(path: String, store: Arc<dyn ObjectStore>) -> anyhow::Result<slatedb::Db> {
     let db = crate::keyspace::db_builder(path.clone(), store)
         .with_settings(slatedb::config::Settings {
@@ -326,7 +435,7 @@ async fn rig_log(path: String, store: Arc<dyn ObjectStore>) -> anyhow::Result<sl
 )]
 pub(super) fn rig_opener(
     store: Arc<dyn ObjectStore>,
-    shard_cfg: crate::shard::ShardConfig,
+    shard_cfg: RigShard,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     seal: Option<fn(&mut crate::shard::seal::SealSettings)>,
     notifier: crate::shard_directory::ShardCloseNotifier,
@@ -341,7 +450,7 @@ pub(super) fn rig_opener(
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
             > = Box::pin(async move {
-                let db = rig_log(path, store.clone()).await?;
+                let db = shard_cfg.log(path, &store).await?;
                 // R26-5 park point: BEFORE restoration, exactly where a
                 // slow durable-state load sits in production.
                 if let Some(park) = &open_park {
@@ -364,11 +473,11 @@ pub(super) fn rig_opener(
                     prefix,
                     Arc::new(db),
                     store.clone(),
-                    shard_cfg.clone(),
+                    shard_cfg.engine(),
                     Some(on_close),
                     __maint,
                 );
-                engine.configure_seal(seal.unwrap_or(fast_sealer));
+                shard_cfg.seal(&engine, seal);
                 Ok(engine)
             });
             fut

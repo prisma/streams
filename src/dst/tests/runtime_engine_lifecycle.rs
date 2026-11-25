@@ -14,7 +14,8 @@ async fn ready_rig() -> super::fixture_http::HttpRig {
             shard: crate::shard::ShardConfig {
                 wal_group_commit: true,
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
     )

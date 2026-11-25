@@ -104,6 +104,15 @@ static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// FRAME_COMPRESS is a retired name: layout 5 pages compress whenever that
 /// pays.
 fn shard_config(args: &crate::config::CliArgs) -> ShardConfig {
+    // The shard log's `l0_max_ssts` reaches each engine's L0 watermark as
+    // the process's line.
+    crate::backpressure::set_l0_line(args.l0_max_ssts);
+    engine_config(args)
+}
+
+/// [`shard_config`] without the process's line: the engine configuration alone, so a test's engine
+/// may have it without setting the line of every other test in the process.
+pub(crate) fn engine_config(args: &crate::config::CliArgs) -> ShardConfig {
     let mut config = ShardConfig {
         wal_group_commit: args.wal_group_commit != 0,
         wal_flush_gap: Duration::from_millis(if args.wal_flush_gap_ms == 0 {
@@ -123,9 +132,6 @@ fn shard_config(args: &crate::config::CliArgs) -> ShardConfig {
     // equivalent mutant.
     config.wal_gather_skip_reqs = crate::config::EngineConfig::WAL_GATHER_SKIP_REQS;
     config.wal_gather_skip_bytes = crate::config::EngineConfig::WAL_GATHER_SKIP_BYTES;
-    // The shard log's `l0_max_ssts` reaches each engine's L0 watermark as
-    // the process's line.
-    crate::backpressure::set_l0_line(args.l0_max_ssts);
     config
 }
 

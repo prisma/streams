@@ -6,7 +6,7 @@
 //! meas-149's run. Each scenario holds an append across the split at its park and checks who opens
 //! the children and who answers the append.
 
-use super::fixture_http::{HttpRig, HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_http::{HttpRig, HttpRigOptions, RigShard, engine_shutdown, http_rig_build};
 use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
@@ -34,14 +34,18 @@ fn loaded_members(cli: &mut crate::config::CliArgs) {
     cli.admit_max_inflight = 512;
 }
 
-/// A cell's data store and its members' configuration.
-type CellOf<'a> = (&'a Arc<dyn ObjectStore>, fn(&mut crate::config::CliArgs));
+/// A cell's data store, its members' configuration and the profile their logs open on.
+type CellOf<'a> = (
+    &'a Arc<dyn ObjectStore>,
+    fn(&mut crate::config::CliArgs),
+    fn() -> RigShard,
+);
 
 /// A member `name` of the cell over `data` and `fleet`, whose leaves are `leaves`; its fleet
 /// started when `ticks`.
 async fn member(
     fleet: &Arc<dyn ObjectStore>,
-    (data, cli): CellOf<'_>,
+    (data, cli, shard): CellOf<'_>,
     (name, leaves): (&str, &[&str]),
     runtime: RigRuntime,
     ticks: bool,
@@ -53,6 +57,7 @@ async fn member(
             fleet_store: Some(fleet.clone()),
             instance: Some(name.to_string()),
             cli,
+            shard: shard(),
             prefixes: leaves.iter().map(|leaf| (*leaf).to_string()).collect(),
             ..Default::default()
         },
@@ -122,6 +127,11 @@ impl Pair {
     /// Both members with their fleet ticks running, every data-store request 20 ms away and the
     /// rig's in-flight cap of 512: the meas-149 rerun's planned move (F6).
     pub(super) async fn loaded() -> Self {
+        Self::loaded_on(RigShard::default).await
+    }
+
+    /// [`Self::loaded`] with both members' logs on the profile `shard`.
+    pub(super) async fn loaded_on(shard: fn() -> RigShard) -> Self {
         use crate::dst::fault_store::{FaultPlan, FaultStore};
         let plan = FaultPlan {
             latency_pct: 100,
@@ -129,7 +139,7 @@ impl Pair {
             ..FaultPlan::CLEAN
         };
         let data: Arc<dyn ObjectStore> = FaultStore::uniform(mem(), 0xF6, plan);
-        let pair = Self::over(Tick::Runs, (&data, loaded_members)).await;
+        let pair = Self::over(Tick::Runs, (&data, loaded_members, shard)).await;
         // Both members' URLs published, as a deploy publishes them, so a member forwards to the
         // owner instead of answering its client `409` (the ticks replace the peers set by hand).
         let urls = serde_json::json!({
@@ -145,13 +155,18 @@ impl Pair {
     }
 
     async fn of(tick: Tick) -> Self {
-        Self::over(tick, (&mem(), two_members)).await
+        Self::over(tick, (&mem(), two_members, RigShard::default)).await
     }
 
     /// Both members with their fleet ticks running over a cell of the two leaves `0` and `1`,
     /// both the ring's for `streams-2`, whose parent `""` the ring gives to `streams-1`.
     async fn halves() -> Self {
-        Self::over_leaves(Tick::Runs, (&mem(), two_members), &["0", "1"]).await
+        Self::over_leaves(
+            Tick::Runs,
+            (&mem(), two_members, RigShard::default),
+            &["0", "1"],
+        )
+        .await
     }
 
     async fn over(tick: Tick, cell: CellOf<'_>) -> Self {
@@ -707,7 +722,7 @@ async fn a_born_override_does_not_pin_a_child_past_the_return_window() {
     let mut rigs = Vec::new();
     for (n, name) in names.iter().enumerate() {
         let runtime = RigRuntime::incarnation(u64::try_from(n).unwrap());
-        let cell = (&data, two_members as fn(&mut crate::config::CliArgs));
+        let cell: CellOf<'_> = (&data, two_members, RigShard::default);
         rigs.push(member(&fleet, cell, (*name, &[""]), runtime, true).await);
     }
     store_topology(&rigs[0]).await;
