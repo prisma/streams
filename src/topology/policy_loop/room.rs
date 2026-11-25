@@ -36,10 +36,11 @@ pub(crate) async fn moved_for_room(cell: &Cell, view: &View, prefix: &str) -> De
     Decision::Hold(held_for(outcome))
 }
 
-/// The hold a room move's end answers: the move's cooldown once made, else how it was not made. A
+/// The hold a room move's or a co-location hand's end answers: the cooldown once made, else how it
+/// was not made. A
 /// move that was not made is not steady: its leaf is over the split line and the next pass tries
 /// again, so the decision an operator reads names the attempt's end.
-fn held_for(outcome: Outcome) -> Hold {
+pub(super) fn held_for(outcome: Outcome) -> Hold {
     match outcome {
         Outcome::Moved => Hold::OverrideRecent,
         Outcome::Kept => Hold::MoveKept,

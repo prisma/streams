@@ -237,13 +237,14 @@ OWNERS = (
           'topology::policy:: topology::policy_loop:: '
           'dst_tests::topology_policy::one_stream_carrying_a_shards_appends_holds_hot_entity '
           'dst_tests::topology_policy::a_live_intent_holds_the_split_until_it_is_terminal dst_tests::fleet_handoff_drain:: '
-          'dst_tests::topology_colocation_shield::'),
+          'dst_tests::fleet_handoff_holds:: dst_tests::topology_colocation_shield::'),
     # A rolled-back split's backoff (meas149-reshaping F1d): its waits are unit tests, exact to the
     # millisecond; the loop's use of it is topology_policy_loop's.
     # A split refused for room moves its shard to an instance with room
     # (GATE-DECISION-f2-convergence-2026-11-17): the two-member room DST (about 70 s: one move cooldown).
     owner('topology_policy_loop_room', 'src/topology/policy_loop/room.rs',
-          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'dst_tests::topology_colocation::a_split_refused_for_room'),
+          'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_holds:: '
+          'dst_tests::topology_colocation::a_split_refused_for_room topology::policy_loop::room::'),
     owner('topology_policy_loop_backoff', 'src/topology/policy_loop/backoff.rs',
           'topology::policy_loop::backoff'),
     # Its own unit tests (topology::recover::merge::tests, push 4's fix: every claimant witness,

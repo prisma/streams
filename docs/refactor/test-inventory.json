@@ -591,6 +591,17 @@
     "scenarios": []
   },
   {
+    "name": "a_co_location_hand_holds_override_recent_only_when_it_moved",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "471454b042a819d5b1a5a61beaefd17c4b2537d6c280cf6009c869d7326795b3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_handoff_holds.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_cold_engine_under_the_in_flight_cap",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]",
@@ -4372,10 +4383,10 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a20eeaaa6c6fdcbf09d2b72f6e061e1c18c59ff2189f40a7764d4dfa13cef35b",
+    "function_sha256": "9d93d101424a76edc1a73b7a853c7dc74404cc35c6962ec1834ab1027f14f9d1",
     "mechanisms": [],
     "configuration": [],
-    "file": "src/dst/tests/fleet_handoff_cases.rs",
+    "file": "src/dst/tests/fleet_handoff_holds.rs",
     "scenarios": []
   },
   {

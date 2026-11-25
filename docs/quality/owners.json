@@ -1531,6 +1531,14 @@
     {
       "category": "by-path-module",
       "count": 1,
+      "owner": "crate::fleet_handoff_holds",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "What the topology policy holds after a planned move it asked for was made or was not (the room move and the co-location's hand); compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_handoff_holds.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
       "owner": "crate::fleet_handoff_bound",
       "path": "src/dst/dst_tests.rs",
       "reason": "A planned move's commit under a slow store (Addendum 26 of GATE-DECISION-s22-join-2026-11-20): a move on a fleet store at 600 ms an operation commits within its hold; at 1.5 s an operation, a giver whose return of a leaf runs out of its commit's bound tries it at most five times in 120 s, and the leaf acks every append between the tries; a CAS that wins while the read after it is held past the hold's end is the move, mirrored to its target.",

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 /// `streams-1` of a ring of two over `00` and `01`, its view published by hand, its handoff runner
 /// started, and `00` (its ring home) open when `open`.
-async fn giver(open: bool) -> HttpRig {
+pub(super) async fn giver(open: bool) -> HttpRig {
     member(&mem(), mem(), "streams-1", RigRuntime::first(), open).await
 }
 
@@ -65,7 +65,7 @@ pub(super) async fn stop(rig: HttpRig) {
 }
 
 /// The stored overrides' entry for `prefix`: its target.
-async fn entry(rig: &HttpRig, prefix: &str) -> Option<String> {
+pub(super) async fn entry(rig: &HttpRig, prefix: &str) -> Option<String> {
     let doc = rig.state.fleet.read_overrides().await.unwrap().0;
     doc.entries.get(prefix).map(|e| e.to.clone())
 }
@@ -852,66 +852,6 @@ async fn the_released_queue_is_waited_for_until_it_drains_or_its_bound() {
     );
     assert_eq!(queued, 0, "the queue drained");
     drop(answers);
-    stop(rig).await;
-}
-
-/// **A split refused for room holds `override_recent` when its shard moved, and `move_not_started`
-/// when it did not** (`policy_loop::room::moved_for_room`). Two instances, `streams-2` with room
-/// for `00` and its two children: with `00` claimed by another move the move is not made
-/// (`move_not_started`); released, the move is made (`override_recent`) and the entry names
-/// `streams-2`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
-async fn a_room_move_holds_override_recent_only_when_it_moved() {
-    use crate::topology::policy::{Decision, Hold, Instance, View};
-    use crate::topology::policy_loop;
-    let rig = giver(true).await;
-    let state = &rig.state;
-    let cell = policy_loop::Cell {
-        me: "streams-1".to_string(),
-        fleet: state.fleet.clone(),
-        shards: state.shards.clone(),
-        ownership: state.ownership.clone(),
-        store: state.data_store.clone(),
-        limits: policy_loop::limits(&state.config),
-        appends_ceiling: state.config.cli.shard_appends_ceiling,
-        rss_shed_mb: 0,
-        split: policy_loop::split_entry(state.shards.clone()),
-        merge: policy_loop::merge_entry(state.shards.clone()),
-    };
-    let instance = |id: &str, resident_shards| Instance {
-        id: id.to_string(),
-        resident_shards,
-        accepting: true,
-    };
-    let view = View {
-        now_ms: 0,
-        me: "streams-1".to_string(),
-        leaves: Vec::new(),
-        instances: vec![instance("streams-1", 2), instance("streams-2", 0)],
-        split_demand: 0,
-        live: 0,
-        beats_fresh: true,
-        intent_live: false,
-        last_op_end_ms: None,
-        desired_computed_ms: None,
-        youngest_override_ms: None,
-        congested: false,
-    };
-    let engine = state.shards.open("00").expect("00 is open");
-    assert!(
-        engine.gc_state().gate.claim_move(),
-        "another move claims 00"
-    );
-    let kept = policy_loop::room::moved_for_room(&cell, &view, "00").await;
-    engine.gc_state().gate.release_move();
-    drop(engine);
-    let moved = policy_loop::room::moved_for_room(&cell, &view, "00").await;
-    let not_started = Decision::Hold(Hold::MoveNotStarted);
-    assert_eq!(
-        (kept, moved),
-        (not_started, Decision::Hold(Hold::OverrideRecent))
-    );
-    assert_eq!(entry(&rig, "00").await.as_deref(), Some("streams-2"));
     stop(rig).await;
 }
 

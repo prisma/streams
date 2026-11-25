@@ -275,12 +275,12 @@ async fn act(
 /// nothing. Whichever then holds both is the actor and merges once the move's cooldown has passed
 /// (`override_recent` meanwhile). With no instance that has room the actor asks the fleet for one,
 /// as a split does (the beat's `instance_full`; the count grows within its clamp); a holder with
-/// nothing to write holds `peer_acts`, the partner without a target among them. A move not made
-/// holds steady; the next pass decides again.
-async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
+/// nothing to write holds `peer_acts`, the partner without a target among them. A hand that was not
+/// made holds how it ended (`room::held_for`); the next pass decides again.
+pub(crate) async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
     use super::policy::Hold;
     use crate::fleet::colocate::Step;
-    use crate::fleet::handoff::{Change, Outcome, hand_off};
+    use crate::fleet::handoff::{Change, hand_off};
     let max = cell.limits.shards_per_instance_max;
     let step = crate::fleet::colocate::step(view, max, parent);
     tracing::info!(parent, ?step, "topology merge: co-location");
@@ -291,12 +291,8 @@ async fn colocate(cell: &Cell, view: &View, parent: &str) -> Decision {
         },
         Step::Wait => Decision::Hold(Hold::PeerActs),
         Step::Hand { half, to } => {
-            match hand_off(&cell.fleet, &half, Change::To(to), false).await {
-                Outcome::Moved => Decision::Hold(Hold::OverrideRecent),
-                Outcome::Kept | Outcome::NotStarted | Outcome::BackedOff | Outcome::Evacuate => {
-                    Decision::Hold(Hold::Steady)
-                }
-            }
+            let outcome = hand_off(&cell.fleet, &half, Change::To(to), false).await;
+            Decision::Hold(room::held_for(outcome))
         }
     }
 }
