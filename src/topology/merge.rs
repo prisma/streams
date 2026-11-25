@@ -31,9 +31,9 @@ use crate::spill::{gc, lineage, runindex};
 /// The pause's quiesce deadline: both gates exclusive within it, or the merge rolls back.
 const QUIESCE: Duration = Duration::from_secs(5);
 /// How long the retired sources' held operations may take to drain to `M`.
-const DRAIN: Duration = Duration::from_secs(2);
+pub(crate) const DRAIN: Duration = Duration::from_secs(2);
 /// How long `M`'s open may be held off while its prefix's previous incarnation closes.
-const OPEN_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const OPEN_WAIT: Duration = Duration::from_secs(5);
 /// The pause's checkpoint lifetime (it expires if the merge dies).
 const CHECKPOINT_LIFETIME: Duration = Duration::from_secs(3600);
 

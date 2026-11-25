@@ -94,6 +94,32 @@ fn grow_budget() -> Duration {
     Duration::from_secs(fixed_waits_secs + (OPERATIONS + LOST_PASSES) * PASS_SECS)
 }
 
+/// How long a published merge's actor may still hold its sources' engines: `M`'s open, then their
+/// held operations' drain, after which it retires them (`topology::merge::publish`; no tick waits).
+fn settles_within() -> Duration {
+    use crate::topology::merge::{DRAIN, OPEN_WAIT};
+    OPEN_WAIT + DRAIN
+}
+
+/// The engines `rig` holds once each is a leaf of `leaves`, or what it holds past
+/// [`settles_within`]; prints how long they took.
+async fn settled_holdings(rig: &HttpRig, leaves: &[String]) -> Vec<String> {
+    let began = tokio::time::Instant::now();
+    loop {
+        let held = rig.state.shards.held_prefixes();
+        if held.iter().all(|prefix| leaves.contains(prefix)) || began.elapsed() >= settles_within()
+        {
+            eprintln!(
+                "holdings settled in {:?} of {:?}",
+                began.elapsed(),
+                settles_within()
+            );
+            return held;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// S4's and S6's settle after a count change, in seconds, under `cli`: the topology cooldown it
 /// sets (`topology::ops::settle_ms`).
 fn settle_secs(cli: fn(&mut crate::config::CliArgs)) -> u64 {
@@ -535,10 +561,12 @@ async fn a_one_shard_cell_grows_to_four_shards_on_two_instances_and_converges_ba
     );
     assert_eq!(converged, (vec![String::new()], 1, 1), "grown {grown:?}");
     assert!(cell.running.contains_key(&1));
-    // No instance holds an engine for a prefix that is no leaf (#251 amendment R3-d).
+    // No instance holds an engine for a prefix that is no leaf (#251 amendment R3-d), once the
+    // merge's actor retired its sources: it publishes the topology first and drains their held
+    // operations before it retires them (`topology::merge::publish`).
     let leaves = cell.leaves().await;
     for (n, rig) in &cell.running {
-        let held = rig.state.shards.held_prefixes();
+        let held = settled_holdings(rig, &leaves).await;
         assert!(
             held.iter().all(|prefix| leaves.contains(prefix)),
             "streams-{n} holds {held:?} over the leaves {leaves:?}"
