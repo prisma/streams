@@ -8832,7 +8832,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "64752ae2c1842616e6c6afe4319b373198aa8cc43a39c752ee039bdeabbfa3b3",
+    "function_sha256": "e1015e6f0332d8102039b4078b594152060ccc169e686eb92bc648f85c77f8a8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_basics.rs",
@@ -8843,7 +8843,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "a26d0f8e56e9454f10f949d55126c5dbaefadd44b925fd4419a3eeb70db4f257",
+    "function_sha256": "0fb91d65cf764b17bee8532ea78478aaf9fd62777500b4efe7a46f5ec043ce81",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/livefeed_basics.rs",

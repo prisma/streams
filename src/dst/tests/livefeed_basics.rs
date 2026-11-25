@@ -550,16 +550,22 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     );
     prod.write_all(preq2.as_bytes()).await.unwrap();
 
+    // Both sessions live before the append: each has reported the
+    // backlog's frontier. A session that meets the append in its first
+    // window reports one frontier, not two (`sse::session`: ONE
+    // standalone upToDate at a verified durable frontier).
+    let raw_join = hub_sse_up_to_date(&mut raw).await;
+    let prod_join = hub_sse_up_to_date(&mut prod).await;
     hub_append_lf(addr, "lfx", r#"{"w":1}"#).await;
 
     // The done predicate fires on the DATA frame; its trailing cursor
     // control arrives in a separate chunk — drain one more beat.
     let (raw_txt, _) = hub_sse_collect(&mut raw, 10, |t| t.contains("\"w\":1")).await;
     let (extra_r, _) = hub_sse_collect(&mut raw, 2, |_| false).await;
-    let raw_txt = format!("{raw_txt}{extra_r}");
+    let raw_txt = format!("{raw_join}{raw_txt}{extra_r}");
     let (prod_txt, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"w\":1")).await;
     let (extra_p, _) = hub_sse_collect(&mut prod, 2, |_| false).await;
-    let prod_txt = format!("{prod_txt}{extra_p}");
+    let prod_txt = format!("{prod_join}{prod_txt}{extra_p}");
 
     for (side, txt) in [("raw", &raw_txt), ("product", &prod_txt)] {
         // PER-SURFACE SHAPE per drained window (round 11.8): PRODUCT
@@ -601,6 +607,17 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     }
 }
 
+/// Collect `sck` until the session has reported the backlog's frontier (its `upToDate`), or fail at
+/// 10 s: the session is then live, so the next append is a window of its own.
+async fn hub_sse_up_to_date(sck: &mut tokio::net::TcpStream) -> String {
+    let (txt, _) = hub_sse_collect(sck, 10, |t| t.contains("\"upToDate\":true")).await;
+    assert!(
+        txt.contains("\"upToDate\":true"),
+        "the session reports the backlog's frontier:\n{txt}"
+    );
+    txt
+}
+
 /// Finding 4 coverage, REVERSE creation order: PRODUCT creates the
 /// feed, RAW joins second. Same canonical framing assertions as the
 /// raw-first leg — feed creation order must not change the wire shape
@@ -628,16 +645,19 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
     );
     raw.write_all(req.as_bytes()).await.unwrap();
 
+    // Both sessions live before the append (as in the raw-first leg).
+    let prod_join = hub_sse_up_to_date(&mut prod).await;
+    let raw_join = hub_sse_up_to_date(&mut raw).await;
     hub_append_lf(addr, "lfp", r#"{"w":1}"#).await;
 
     // The done predicate fires on the DATA frame; its trailing cursor
     // control arrives in a separate chunk — drain one more beat.
     let (prod_txt, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"w\":1")).await;
     let (extra_p, _) = hub_sse_collect(&mut prod, 2, |_| false).await;
-    let prod_txt = format!("{prod_txt}{extra_p}");
+    let prod_txt = format!("{prod_join}{prod_txt}{extra_p}");
     let (raw_txt, _) = hub_sse_collect(&mut raw, 10, |t| t.contains("\"w\":1")).await;
     let (extra_r, _) = hub_sse_collect(&mut raw, 2, |_| false).await;
-    let raw_txt = format!("{raw_txt}{extra_r}");
+    let raw_txt = format!("{raw_join}{raw_txt}{extra_r}");
 
     for (side, txt) in [("raw", &raw_txt), ("product", &prod_txt)] {
         let data = txt.matches("event: data").count();
