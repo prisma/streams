@@ -4,9 +4,9 @@
       "check": "KANI-108/exact-sum",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "10fb300fca8e02fce34a6e21232f21da690369f35d5e16969edea02243746792",
+      "log_sha256": "9d8cffd349c477f7f3a74e3c84409e2427f355db755df05aaa10681c7d3392fc",
       "role": "baseline",
-      "seconds": 62.0,
+      "seconds": 39.6,
       "verdict": "pass"
     },
     {
@@ -15,7 +15,7 @@
       "failed_checks": [
         "\"a merged row only for one length and a sum that fits\""
       ],
-      "log_sha256": "e3947223d7bff9fe63aeef44b7c74f9fbf5a904c78d1b9df5ffa4fed79b8f74d",
+      "log_sha256": "f37fee87740c8e9e5e48d96fb8c64b2a0a5d9a00b8f1a30cce2e05c83e4756bc",
       "mutated": {
         "src/spill/gc.rs": {
           "baseline": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
@@ -23,7 +23,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 98.6,
+      "seconds": 110.2,
       "verdict": "fail"
     },
     {
@@ -32,7 +32,7 @@
       "failed_checks": [
         "\"the merged row keeps the earlier creation\""
       ],
-      "log_sha256": "140ab6ee7b21025336f721f3593cb3d42f2f87d48a35dc6d40e8f012933f56d3",
+      "log_sha256": "53014b13ca1f354adf7004e2d468895cbd7c7d2d0bb9e3784853f411ad626567",
       "mutated": {
         "src/spill/gc.rs": {
           "baseline": "33c040705f43b7cf9f5d06347d537042a634424567410e24b9cb1e3e2bdb5828",
@@ -40,7 +40,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 100.7,
+      "seconds": 77.1,
       "verdict": "fail"
     }
   ],
@@ -52,7 +52,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -150,10 +150,10 @@
       }
     }
   },
-  "inputs_sha256": "74972cfdbad816848b4fb9a4d3d15bab64fe029343a957026fb2539c29f2a7e6",
+  "inputs_sha256": "ae6881282102620fec157b0e72eba382edcf3777847b626bf071f34dcb3cbd9c",
   "run_on": {
     "dirty_tree": false,
-    "revision": "12e7cae5076007f4ab4ea07280b7266a45bf3a22"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

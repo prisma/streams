@@ -6,7 +6,7 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "55e1c530fce58fd2c86d295d0abb379648cb6d22a0bf0094ad5be5c84ba8b1e5",
+      "log_sha256": "af58c9ea1f230e95e3179ef9ba4f186726163bf9ed4908681c4cadc372dd5656",
       "role": "baseline",
       "seconds": 42.5,
       "verdict": "pass"
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a tagged operation is authorized exactly at or above the fence\""
       ],
-      "log_sha256": "c961c8c76483ef5f2cfacc88fde01342598291845cba9b9354b947491effab5e",
+      "log_sha256": "39cb719f26f6a45a1d0516c29077f800df9023c4cc9d0ff01588e84dd6e13041",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 159.6,
+      "seconds": 41.8,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"an untagged close is refused once a fence exists\""
       ],
-      "log_sha256": "f1aabfd7f43465bbd62d8a0ba0baba3f69d9ee3fa89c828a5dcd5f460744f904",
+      "log_sha256": "b7ecf0511197527472b12b520a8dde22e19352f204b3a3ed00f3b0bd3cf274d1",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 162.7,
+      "seconds": 77.6,
       "verdict": "fail"
     }
   ],
@@ -58,7 +58,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -156,10 +156,10 @@
       }
     }
   },
-  "inputs_sha256": "85fd2807f6339079be8b17d3839766b7cd7c657b8c5f9c6aa2297e78fc818d21",
+  "inputs_sha256": "12ebc58c7dae3808ce5a9a459b9b755c91408c48ae66c552f3714d53efdf9e96",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

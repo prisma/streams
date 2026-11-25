@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "4a2e4f4da691c9ce1de00ece81171362709a356036017e7eca3ae63ed80953da",
+      "log_sha256": "be4d97260b2e1c5e67f0e8ae18fad2c608e98abe4e279df103bb413f6442243f",
       "role": "baseline",
-      "seconds": 107.1,
+      "seconds": 47.7,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0f6a70a23928fa0dd83177605fdb7b05907537c8656258dfc47a7da6c5ce6663",
+      "log_sha256": "26c79b6c8b23ce057852881931ae31698e2382c2054f2ba30cb1b366f54f6d1c",
       "role": "baseline",
-      "seconds": 102.4,
+      "seconds": 89.3,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "c96c948879a3e6c8f8a9358fdbb6bd5079b1d73309c6d830f25360dab85f7f86",
+      "log_sha256": "8153de715d23c14d5f8f30359f382f110b5f52b2fe2fb175f6178cd260ef687e",
       "role": "baseline",
-      "seconds": 90.4,
+      "seconds": 83.8,
       "verdict": "pass"
     },
     {
@@ -39,9 +39,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "1fbc90223ca72eee7557392f9a4064f5ea93730f3c8d0dd5ca686daecf779c32",
+      "log_sha256": "0bf9a62d8dd61e45535ee8e2ae5a8a308477e9b66b78bc85b0a94151c188edf4",
       "role": "baseline",
-      "seconds": 137.2,
+      "seconds": 87.4,
       "verdict": "pass"
     },
     {
@@ -52,7 +52,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "f9e6f077018f40e10e1e2498fd0888aa95b286201f35c424e3b253b0873223f2",
+      "log_sha256": "cd7818a393c097249d77deb4eb5ac53ecf8bec658cbb83f2e3100eca987be7a7",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -60,7 +60,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 65.1,
+      "seconds": 58.7,
       "verdict": "fail"
     },
     {
@@ -71,7 +71,7 @@
       "failed_checks": [
         "\"every key lies in exactly one terminal segment\""
       ],
-      "log_sha256": "4cec9e2915a9e320ceced6331e0cd2c3a71646920a3882bca54391a9a3f4e280",
+      "log_sha256": "374a9848d3edb37e21bc328a9bd4803be3868764b6aa9c4dac795ccb9c3873e8",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -79,7 +79,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 155.2,
+      "seconds": 47.6,
       "verdict": "fail"
     },
     {
@@ -90,7 +90,7 @@
       "failed_checks": [
         "\"the route answers every key with the segment that holds it\""
       ],
-      "log_sha256": "2c1bda7f6ea4a8b814734f0317dd9e21b15230b0e54714596002e6b6133ed7db",
+      "log_sha256": "8fa599c2b5d5bda77ba69c68d1a2535716a0ca50c9f170f590af4e9bc34a562f",
       "mutated": {
         "src/segmap.rs": {
           "baseline": "82ca57379a09ee725edc6dfcc21eab18574712e95a8ed834920227ad62edd202",
@@ -98,7 +98,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 240.3,
+      "seconds": 47.6,
       "verdict": "fail"
     }
   ],
@@ -110,7 +110,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -209,10 +209,10 @@
       }
     }
   },
-  "inputs_sha256": "3462756364d37e1d1d8e82c9fbd85fa1384dc1a184c7b8b71819af906d283aec",
+  "inputs_sha256": "ad6274eaa760d8d88529dc8a85dcf1aa42466e1c5b35a18164f2cec3df8ae4cd",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

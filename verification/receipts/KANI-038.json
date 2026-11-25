@@ -6,18 +6,18 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cac94f7ec025fd2b0283aedd1dd92783111ad0edfd4d6cd317e9ae3a27fc5068",
+      "log_sha256": "02a06fe0427353315955a9163e2548eb7f56e48d873c80d46634c6fce0ce7464",
       "role": "baseline",
-      "seconds": 45.1,
+      "seconds": 42.1,
       "verdict": "pass"
     },
     {
       "check": "KANI-038/exhausted",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "0c42b643a584e7d9d97a7b6d2d4897e08bbb0b2f5f64a3c3d6a20b8b4b904568",
+      "log_sha256": "d28352eec2bc2fbd90391ccd41a1d233eed9f80e469fe70666a54c01b17123fd",
       "role": "baseline",
-      "seconds": 43.7,
+      "seconds": 43.0,
       "verdict": "pass"
     },
     {
@@ -28,7 +28,7 @@
       "failed_checks": [
         "\"the adjacent sequence is admitted unless the collection is closed\""
       ],
-      "log_sha256": "71f98696eaea2c2f128f098aaf246fc64ff3b8b955c25e83dd93de4cd1dbd26a",
+      "log_sha256": "5d4cf56db7182a192ef31c172894abdfc9c7fd003d30e9370f6cc1a699fbfa46",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -36,7 +36,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 133.9,
+      "seconds": 64.2,
       "verdict": "fail"
     },
     {
@@ -47,7 +47,7 @@
       "failed_checks": [
         "\"a sequence beyond the successor is a gap naming the successor\""
       ],
-      "log_sha256": "86bbb00e57b0de18e6262c13cb4e066f2183154a38936169de182167139adbb5",
+      "log_sha256": "df12ffc6bb6561673d68acc4deeec04b453ca14fc8db2571b4ac239763b5e316",
       "mutated": {
         "src/shard/commit_plan.rs": {
           "baseline": "d0bafde9c9a82d5ca4cb997863e49e777947c07e7d378a677b3b5664f067e2ee",
@@ -55,7 +55,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 203.3,
+      "seconds": 110.3,
       "verdict": "fail"
     }
   ],
@@ -68,7 +68,7 @@
       "ASM-PRODUCER-ROW": "bf02f39f80c7bc9a81911b57a7923e77dfc913a0720422f22701974a94ab335c"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -166,10 +166,10 @@
       }
     }
   },
-  "inputs_sha256": "970bd5bbedef6e316a744672e23e120712d1b2b5863076ec57d8cedad74b094e",
+  "inputs_sha256": "caf8cab7b911a41c8f938d72d25f7376ad74126cc5fc449ec21b0e68bd31a361",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

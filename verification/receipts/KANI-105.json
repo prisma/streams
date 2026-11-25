@@ -6,9 +6,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "cf4ee47b522e5cf717ce7f552444720d8e641fd1a98ff684986572cb667adb07",
+      "log_sha256": "8cf47364f790f85319ad6bd22575e63fd74903185a8dc69a523ee4441be6e449",
       "role": "baseline",
-      "seconds": 510.0,
+      "seconds": 412.0,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ea7b15e2a265ddd5416a2a85d55de5b81d8e9c6fe1617e2996c9f2b6c9e93d05",
+      "log_sha256": "2579ffb8c6be25c64cbe8e8f369e38c26bcb950a456dc6acc330978f9f08080b",
       "role": "baseline",
-      "seconds": 181.6,
+      "seconds": 160.2,
       "verdict": "pass"
     },
     {
@@ -28,9 +28,9 @@
       "covers_satisfied": 1,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d9272e77a2d5f1340c2abc7139f4a49505c0ed614500a1ec9a0fb77da68a0986",
+      "log_sha256": "63ffedac47e6a9f3cb9e455a1a70ff0886de5b40e8d8c37f43a1252ca0f355df",
       "role": "baseline",
-      "seconds": 96.9,
+      "seconds": 85.6,
       "verdict": "pass"
     },
     {
@@ -41,7 +41,7 @@
       "failed_checks": [
         "\"a read stops only where no span holds the offset\""
       ],
-      "log_sha256": "2431895443b9691b10d2aca2d806a8b7b1c0e4634feda6fb48739de4b8f9025c",
+      "log_sha256": "7cbf1d5919df08899e5da1914b18c24c6e6eec689282e1dc3ef500c7c7a2c508",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "4f6acae991d0c9db6f960dd9b1429797fdeac807e0e30c9af44e14fdb5233708",
@@ -49,7 +49,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 408.9,
+      "seconds": 395.3,
       "verdict": "fail"
     },
     {
@@ -60,7 +60,7 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "45796925a2c6ddfb65d7c0ea510af57f219070f49ecf4110d1e6403c3e79cc4e",
+      "log_sha256": "4db0babea79310beb382e20d37d9068eeaf84a863a7745966a98c72cd2b96366",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "4f6acae991d0c9db6f960dd9b1429797fdeac807e0e30c9af44e14fdb5233708",
@@ -68,7 +68,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 419.2,
+      "seconds": 350.9,
       "verdict": "fail"
     },
     {
@@ -80,7 +80,7 @@
         "\"first offsets increase strictly\"",
         "\"last offsets increase strictly\""
       ],
-      "log_sha256": "0bc3b01593bc4d53eb7507b0a7e4a30bc746fd4ce07148ffe13ecfbe1cca8b9b",
+      "log_sha256": "e67a3d957e86987fe7c8664657d3a74eda72dfd79f13907da6ce60bd6ecbff38",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "4f6acae991d0c9db6f960dd9b1429797fdeac807e0e30c9af44e14fdb5233708",
@@ -88,7 +88,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 224.6,
+      "seconds": 164.3,
       "verdict": "fail"
     },
     {
@@ -99,7 +99,7 @@
       "failed_checks": [
         "\"each pick is the best holder of its offset\""
       ],
-      "log_sha256": "4c9b931c218d6d53e26a45e2d817dd7758c8b6cf8336b69b67876070ecf38783",
+      "log_sha256": "cc79085a79ef13c572643ea93c238a230d6e28a1ed165dcc30c56c34119fcf99",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "4f6acae991d0c9db6f960dd9b1429797fdeac807e0e30c9af44e14fdb5233708",
@@ -107,7 +107,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 399.1,
+      "seconds": 349.8,
       "verdict": "fail"
     },
     {
@@ -118,7 +118,7 @@
       "failed_checks": [
         "\"of equal spans the newest is kept\""
       ],
-      "log_sha256": "5fb95ec708730d1890bd8b57ec5350be91b05fdcb7951989c335b3255a218f4f",
+      "log_sha256": "6e8cded8db6e513cff8d83c65403bf3b9ee23d147bb372f6ec77347e9dd88d4c",
       "mutated": {
         "src/spill/runindex/tiling.rs": {
           "baseline": "4f6acae991d0c9db6f960dd9b1429797fdeac807e0e30c9af44e14fdb5233708",
@@ -126,7 +126,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 91.2,
+      "seconds": 91.4,
       "verdict": "fail"
     }
   ],
@@ -139,7 +139,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -239,10 +239,10 @@
       }
     }
   },
-  "inputs_sha256": "d7bf2f55f5d3cdb6326303d5826f4faf6b413d99c53f6779e71c3cff46c4d608",
+  "inputs_sha256": "07bf5daf89a892b7d7ec4ac9ac7ccba9bda9ce37fefa47c904ef7a27c7649f94",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

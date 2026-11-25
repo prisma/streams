@@ -6,27 +6,27 @@
       "covers_satisfied": 2,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "7c00d744785ce0623715f105ac361fa9377934af08febeed9a9b047b0f012f77",
+      "log_sha256": "96ca311a24c6d743678b3b778a8fc52fd9c69ada24ca241f97acd48321c68a6f",
       "role": "baseline",
-      "seconds": 147.4,
+      "seconds": 93.6,
       "verdict": "pass"
     },
     {
       "check": "KANI-109/empty",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "bdd513ae4ecac3eb6b2217e99e8a32be781645aaacd821efe75101b1165125f6",
+      "log_sha256": "efbaaa837ad20a65fe0702a8b0c467448e3ff6083cbf923e35ac3c2455890e4d",
       "role": "baseline",
-      "seconds": 58.6,
+      "seconds": 57.2,
       "verdict": "pass"
     },
     {
       "check": "KANI-109/count",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "065632fca939d08e47962c82f2b6b77f229cdb91591cfda7ab6853ab06fc94a1",
+      "log_sha256": "344cebc0f5212d5ffbe3f9c510c8375780dae8658fc715d964e5026eeaf9dd02",
       "role": "baseline",
-      "seconds": 44.9,
+      "seconds": 47.1,
       "verdict": "pass"
     },
     {
@@ -39,7 +39,7 @@
         "\"an untouched offset of the row is clear\"",
         "\"is_empty holds exactly when no offset is held\""
       ],
-      "log_sha256": "7e444573eaff03adcdaa8cfa12395b00f1cc281582eadb9955d3fd01ea13aa14",
+      "log_sha256": "090242a0e40aa5804d152b2344d743d021686920cfa7384a0547551c84aef9e8",
       "mutated": {
         "src/native_queue/range.rs": {
           "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
@@ -47,7 +47,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 61.7,
+      "seconds": 101.1,
       "verdict": "fail"
     },
     {
@@ -59,7 +59,7 @@
         "\"the bitmap holds exactly the offsets its last operations set\"",
         "\"is_empty holds exactly when no offset is held\""
       ],
-      "log_sha256": "5c028681599e8b32d1895b259b09af37c1e14f3191d055b454028735df2a131a",
+      "log_sha256": "30b36b91347ee46367a130d7015d473a4353887b2da8a52ce52b36ec0b1acd66",
       "mutated": {
         "src/native_queue/range.rs": {
           "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
@@ -67,7 +67,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 61.3,
+      "seconds": 109.6,
       "verdict": "fail"
     },
     {
@@ -76,7 +76,7 @@
       "failed_checks": [
         "\"count is zero exactly when the bitmap is empty\""
       ],
-      "log_sha256": "e4a3227996330acc2f67c8043c5d4cea44c66216387e9c508f69a540f608aad4",
+      "log_sha256": "0fcffe47d503f73f957af5c099c61018b8d5d66365e15c3bf69a88de64b97374",
       "mutated": {
         "src/native_queue/range.rs": {
           "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
@@ -84,7 +84,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 48.1,
+      "seconds": 105.2,
       "verdict": "fail"
     },
     {
@@ -93,7 +93,7 @@
       "failed_checks": [
         "\"a row is empty exactly when it holds nothing\""
       ],
-      "log_sha256": "f97d28cc2913e20a07a90bbdc1367f100a1e075f4b1f1269d665125772fe366b",
+      "log_sha256": "65e5ace6e329876fca2cfe878f653718922cff26a19ddb1aa854d58e463d75b5",
       "mutated": {
         "src/native_queue/range.rs": {
           "baseline": "303cbcb1fbe3fb03d48ebc74ebb88f64aba6503f2b0ae28f9ed43d0667775579",
@@ -101,7 +101,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 55.7,
+      "seconds": 86.0,
       "verdict": "fail"
     }
   ],
@@ -113,7 +113,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -213,10 +213,10 @@
       }
     }
   },
-  "inputs_sha256": "23cfc4b89750b26cc15f42eb34ab535bb2714c6589e5525ee15dac0b49698026",
+  "inputs_sha256": "3ac6f44c6c66ea84916321adb74d0825bcb28c9e24077781ec032d90f2fb6765",
   "run_on": {
     "dirty_tree": false,
-    "revision": "c04ff650d0b00e05b503be3040e653a2d8d4dbb2"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

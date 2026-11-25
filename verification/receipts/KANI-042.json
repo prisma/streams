@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "bd1ff9cf470c568203863ae452b3c8f14a4bcee43f1f0821bfebb767698cc67a",
+      "log_sha256": "c8fd5c7fc854f7e538972881ee4365941b0f45f8bdf2525489a23a33fe6bae5a",
       "role": "baseline",
-      "seconds": 231.2,
+      "seconds": 199.6,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"the raw surface follows the contract\""
       ],
-      "log_sha256": "6bb0ae098903a339980439c6dadcea535175160ccbec20d3662fc9342d3e5472",
+      "log_sha256": "87c8e34ce057bddcdb37584a5f9671b621c99c8be3a2035e49db5d5dc6476a1b",
       "mutated": {
         "src/application/lifecycle/claims.rs": {
           "baseline": "09dd48ed5ba0af5065a4a6dae46612fed9ee784a9cd10d526dc4921d75ae6277",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 224.9,
+      "seconds": 221.0,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"the product surface agrees with the raw surface\""
       ],
-      "log_sha256": "9ea98dd4dba98e6e18530858d3f154585859e1d2592f8d69b19c9fcd9321f61a",
+      "log_sha256": "e78ef7cc15b43fac14b85bb4913df991da1a266566b59db63a3348253541308a",
       "mutated": {
         "src/application/append/contract.rs": {
           "baseline": "e73cf3c7c38560ad3334c1be40cbe314377b2083ac8dd26701f3c404a4ea1833",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 179.3,
+      "seconds": 164.6,
       "verdict": "fail"
     }
   ],
@@ -58,7 +58,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -157,10 +157,10 @@
       }
     }
   },
-  "inputs_sha256": "fed2899b49c47f2efc5d26345db3b6ea349b15db204c637b1a5a19371645cf28",
+  "inputs_sha256": "d390004fab1b5d5b19d01ddb66b0912e0fbc0b334630cc53a425948b91266b22",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

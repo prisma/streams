@@ -6,9 +6,9 @@
       "covers_satisfied": 3,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "12ca08aa2831ad880b9ea82409ebff6c61dbc7fe5062f8b4cefa199e23281f60",
+      "log_sha256": "4212e7e3cb75b5425a595a4455f3aae0dcf4538e0c5da5fbbcd27257bbbf8caf",
       "role": "baseline",
-      "seconds": 63.9,
+      "seconds": 49.5,
       "verdict": "pass"
     },
     {
@@ -17,9 +17,9 @@
       "covers_satisfied": 4,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "652876a3c530aee37cc0f3158fbc65ed9413bf47d2933832b20bd76ffd6b037e",
+      "log_sha256": "4fd726ee4e5007f122525b669f265f41a89fbd1d610e0d003b832be4e1867747",
       "role": "baseline",
-      "seconds": 62.5,
+      "seconds": 53.4,
       "verdict": "pass"
     },
     {
@@ -30,7 +30,7 @@
       "failed_checks": [
         "\"an overflowing run is refused\""
       ],
-      "log_sha256": "2c8d03b2374ea1e6f5df2dc64be3aaefa33e3b598969b6ab7cc99f745a1ad362",
+      "log_sha256": "4f3b726044ff057629ed1f83284db90f9b6bfa9668418f97ddfb40398ba23c49",
       "mutated": {
         "src/crypto_page/varint.rs": {
           "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
@@ -38,7 +38,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 64.3,
+      "seconds": 53.6,
       "verdict": "fail"
     },
     {
@@ -49,7 +49,7 @@
       "failed_checks": [
         "\"an overlong run is refused\""
       ],
-      "log_sha256": "1658fc661f1c39bcbf1de1ab87f80ad942c67e56618fb0fb171a8bcc3f0e2cad",
+      "log_sha256": "63e2c3f58a0c84be8ab295a26b2a7380c0c2b072a10352d2b5d6fd8cbda98689",
       "mutated": {
         "src/crypto_page/varint.rs": {
           "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
@@ -57,7 +57,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 61.9,
+      "seconds": 51.8,
       "verdict": "fail"
     },
     {
@@ -68,7 +68,7 @@
       "failed_checks": [
         "\"the minimal encoding of a u64 decodes to its value and consumes exactly itself\""
       ],
-      "log_sha256": "6331e02876b7ee72ef59a1aad209d379125ba3e726da761df9dbb100021ae99d",
+      "log_sha256": "70598ba9c0b1fcd9a7b0311710ad4340536911b85efd7bd0f8d58ae68f44e12e",
       "mutated": {
         "src/crypto_page/varint.rs": {
           "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
@@ -76,7 +76,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 56.5,
+      "seconds": 49.7,
       "verdict": "fail"
     },
     {
@@ -87,7 +87,7 @@
       "failed_checks": [
         "\"put_varint writes the minimal encoding of its value\""
       ],
-      "log_sha256": "c943ee8f293510b6ce5aa73f12ed718e357243c5473cf3d32e287149ab8bdc52",
+      "log_sha256": "2c949f4325140aa620e0b8e552055a4458d66b6084e6a039aa2324d5545beb09",
       "mutated": {
         "src/crypto_page/varint.rs": {
           "baseline": "a6864544d19ee31c6ca5f839a2a3b83e1fb7ca9642be8d16ac7959add288bfce",
@@ -95,7 +95,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 86.7,
+      "seconds": 48.2,
       "verdict": "fail"
     }
   ],
@@ -107,7 +107,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -207,10 +207,10 @@
       }
     }
   },
-  "inputs_sha256": "8334bd6dfb150f2c7485a8b76b972d12c155cf72af1b0ed5deb9d8e3f0955cac",
+  "inputs_sha256": "c5d9f56566e86a6729a64d6738987c98006fdcfb1caf6bd53742f99f557ca680",
   "run_on": {
     "dirty_tree": false,
-    "revision": "90eece9ae57cd5a2fb749d805bde48a4dc1b5092"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

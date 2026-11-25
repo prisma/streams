@@ -6,9 +6,9 @@
       "covers_satisfied": 5,
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "4080a49d9db65b32c00cd57917d15413c696b5dcfcfcb86433060a2f37567fe1",
+      "log_sha256": "d809546ff39aabe67e35ab8129dff9481d8f3c7f18fbc8f549d51cb1bfaf6d82",
       "role": "baseline",
-      "seconds": 50.3,
+      "seconds": 44.1,
       "verdict": "pass"
     },
     {
@@ -19,7 +19,7 @@
       "failed_checks": [
         "\"a message is leased only before its retention end\""
       ],
-      "log_sha256": "25883a0eeaf1c8855f031a609117c9c39bf1a1057af4975a204ebca5b38ae11b",
+      "log_sha256": "70610e8da1a7592ad5bdf65a1dd6542803577ccdc5d242d1b6fde8af79068426",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -27,7 +27,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 47.0,
+      "seconds": 44.8,
       "verdict": "fail"
     },
     {
@@ -38,7 +38,7 @@
       "failed_checks": [
         "\"only a cancel bit, and no skip bit, passes it as cancelled\""
       ],
-      "log_sha256": "0c163e9668f5f352e97b1b4d42d77f14bb7483a6318a18abedaffb3514c66887",
+      "log_sha256": "bbb7fbeaa713d5c243e5113700fe9d207a75f8a0add0d263660e80c93e1a703e",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -46,7 +46,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 46.9,
+      "seconds": 44.3,
       "verdict": "fail"
     },
     {
@@ -58,7 +58,7 @@
         "\"a message is leased only before its retention end\"",
         "\"a message enters the gap only from its retention end\""
       ],
-      "log_sha256": "e25206c3f02fccb2d2b5543f0d8c6484fff254a25150d7ed5654fec198c991a9",
+      "log_sha256": "7e9cc200461038872da264819660163bce4e23d8801b59d7e1c2c9257c46b59c",
       "mutated": {
         "src/native_queue/frontier.rs": {
           "baseline": "81d640803db29dae08efbe1594f86c599d438e20a4cc62ff4fca857d0ea7abc9",
@@ -66,7 +66,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 42.8,
+      "seconds": 80.7,
       "verdict": "fail"
     }
   ],
@@ -78,7 +78,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -178,10 +178,10 @@
       }
     }
   },
-  "inputs_sha256": "0588e122d55616bad7c9ea969fa98c05bee65a50a5a02cb0db718a7ad762b66d",
+  "inputs_sha256": "c97edbb2834c0143eccc6032fe10da5f3709cdb512a15611f2a14cb764584c6e",
   "run_on": {
     "dirty_tree": false,
-    "revision": "c04ff650d0b00e05b503be3040e653a2d8d4dbb2"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {

@@ -4,72 +4,72 @@
       "check": "KANI-111/message-id",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ab3937ee1cc72a0f43b34254d984c4bd41728e76aea77d5dafc8ec1fc67810b8",
+      "log_sha256": "590d4966ea9d350dce9f063ff093376830b3e39cdf4ed1ea4e4f625ef7c4ad7a",
       "role": "baseline",
-      "seconds": 54.5,
+      "seconds": 49.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/lease-token",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "e78ab8b26e6d7b3455b9c972058dbd11acbbedd0568acacf7884bcfb2931859c",
+      "log_sha256": "b5c4f335ed4aed06e7eca5de8158fa47822832b8bd5b7faa40bbeba4e593a515",
       "role": "baseline",
-      "seconds": 54.4,
+      "seconds": 80.3,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/lane",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "d30ac2b3b7b5fce41477141d968b92def563ec5d746d85d90eee1e0a96c4921d",
+      "log_sha256": "feb8e2ab3b14faa2d8aaa15d4b43a5d6cbce0b6618a949d5cd0010f7f667dc20",
       "role": "baseline",
-      "seconds": 50.5,
+      "seconds": 72.7,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/dedup",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "c3d18a3222ad5908f43bf6aa9e99bb40d0eb124f81bbf202366acf4a561e4388",
+      "log_sha256": "fd9c430ab5a89737c73c72d9c79ac18ab8a44918d15560453ae54109815d321a",
       "role": "baseline",
-      "seconds": 53.5,
+      "seconds": 83.0,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/scheduled-0",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "b815d3b0f1a8174b476a3fb6184c7a32d76ebc08d5cc29e83b336f5162223308",
+      "log_sha256": "819f401b053fa36c8a589eecf5f300e6a2a36509a780f2b95dc7bf89289143fd",
       "role": "baseline",
-      "seconds": 62.4,
+      "seconds": 86.9,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/scheduled-4",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "ea2bbb2604588cf47418205c1571632009c42083fe0b0801c687bb3fc4577910",
+      "log_sha256": "fd139a35b792719d65e24fbffadb9293aab1bc47b3f6b63620b54c338b67ca90",
       "role": "baseline",
-      "seconds": 54.1,
+      "seconds": 48.3,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/hint-key",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "f024456aa78847e3f61a493565fc82efa2ead6a65d4c11c725d76a75f70b0492",
+      "log_sha256": "1b842f868306dcff32c097755b75fd15a4899195e0c3aeac90586341e2ae0759",
       "role": "baseline",
-      "seconds": 50.8,
+      "seconds": 44.5,
       "verdict": "pass"
     },
     {
       "check": "KANI-111/hint-ranges",
       "expected": "pass",
       "failed_checks": [],
-      "log_sha256": "30a3e664ee31af3a68a6161f33d1598cf5955451cdb8523d78ed3cdef0752934",
+      "log_sha256": "1e2d3361369fcf7e18a8717e273675f0aa783d1a0d529460b3d980cdfebdf197",
       "role": "baseline",
-      "seconds": 145.1,
+      "seconds": 133.8,
       "verdict": "pass"
     },
     {
@@ -78,7 +78,7 @@
       "failed_checks": [
         "\"an id names nothing under another incarnation\""
       ],
-      "log_sha256": "7f80b34d531aa0dbafc9d1e3bab20a9edf57c364872b3dd32761db50ebce9375",
+      "log_sha256": "1f342e8de1db49479f74b89eb6a8c11c1c71e7b0fe84bb3d3171f75bf7baaa7b",
       "mutated": {
         "src/native_queue/keys.rs": {
           "baseline": "1a5771a989e74c6a5f6c3c1db4748bc00ccc2968e936204a48f1c1df0e9d9a3c",
@@ -86,7 +86,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 54.4,
+      "seconds": 48.0,
       "verdict": "fail"
     },
     {
@@ -95,7 +95,7 @@
       "failed_checks": [
         "\"an id of another lane names nothing\""
       ],
-      "log_sha256": "d4fc19e9f076a6f0cf15b20778d41848b4623fe08afe340f090ff32d005c2d39",
+      "log_sha256": "3ca0e10cf72a425d868f8b13c7a615d870321239af7f18d3f94f071af83c830d",
       "mutated": {
         "src/native_queue/keys.rs": {
           "baseline": "1a5771a989e74c6a5f6c3c1db4748bc00ccc2968e936204a48f1c1df0e9d9a3c",
@@ -103,7 +103,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 45.3,
+      "seconds": 41.4,
       "verdict": "fail"
     },
     {
@@ -112,7 +112,7 @@
       "failed_checks": [
         "\"a lease token parses back to its lease\""
       ],
-      "log_sha256": "bb1c1b63fa099c2a7c50dd0dfebc45024e201fd872c5b6e444e2c63a28ad1c40",
+      "log_sha256": "24eeb966bb55fcb0fd26d1aa90b018d26badd771f19f3a31892924ed2bcd7b2a",
       "mutated": {
         "src/native_queue/keys.rs": {
           "baseline": "1a5771a989e74c6a5f6c3c1db4748bc00ccc2968e936204a48f1c1df0e9d9a3c",
@@ -120,7 +120,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 53.1,
+      "seconds": 50.7,
       "verdict": "fail"
     },
     {
@@ -129,7 +129,7 @@
       "failed_checks": [
         "\"a long dedup entry is refused\""
       ],
-      "log_sha256": "6ac18f915cb5768fb66ef071783566a1c2c38234897d173cab74e0afe3e1b3e0",
+      "log_sha256": "02b84e6d1c4d748df001aa60155e231258db505bf8591dd145326ebca1f9c66a",
       "mutated": {
         "src/native_queue/rows.rs": {
           "baseline": "004c35335b680ab20fd52f604d3a6049d0aef60b8e5ceee7f81be030d49be404",
@@ -137,7 +137,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 51.1,
+      "seconds": 46.4,
       "verdict": "fail"
     },
     {
@@ -146,7 +146,7 @@
       "failed_checks": [
         "\"another tag names nothing\""
       ],
-      "log_sha256": "1122db5305bdd2c9dffd38c479be12e33a824aecb4aea8f52252c790cd278b71",
+      "log_sha256": "0908a7eaac81f4a112546b7f98f12f354569ee0ef8907e19beed1eb942f894ae",
       "mutated": {
         "src/native_queue/hints.rs": {
           "baseline": "40b3257148be6e1db186f54d24cc9432847f3097c8eb73d20130db1a32f67f9a",
@@ -154,7 +154,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 49.2,
+      "seconds": 76.7,
       "verdict": "fail"
     },
     {
@@ -165,7 +165,7 @@
         "\"sorted and apart\"",
         "\"sorted and apart\""
       ],
-      "log_sha256": "eb1e01838d2c9413b6e690d7cb2f2fb7083c6620eadd78d40141dde798869d5f",
+      "log_sha256": "76b58724a7965b80493a98525b60a7fc4c886826e51cf15fd9c17247275170ea",
       "mutated": {
         "src/native_queue/hints.rs": {
           "baseline": "40b3257148be6e1db186f54d24cc9432847f3097c8eb73d20130db1a32f67f9a",
@@ -173,7 +173,7 @@
         }
       },
       "role": "negative-control",
-      "seconds": 140.8,
+      "seconds": 196.6,
       "verdict": "fail"
     }
   ],
@@ -185,7 +185,7 @@
       "ASM-KANI-SCOPE": "f8bee221cf99dfb72e0d23597add861c686dd71e8afc0ea71ff7b3e8d9cc7b16"
     },
     "files": {
-      "Cargo.lock": "76772c93ed9fe4b6705ce75c70fb5763326ee947eaf45afcaae6dadc1ccf120d",
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
       "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
       "build.rs": "80d031fd07ba3796cf6a5059c8af33424842f3dbf3810d54a746e69ac5d71f66",
       "rust-toolchain.toml": "85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
@@ -291,10 +291,10 @@
       }
     }
   },
-  "inputs_sha256": "0261d47e513970e4339270c0d1815cae2b1f7b7da080e562d3dde6e127a2f5cb",
+  "inputs_sha256": "afbd16f8948101cfe166af681e90f1dc5b0e438804919c86108297b1a990b69a",
   "run_on": {
     "dirty_tree": false,
-    "revision": "8b95e1edfaed50af14a839534f3dbbf88fbf2f31"
+    "revision": "38a8236ce9e16803a763996b8d3b2c1a782b010b"
   },
   "schema": 2,
   "tools": {
