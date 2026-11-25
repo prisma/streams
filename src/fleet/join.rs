@@ -15,7 +15,8 @@
 //!   only under R3. The model's `Decide`.
 //! - **a joiner** (unlisted, its ordinal within the count, R3 met) joins when nothing is uncovered
 //!   (R2): no leaf's owner over the document's ring differs from its owner over the ring with the
-//!   joiner. One CAS adds it with its boot id, against the version the coverage was computed
+//!   joiner. Over a document that lists nobody nothing is uncovered: no instance could pin
+//!   (Addendum 44). One CAS adds it with its boot id, against the version the coverage was computed
 //!   from; the view with itself is published with no await after the CAS's answer (C5). Past
 //!   [`JOIN_PHASE`] from its first pass that found something uncovered, it joins anyway: a WARN
 //!   names each uncovered leaf and its owner, counted `joins_unpinned` (E5). The model's
@@ -262,7 +263,13 @@ impl Planned {
             return Self::default();
         }
         let ring = c.ring(Some(listed));
-        let uncovered = uncovered(facts.leaves, &ring, c.me(), &document.entries);
+        // A document that lists nobody has no member to pin (Addendum 44). Not an empty `ring`: a
+        // listed member this reader alone judges dead may hold engines.
+        let uncovered = if listed.is_empty() {
+            Vec::new()
+        } else {
+            uncovered(facts.leaves, &ring, c.me(), &document.entries)
+        };
         if !uncovered.is_empty() && !facts.phase_over {
             return Self {
                 next: None,

@@ -5,6 +5,7 @@
 //! store. The rigs and helpers are `fleet_join`'s.
 
 use super::fixture_http::HttpRig;
+use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use super::fleet_join::{
@@ -17,6 +18,11 @@ use crate::dst::{ObjClass, StoreOp};
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// The stream the lone member's restart reads back, and its read from the start.
+const STREAM: &str = "/v1/stream/lone";
+const STREAM_FROM_START: &str = "/v1/stream/lone?offset=-1";
+const JSON: (&str, &str) = ("content-type", "application/json");
 
 /// One tick of the upgrade on one rig: its name, the document version its view was published from,
 /// the ring it publishes, and whether it holds any engine.
@@ -423,7 +429,7 @@ const COLD: FaultPlan = FaultPlan {
 
 /// The leaves `name` wins in a ring of `streams-1` and `name`.
 fn won_by(name: &str) -> Vec<&'static str> {
-    let both = ["streams-1".to_string(), name.to_string()];
+    let both = ["streams-1".to_string(), "streams-2".to_string()];
     let wins = |leaf: &&str| both[crate::ownership::ring_pick(leaf, &both)] == name;
     LEAVES.iter().copied().filter(wins).collect()
 }
@@ -568,4 +574,102 @@ async fn a_boot_whose_document_read_is_parked_writes_no_beat() {
         "no beat while its own document read is parked"
     );
     stop(a).await;
+}
+
+/// **A member that restarts alone after its drain serves at once** (the join ruling, Addendum 44):
+/// the redeploy of a one-instance cell. `streams-1` is the cell's only member; its drain finds no
+/// peer and announces; it stops, and its next boot finds its previous beat draining, so it unlists
+/// itself (C13) and the document lists nobody. Nothing is uncovered then: no instance could pin, so
+/// it joins at its next pass, with no fallback counted, and serves a record it acked before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_lone_member_restarted_after_its_drain_joins_at_once() {
+    let (data, fleet) = (mem(), mem());
+    desired(&fleet, 1, 1).await;
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    super::fixture_members::joined(&fleet, &[&a], BOUND).await;
+    let (created, _, _) = hreq(a.addr, "PUT", STREAM, &[JSON], b"").await;
+    let (acked, _, _) = hreq(a.addr, "POST", STREAM, &[JSON], br#"[{"n":1}]"#).await;
+    assert_eq!((created, acked), (201, 204), "the record before the drain");
+    let drained = crate::fleet::drain::drain(&a.state, "streams-1", BOUND).await;
+    assert_eq!(drained, crate::fleet::drain::DrainOutcome::NoPeer);
+    stop(a).await;
+    let a = member(
+        &data,
+        fleet.clone(),
+        "streams-1",
+        RigRuntime::incarnation(1),
+    )
+    .await;
+    until_joined("the lone member's next boot joins", async || {
+        a.state.fleet.standing().joined_at_pass().is_some()
+    })
+    .await;
+    super::fixture_members::joined(&fleet, &[&a], BOUND).await;
+    let (status, _, body) = hreq(a.addr, "GET", STREAM_FROM_START, &[], b"").await;
+    assert_eq!(
+        (
+            status,
+            body.as_slice(),
+            a.state.fleet.standing().joins_unpinned()
+        ),
+        (200, br#"[{"n":1}]"#.as_slice(), 0),
+        "(the read's status, the record before the drain, joins past JOIN_PHASE)"
+    );
+    stop(a).await;
+}
+
+/// **A whole cell restarted late serves at once** (the join ruling, Addendum 44). Both members'
+/// previous beats are 60 s old, past C13's 12 s, so each unlists itself and the document lists
+/// nobody: one joins by its CAS, the other's CAS is lost to it (or planned after it), so it waits
+/// for that member's pins and joins covered. Each pinned leaf then moves to it giver first: no
+/// engine is fenced, no fallback is counted, and each serves the leaves it wins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_whole_cell_restarted_late_joins_without_a_fence() {
+    let (data, fleet) = (mem(), mem());
+    desired(&fleet, 2, 1).await;
+    for name in ["streams-1", "streams-2"] {
+        super::fixture_members::seed_joined(&fleet, name, "before").await;
+        previous_beat(&fleet, name, 60_000).await;
+    }
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    let b = member(
+        &data,
+        fleet.clone(),
+        "streams-2",
+        RigRuntime::incarnation(1),
+    )
+    .await;
+    until_joined("both members of the restarted cell join", async || {
+        stamped(&fleet, &[&a, &b]).await == 2
+    })
+    .await;
+    super::fixture_members::joined(&fleet, &[&a, &b], BOUND).await;
+    for (rig, name) in [(&a, "streams-1"), (&b, "streams-2")] {
+        let won = won_by(name);
+        assert!(!won.is_empty(), "{name} wins a leaf");
+        until("each member serves the leaves it wins", async || {
+            served(rig, &won).await == won.len()
+        })
+        .await;
+    }
+    let fallbacks = [&a, &b].map(|rig| rig.state.fleet.standing().joins_unpinned());
+    assert_eq!(
+        (fallbacks, nothing_fenced(&[&a, &b])),
+        ([0, 0], vec![(0, 0), (0, 0)]),
+        "(joins past JOIN_PHASE, fences)"
+    );
+    for rig in [a, b] {
+        stop(rig).await;
+    }
+}
+
+/// How many of `rigs` the document lists with their own boot ids.
+async fn stamped(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig]) -> usize {
+    let members = stored(fleet).await.0;
+    let own = |rig: &&&HttpRig| {
+        let name = &rig.state.config.cli.instance_name;
+        let boot = Some(&rig.state.runtime.identity.boot_id);
+        members.iter().any(|(n, b)| n == name && b.as_ref() == boot)
+    };
+    rigs.iter().filter(own).count()
 }

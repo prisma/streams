@@ -294,7 +294,8 @@ The same document's `members` is the ring of record (§22): a list of
 own ring only while it is listed with its own boot id. A booting instance
 within the desired count joins by one CAS that adds it with its boot id,
 once every leaf it would win is pinned to its holder (or after 139 s
-without that, with a WARN). A restart whose previous beat is still young
+without that, with a WARN). Over a document that lists nobody (a lone
+instance redeployed, or a whole cell restarted late) it joins at once. A restart whose previous beat is still young
 replaces its old boot id in place; otherwise it unlists and joins again.
 A document with no `members` (an older cell's) is listed by a member with
 the ordinals of today's ring.

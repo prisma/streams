@@ -794,3 +794,100 @@ fn only_a_joiner_within_the_count_reports_a_wait() {
         "(a joiner within the count, beyond it, a member, a restart)"
     );
 }
+
+/// `me`'s facts for a joiner's pass under R3 with [`super::JOIN_PHASE`] not over.
+fn joining<'a>(c: &'a Candidates, all: &'a [String]) -> Facts<'a> {
+    Facts {
+        candidates: c,
+        leaves: all,
+        may_join: true,
+        young: Some(false),
+        member: false,
+        phase_over: false,
+    }
+}
+
+/// The join ruling, Addendum 44: over a document that lists nobody no instance could pin, so
+/// nothing is uncovered and a joiner within the count joins at its first pass, its entries kept as
+/// read. R3 and the count still hold it back.
+#[test]
+fn a_joiner_joins_at_once_over_a_document_that_lists_nobody() {
+    let all = leaves();
+    let nobody = document(Vec::new(), &[("03", "streams-2")]);
+    let c = reader(2, "streams-1", "a2", &[]);
+    let planned = plan(&joining(&c, &all), &nobody, "a2");
+    assert!(!planned.uncovered_now, "no wait begins");
+    let (next, why) = planned.next.expect("the join is written");
+    assert_eq!(why, Write::Joined { uncovered: vec![] });
+    assert_eq!(next.members, Some(vec![member("streams-1", Some("a2"))]));
+    let kept: Vec<_> = next.entries.iter().map(|(leaf, e)| (leaf, &e.to)).collect();
+    assert_eq!(kept, [(&"03".to_string(), &"streams-2".to_string())]);
+    let beyond = reader(2, "streams-3", "c1", &[]);
+    assert!(
+        plan(&joining(&beyond, &all), &nobody, "c1").next.is_none(),
+        "C5: its ordinal beyond the count"
+    );
+    let unbeaten = Candidates::held(2, "streams-1", vec![]).with_boot("a2");
+    assert!(
+        plan(&joining(&unbeaten, &all), &nobody, "a2")
+            .next
+            .is_none(),
+        "R3: no beat of this boot read"
+    );
+}
+
+/// Addendum 44's key is the document's list, not the reader's ring: a listed member beyond the
+/// count that this reader alone judges dead gives it an empty ring, and may hold engines, so a
+/// joiner still waits out `JOIN_PHASE`.
+#[test]
+fn a_joiner_waits_while_anyone_is_listed_even_over_an_empty_ring() {
+    let all = leaves();
+    let beats = vec![
+        ("streams-1".to_string(), (boot_of("a2"), true)),
+        ("streams-3".to_string(), (boot_of("c1"), false)),
+    ];
+    let c = Candidates::held(1, "streams-1", beats).with_boot("a2");
+    let listed = vec![member("streams-3", Some("c1"))];
+    assert_eq!(c.ring(Some(&listed)), Vec::<String>::new(), "the premise");
+    let planned = plan(&joining(&c, &all), &document(listed, &[]), "a2");
+    assert!(planned.next.is_none() && planned.uncovered_now);
+}
+
+/// Two joiners of one document that lists nobody: the first CAS wins, and the other, planning
+/// again over the winner's listing, waits for its pins (Addendum 44).
+#[test]
+fn the_second_joiner_of_an_empty_document_waits_for_the_firsts_pins() {
+    let all = leaves();
+    let nobody = document(Vec::new(), &[]);
+    let first = reader(2, "streams-1", "streams-1", &["streams-2"]);
+    let (won, _) = plan(&joining(&first, &all), &nobody, "streams-1")
+        .next
+        .expect("the first joins");
+    let second = reader(2, "streams-2", "b2", &["streams-1"]);
+    let waiting = plan(&joining(&second, &all), &won, "b2");
+    assert!(waiting.next.is_none() && waiting.uncovered_now);
+}
+
+/// Until the leave: a member beyond the count that is the last one listed unlists itself (the
+/// interim's removal half), its pins then naming nobody listed, and the joiner that finds the list
+/// empty joins at once (Addendum 44 §1: E5's scale-in class).
+#[test]
+fn a_joiner_follows_the_interims_removal_of_the_last_listed_member() {
+    let all = leaves();
+    let leaver = reader(1, "streams-2", "b1", &["streams-1"]);
+    let listed = document(vec![member("streams-2", Some("b1"))], &[]);
+    let facts = Facts {
+        member: true,
+        ..joining(&leaver, &all)
+    };
+    let (emptied, why) = plan(&facts, &listed, "b1").next.expect("the removal");
+    assert!(matches!(why, Write::Pinned(ref pins, ref beyond)
+        if !pins.is_empty() && beyond == &names(&["streams-2"])));
+    assert_eq!(emptied.members, Some(Vec::new()));
+    let joiner = reader(1, "streams-1", "a2", &["streams-2"]);
+    let (joined, why) = plan(&joining(&joiner, &all), &emptied, "a2")
+        .next
+        .expect("the join is written");
+    assert_eq!(why, Write::Joined { uncovered: vec![] });
+    assert_eq!(joined.members, Some(vec![member("streams-1", Some("a2"))]));
+}

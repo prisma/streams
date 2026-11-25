@@ -2184,6 +2184,17 @@
     "scenarios": []
   },
   {
+    "name": "a_lone_member_restarted_after_its_drain_joins_at_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "4c8c46a15830513362969e26f1aa7508d77fb3640bd7c73bd07c7b287f9902b4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_lost_applied_suffix_rewinds_to_the_durable_frontier",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -5847,6 +5858,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_whole_cell_restarted_late_joins_without_a_fence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "cc0d0bbb77f02819bf30da0bde3aa2f1b5cdea4b6f9c99cc1a81d8a901e70ba9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
     "scenarios": []
   },
   {
