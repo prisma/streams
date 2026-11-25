@@ -6131,6 +6131,17 @@
           "deadlock_check": false
         },
         {
+          "id": "TLA-048/nc-no-merge-open",
+          "role": "negative-control",
+          "spec": "verification/tla/topology/TopologyMerge.tla",
+          "config": "verification/tla/topology/MC_TopologyMerge_nc_no_merge_open.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MergeHappens"
+          },
+          "deadlock_check": false
+        },
+        {
           "id": "TLA-048/nc-open-path-570cce46b",
           "role": "negative-control",
           "spec": "verification/tla/topology/TopologyMerge.tla",
@@ -6270,6 +6281,481 @@
           "expect": {
             "result": "violation",
             "property": "Witness_UnheldFirstOpen"
+          },
+          "deadlock_check": false
+        }
+      ]
+    },
+    {
+      "id": "TLA-049",
+      "kind": "tla",
+      "title": "Fleet ring membership of record: a join by CAS covered by pins, the no-op drops, a planned move, a restart and a document that lists nobody move no open leaf",
+      "status": "pass-with-recorded-scope",
+      "owner": "the fleet's membership step inside the tick's publication (fleet::join: plan, pins, uncovered, the joiner's and the restart's decisions), the ring from the document and held beats (fleet::record), the published view and its refresh (fleet::view), and the entries' no-op drops and returns (fleet::moves)",
+      "source_paths": [
+        "src/fleet/join.rs",
+        "src/fleet/record.rs",
+        "src/fleet/view.rs",
+        "src/fleet/moves.rs"
+      ],
+      "verification_paths": [
+        "verification/tla/membership/RingMembership.tla"
+      ],
+      "requirements": [
+        "T10",
+        "T11",
+        "T12"
+      ],
+      "models": [
+        "TLA-011",
+        "TLA-048"
+      ],
+      "assumptions": [
+        "ASM-OBJSTORE-CAS"
+      ],
+      "input_scope": "CONDITIONAL DESIGN CHECK: the overrides document's CASes rest on the unestablished ASM-OBJSTORE-CAS. Three instances (ordinals 1..3), two leaves p and q with a fixed rendezvous order each, one overrides document (`members` with incarnations, one entry a leaf), each instance's own view from one document read, the desired count a separate object, engines open or not, planned moves giver first. Flags (each excuses every leaf from then on): a crash, a misjudgement, the join fallback, the leave fallback, a dead name's removal and an in-place restart's return; nothing is claimed after the first flagged step. Bounds per configuration: count changes, moves, crashes, restarts, misjudgements. BUILT at this commit: R1, R1a, R1b, R2, R3, C5-C8, C13, the join fallback, and the document that lists nobody (Addendum 44). NOT YET CODE, in the model only: `Leaving`'s planned hand-off, `Seal`, `Unseal`, `Release`, `LeaveFallback`, `DeadRemoval`, the drain's removal before its announcement (R4), and K3's move-in slot (SlotOn, step 3b: TRUE in `witness-slot-refused`, `pass-slot` and the two slot liveness runs, FALSE in every other check, as the code is). Until the leave lands the code removes a name beyond the count in one CAS with its pins and a drain announces first (E5's scale-in class). OUTSIDE THE MODEL: the unstamped listing and its upgrade, C17, C18 and C18b, a foreign write of the document (NEXT-WORK), withdrawal, H1 and an empty ring in a move's CAS (D5), R1e's corner (a boot that stamps in place and dies before its first beat leaves a listed boot with no beat of it; the model's next read holds evidence), the fair share, back-off and the commit's bound, the tie order, C13's 12 s and every phase. A joiner whose leaves a leaver holds completes, until the leave, only through the interim's removal: the registered liveness runs with a crash have no instance beyond the count. A joiner whose listed peers are all judged dead by it waits out JOIN_PHASE in the code (C3's fallback ring; Addendum 45 section 2): no registered liveness run has a crashed instance that does not restart. Safety: MembershipMovesNothing in every safety check; NoTwoEngines, with TypeOK, in the five baselines and in `pass-slot` (not in `pass-third-party-noop`). Liveness under weak fairness for the steps the code retries (JoinCompletes).",
+      "checks": [
+        {
+          "id": "TLA-049/baseline",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_baseline.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "workers": 4,
+          "heap": "8g",
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-049/baseline-child-entry",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_baseline_child_entry.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-049/baseline-drain",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_baseline_drain.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "workers": 4,
+          "heap": "8g",
+          "timeout_seconds": 7200
+        },
+        {
+          "id": "TLA-049/baseline-flagged",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_baseline_flagged.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/baseline-from-one",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_baseline_from_one.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-counts",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_counts.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-entry",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_entry.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-entry-counts",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_entry_counts.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-join",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_join.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-join-slot",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_join_slot.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-moves",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_moves.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-moves-slot",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_moves_slot.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/liveness-restart",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_liveness_restart.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/pass-slot",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_pass_slot.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false,
+          "timeout_seconds": 3600
+        },
+        {
+          "id": "TLA-049/pass-third-party-noop",
+          "role": "baseline",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_pass_third_party_noop.cfg",
+          "expect": {
+            "result": "pass"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-announce-before-removal",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_announce_before_removal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-drain-rejoins",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_drain_rejoins.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-evidence-by-name",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_evidence_by_name.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-no-coverage",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_no_coverage.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-nobody-uncovered",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_nobody_uncovered.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "JoinCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-noop-ring-only",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_noop_ring_only.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "JoinCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-refresh-keeps-ring",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_refresh_keeps_ring.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-release-unsealed",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_release_unsealed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-rev1-beat-claim-ce1",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_rev1_beat_claim_ce1.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-rev1-beat-claim-ce2",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_rev1_beat_claim_ce2.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-ruled-cover",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_ruled_cover.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-ruled-ring",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_ruled_ring.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "MembershipMovesNothing"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/nc-today-noop",
+          "role": "negative-control",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_nc_today_noop.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "JoinCompletes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-count-drops-mid-join",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_count_drops_mid_join.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_CountDropsMidJoin"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-dead-removal",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_dead_removal.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DeadRemoval"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-drain-crash-removed",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_drain_crash_removed.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DrainCrashRemoved"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-drain-crash-unremoved",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_drain_crash_unremoved.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DrainCrashUnremoved"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-drain-during-leave",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_drain_during_leave.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_DrainDuringLeave"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-join-fallback",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_join_fallback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_JoinFallback"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-joiner-serves",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_joiner_serves.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_JoinerServes"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-joiner-waits",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_joiner_waits.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_JoinerWaitsOnUnpinnedHolder"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-leave-fallback",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_leave_fallback.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_LeaveFallback"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-move-ends-at-ready",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_move_ends_at_ready.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_MoveEndsAtReady"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-rejoins-after-drain",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_rejoins_after_drain.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_RejoinsAfterDrain"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-return-races-join",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_return_races_join.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_ReturnRacesJoin"
+          },
+          "deadlock_check": false
+        },
+        {
+          "id": "TLA-049/witness-slot-refused",
+          "role": "witness",
+          "spec": "verification/tla/membership/RingMembership.tla",
+          "config": "verification/tla/membership/MC_RingMembership_witness_slot_refused.cfg",
+          "expect": {
+            "result": "violation",
+            "property": "Witness_SlotRefused"
           },
           "deadlock_check": false
         }

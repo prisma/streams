@@ -1,0 +1,692 @@
+{
+  "checks": [
+    {
+      "check": "TLA-049/baseline",
+      "depth": 45,
+      "distinct_states": 15409824,
+      "expected": "pass",
+      "log_sha256": "504a740d30d44284dba3da5ae08e732b2a66c73e8a8f9b295624924b1e2238a0",
+      "property": null,
+      "role": "baseline",
+      "seconds": 917.8,
+      "states_generated": 189295923,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/baseline-child-entry",
+      "depth": 37,
+      "distinct_states": 3613235,
+      "expected": "pass",
+      "log_sha256": "c868be6948cdbb920e0d436b43ccc76eae42669519c0daacfce63a170ce60f76",
+      "property": null,
+      "role": "baseline",
+      "seconds": 415.3,
+      "states_generated": 43834368,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/baseline-drain",
+      "depth": 46,
+      "distinct_states": 16242542,
+      "expected": "pass",
+      "log_sha256": "a6225f18604895fbe910cdd9d802e99433162ccac3d746e29ae5ac30a3864363",
+      "property": null,
+      "role": "baseline",
+      "seconds": 1056.9,
+      "states_generated": 184916358,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/baseline-flagged",
+      "depth": 24,
+      "distinct_states": 120284,
+      "expected": "pass",
+      "log_sha256": "51e2e032f8f4862d6fd9fac77f10ffe4be9bf5ea7a7870c3eff71761fb4dafae",
+      "property": null,
+      "role": "baseline",
+      "seconds": 16.5,
+      "states_generated": 1715378,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/baseline-from-one",
+      "depth": 31,
+      "distinct_states": 785855,
+      "expected": "pass",
+      "log_sha256": "1029e2987e3c2bba561f446f68b29df433618bcc8cf42bc54bde9b80aa1ed252",
+      "property": null,
+      "role": "baseline",
+      "seconds": 98.8,
+      "states_generated": 8691331,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-counts",
+      "depth": 27,
+      "distinct_states": 103831,
+      "expected": "pass",
+      "log_sha256": "f15ec6724a88d9714ef6e2ed17cd4eaa062899a36d183a0830900494fc3903d8",
+      "property": null,
+      "role": "baseline",
+      "seconds": 129.7,
+      "states_generated": 1161172,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-entry",
+      "depth": 14,
+      "distinct_states": 1712,
+      "expected": "pass",
+      "log_sha256": "aa12dd797cd27fddf28a66d333f97b3715e07f30cdec361c4467035da79de387",
+      "property": null,
+      "role": "baseline",
+      "seconds": 3.9,
+      "states_generated": 16564,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-entry-counts",
+      "depth": 27,
+      "distinct_states": 111780,
+      "expected": "pass",
+      "log_sha256": "fa80dcaf107a6f177092e68a107bb9b9ce1ad076f8318c66a9fb5cd26ce14172",
+      "property": null,
+      "role": "baseline",
+      "seconds": 158.0,
+      "states_generated": 1254885,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-join",
+      "depth": 14,
+      "distinct_states": 1447,
+      "expected": "pass",
+      "log_sha256": "14ddf0c3ccd15b92dfe4d4d11e613cc60aa232df4fff7ea6fd86610c56b5671f",
+      "property": null,
+      "role": "baseline",
+      "seconds": 3.4,
+      "states_generated": 14081,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-join-slot",
+      "depth": 14,
+      "distinct_states": 1447,
+      "expected": "pass",
+      "log_sha256": "139c8e8b33dfaad1921a130b2e838b5cf12b7e76295ff5ef825310d1456a192b",
+      "property": null,
+      "role": "baseline",
+      "seconds": 3.4,
+      "states_generated": 14081,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-moves",
+      "depth": 23,
+      "distinct_states": 18257,
+      "expected": "pass",
+      "log_sha256": "791f4f2a8e4d9ad7652603326701617916d351f4f65a33cac53c5319a651c0a7",
+      "property": null,
+      "role": "baseline",
+      "seconds": 26.7,
+      "states_generated": 189461,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-moves-slot",
+      "depth": 23,
+      "distinct_states": 18257,
+      "expected": "pass",
+      "log_sha256": "16082bd429922c02b068241515a36f7aeab9ba7416a12cf824305c56576c2218",
+      "property": null,
+      "role": "baseline",
+      "seconds": 26.8,
+      "states_generated": 189461,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/liveness-restart",
+      "depth": 22,
+      "distinct_states": 20043,
+      "expected": "pass",
+      "log_sha256": "cecf3473a2d19cad6924c836cd1981df5be4448e493e029fb0756e2a3527b67e",
+      "property": null,
+      "role": "baseline",
+      "seconds": 29.8,
+      "states_generated": 151719,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/pass-slot",
+      "depth": 39,
+      "distinct_states": 3514080,
+      "expected": "pass",
+      "log_sha256": "b15e391805b95285560355edaf6c390dd7e622d4b9310c23556c4038a12e6427",
+      "property": null,
+      "role": "baseline",
+      "seconds": 398.2,
+      "states_generated": 42076938,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/pass-third-party-noop",
+      "depth": 31,
+      "distinct_states": 888193,
+      "expected": "pass",
+      "log_sha256": "2b3fb46e3016cb73dc836bd659f8f7ef50a2710b31924f42b14fcc42b68249a9",
+      "property": null,
+      "role": "baseline",
+      "seconds": 114.2,
+      "states_generated": 9964501,
+      "states_left": 0,
+      "verdict": "pass"
+    },
+    {
+      "check": "TLA-049/nc-announce-before-removal",
+      "depth": 9,
+      "distinct_states": 2550,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "1ba34e9645d6106b4b9667e46f92a947dd8a2f755b3c4d228e91f2ed18661766",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 1.2,
+      "states_generated": 10859,
+      "states_left": 1496,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-drain-rejoins",
+      "depth": 14,
+      "distinct_states": 220947,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "d61e7fbf4d9a55758fc82808c2113a9c7b730b262ed53ce272c75f3efb556005",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 15.8,
+      "states_generated": 1392705,
+      "states_left": 102192,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-evidence-by-name",
+      "depth": 17,
+      "distinct_states": 1038983,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "616b51826a5553d25ce8274fa5b662fe40f6f9f7a457b45b086fdbd45c27e67c",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 76.8,
+      "states_generated": 7426965,
+      "states_left": 409359,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-no-coverage",
+      "depth": 8,
+      "distinct_states": 1286,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "6c5c60a285b15e00839c6afa76239d12e4d93ad632da4ed28bad7233aea165d5",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 1.2,
+      "states_generated": 4637,
+      "states_left": 824,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-nobody-uncovered",
+      "distinct_states": 4271,
+      "expected": "violation:JoinCompletes",
+      "log_sha256": "135ecf58be6fe11a7604d71cf7e978fef7f329966f15ddb4f3e7fbd82fefddf8",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 3.9,
+      "states_generated": 16655,
+      "states_left": 1967,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-noop-ring-only",
+      "distinct_states": 1507,
+      "expected": "violation:JoinCompletes",
+      "log_sha256": "1a102cb2380c69d0ff54670187a3a04972d3a14d52b7fa66b334db73e28169fc",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 3.8,
+      "states_generated": 12234,
+      "states_left": 326,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-refresh-keeps-ring",
+      "depth": 13,
+      "distinct_states": 77817,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "886d059e3dd29c78a2bc3c571853b37264572b9f3fa43824441a9f3835fe0c67",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 6.3,
+      "states_generated": 516651,
+      "states_left": 34155,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-release-unsealed",
+      "depth": 7,
+      "distinct_states": 366,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "32a8a26a2f3776ca0619631b5f5d30dd8e0337a622712e2b3dfc5a97f30071c9",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 1.0,
+      "states_generated": 1142,
+      "states_left": 236,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-rev1-beat-claim-ce1",
+      "depth": 12,
+      "distinct_states": 11549,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "f9de1e5db497dc4235cf9ab3e177cb35a2dac50b4b5e01fbfbe7fe060db261b9",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 2.4,
+      "states_generated": 203967,
+      "states_left": 5092,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-rev1-beat-claim-ce2",
+      "depth": 9,
+      "distinct_states": 2179,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "b2657176c28a20db5fe79e11b7dc0fb10f9d32ee16119531bd6efb4136b8cbba",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 1.2,
+      "states_generated": 28415,
+      "states_left": 1210,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-ruled-cover",
+      "depth": 12,
+      "distinct_states": 43635,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "365874adc2f00326e5a91b055ed32786e74f50bc154dd98c3e96b4e6c6a9bb95",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 4.0,
+      "states_generated": 270164,
+      "states_left": 20596,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-ruled-ring",
+      "depth": 13,
+      "distinct_states": 64694,
+      "expected": "violation:MembershipMovesNothing",
+      "log_sha256": "7dda9dba76d5af02370ff2864f5771928146408936f8415863fe882a323b5577",
+      "property": "MembershipMovesNothing",
+      "role": "negative-control",
+      "seconds": 5.4,
+      "states_generated": 424536,
+      "states_left": 28545,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/nc-today-noop",
+      "distinct_states": 2115,
+      "expected": "violation:JoinCompletes",
+      "log_sha256": "177c72547fd11a1ffa9c8f5dbde25681c942077a885e7bc4e3d602563ed5ea36",
+      "property": "<temporal>",
+      "role": "negative-control",
+      "seconds": 6.3,
+      "states_generated": 22606,
+      "states_left": 0,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-count-drops-mid-join",
+      "depth": 6,
+      "distinct_states": 239,
+      "expected": "violation:Witness_CountDropsMidJoin",
+      "log_sha256": "4493885e159abd54ae9cba4f2585ac034804a3946d4725840ee3c6485c7e1030",
+      "property": "Witness_CountDropsMidJoin",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 661,
+      "states_left": 163,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-dead-removal",
+      "depth": 5,
+      "distinct_states": 131,
+      "expected": "violation:Witness_DeadRemoval",
+      "log_sha256": "c977b3a9b1024cf1dcc7e8bb305551818edaa24ac7dc88b8fd2045a1fbf7e016",
+      "property": "Witness_DeadRemoval",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 269,
+      "states_left": 95,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-drain-crash-removed",
+      "depth": 6,
+      "distinct_states": 797,
+      "expected": "violation:Witness_DrainCrashRemoved",
+      "log_sha256": "a8b2dfe09fcb783e4269fbb448b0e24520a78818a18a287204df4c245e93759c",
+      "property": "Witness_DrainCrashRemoved",
+      "role": "witness",
+      "seconds": 1.1,
+      "states_generated": 2418,
+      "states_left": 561,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-drain-crash-unremoved",
+      "depth": 4,
+      "distinct_states": 55,
+      "expected": "violation:Witness_DrainCrashUnremoved",
+      "log_sha256": "4eac6171948be2f7c54a4156a7f66ab72c5dacadb2468312e4cfde09667892ec",
+      "property": "Witness_DrainCrashUnremoved",
+      "role": "witness",
+      "seconds": 0.8,
+      "states_generated": 95,
+      "states_left": 42,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-drain-during-leave",
+      "depth": 6,
+      "distinct_states": 706,
+      "expected": "violation:Witness_DrainDuringLeave",
+      "log_sha256": "f44bd55fe9bfad2e4dc74cf69ff6d5e4e1db16df26174f44c2d2d4f282a72484",
+      "property": "Witness_DrainDuringLeave",
+      "role": "witness",
+      "seconds": 1.1,
+      "states_generated": 2241,
+      "states_left": 475,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-join-fallback",
+      "depth": 6,
+      "distinct_states": 258,
+      "expected": "violation:Witness_JoinFallback",
+      "log_sha256": "6e686a33f96ca4b9f239324a7fb3c1c329dd6987c661f14b34cd5974e785f92b",
+      "property": "Witness_JoinFallback",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 712,
+      "states_left": 176,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-joiner-serves",
+      "depth": 12,
+      "distinct_states": 37691,
+      "expected": "violation:Witness_JoinerServes",
+      "log_sha256": "5d5616fdbcaba36ae6f66d25b30d9a512f2876726cbf92eb7674c13c808e8f14",
+      "property": "Witness_JoinerServes",
+      "role": "witness",
+      "seconds": 3.5,
+      "states_generated": 225522,
+      "states_left": 18371,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-joiner-waits",
+      "depth": 8,
+      "distinct_states": 1310,
+      "expected": "violation:Witness_JoinerWaitsOnUnpinnedHolder",
+      "log_sha256": "f1b50ca39355be13e9009e1cf34c9b45ab36898a26fd6ed47f54bbfb7a324dab",
+      "property": "Witness_JoinerWaitsOnUnpinnedHolder",
+      "role": "witness",
+      "seconds": 1.2,
+      "states_generated": 4735,
+      "states_left": 833,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-leave-fallback",
+      "depth": 6,
+      "distinct_states": 118,
+      "expected": "violation:Witness_LeaveFallback",
+      "log_sha256": "c472f0095de1607d2424d71c66d6dc7d44b8a40f93cb1a9e7cecb420ba1f116f",
+      "property": "Witness_LeaveFallback",
+      "role": "witness",
+      "seconds": 1.0,
+      "states_generated": 318,
+      "states_left": 78,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-move-ends-at-ready",
+      "depth": 9,
+      "distinct_states": 4837,
+      "expected": "violation:Witness_MoveEndsAtReady",
+      "log_sha256": "b4e8b802c45a1dec030c5b9c952843d86be2662d4f006f47df0046e37ff9cecf",
+      "property": "Witness_MoveEndsAtReady",
+      "role": "witness",
+      "seconds": 1.4,
+      "states_generated": 21281,
+      "states_left": 2861,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-rejoins-after-drain",
+      "depth": 10,
+      "distinct_states": 958,
+      "expected": "violation:Witness_RejoinsAfterDrain",
+      "log_sha256": "f1ad3c437cb2720f35f47ce194a21ac2047ffe15d49344f81714591d8832f771",
+      "property": "Witness_RejoinsAfterDrain",
+      "role": "witness",
+      "seconds": 1.2,
+      "states_generated": 4949,
+      "states_left": 355,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-return-races-join",
+      "depth": 13,
+      "distinct_states": 64496,
+      "expected": "violation:Witness_ReturnRacesJoin",
+      "log_sha256": "cb98ba34f48fdecd23e4659b7202b1fbfc93ce3ee68773c8ff0f61299053a76a",
+      "property": "Witness_ReturnRacesJoin",
+      "role": "witness",
+      "seconds": 5.7,
+      "states_generated": 459682,
+      "states_left": 22185,
+      "verdict": "violation"
+    },
+    {
+      "check": "TLA-049/witness-slot-refused",
+      "depth": 5,
+      "distinct_states": 56,
+      "expected": "violation:Witness_SlotRefused",
+      "log_sha256": "895cf692278bcf735e79ec4674c665f9abb099d496847dac3dbd306027c4102c",
+      "property": "Witness_SlotRefused",
+      "role": "witness",
+      "seconds": 0.9,
+      "states_generated": 217,
+      "states_left": 32,
+      "verdict": "violation"
+    }
+  ],
+  "complete": true,
+  "id": "TLA-049",
+  "inputs": {
+    "assumptions": {
+      "ASM-OBJSTORE-CAS": "2ae43f6d8ddd2a496b3982846370ab5d1cfe7fa2bd95be7317c703122518bf13"
+    },
+    "files": {
+      "Cargo.lock": "f6ae4c629b132f0c521ed2ac32164018405c0d20298f21ff9678a62aa20bfbfd",
+      "Cargo.toml": "c16000255b787c2f51c15c4c6b6cde2867a405ee7a044aecb26dfe3a4e094823",
+      "scripts/quality/formal.py": "959c0a5d8ac9dcea4bdc41f82d1eafeeb7581e8fd7bd0c8e6fe9f21637157786",
+      "src/fleet/join.rs": "ed5146835ce0d1de339995a178eb07976fb41bf6d7275c038fa1403379b9a15b",
+      "src/fleet/moves.rs": "b481f2c7052c594c33e0656e5ca73198ba94fecc5d1f24a441a8f75b2ebcb88d",
+      "src/fleet/record.rs": "58a2015796463a07437e3bd60d76b22459faecc096ed819f022b6e8fa79d2cb0",
+      "src/fleet/view.rs": "b7554132a9969040700f41174f9c45e89945df998154b47091caa8d24c4fb312",
+      "verification/tla/membership/MC_RingMembership_baseline.cfg": "0528c3df0ada80c6c699fe92416c86c8d659b32f73571bb902b32f9810e23fcc",
+      "verification/tla/membership/MC_RingMembership_baseline_child_entry.cfg": "41df9b05784ec9ae938bd6392e83245b82550f46c3c73a668314e11332b2862d",
+      "verification/tla/membership/MC_RingMembership_baseline_drain.cfg": "3b17de118fa39be42df58fd2c84eaa465501aa52280b43d1d7e4536e37b45c5c",
+      "verification/tla/membership/MC_RingMembership_baseline_flagged.cfg": "c3ba637e0a28e3127415dcd56726cd31e6b9645848fd5aa4fdd148752fac145f",
+      "verification/tla/membership/MC_RingMembership_baseline_from_one.cfg": "d86173253d768cad4f9652ff1aee8f67f6b63a07b566d1e176ee75a444ff9dbe",
+      "verification/tla/membership/MC_RingMembership_liveness_counts.cfg": "78c7fd9bd2c87011ed02913bdbc2328fa29eb2a5dc39597e05216bcfee43ac0c",
+      "verification/tla/membership/MC_RingMembership_liveness_entry.cfg": "41cb019c01215201a4be3f51c83b6b15dd3dc4e115da21f5104ed2fe9ecd2c76",
+      "verification/tla/membership/MC_RingMembership_liveness_entry_counts.cfg": "6bd0bf389de3f9e555b29710dddaf3c5d3abcca4daa2cb248ab8c9a19283476b",
+      "verification/tla/membership/MC_RingMembership_liveness_join.cfg": "fa6c79e174c756cf172f209942f306499f7b84531eba090a7316ae98172f215f",
+      "verification/tla/membership/MC_RingMembership_liveness_join_slot.cfg": "93738dc900bc9a4f41ead0594b66d8a5878d2d3b5925764e59f5ae194a4e2195",
+      "verification/tla/membership/MC_RingMembership_liveness_moves.cfg": "2955d9e98fb2eece65f3f9bd2c3f6f0fa7added9eee71516f7c2eb3cf43c2a0a",
+      "verification/tla/membership/MC_RingMembership_liveness_moves_slot.cfg": "4ac0d11a12751a2b47f5a3e946488654a311eb86da5fb3ee403bf4693ad2fa97",
+      "verification/tla/membership/MC_RingMembership_liveness_restart.cfg": "d05d2fdb0d23cf66847126642a32c2c6e4fe6f71a75d0d39e59e2d815d1da4f9",
+      "verification/tla/membership/MC_RingMembership_nc_announce_before_removal.cfg": "9be2f15344a3bb3cf75ae7445aabf570c7bb42e7c675d8fd4a2ba2bdc006997b",
+      "verification/tla/membership/MC_RingMembership_nc_drain_rejoins.cfg": "26e28f71ed23f3fb31249968d53cf0cb3fd77e9669d9100371517595a2a71a0b",
+      "verification/tla/membership/MC_RingMembership_nc_evidence_by_name.cfg": "9eeed4729dd49d7135add9f32775697e69b40654c980270c80dc24125a377814",
+      "verification/tla/membership/MC_RingMembership_nc_no_coverage.cfg": "0abe78967cc55f64b59c709e6a7d7cd4ca27cc52dffebfd5425434cf3dd4d46e",
+      "verification/tla/membership/MC_RingMembership_nc_nobody_uncovered.cfg": "91191d54f6b71e3bb34598d5c94971c8677b80afa3bc3b2231e56cf628fc3d28",
+      "verification/tla/membership/MC_RingMembership_nc_noop_ring_only.cfg": "564d849a1bd64434c2e2187a5a0031a0398f3b635d86c470ec02621b39fdd4d4",
+      "verification/tla/membership/MC_RingMembership_nc_refresh_keeps_ring.cfg": "196a530fe0830e6e88fc57c02271f19794bf91ad1dd37addd58b51e8d923456c",
+      "verification/tla/membership/MC_RingMembership_nc_release_unsealed.cfg": "c543193eefe936684d04f1846c03c5af7481134e782fcc1c92586f3c076fce14",
+      "verification/tla/membership/MC_RingMembership_nc_rev1_beat_claim_ce1.cfg": "6ae7f20d5b95d8139f0dc3dca28d62740a63dc27edef2503cdb77daeb322862b",
+      "verification/tla/membership/MC_RingMembership_nc_rev1_beat_claim_ce2.cfg": "00e95a329007026d783585af6c342ee03720f41720d917ec93fb3e87b87f0a54",
+      "verification/tla/membership/MC_RingMembership_nc_ruled_cover.cfg": "c0448bece12e5d8cc15a9d7a98ccad312c38f3520eeb1a7c6ebf59b453ddf790",
+      "verification/tla/membership/MC_RingMembership_nc_ruled_ring.cfg": "b3d1014b3779fb7d3ed817b026f9ad4475b9d30083c1ed9f17a23d3a42bf1fa8",
+      "verification/tla/membership/MC_RingMembership_nc_today_noop.cfg": "eb40ac99ec5335b3b181a07e24d1edae04e326cb4b7c3f5eac5a8f23a7dd240b",
+      "verification/tla/membership/MC_RingMembership_pass_slot.cfg": "9f59a1d1f00c87d4a9c15cd74dbfddc15c7fc76c15efb23b47958c42185319fb",
+      "verification/tla/membership/MC_RingMembership_pass_third_party_noop.cfg": "4f95716bcfc7e3ca11db8295c0096522d743bf5489ad23cd410b90ec6068c9e0",
+      "verification/tla/membership/MC_RingMembership_witness_count_drops_mid_join.cfg": "4a95d74b9fea9313c828515350eb87be4722138ef38698268ffa759cd654a5c9",
+      "verification/tla/membership/MC_RingMembership_witness_dead_removal.cfg": "0ea39adc09bcbe8719dced376c2797e6a040b523aaeb3249892bf25a5cb78dc4",
+      "verification/tla/membership/MC_RingMembership_witness_drain_crash_removed.cfg": "9c50c40af3dee99836cd6a991fb5464cafc63e59336398257431e9c65d035dc6",
+      "verification/tla/membership/MC_RingMembership_witness_drain_crash_unremoved.cfg": "32e6a87a8c9b9d8b3c1bc54218045a24e561d23a2ba469d26817951ebbe1cbd7",
+      "verification/tla/membership/MC_RingMembership_witness_drain_during_leave.cfg": "a6238c0ece2a041f6dd5c0d703c618aceab56475db9b343ffd3c62cb9c840385",
+      "verification/tla/membership/MC_RingMembership_witness_join_fallback.cfg": "4aa73a31981b5ca6d6c83716626606de8e052b235260775c6a29d91f0aff182a",
+      "verification/tla/membership/MC_RingMembership_witness_joiner_serves.cfg": "d5ce5d4bbf61614c7e9279cb97b02eeb7a12de1daf9f15003fc3b9752c3a7f66",
+      "verification/tla/membership/MC_RingMembership_witness_joiner_waits.cfg": "78d6f20005ace67404858ec24b967467d4eddb207368efe5e98035b1ff3a9c79",
+      "verification/tla/membership/MC_RingMembership_witness_leave_fallback.cfg": "797cd2c218bb81479ac7ae5a99ba465124a21424036a78d2efc3159683c7d382",
+      "verification/tla/membership/MC_RingMembership_witness_move_ends_at_ready.cfg": "c6d35a7df652a832769fc0573ea86a0404d8a58467bd45b3f096ad86f0806cac",
+      "verification/tla/membership/MC_RingMembership_witness_rejoins_after_drain.cfg": "0bc3fc5b5fbd7ec96a61b6e841ef7d0105cb459ede6baa2a8b60b6d7a4a44448",
+      "verification/tla/membership/MC_RingMembership_witness_return_races_join.cfg": "876c0f5d7994ae82e3ef36db5f201ba6beede9bf83fbf2a473248cc228e2d64b",
+      "verification/tla/membership/MC_RingMembership_witness_slot_refused.cfg": "4cca2af7f8f18f217e646c79dfc4dd16f12f611c3468b81529c4503b4b03e428",
+      "verification/tla/membership/RingMembership.tla": "143e9669a0a4d4175b45eea32054f38a0925895a797abe9bf6ac71b471bb5f67"
+    },
+    "manifest_entry": "deb83b05d58bacba07bf4b277e2edccfb6bd3c6b8f3f11274ccfcd7b56cdd570",
+    "pins": {
+      "formal": {
+        "cbmc": "6.11.0",
+        "kani": "0.68.0",
+        "kani-bundle-sha256": {
+          "aarch64-apple-darwin": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+          "aarch64-unknown-linux-gnu": "0042d2688bf1550270def4a79c96aaeea138631818cb4ab5480120f2d51a942c",
+          "x86_64-apple-darwin": "b1367f694c1350abcae133701f78b3be3fd6e9beb66681a22ea0bcac0cc34808",
+          "x86_64-unknown-linux-gnu": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3"
+        },
+        "kani-rust": "nightly-2026-08-21",
+        "tla2tools": "1.7.4",
+        "tla2tools-sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "tlc": "2.19"
+      },
+      "slatedb": {
+        "base": "0c22c032bb1af4e53d92b2098c83a34b11d2d710",
+        "carries": [
+          {
+            "docs": true,
+            "fork": "ab50eaf52c6a244d806ab58c6f6e564773e76e10"
+          },
+          {
+            "fork": "609038fdb2ce137ebf90a75e1c173717fb2e4c32",
+            "pr": 2190,
+            "pr_diff": true
+          },
+          {
+            "fork": "f39b48f048f83d72e4afadaec94a756e67eca495",
+            "pr": 2191,
+            "pr_diff": true
+          },
+          {
+            "fork": "d8e6694592f68cda28cb8d7a362ed9decee01d4a",
+            "pr": 2010
+          },
+          {
+            "fork": "efa388f911de6e4ddd23c8827c1e4074b203e5e5",
+            "issue": 2211
+          },
+          {
+            "fork": "e533a050a49d325cca5b49c3e44e84243e2024cd",
+            "issue": 2213
+          },
+          {
+            "fork": "b10b0e87b12602875b19f2b1500694372cb0f620",
+            "issue": 2215
+          },
+          {
+            "fork": "c0a7476bfbf7ac09322683f140ce34aae95d3670",
+            "issue": 2239
+          },
+          {
+            "fork": "5196d6d622b7500c32f3a1711efd0ef93e27a491",
+            "issue": 2240
+          },
+          {
+            "docs": true,
+            "fork": "735b017170bb321b0e3d5226ef1dc14c0436b229"
+          },
+          {
+            "fork": "30bae5fe24d682efa5437c3cc5136e9db8d0435d",
+            "pr": 2231
+          },
+          {
+            "docs": true,
+            "fork": "857840b6007bce0f8d0488ac62e57f53e40c558a"
+          },
+          {
+            "fork": "2f12ec7b9a3ddfdae21e9b274b6abbbab73f2ce4",
+            "issue": 2263
+          },
+          {
+            "docs": true,
+            "fork": "9251675b8007f524877d2b731d41f286176e0bed"
+          },
+          {
+            "docs": true,
+            "fork": "e14e58df812434aedc70440ca09db90da5e97bc1"
+          }
+        ],
+        "git": "https://github.com/prisma/slatedb.git",
+        "rev": "e14e58df812434aedc70440ca09db90da5e97bc1",
+        "upstream": "https://github.com/slatedb/slatedb.git"
+      }
+    }
+  },
+  "inputs_sha256": "38ea1e1c22722adb2477cf9561aede70addf699b2484ac02d19b68debcf6d1b2",
+  "run_on": {
+    "dirty_tree": false,
+    "revision": "8d545230d241bf2263370331af844ae34335a699"
+  },
+  "schema": 2,
+  "tools": {
+    "java": "17.0.1",
+    "kani": "0.68.0",
+    "platform": "aarch64-apple-darwin",
+    "tla2tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "tlc": "2.19"
+  }
+}

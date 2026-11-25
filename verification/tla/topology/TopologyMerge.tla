@@ -207,6 +207,12 @@ RoomM(i) == Resident(i) + 1 <= Cap
 \* definition override, MergeNeedsRoom <- RoomGuardOn.
 MergeNeedsRoom == FALSE
 RoomGuardOn == TRUE
+
+\* The merge entry opens a half its instance does not hold open (MergeOpen,
+\* Addendum 7). TLA-048/nc-no-merge-open switches it off through a definition
+\* override, MergeOpens <- MergeOpensOff.
+MergeOpens == TRUE
+MergeOpensOff == FALSE
 ActorAlive == pc \in {"prepared", "owned1", "ckptEarly", "parked", "quiesced", "cloned",
                       "owned2", "t0", "t1", "published"}
 BeforeT == pc \in {"prepared", "owned1", "ckptEarly", "parked", "quiesced", "cloned", "owned2"}
@@ -379,7 +385,8 @@ ColocateAsk ==
 \* first, then a restart, leaves the target's own source closed with no
 \* override, which neither EagerOpen nor a cold pair's request reopens (the
 \* colocate-partner trace, tlc/20261120T191628Z).
-MergeOpen(i, s) == PolicyReady /\ Owner(0) = Owner(1) /\ Owner(s) = i /\ OpenOn(i, s)
+MergeOpen(i, s) ==
+    MergeOpens /\ PolicyReady /\ Owner(0) = Owner(1) /\ Owner(s) = i /\ OpenOn(i, s)
 
 \* The move's cooldown passes.
 Settle ==

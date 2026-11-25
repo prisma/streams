@@ -143,7 +143,8 @@ design check (§7.7).
 | TLA-018 | pass-with-recorded-scope | 5 / 4 / 4 | SealRead.tla: durable and applied, unfiltered and keyed reads composed of the ring, the directory's chunks (summary skips, honest partial) and the unsealed pages captured with the boundary under one lock. Replaces ReadCompose.tla. Controls: late directory, hole consumed, under-approximating summary, the pre-F4 second lock. | to be recorded | — |
 | TLA-019 | pass-with-recorded-scope | 12 / 17 / 21 | `ReachGC.tla` (GC, with the compaction checkpoint) and `ForkPin.tla` (fork references, the debt marker, the reconciler, the backfill and recreation). The catalog's "eventually reclaimable" clause is not met on a partition with no further writes (TLA-019-F2), and it is unchecked for deleted incarnations, because no reclamation policy exists (TLA-019-F3). | to be recorded at `d83af9a4` | ASM-OBJSTORE-CAS (unestablished); ASM-HISTORY-GC-CLOCK (unestablished for multi-host operation) |
 | TLA-045 | pass-with-recorded-scope | 2 / 11 / 5 | `TopologyReconfiguration.tla`: one leaf's split into its halves and its recovery, the lease that does not fence and the claim as an action of an open after its epoch bump, fresh homes per attempt; an attempted `'T'` counts as written and no source write follows it (push 4, Addenda 5 and 6). Safety and `ForwardAfterRetire`/`OperationCompletes` under fairness. | to be recorded in push 4's receipt pass | ASM-OBJSTORE-CAS (unestablished) |
-| TLA-048 | pass-with-recorded-scope | 13 / 17 / 7 | `TopologyMerge.tla`: two siblings' co-location, merge and recovery, local and cross-instance pairs, crashes, partitions, lapses and restarts within each configuration's bounds, the landed open path; no source opened after the publish, no source write after its `'T'`, and an instance opens only sources it owns by a published view (push 4, #251 R3-d, Addenda 5 and 9). Liveness under weak fairness for the steps the code retries; one configuration under strong claim fairness. | to be recorded in push 4's receipt pass | ASM-OBJSTORE-CAS (unestablished); strong claim fairness, for `assume-strong-claim-fairness` only |
+| TLA-048 | pass-with-recorded-scope | 14 / 19 / 7 | `TopologyMerge.tla`: two siblings' co-location, merge and recovery, local and cross-instance pairs, crashes, partitions, lapses and restarts within each configuration's bounds, the landed open path; no source opened after the publish, no source write after its `'T'`, and an instance opens only sources it owns by a published view (push 4, #251 R3-d, Addenda 5 and 9). Liveness under weak fairness for the steps the code retries; one configuration under strong claim fairness. | to be recorded in push 4's receipt pass | ASM-OBJSTORE-CAS (unestablished); strong claim fairness, for `assume-strong-claim-fairness` only |
+| TLA-049 | pass-with-recorded-scope | 15 / 13 / 13 | `RingMembership.tla`: the fleet's ring of record: a join by CAS covered by pins, the no-op drops, a planned move, a restart in place or by rejoining, and a document that lists nobody. A design check: the leave (release, its fallback, the dead name's removal) and step 3b's slot are in the model, not yet in the code. | recorded on the commit that registers it | ASM-OBJSTORE-CAS (unestablished) |
 
 The manifest holds 312 checks at `d83af9a4`: 79 baselines, 104 negative
 controls, 129 witnesses and no known defect.
@@ -507,6 +508,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 | [TLA-044](#tla-044) | Persisted-format and rolling-upgrade compatibility transitions | D |
 | [TLA-045](#tla-045) | Shard split, its intent and recovery (S4) | P0 |
 | [TLA-048](#tla-048) | Merge of sibling leaves, its co-location and recovery (S6) | P0 |
+| [TLA-049](#tla-049) | Fleet ring membership of record moves no open leaf (§22) | P0 |
 
 <a id="tla-001"></a>
 ### TLA-001 — Registry CAS, attempt-local outcomes, and incarnation fencing
@@ -1268,7 +1270,7 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 
 **Status:** pass-with-recorded-scope (S6, package 1, 2026-11-10/11, all 37 checks as expected under weak fairness on 0a7842535's claim order; registered in push 4 with manifest entry TLA-048: 13 baselines, 17 negative controls, 7 witnesses). The receipt is recorded in push 4's receipt pass.
 
-**Recorded scope (#261 B1-e, GATE-DECISION-s22-join-2026-11-20 Addendum 7).** Co-location is one step a source, taken by that source's holder (`ColocateHalf(s)`): towards B1's target over the state (`Target`: the actor, then the partner under `PartnerFallback`, then a third live instance with room for both halves and `M`), or, at most `MaxSkews` (1) times in all, towards another target B1's tiers allow (`Allowed`), as a holder whose view differs would. A holder on the target pins its source; one elsewhere hands it there, in either order: the code pins before it hands; the model allows both (the TLA-049 ruling's treatment of H1). The actor's ask for an instance is `ColocateAsk`. Since either order is allowed, the merge entry's own open of a half is a weakly fair step, `MergeOpen(i, s)` (`start_merge` resolves each half with `Adoption::Internal`; its behaviours are `RequestOpen`'s, so only fairness grows). The evidence is the colocate-partner trace (`~/.streams-k2/analysis/s22/coloc/tlc/20261120T191628Z/TLA-048__colocate-partner.log`): a half handed first, then a restart, left source 1 closed with no override, and nothing fair reopened it. A control with `MergeOpen` off follows in the join's push. Giver first stays outside this model: a holder's handoff is one step here, and its park, flush and close before the CAS are TLA-011's. Re-recorded in the commit's push.
+**Recorded scope (#261 B1-e, GATE-DECISION-s22-join-2026-11-20 Addendum 7).** Co-location is one step a source, taken by that source's holder (`ColocateHalf(s)`): towards B1's target over the state (`Target`: the actor, then the partner under `PartnerFallback`, then a third live instance with room for both halves and `M`), or, at most `MaxSkews` (1) times in all, towards another target B1's tiers allow (`Allowed`), as a holder whose view differs would. A holder on the target pins its source; one elsewhere hands it there, in either order: the code pins before it hands; the model allows both (the TLA-049 ruling's treatment of H1). The actor's ask for an instance is `ColocateAsk`. Since either order is allowed, the merge entry's own open of a half is a weakly fair step, `MergeOpen(i, s)` (`start_merge` resolves each half with `Adoption::Internal`; its behaviours are `RequestOpen`'s, so only fairness grows). The evidence is the colocate-partner trace (`~/.streams-k2/analysis/s22/coloc/tlc/20261120T191628Z/TLA-048__colocate-partner.log`): a half handed first, then a restart, left source 1 closed with no override, and nothing fair reopened it. The control `nc-no-merge-open` turns `MergeOpen` off (registered with TLA-049): the pair then never merges, by that trace's steps to its final state. Giver first stays outside this model: a holder's handoff is one step here, and its park, flush and close before the CAS are TLA-011's. Re-recorded in the commit's push.
 
 **Validate.** A merge of two sibling sources into a fresh home (`docs/scaling/S6-DESIGN.md` §7.2-§7.4) never loses an acknowledged record (`AckedReadable`), never rolls back once either source holds `'T'` (`NoRollbackWithT`), never ends an intent with `'T'` in a source before the publish (`NoTEndedUnpublished`), and, under weak fairness for the steps the code retries, co-locates the pair and completes (`MergeHappens`, `OperationCompletes`), whether the actor finishes, crashes, is partitioned or is left `Unfinished`.
 
@@ -1279,6 +1281,44 @@ Except the models [§0](#0-implementation-record) lists, all items below are **p
 **Required negative controls.** Clone one source only, checkpoint before the barrier, fence only one source at the claim, roll back after one `'T'`, reclaim an unpublished merge, end a `'T'`d intent unpublished, open under a fresh lease, the maintenance open before the claim or waiting for its own claim, no eager move-in, no lapsed open, no heartbeat reclaim, no ask for an instance, the actor alone, the pre-fix open path (570cce46b), and unbounded restarts (the 17 in the manifest).
 
 **Related work:** TLA-011, 019, 045; KANI-108.
+
+<a id="tla-049"></a>
+### TLA-049 — Fleet ring membership of record moves no open leaf
+
+**Priority:** P0 · **Requirement anchors:** T10–T12  
+**Source owners:** [`src/fleet/join.rs`](src/fleet/join.rs); [`src/fleet/record.rs`](src/fleet/record.rs); [`src/fleet/view.rs`](src/fleet/view.rs); [`src/fleet/moves.rs`](src/fleet/moves.rs)
+
+**Status:** pass-with-recorded-scope (NEXT-WORK §22; GATE-DECISION-s22-join-2026-11-20 Addenda 41-45). 15 passing runs, 13 negative controls and 13 witnesses, all as expected on the model as amended (six amendments of the text the join was designed from, below). The receipt records the commit its inputs were read at.
+
+**Validate.** A count change, a join, a drain, a restart or a planned move makes no instance hold an engine for a leaf another live instance owns by its own view, unless a flagged step (a crash, a misjudgement, a fallback past its phase, a dead name's removal, an in-place restart's return) touched the leaf (`MembershipMovesNothing` in every safety check; `NoTwoEngines` in the five baselines and `pass-slot`). Under weak fairness for the steps the code retries, every joiner within the count joins or stops or leaves the count (`JoinCompletes`).
+
+**Why valuable.** The liveness run over two crashes and restarts found the join's `JOIN_PHASE` outage of a cell whose document lists nobody (146 s in a DST; fixed in 4f29b0c78; `nc-nobody-uncovered` is the code before it).
+
+**The amendments** (Addenda 42 and 44; the set is re-run whole after the sixth). 1: `PinsOf` takes the entries. 2: the no-op drop's set holds every listed instance. 3: K3's move-in slot (`SlotOn`) is off in every safety baseline, as the code has none. 4: a move's CAS takes the removal or the explicit entry when its target is the ring home. 5: a reader's read of a boot that is listed and undecided takes either branch: the old boot's beat still fresh, or evidence against it. 6: a document that lists nobody leaves nothing to cover.
+
+**Liveness runs (Addendum 44).** `liveness-join`'s constants reach none of the amendments (the same 1,447 distinct states on every text). Registered beside it: `liveness-entry`, `liveness-counts`, `liveness-entry-counts`, `liveness-moves`, `liveness-moves-slot` and `liveness-restart`. One move with two count changes is cited, not registered: it takes 26 to 27 minutes (`~/.streams-k2/analysis/s22/tla049/runs/live-20261125T144222`: 3,400,987 distinct states with the slot off and 3,301,832 with it on, on the text before amendment 6; both pass).
+
+**Model action to code.**
+
+| Model | Code | |
+|---|---|---|
+| `Publish`, `Refresh`, the mirror | `view::published`, `view::installed`, `published_here`, `handoff::mirror` over `Standing::ring_of` | as the model |
+| `RingRec` (`evidence`), `Member` | `Candidates::ring`, `in_ring`, `is_member` | as the model for stamped listings |
+| `Decide` | `Planned::of_restart` | as the model |
+| `Uncovered` (`owners`), `Join`, `JoinFallback` | `join::uncovered`, `Planned::of_joiner` | as the model (amendment 6: `of_joiner` on an empty list) |
+| `PinsOf`, `Pin` | `join::pins`, `Planned::of_member` | as the model (amendment 1); the code's pin by a member beyond the count, with its own removal, is outside (the interim, until the leave) |
+| `NoOpDrop` | `moves::counted_home` | as the model (amendment 2) |
+| `DropUnlisted` | C6(c) in `Tick::returns` | as the model |
+| `MoveStart`, `MoveClose`, `MoveCas`, `MoveEnd` | `handoff.rs` | as the model; the slot is off (amendment 3); the CAS's two forms, amendment 4 (`handoff::changed`); D5: the code's test is that no other member owns the leaf, the model's that the document gives it to the giver (they differ only over an empty ring) |
+| `Start`, `ReadBeats` | no beat of a listed boot before its decision | as the model (amendment 5) |
+| `MoveTarget`'s count and R1d tests | `returnable`, `home_healthy`, the within-count tests of `count_balance` and `lag_plan` | as the model |
+| `Seal`, `Unseal`, `Release`, `LeaveFallback`, `DeadRemoval`, `Announce` after removal, K3 | none | not yet code |
+
+The rulings after 2026-11-20 14:06 UTC that touch a modelled rule: Addenda 1-3 (the unstamped listing, outside), 23 (the order of a list, outside), 25 (the fair share, outside), 26 (the back-off, outside), 33-36 (C18 and C18b, outside; NEXT-WORK's foreign-write entry), 42, 44 and 45 (here). The manifest's `input_scope` lists what is outside.
+
+**Required negative controls.** Today's ring change with nothing covered, rev 1's beat claim (two counterexamples), the ruled cover and the ruled ring, evidence by name, a release unsealed, an announcement before the removal, a drain that rejoins, a refresh that keeps its ring, the no-op test over the ring alone (two forms), and a document that lists nobody (the 13 in the manifest).
+
+**Related work:** TLA-011, 048.
 
 <a id="tla-046"></a>
 ### TLA-046 — Native queue delivery on its stream's pages: the frontier, range rows, leases, poison bodies and the sealed lane
