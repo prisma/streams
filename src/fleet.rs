@@ -35,6 +35,8 @@ mod join;
 pub(crate) use join::JOIN_PHASE;
 // Dead names (C14, R1c): a listed name removed on evidence, never by the count.
 mod dead;
+#[cfg(test)]
+pub(crate) use dead::DEAD_MS;
 // The leave (§22 step 6): a member beyond the count hands off, seals and releases itself.
 mod leave;
 // The tick's return-home and lag move.

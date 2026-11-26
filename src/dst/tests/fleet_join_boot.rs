@@ -795,3 +795,24 @@ async fn first_listing(fleet: &Arc<dyn ObjectStore>, members: usize) -> crate::f
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// **R1c's second arm: a boot stamped and killed before its first beat is removed at the bound,
+/// not before** (C14; GATE-DECISION-tla049-r1-r3 R1c; Addendum 41 B item 7, Addendum 61). The
+/// document lists `streams-2` with a boot id no beat of which was ever written. `streams-1`'s
+/// every read answers with no beat of it; on `streams-1`'s own clock the name stays listed until
+/// a tick before `PROGRESS_DEADLINE` plus `RING_LIVENESS` (169 s) from its first such read, and is
+/// removed after. Real time, as ruled: in the join's leg, not the suite.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_boot_stamped_and_killed_before_its_first_beat_is_removed_at_r1cs_bound() {
+    let bound = Duration::from_millis(crate::fleet::DEAD_MS.cast_unsigned());
+    let (fleet, a) = super::fleet_leave::gone_cell(&[("streams-2", None)]).await;
+    let tick = Duration::from_secs(2);
+    let took = super::fleet_leave::listed_after(
+        &fleet,
+        (&["streams-1", "streams-2"], &["streams-1"]),
+        (bound - tick * 2, bound + Duration::from_secs(20)),
+    )
+    .await;
+    eprintln!("JOIN r1c removed after {took:?}");
+    super::fleet_handoff_cases::stop(a).await;
+}
