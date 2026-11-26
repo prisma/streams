@@ -500,10 +500,7 @@ async fn answered(
 /// (E5's `joins_unpinned`).
 fn reported(state: &AppState, read: &Overrides, written: bool, why: &Write) {
     tracing::info!(written, ?why, "fleet membership");
-    if written && *why == Write::Released {
-        // Its own release clears the member note (Addendum 41 B item 8).
-        state.fleet.standing().forget_member();
-    }
+    note_decision(state.fleet.standing(), written, why);
     let Write::Joined { uncovered } = why else {
         return;
     };
@@ -519,6 +516,22 @@ fn reported(state: &AppState, read: &Overrides, written: bool, why: &Write) {
         tracing::warn!(shard = %leaf, ?to, "fleet join past JOIN_PHASE: a leaf was left uncovered");
     }
     state.fleet.standing().note_join_unpinned();
+}
+
+/// What this boot's own committed write tells its member note (item 8; Addendum 63): a write
+/// the store answered as committed is a read of the document at that version, so one that lists
+/// this boot with its own boot id (a join, an in-place restart, a stamp) makes it a member from
+/// then, not only from its next pass; its own release clears the note. A write not committed
+/// notes nothing.
+fn note_decision(standing: &Standing, written: bool, why: &Write) {
+    if !written {
+        return;
+    }
+    match why {
+        Write::Joined { .. } | Write::InPlace | Write::Stamped => standing.note_member(),
+        Write::Released => standing.forget_member(),
+        Write::Listed | Write::Unlisted | Write::Restamped | Write::Pinned(..) => {}
+    }
 }
 
 /// The joiner's line a leg reads (bench/ramp/join_report.py, package 6's reader of the `fleet
@@ -544,3 +557,6 @@ fn since_rise_ms(computed_at_ms: Option<i64>, now_ms: i64) -> i64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod decision_tests;
