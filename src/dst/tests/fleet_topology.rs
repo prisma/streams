@@ -20,6 +20,9 @@ async fn beat_naming(state: &App, since_ms: i64, want: Option<&str>, reserved: u
     let t0 = Instant::now();
     loop {
         let beats = state.fleet.peek_heartbeat_set().await.unwrap_or_default();
+        for own in beats.iter().filter(|b| b.instance == "streams-1") {
+            super::fixture_members::own_stamp(state, own.ts_ms);
+        }
         let found = beats.into_iter().any(|b| {
             b.instance == "streams-1"
                 && b.ts_ms > since_ms

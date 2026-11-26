@@ -217,6 +217,7 @@ pub(super) async fn joined(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig], boun
         for rig in rigs {
             decided_before_beating(fleet, rig).await;
         }
+        own_beats_stamped(fleet, rigs).await;
         let read = document(fleet).await;
         if converged(&read, rigs) && views_agree(&read, rigs) {
             return;
@@ -227,6 +228,41 @@ pub(super) async fn joined(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig], boun
             report(&read, rigs)
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A beat `state`'s runtime published is stamped with its own clock less its tests' skew, within
+/// the ring's liveness (GATE-DECISION-s22-join-2026-11-20 Addendum 65): a beat dated anywhere else
+/// (at the epoch, say) leaves every view unformed, so a wait on one fails at once, by name, rather
+/// than after its bound.
+pub(super) fn own_stamp(state: &crate::http::AppState, ts_ms: i64) {
+    let name = state.config.cli.instance_name.as_str();
+    let skew = i64::try_from(state.fleet.standing().beat_skew()).unwrap_or(i64::MAX);
+    let clock = crate::shard::now_ms().saturating_sub(skew);
+    assert!(
+        (clock - 30_000..=clock + 1_000).contains(&ts_ms),
+        "{name}'s own beat is stamped {ts_ms}, not its clock less its test skew ({clock})"
+    );
+}
+
+/// [`own_stamp`] for each of `rigs`' stored beat of its own boot, once it has one.
+pub(super) async fn own_beats_stamped(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig]) {
+    for rig in rigs {
+        let name = rig.state.config.cli.instance_name.as_str();
+        let Ok(got) = fleet.get(&Path::from(format!("fleet/{name}.json"))).await else {
+            continue;
+        };
+        let Ok(body) = got.bytes().await else {
+            continue;
+        };
+        let beat: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        let boot = rig.state.runtime.identity.boot_id.as_str();
+        if let (Some(ts_ms), Some(true)) = (
+            beat["ts_ms"].as_i64(),
+            beat["boot_id"].as_str().map(|own| own == boot),
+        ) {
+            own_stamp(&rig.state, ts_ms);
+        }
     }
 }
 

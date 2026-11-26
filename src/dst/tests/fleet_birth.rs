@@ -226,6 +226,7 @@ impl Pair {
             .iter()
             .any(|rig| rig.state.ownership.ring_active().len() < 2)
         {
+            super::fixture_members::own_beats_stamped(&fleet, viewing).await;
             assert!(t0.elapsed() < BOUND, "both views name both members");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

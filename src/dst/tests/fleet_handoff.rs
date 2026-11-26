@@ -430,6 +430,7 @@ pub(super) async fn balance_cell() -> (HttpRig, HttpRig) {
         assert!(t0.elapsed() < BOUND, "streams-1 beats");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    super::fixture_members::own_beats_stamped(&fleet, &[&a]).await;
     let b = balance_member(&fleet, &data, "streams-2", RigRuntime::incarnation(1)).await;
     let urls = serde_json::json!({
         "streams-1": format!("http://{}", a.addr),
@@ -441,6 +442,7 @@ pub(super) async fn balance_cell() -> (HttpRig, HttpRig) {
         .iter()
         .any(|rig| rig.state.ownership.ring_active().len() < 2)
     {
+        super::fixture_members::own_beats_stamped(&fleet, &[&a, &b]).await;
         assert!(t0.elapsed() < BOUND, "both views name both members");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

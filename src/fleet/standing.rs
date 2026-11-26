@@ -451,6 +451,12 @@ impl Standing {
         self.beat_skew_ms.store(skew_ms, Ordering::Relaxed);
     }
 
+    /// Tests: how far behind the wall clock this runtime stamps its beats (`skew_beats`).
+    #[cfg(test)]
+    pub(crate) fn beat_skew(&self) -> u64 {
+        self.beat_skew_ms.load(Ordering::Relaxed)
+    }
+
     /// The time a beat is stamped with: the wall clock, less the tests' skew.
     pub(super) fn beat_stamp(&self) -> i64 {
         let now = crate::shard::now_ms();

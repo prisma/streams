@@ -475,6 +475,8 @@ async fn three_member_cell() -> [HttpRig; 3] {
     };
     let t0 = Instant::now();
     while !rigs.iter().all(knows) {
+        let refs: Vec<&HttpRig> = rigs.iter().collect();
+        super::fixture_members::own_beats_stamped(&fleet, &refs).await;
         assert!(
             t0.elapsed() < BOUND,
             "every view names all three members and their URLs"
