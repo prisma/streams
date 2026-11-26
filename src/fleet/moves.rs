@@ -152,7 +152,13 @@ impl Tick<'_> {
         let gain = pending_returns.get(home).copied().unwrap_or(0)
             + 1
             + self.candidacies.reserved_of(home);
-        return_home_allowed(owned, gain, shards.prefixes().len(), self.active.len())
+        within_share(
+            owned,
+            gain,
+            shards.prefixes().len(),
+            &self.active,
+            self.count,
+        )
     }
 
     /// The lag move's plan: this instance's laggiest shard (`AppState::lag_victim`, over the
@@ -276,6 +282,18 @@ impl Overrides {
     }
 }
 
+/// Whether a home owning `owned` of `leaves` may take `gain` more back: within the fair share
+/// over the members of `ring` within `count` (Addendum 41 B item 2). A leaver beyond the count
+/// stays in the ring until it releases.
+fn within_share(owned: usize, gain: usize, leaves: usize, ring: &[String], count: u64) -> bool {
+    return_home_allowed(
+        owned,
+        gain,
+        leaves,
+        super::record::sharing(ring, count).len(),
+    )
+}
+
 /// Whether return-home may give a shard back to `home`: a home with a fresh heartbeat
 /// (`peer_lag`) when it reports no absorb lag; one without, only when it is this instance (`me`)
 /// and none of its shards stalls (`my_stall_secs`). Another member without a fresh heartbeat is
@@ -328,7 +346,7 @@ fn returnable(home: &str, me: &str, count: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{counted_home, home_healthy, returnable, returned, void};
+    use super::{counted_home, home_healthy, returnable, returned, void, within_share};
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_string()).collect()
@@ -451,5 +469,20 @@ mod tests {
             [true, false, false],
             "(another within, itself, beyond the count)"
         );
+    }
+
+    /// Return-home's share divides by the ring's members within the count (Addendum 41 B item 2):
+    /// six leaves over `streams-1` and `streams-2` within a count of two give a share of three, so
+    /// a home holding two takes one back though `streams-3`, beyond the count, is still in the ring.
+    #[test]
+    fn return_homes_share_divides_by_the_members_within_the_count() {
+        let ring = names(&["streams-1", "streams-2", "streams-3"]);
+        assert!(within_share(2, 1, 6, &ring, 2), "a share of three");
+        assert!(!within_share(3, 1, 6, &ring, 2), "past the share of three");
+        assert!(
+            !within_share(2, 1, 6, &ring, 3),
+            "within a count of three: two"
+        );
+        assert!(!within_share(0, 1, 6, &[], 2), "no ring");
     }
 }

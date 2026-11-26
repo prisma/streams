@@ -331,17 +331,17 @@ impl FleetRead {
                 (0..*reserved).map(|n| (format!("{RESERVED}{member}/{n}"), member.clone()));
             owners.extend(phantoms);
         }
+        // The share divides by the members within the count, and only they are targets (Addendum
+        // 41 B item 2, C11): a leaver beyond it stays in the ring until it releases, and its
+        // shards are its own leave's to move.
         pick(
             &owners,
-            &self.active,
+            &super::record::sharing(&self.active, self.count),
             me,
-            // C11: no move names a listed member beyond the count.
             |member| {
-                super::record::within_count(member, self.count)
-                    && self
-                        .lags
-                        .get(member)
-                        .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
+                self.lags
+                    .get(member)
+                    .is_some_and(|lag| well_under(*lag, lag_threshold_secs))
             },
             // An override to a non-member is void (every reader ignores it),
             // so its shard moves as one with none; so does one past the return window.
@@ -376,7 +376,14 @@ fn past_share_in_mirror(state: &AppState, me: &str) -> bool {
         .iter()
         .filter(|prefix| state.ownership.effective_owner(prefix).as_deref() == Some(me))
         .count();
-    past_share(owned, prefixes.len(), active.len())
+    // The share over the members within the count the tick's last pass read, as the plan's
+    // (Addendum 60 §2); before the first pass, every member.
+    let count = state.fleet.standing().pass_count().unwrap_or(u64::MAX);
+    past_share(
+        owned,
+        prefixes.len(),
+        super::record::sharing(&active, count).len(),
+    )
 }
 
 /// One pass: read the fleet when this instance may be past the share, and
@@ -438,6 +445,9 @@ async fn run(state: Arc<AppState>, instance: String, cancel: Cancellation) -> Ta
         }
     }
 }
+
+#[cfg(test)]
+mod share_tests;
 
 #[cfg(test)]
 mod tests {
