@@ -319,6 +319,14 @@ member holds, a fence for one pass. Only a boot that has neither read nor
 written its own listing with its own boot id unlists itself first and then
 joins (a boot's own committed join, in-place restart or stamp counts).
 
+During a scale-in, breaking the contract costs more. A write that drops
+`members` while a member beyond the desired count is leaving is listed
+again with only the members within the count, so the leaver is unlisted:
+its shards answer as at a crash takeover (a fence), it counts
+`removed_while_listed`, and it joins again only if the count takes it. A
+cell whose only serving instance is that leaver has no ring until a member
+within the count beats.
+
 While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
 has published a ring, of any size), the scaler splits nothing (edge change
 #119): a split's child lands on another shard, which is another server's
