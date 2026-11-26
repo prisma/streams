@@ -52,6 +52,16 @@ pub(super) fn within_count(instance: &str, count: u64) -> bool {
         .is_some_and(|index| (1..=count.max(1)).contains(&index))
 }
 
+/// The members of `ring` within `count`, those a fair share divides by (Addendum 41 B item 2): a
+/// leaver beyond the count stays in the ring until it releases, and counting it would understate
+/// the share, refusing a return or a count move the cell needs.
+pub(super) fn sharing(ring: &[String], count: u64) -> Vec<String> {
+    ring.iter()
+        .filter(|member| within_count(member, count))
+        .cloned()
+        .collect()
+}
+
 /// A boot id as the planner compares it: the first eight bytes of its `crypto::hash16`, an
 /// algorithm the code fixes (the join ruling §7). Never written or sent; both sides of every
 /// comparison are hashed in the comparing process. Two boot ids that collide in 64 bits would let
@@ -526,6 +536,18 @@ mod tests {
 
     /// Today's ring: the qualified ordinals within the count, in ordinal order; none qualifying,
     /// every ordinal within the count.
+    /// The members a fair share divides by (Addendum 41 B item 2): the ring's within the count,
+    /// in the ring's order.
+    #[test]
+    fn a_share_divides_by_the_rings_members_within_the_count() {
+        let ring = names(&["streams-3", "streams-1", "streams-4", "streams-2"]);
+        assert_eq!(super::sharing(&ring, 2), names(&["streams-1", "streams-2"]));
+        assert_eq!(
+            super::sharing(&ring, 3),
+            names(&["streams-3", "streams-1", "streams-2"])
+        );
+    }
+
     #[test]
     fn todays_ring_is_the_qualified_ordinals_within_the_count() {
         let candidates = Candidates::new(3, names(&["streams-3", "streams-1", "streams-9"]));
