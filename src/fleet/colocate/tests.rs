@@ -13,6 +13,7 @@ fn instance(id: &str, resident_shards: u32, accepting: bool) -> Instance {
         id: id.into(),
         resident_shards,
         accepting,
+        within_count: true,
     }
 }
 
@@ -158,4 +159,44 @@ fn a_third_target_takes_each_half_from_its_holder_and_no_room_writes_nothing() {
     assert_eq!(step_of("c", (2, 2), third), Step::Wait);
     assert_eq!(step_of("a", (2, 2), None), Step::NoRoom);
     assert_eq!(step_of("b", (2, 2), None), Step::Wait);
+}
+
+/// `view` with `ids` beyond the count (`Instance::within_count`).
+fn beyond(mut view: View, ids: &[&str]) -> View {
+    for instance in &mut view.instances {
+        if ids.contains(&instance.id.as_str()) {
+            instance.within_count = false;
+        }
+    }
+    view
+}
+
+/// **A member beyond the count is no target, as the actor, the partner or another, and starts
+/// none** (C11; GATE-DECISION-s22-join-2026-11-20 Addendum 41 B, item 10). Under a ceiling of 4:
+/// the actor `a` with room but beyond leaves the target to the partner `b`; the partner with room
+/// but beyond leaves it to `c`; `c` beyond leaves none. A holder beyond the count waits where it
+/// would ask for room or hand its half.
+#[test]
+fn a_member_beyond_the_count_is_no_target_and_starts_none() {
+    let target = |view: &View| colocation_target(view, 4, &halves());
+    let actor_beyond = beyond(view("b", (2, 2), None, true), &["a"]);
+    assert_eq!(target(&actor_beyond).as_deref(), Some("b"));
+    let partner_beyond = beyond(view("a", (3, 2), Some((0, true)), true), &["b"]);
+    assert_eq!(target(&partner_beyond).as_deref(), Some("c"));
+    let other_beyond = beyond(view("a", (3, 3), Some((0, true)), true), &["c"]);
+    assert_eq!(target(&other_beyond), None);
+    let asks = beyond(view("a", (3, 3), None, true), &["a"]);
+    assert_eq!(
+        step(&asks, 4, "0"),
+        Step::Wait,
+        "the actor beyond asks for none"
+    );
+    let hands = beyond(view("b", (3, 3), Some((0, true)), true), &["b"]);
+    assert_eq!(
+        step(&hands, 4, "0"),
+        Step::Wait,
+        "the partner beyond hands none"
+    );
+    let unaffected = view("b", (3, 3), Some((0, true)), true);
+    assert_eq!(step(&unaffected, 4, "0"), hand("01", "c"));
 }

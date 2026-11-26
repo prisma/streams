@@ -48,6 +48,7 @@ fn instance(id: &str, resident_shards: u32) -> Instance {
         id: id.to_owned(),
         resident_shards,
         accepting: true,
+        within_count: true,
     }
 }
 

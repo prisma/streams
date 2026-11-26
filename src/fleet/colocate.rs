@@ -29,8 +29,11 @@ pub(crate) enum Step {
 }
 
 /// This instance's step (`view.me`'s) for the pair under `parent` in `view`, under the ceiling
-/// `max`.
+/// `max`. An instance beyond the count starts none (C11): it waits, and its leave moves its half.
 pub(crate) fn step(view: &View, max: u32, parent: &str) -> Step {
+    if beyond_count(view, &view.me) {
+        return Step::Wait;
+    }
     let halves = [format!("{parent}0"), format!("{parent}1")];
     let [zero, one] = &halves;
     let (half, _) = if owner(view, zero) == Some(&view.me) {
@@ -56,6 +59,12 @@ pub(crate) fn step(view: &View, max: u32, parent: &str) -> Step {
     }
 }
 
+/// Whether `view` shows `id` beyond the count (`Instance::within_count`); one it does not show is
+/// not, as before C11 (an actor's room counts its view's shards whether or not it beats).
+fn beyond_count(view: &View, id: &str) -> bool {
+    view.instances.iter().any(|i| i.id == id && !i.within_count)
+}
+
 /// The owner of the leaf `prefix` in `view`.
 fn owner<'a>(view: &'a View, prefix: &str) -> Option<&'a String> {
     view.leaves
@@ -70,7 +79,7 @@ fn owner<'a>(view: &'a View, prefix: &str) -> Option<&'a String> {
 /// every other accepting instance, fewest shards first, then by name, with room under `max` for
 /// what it would hold until the merge publishes. A holder takes the other half and the merged leaf
 /// (its shards + 2); any other instance takes both halves and the merged leaf (+ 3). The partner
-/// and the others must be accepting.
+/// and the others must be accepting, and none of the three beyond the count (C11).
 fn colocation_target(view: &View, max: u32, halves: &[String; 2]) -> Option<String> {
     let [zero, one] = halves;
     let actor = owner(view, zero)?;
@@ -83,16 +92,21 @@ fn colocation_target(view: &View, max: u32, halves: &[String; 2]) -> Option<Stri
             .map_or(0, |i| i.resident_shards)
     };
     let room = |id: &str, takes: u32| resident(id).saturating_add(takes) <= max;
-    if room(actor.as_str(), 2) {
+    let within = |id: &str| !beyond_count(view, id);
+    if within(actor.as_str()) && room(actor.as_str(), 2) {
         return Some(actor.clone());
     }
-    if let Some(partner) = partner.filter(|p| accepting(p.as_str()) && room(p.as_str(), 2)) {
+    let takes_its_half = |p: &&String| accepting(p.as_str()) && within(p.as_str());
+    if let Some(partner) = partner.filter(|p| takes_its_half(p) && room(p.as_str(), 2)) {
         return Some(partner.clone());
     }
+    // The actor and the partner need no exclusion here: one that reaches this tier failed its own
+    // room for two (or is beyond the count, or the partner not accepting), so it has no room for
+    // three either.
     let mut others: Vec<&Instance> = view
         .instances
         .iter()
-        .filter(|i| i.accepting && i.id != *actor && owner(view, one) != Some(&i.id))
+        .filter(|i| i.accepting && i.within_count)
         .collect();
     others.sort_by_key(|i| (i.resident_shards, i.id.clone()));
     others

@@ -374,6 +374,13 @@ impl Standing {
         candidates.as_ref().map(super::record::Candidates::count)
     }
 
+    /// Whether `instance`'s ordinal is within the count the tick's last pass read (C11), as the
+    /// membership's passes read it (`record::within_count`); true before the first pass.
+    pub(crate) fn within_count(&self, instance: &str) -> bool {
+        self.pass_count()
+            .is_none_or(|count| super::record::within_count(instance, count))
+    }
+
     /// Tests: the tick's last pass read `count` with `names` its candidates.
     #[cfg(test)]
     pub(crate) fn note_pass(&self, count: u64, names: &[&str]) {

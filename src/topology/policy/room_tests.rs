@@ -53,6 +53,7 @@ fn room_view(instances: &[(&str, u32, bool)]) -> View {
                 id: (*id).to_owned(),
                 resident_shards: *resident_shards,
                 accepting: *accepting,
+                within_count: true,
             })
             .collect(),
         split_demand: 0,
@@ -108,4 +109,25 @@ fn the_target_is_the_accepting_instance_with_room_and_fewest_shards() {
         "then by name"
     );
     assert_eq!(pick(&three[..3], 3), None, "none has room");
+}
+
+/// C11 (GATE-DECISION-s22-join-2026-11-20 Addendum 41 B): the room move names no instance beyond
+/// the count. The emptiest instance, beyond it, is skipped for the next with room; with none
+/// other, there is no target.
+#[test]
+fn the_room_moves_target_is_never_beyond_the_count() {
+    let mut view = room_view(&[
+        ("streams-1", 4, true),
+        ("streams-2", 1, true),
+        ("streams-3", 0, true),
+    ]);
+    view.instances[2].within_count = false;
+    let pick = |view: &View| super::room_for_split(view, 4, "streams-1");
+    assert_eq!(pick(&view).as_deref(), Some("streams-2"));
+    view.instances[1].within_count = false;
+    assert_eq!(
+        pick(&view),
+        None,
+        "only instances beyond the count have room"
+    );
 }

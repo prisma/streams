@@ -39,6 +39,17 @@ fn the_pass_count_is_the_last_passs() {
     assert_eq!(standing.pass_count(), Some(2));
 }
 
+/// The policy view's count (C11, `Instance::within_count`): every instance is within it before a
+/// pass; after one, the ordinals the pass's count names are, and one beyond it is not.
+#[test]
+fn an_instance_is_within_the_count_of_the_last_pass() {
+    let standing = Standing::default();
+    assert!(standing.within_count("streams-3"), "no pass yet");
+    standing.note_pass(2, &["streams-1", "streams-2", "streams-3"]);
+    let within = ["streams-1", "streams-2", "streams-3"].map(|name| standing.within_count(name));
+    assert_eq!(within, [true, true, false]);
+}
+
 /// A drain has begun from its first handoff and once it is announced, each alone; a planned
 /// move's close that did not end clean is counted, once each.
 #[test]

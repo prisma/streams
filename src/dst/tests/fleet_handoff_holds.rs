@@ -101,6 +101,7 @@ fn two_instances(leaves: Vec<crate::topology::policy::Leaf>) -> crate::topology:
         id: id.to_string(),
         resident_shards,
         accepting: true,
+        within_count: true,
     };
     crate::topology::policy::View {
         now_ms: 0,

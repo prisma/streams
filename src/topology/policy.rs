@@ -49,6 +49,11 @@ pub(crate) struct Instance {
     /// Fresh, not draining, not withdrawn and below its RSS shed line: one that may take a
     /// shard.
     pub accepting: bool,
+    /// Its ordinal is within the desired count this instance's last pass read (true before the
+    /// first pass). One beyond it is leaving: no planned move names it, as the room move's or a
+    /// co-location's target, and it starts no co-location (C11; GATE-DECISION-s22-join-2026-11-20
+    /// Addendum 41 B, item 10).
+    pub within_count: bool,
 }
 
 /// One tick's view of the cell.
@@ -490,13 +495,13 @@ fn reserve(view: &View, at: &Limits) -> Option<Decision> {
 const MOVED_SPLIT_TAKES: u32 = 3;
 
 /// The instance the shard of a split this instance `me` has no room for goes to: an accepting
-/// instance other than `me` whose resident shards plus the shard and its two children fit under
+/// instance within the count other than `me` whose resident shards plus the shard and its two children fit under
 /// `max`, fewest shards first, then by name; none when no instance has room.
 pub(crate) fn room_for_split(view: &View, max: u32, me: &str) -> Option<String> {
     let mut candidates: Vec<&Instance> = view
         .instances
         .iter()
-        .filter(|i| i.accepting && i.id != me)
+        .filter(|i| i.accepting && i.within_count && i.id != me)
         .filter(|i| i.resident_shards.saturating_add(MOVED_SPLIT_TAKES) <= max)
         .collect();
     candidates.sort_by_key(|i| (i.resident_shards, i.id.clone()));

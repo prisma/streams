@@ -439,7 +439,9 @@ fn view(cell: &Cell, seen: &mut Seen, intent_live: bool) -> View {
         })
         .collect();
     let (stale, shed) = (cell.limits.beat_stale_ms, cell.rss_shed_mb);
-    let instances = instances(&leaves, &beats, now_ms, stale, shed);
+    let instances = counted(instances(&leaves, &beats, now_ms, stale, shed), |id| {
+        standing.within_count(id)
+    });
     #[cfg(test)]
     let instances = skewed(instances, standing.view_skew().as_deref());
     let docs = standing.doc_times();
@@ -531,9 +533,19 @@ fn instances(
                 id: beat.instance.clone(),
                 resident_shards: u32::try_from(held).unwrap_or(u32::MAX),
                 accepting: member(beat, now_ms, stale_ms) && below_shed,
+                within_count: true,
             }
         })
         .collect()
+}
+
+/// `instances` with whether each is within the desired count the fleet's last pass read, `within`
+/// (C11; `Instance::within_count`).
+fn counted(mut instances: Vec<Instance>, within: impl Fn(&str) -> bool) -> Vec<Instance> {
+    for instance in &mut instances {
+        instance.within_count = within(&instance.id);
+    }
+    instances
 }
 
 /// The policy's limits from the configuration (rev 4 §4.3, Q4, S4 §10.1).
@@ -860,6 +872,7 @@ mod tests {
             id: id.into(),
             resident_shards,
             accepting,
+            within_count: true,
         };
         assert_eq!(
             instances(&leaves, &beats, NOW, STALE, 500),
