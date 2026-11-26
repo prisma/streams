@@ -26,9 +26,10 @@
 //! - **a member found unstamped** (C18, the join ruling, Addendum 33): a boot that has read itself
 //!   listed with its own boot id, and then reads its listing unstamped (a write that dropped its
 //!   boot id, or one that dropped `members` and was relisted by another), stamps its own boot id
-//!   back in place. It never unlists itself on C13's boot-time verdict after its decision. Not
-//!   covered: an undecided boot (C13), a listing with another boot id (R1a), a name removed
-//!   outright (a joiner), a member beyond the count.
+//!   back in place, whatever the count: a member beyond it has not released (Addendum 41 B item
+//!   8). It never unlists itself on C13's boot-time verdict after its decision. A pass that finds
+//!   its name unlisted clears the decision: it is a joiner then. Not covered: an undecided boot
+//!   (C13), a listing with another boot id (R1a), a name removed outright (a joiner).
 //!
 //! A committed CAS answers the document as written at the version the store gave, so the pass
 //! reads the document once (C4's read-once); a lost CAS, or one whose answer was lost, is followed
@@ -177,7 +178,7 @@ pub(super) fn plan(facts: &Facts<'_>, document: &Overrides, boot_id: &str) -> Pl
     match mine.map(|member| member.boot_id.as_deref()) {
         // An unstamped listing of its own name is another boot's (the join ruling §2): never
         // membership by the listing alone.
-        Some(None) if facts.member && within_count(me, c.count()) => {
+        Some(None) if facts.member => {
             let next = restamped(document, me, Some(boot_id));
             Planned::write(Some(next), Write::Restamped)
         }
@@ -351,6 +352,8 @@ pub(super) async fn pass(
         .with_settled(standing.settled(candidates));
     if candidates.is_member(read.0.members.as_deref()) {
         standing.note_member();
+    } else if unlisted(&read.0, candidates.me()) {
+        standing.forget_member();
     }
     let leaves = state.shards.prefixes().to_vec();
     let facts = Facts {
@@ -383,6 +386,15 @@ fn released(state: &AppState, candidates: &Candidates, document: &Overrides) {
     if may_beat(candidates, document) {
         state.fleet.standing().allow_beats();
     }
+}
+
+/// Whether `document` lists members and not `me` under any boot id: item 8's clearing point
+/// (Addendum 41 B). A document without `members` (C17's older cell) does not unlist anyone.
+pub(super) fn unlisted(document: &Overrides, me: &str) -> bool {
+    document
+        .members
+        .as_deref()
+        .is_some_and(|listed| listed.iter().all(|member| member.name != me))
 }
 
 /// Whether `document` shows this boot's decision (see [`released`]).

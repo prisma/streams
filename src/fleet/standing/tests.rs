@@ -343,10 +343,11 @@ fn the_join_records_the_pass_that_wrote_it() {
     );
 }
 
-/// C18's flag (the join ruling, Addendum 33): a boot is no member until a pass reads it listed with
-/// its own boot id, and then stays one; C13's boot-time verdict is not touched by it.
+/// C18's flag (the join ruling, Addendum 33; Addendum 41 B item 8): a boot is no member until a
+/// pass reads it listed with its own boot id, and stays one until a pass finds it unlisted; C13's
+/// boot-time verdict is not touched by either.
 #[test]
-fn a_boot_is_a_member_once_a_pass_reads_it_listed_and_stays_one() {
+fn a_boot_is_a_member_from_a_pass_that_reads_it_listed_until_one_finds_it_unlisted() {
     let standing = Standing::default();
     standing.decide_boot(false);
     assert!(!standing.decided_member(), "no pass read it yet");
@@ -356,6 +357,14 @@ fn a_boot_is_a_member_once_a_pass_reads_it_listed_and_stays_one() {
         (standing.decided_member(), standing.boot_young()),
         (true, Some(false))
     );
+    standing.forget_member();
+    assert_eq!(
+        (standing.decided_member(), standing.boot_young()),
+        (false, Some(false)),
+        "found unlisted"
+    );
+    standing.note_member();
+    assert!(standing.decided_member(), "listed again by a later pass");
 }
 
 /// C13's verdict reads back as decided, and nothing before (#183's survivors `boot_young` as
