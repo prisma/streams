@@ -237,8 +237,9 @@ The gates enforce these; plan for them before writing
   `scripts/quality/formal.py`, `Cargo.toml` and `Cargo.lock` feed every
   receipt; `build.rs` and `rust-toolchain.toml` every Kani receipt. Editing
   `verification/manifest.json`, `quality-tools.toml` or `formal.py` makes
-  CI's formal job run every obligation (about 40-50 min on the slowest of six
-  shards, bounded by TLA-002).
+  CI's formal job run every obligation (about 85-101 min on the longest of six
+  shards, measured in runs 45667633105, 45725137695 and 45735384631; CI's TLC
+  at 4 workers ran TLA-049's checks about 3.3x slower than the Mac at 8).
 - Before editing, `python3 scripts/dev/formal_batch.py cost [paths]` shows
   which receipts a change stales and what CI will run; after,
   `. scripts/dev/env.sh && python3 scripts/quality/formal.py check` (0.2 s;
