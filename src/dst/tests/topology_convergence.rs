@@ -74,18 +74,20 @@ fn converge_budget(instances: usize) -> Duration {
 /// (GATE-DECISION-convergence-grow-budget-2026-11-19). The chain is serial: S4's settle and the
 /// policy's `override_recent` both hold on the fleet's youngest override, not the leaf's own.
 /// - fixed waits: the count's 30 s grow floor (`fleet::hysteresis::GROW_FLOOR_MS`), S4's settle
-///   after the count change (`topology::ops::settle_ms`, `compressed`'s 1 s), and three move cooldowns
-///   (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, which `compressed` does not set): the born
-///   children's before the room move of `0`, the move's before `0` splits, and `00`'s and `01`'s
-///   before `1` splits: 270 s;
+///   after the count change (`topology::ops::settle_ms`: the topology cooldown, `compressed`'s 1 s),
+///   and three move cooldowns (`REBALANCE_MOVE_COOLDOWN_SECS`' default, 60 s, which `compressed`
+///   does not set): the born children's before the move of `0` (a room move, or count balance's,
+///   which carries it on the production profile), the move's before `0` splits, and `00`'s and
+///   `01`'s before `1` splits: 211 s;
 /// - four operations (the root split, the room move, the splits of `0` and of `1`), each waiting
 ///   for its actor's next policy pass (`policy_loop::PERIOD`, 10 s): 40 s;
 /// - three lost passes: an attempt that comes back not made and is retried on the next pass (a
 ///   room move's handoff `NotStarted` on its 2 s / 300 ms bounds, a split lost to the 5 s quiesce
 ///   deadline): 30 s.
 ///
-/// 340 s. One more serial cooldown in the chain (the fastest measured chain is 282 s) reaches the
-/// fourth leaf no sooner than 342 s, so it fails here.
+/// 281 s. A green run on CI reaches the fourth leaf at about 230 to 240 s; one more serial
+/// cooldown (60 s) in the chain fails here, and so does a room move missed on more passes than
+/// three (Addendum 49's red: three at `pre_flush`, then the fleet's shrink).
 fn grow_budget() -> Duration {
     let fixed_waits_secs = 30 + settle_secs(compressed) + 3 * 60;
     const OPERATIONS: u64 = 4;
@@ -200,6 +202,10 @@ impl Cell {
                 instance: Some(format!("streams-{n}")),
                 cli: self.cli,
                 prefixes: vec![String::new()],
+                // Production's log profile (GATE-DECISION-s22-join-2026-11-20 Addendum 49): the
+                // grow half's room move flushes unparked within 2 s, which the fast profile's L0
+                // cap of 8 can miss on a starved host, and its budget has no slack for that.
+                shard: super::fixture_http::RigShard::production(),
                 ..Default::default()
             },
         )
@@ -212,9 +218,12 @@ impl Cell {
     }
 
     /// Stop `streams-<n>`: its supervised loops end (its last beat withdraws it) and its engines
-    /// close.
+    /// close. Its planned moves' attempts are printed first: count balance's moves, which the
+    /// decision trace does not show, among them (GATE-DECISION-s22-join-2026-11-20 Addendum 54).
     async fn stop(&mut self, n: u64) {
         let rig = self.running.remove(&n).unwrap();
+        let attempts = rig.state.fleet.standing().attempts();
+        eprintln!("streams-{n} planned moves: {attempts:?}");
         let report = rig.tasks.shutdown(Duration::from_secs(5)).await;
         assert!(report.aborted.is_empty(), "streams-{n}: {report:?}");
         engine_shutdown(&rig.state).await;
