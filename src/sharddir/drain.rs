@@ -56,8 +56,9 @@ impl OpenGate {
         serving.get(prefix).is_some_and(fenced)
     }
 
-    /// Whether the gate starts no more opens: a stop, a drain's seal, or its evacuation.
+    /// Whether the gate starts no more opens for good: a stop, a drain's seal, or its evacuation;
+    /// a leaver's reversible seal is not one.
     pub(crate) fn sealed(&self) -> bool {
-        self.inner.stopping.load(Ordering::SeqCst)
+        self.inner.stopping.stopped()
     }
 }

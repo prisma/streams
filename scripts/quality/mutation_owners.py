@@ -485,6 +485,7 @@ OWNERS = (
     owner('fleet_handoff', 'src/fleet/handoff.rs', 'fleet::handoff:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_bound:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('fleet_tags', 'src/fleet/tags.rs', 'fleet::tags:: dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_reads::'),
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
+    owner('sharddir_leave', 'src/sharddir/leave.rs', 'sharddir::leave:: sharddir::open_gate_tests:: dst_tests::fleet_handoff_drain::'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: shard::task_lifecycle_tests::a_retirement_because_ownership_moved_is_counted_as_a_tick_yield dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),
     owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced:: dst_tests::parked_waits::writes_'),
     owner('fleet_moves', 'src/fleet/moves.rs',
