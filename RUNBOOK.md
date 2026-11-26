@@ -315,8 +315,9 @@ one member, then each other member stamps itself back on its next pass
 (about 4 s in all). Meanwhile no member leaves its own ring, unlists
 itself, or yields a shard over the write, unless a peer cannot read a
 member's heartbeat in that same pass: that peer may then open a shard the
-member holds, a fence for one pass. Only a boot that has not yet read
-itself listed with its own boot id unlists itself first and then joins.
+member holds, a fence for one pass. Only a boot that has neither read nor
+written its own listing with its own boot id unlists itself first and then
+joins (a boot's own committed join, in-place restart or stamp counts).
 
 While the server runs in a fleet (`FLEET_PREFIX` set, once its fleet loop
 has published a ring, of any size), the scaler splits nothing (edge change
