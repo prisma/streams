@@ -41,6 +41,25 @@
 (* slot. Abstraction line (K10): a move ends at the target's Ready, or at *)
 (* its hold's lapse.                                                       *)
 (*                                                                          *)
+(* The leave (src/fleet/leave.rs, Addendum 41 B, Addendum 44 Q7): a member *)
+(* beyond the count pins as any member (C7), hands off giver first to a    *)
+(* successor within the count, seals once its view gives it nothing and it *)
+(* holds nothing (src/sharddir/leave.rs), and is released by its own pass  *)
+(* while a member within the count is listed. A listed name leaves the     *)
+(* document only by its own release or on evidence (C14, src/fleet/dead.rs: *)
+(* DeadRemoval, the code's one CAS with the pins modelled as the path Pin  *)
+(* then DeadRemoval from one document), never by the count.                *)
+(*                                                                          *)
+(* The foreign write (an environment step, Addenda 33, 35, 41 B items 8-9): *)
+(* an unconditional write that drops a running member's boot id, or drops  *)
+(* `members` (an older cell's document, C17: every ring is today's, the    *)
+(* qualified ordinals within the count, until a member of today's ring     *)
+(* relists today's ordinals, itself stamped). C18: a decided member         *)
+(* (`decided`, Standing::decided_member) found unstamped restamps itself in *)
+(* place, whatever the count. C18b: it counts its own unstamped listing in *)
+(* its own ring, whatever the count. Other readers judge an unstamped name *)
+(* by its beat (record.rs in_ring).                                         *)
+(*                                                                          *)
 (* Flagged steps (each excuses every leaf from then on, in `excused`):     *)
 (* Crash, Misjudge (a live instance judged dead), JoinFallback (JOIN_PHASE *)
 (* past: join with something uncovered), LeaveFallback (LEAVE_PHASE past: *)
@@ -60,8 +79,12 @@
 (* beat read stale, draining or withdrawn; an absent or unread beat of a   *)
 (* listed instance counts live (a rule the ruling does not state; see the  *)
 (* obligation's scope). "ruled" is the ruling's listed /\ qualified.       *)
+(* Operator switches a configuration overrides with `<-` (the others keep  *)
+(* their text): LeaverPins (FALSE: rev 2's `~Leaving` on Pin), EvidenceCovers *)
+(* (FALSE: a joiner's coverage over C3's unfiltered fallback), C18bAnyCount  *)
+(* (FALSE: C18b within the count only), MaxForeignWrites and ForeignWrite.  *)
 (***************************************************************************)
-EXTENDS Naturals, FiniteSets, TLC
+EXTENDS Integers, FiniteSets, TLC
 
 CONSTANTS
     Design,            \* "record" (the ruling) | "beat" (rev 1)
@@ -96,6 +119,35 @@ Order(x) == IF x = "p" THEN <<"n1", "n3", "n2">> ELSE <<"n3", "n2", "n1">>
 Pos(x, n) == CHOOSE i \in 1..3 : Order(x)[i] = n
 Home(x, R) == IF R = {} THEN None ELSE CHOOSE n \in R : \A m \in R : Pos(x, n) <= Pos(x, m)
 
+(* A listing with no boot id (`Member { boot_id: None }`): listed, no member (R1b). *)
+Unstamped == -1
+
+(* The switches (see the header); a configuration replaces one with `<-`. *)
+LeaverPins == TRUE           \* Addendum 44 Q7: a leaver pins
+LeaverPinsOff == FALSE
+EvidenceCovers == TRUE       \* Addendum 45 §2: coverage over R1's ring, empty when it is
+EvidenceCoversOff == FALSE
+C18bAnyCount == TRUE         \* Addendum 41 B item 8: C18b whatever the count
+C18bWithinCount == FALSE
+MaxForeignWrites == 0        \* foreign writes per behaviour
+OneForeignWrite == 1
+ForeignWrite == "unstamp"    \* "unstamp" | "members" | "both"
+ForeignWriteMembers == "members"
+ForeignWriteBoth == "both"
+(* Whether `decided` is kept: only a foreign write makes a listing unstamped, *)
+(* and only then is it read, so with none it stays as Init leaves it.        *)
+DecidedOn == MaxForeignWrites > 0
+(* Addendum 63 (1): C18's note is also taken at this boot's own committed  *)
+(* write that lists it with its own boot id (`Joined`, `InPlace`,          *)
+(* `Stamped`). Control (FALSE): the note only at the next pass's read.      *)
+NoteAtCommit == TRUE
+NoteAtCommitOff == FALSE
+(* TRUE: a foreign write lands only while every live peer's last pass holds *)
+(* the member's beat, so Addendum 36's double fault (a peer's publication   *)
+(* over candidates without the loser's beat) is out of the run.            *)
+ForeignNeedsBeats == FALSE
+ForeignNeedsBeatsOn == TRUE
+
 ASSUME /\ Design \in {"record", "beat"} /\ RingRule \in {"ruled", "name", "evidence"}
        /\ CoverRule \in {"ruled", "owners"}
        /\ InitCount \in 1..3 /\ InitUp \subseteq Nodes /\ InitEntryQ \in Nodes \cup {None}
@@ -127,12 +179,20 @@ VARIABLES
     announced,    \* per instance: this incarnation's beat says draining
     claim,        \* Design "beat": the beat's member claim
     seen,         \* Design "beat": per reader, per instance, the claim last read
-    counters,     \* [cc, mv, cr, mj]: count changes, moves, crashes, misjudges
+    counters,     \* [cc, mv, cr, mj, rs, fw]: count changes, moves, crashes, misjudges,
+                  \* restarts, foreign writes
     excused,      \* ghost: leaves a flagged step touched
-    ghost         \* ghost record for the witnesses
+    ghost,        \* ghost record for the witnesses
+    decided       \* per instance: a pass of this boot read it listed with its own boot id, or
+                  \* its own committed write so listed it (C18's note, Standing::decided_member;
+                  \* Addendum 63), until its own release or a pass that finds it unlisted
 
 vars == <<doc, count, alive, boot, qual, cand, dead, candDead, inc, view, eng, hand, slot, sealed, draining,
-          announced, claim, seen, counters, excused, ghost>>
+          announced, claim, seen, counters, excused, ghost, decided>>
+
+(* The note at this boot's own committed write listing it with its own boot. *)
+NotedAtCommit(n) ==
+    IF DecidedOn /\ NoteAtCommit THEN [decided EXCEPT ![n] = TRUE] ELSE decided
 
 Live == {n \in Nodes : alive[n] /\ ~announced[n]}
 Counted(c) == {n \in Nodes : Ord(n) <= c}
@@ -151,13 +211,23 @@ Leaving(n) == Member(n) /\ (Ord(n) > count \/ draining[n])
 (* read stale or draining. R1: a listed member leaves the ring only on a    *)
 (* held beat of its listed incarnation; "name": on any such beat; "ruled":  *)
 (* listed /\ read live.                                                     *)
+(* An unstamped listing of another is judged by name: in the ring on a beat *)
+(* read live (record.rs in_ring). Its own unstamped listing is in its own  *)
+(* ring only for a decided boot (C18b). A document without `members` gives *)
+(* today's ring (C17): the ordinals within the count read live, else all.  *)
+TodayRing(Q) == IF Counted(count) \cap Q = {} THEN Counted(count) ELSE Counted(count) \cap Q
 RingRec(n, d, Q, D) ==
-    LET self == IF inc[n] # 0 /\ d.members[n] = inc[n] /\ boot[n] = "up" THEN {n} ELSE {}
+    LET own == \/ d.members[n] = inc[n]
+               \/ /\ d.members[n] = Unstamped /\ decided[n]
+                  /\ (C18bAnyCount \/ Ord(n) <= count)
+        self == IF inc[n] # 0 /\ own /\ boot[n] = "up" THEN {n} ELSE {}
         listed == {m \in Nodes \ {n} : d.members[m] # 0}
-        others == CASE RingRule = "ruled" -> listed \cap Q
-                    [] RingRule = "name" -> {m \in listed : D[m] = 0}
-                    [] OTHER -> {m \in listed : D[m] # d.members[m]}
-    IN self \cup others
+        byName == {m \in listed : d.members[m] = Unstamped /\ m \in Q}
+        stamped == {m \in listed : d.members[m] # Unstamped}
+        others == CASE RingRule = "ruled" -> stamped \cap Q
+                    [] RingRule = "name" -> {m \in stamped : D[m] = 0}
+                    [] OTHER -> {m \in stamped : D[m] # d.members[m]}
+    IN IF d.bare THEN TodayRing(Q) ELSE self \cup byName \cup others
 RingBeat(n, Q, sn) ==
     {m \in Nodes : IF m = n THEN claim[n] /\ boot[n] = "up" ELSE m \in Q /\ sn[m]}
 Ring(n, d, Q, D, sn) == IF Design = "record" THEN RingRec(n, d, Q, D) ELSE RingBeat(n, Q, sn)
@@ -177,7 +247,8 @@ Excuse(c) == excused' = Leaves
 Init ==
     /\ doc = [members |-> [m \in Nodes |-> IF Design = "record" /\ m \in InitUp THEN 1 ELSE 0],
               entries |-> [x \in Leaves |-> IF x = "q" /\ InitEntryQ # None
-                                            THEN [to |-> InitEntryQ, pin |-> None] ELSE NoEntry]]
+                                            THEN [to |-> InitEntryQ, pin |-> None] ELSE NoEntry],
+              bare |-> FALSE]
     /\ count = InitCount
     /\ alive = [n \in Nodes |-> n \in InitUp]
     /\ boot = [n \in Nodes |-> IF n \in InitUp THEN "up" ELSE "off"]
@@ -195,13 +266,14 @@ Init ==
     /\ sealed = [n \in Nodes |-> FALSE]
     /\ draining = [n \in Nodes |-> FALSE]
     /\ announced = [n \in Nodes |-> FALSE]
-    /\ counters = [cc |-> 0, mv |-> 0, cr |-> 0, mj |-> 0, rs |-> 0]
+    /\ counters = [cc |-> 0, mv |-> 0, cr |-> 0, mj |-> 0, rs |-> 0, fw |-> 0]
     /\ excused = {}
     /\ ghost = [slotRefused |-> FALSE, joinerWaited |-> FALSE, returnDuringJoin |-> FALSE,
                 joinFallback |-> FALSE, leaveFallback |-> FALSE, deadRemoved |-> FALSE,
                 drainInLeave |-> FALSE, droppedMidJoin |-> FALSE, readyEnd |-> FALSE,
                 drained |-> FALSE, rejoined |-> FALSE,
-                crashUnremoved |-> FALSE, crashRemoved |-> FALSE]
+                crashUnremoved |-> FALSE, crashRemoved |-> FALSE, restampedLeaver |-> FALSE]
+    /\ decided = [n \in Nodes |-> DecidedOn /\ Design = "record" /\ n \in InitUp]
 
 -----------------------------------------------------------------------------
 (* The environment *)
@@ -213,7 +285,7 @@ SetCount(c) ==
     /\ ghost' = [ghost EXCEPT !.droppedMidJoin = @ \/
                     \E j \in Nodes : Up(j) /\ ~Member(j) /\ Ord(j) <= count /\ Ord(j) > c]
     /\ UNCHANGED <<dead, candDead, inc, doc, alive, boot, qual, cand, view, eng, hand, slot, sealed, draining,
-                   announced, claim, seen, excused>>
+                   announced, claim, seen, excused, decided>>
 
 (* The platform starts an instance the count names: a first start, or a    *)
 (* restart after a crash or after a drain's stop (M2), as a new incarnation *)
@@ -235,6 +307,7 @@ Start(n) ==
     /\ seen' = [seen EXCEPT ![n] = [m \in Nodes |-> m \in Live /\ claim[m]]]
     /\ view' = [view EXCEPT ![n] = NoView]
     /\ counters' = IF inc[n] = 0 THEN counters ELSE [counters EXCEPT !.rs = @ + 1]
+    /\ decided' = [decided EXCEPT ![n] = FALSE]
     /\ UNCHANGED <<doc, count, eng, hand, slot, sealed, claim,
                    excused, ghost>>
 
@@ -249,9 +322,10 @@ Decide(n) ==
     /\ IF Design = "record" /\ n \in Listed
        THEN \/ /\ Excuse(n)
                /\ doc' = [doc EXCEPT !.members[n] = inc[n]]
+               /\ decided' = NotedAtCommit(n)
             \/ /\ doc' = [doc EXCEPT !.members[n] = 0]
-               /\ UNCHANGED excused
-       ELSE UNCHANGED <<doc, excused>>
+               /\ UNCHANGED <<excused, decided>>
+       ELSE UNCHANGED <<doc, excused, decided>>
     /\ claim' = [claim EXCEPT ![n] = FALSE]
     /\ UNCHANGED <<dead, candDead, inc, count, alive, qual, cand, view, eng, hand, slot, sealed, draining, announced,
                    seen, counters, ghost>>
@@ -271,7 +345,7 @@ Crash(n) ==
     /\ ghost' = [ghost EXCEPT
            !.crashUnremoved = @ \/ (draining[n] /\ ~announced[n] /\ doc.members[n] # 0),
            !.crashRemoved = @ \/ (draining[n] /\ ~announced[n] /\ doc.members[n] = 0)]
-    /\ UNCHANGED <<dead, candDead, inc, doc, count, qual, cand, draining, announced, claim, seen>>
+    /\ UNCHANGED <<dead, candDead, inc, doc, count, qual, cand, draining, announced, claim, seen, decided>>
 
 (* A live instance judged dead by a reader (a clock, a lost beat).          *)
 Misjudge(n, m) ==
@@ -281,7 +355,7 @@ Misjudge(n, m) ==
     /\ dead' = [dead EXCEPT ![n][m] = inc[m]]
     /\ counters' = [counters EXCEPT !.mj = @ + 1]
     /\ UNCHANGED <<candDead, inc, doc, count, alive, boot, cand, view, eng, hand, slot, sealed, draining,
-                   announced, claim, seen, ghost>>
+                   announced, claim, seen, ghost, decided>>
 
 -----------------------------------------------------------------------------
 (* The tick *)
@@ -297,12 +371,21 @@ ReadBeats(n) ==
               seen' = [seen EXCEPT ![n] = [m \in Nodes |-> IF m \in S THEN m \in Live /\ claim[m]
                                                            ELSE seen[n][m]]]
     /\ UNCHANGED <<candDead, inc, doc, count, alive, boot, cand, view, eng, hand, slot, sealed, draining,
-                   announced, claim, counters, excused, ghost>>
+                   announced, claim, counters, excused, ghost, decided>>
 
-PublishFrom(n, d) ==
+(* C18's note, taken by every pass from the document it read (join::pass):  *)
+(* set when it lists this boot, cleared when it lists the name under no boot. *)
+Noted(n) ==
+    IF ~DecidedOn THEN decided
+    ELSE IF Member(n) THEN [decided EXCEPT ![n] = TRUE]
+    ELSE IF ~doc.bare /\ doc.members[n] = 0 THEN [decided EXCEPT ![n] = FALSE]
+    ELSE decided
+PublishFromAs(n, d, dec) ==
     /\ view' = [view EXCEPT ![n] = MkView(n, d, qual[n], dead[n], seen[n])]
     /\ cand' = [cand EXCEPT ![n] = qual[n]]
     /\ candDead' = [candDead EXCEPT ![n] = dead[n]]
+    /\ decided' = dec
+PublishFrom(n, d) == PublishFromAs(n, d, Noted(n))
 
 Publish(n) ==
     /\ alive[n] /\ boot[n] # "off"
@@ -322,20 +405,20 @@ Refresh(n) ==
     /\ Up(n) /\ view[n].ok
     /\ view' = [view EXCEPT ![n] = RefreshView(n, doc)]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, eng, hand, slot, sealed, draining,
-                   announced, claim, seen, counters, excused, ghost>>
+                   announced, claim, seen, counters, excused, ghost, decided>>
 
 Yield(n, x) ==
     /\ eng[n][x] /\ Owner(view[n], x) # n /\ hand[n].x # x
     /\ eng' = [eng EXCEPT ![n][x] = FALSE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, hand, slot, sealed, draining,
-                   announced, claim, seen, counters, excused, ghost>>
+                   announced, claim, seen, counters, excused, ghost, decided>>
 
 Open(n, x) ==
     /\ Up(n) /\ ~eng[n][x] /\ Owner(view[n], x) = n /\ hand[n].x # x
     /\ ~(SealOnRelease /\ sealed[n])
     /\ eng' = [eng EXCEPT ![n][x] = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, hand, slot, sealed, draining,
-                   announced, claim, seen, counters, excused, ghost>>
+                   announced, claim, seen, counters, excused, ghost, decided>>
 
 -----------------------------------------------------------------------------
 (* The membership task, Design "record" (C5-C8, C10-C12, C14)              *)
@@ -348,9 +431,20 @@ NobodyCoversOff == FALSE
 (* C5 as ruled: a leaf it would win by ring with no entry naming a ring    *)
 (* member. CoverRule "owners": every leaf whose owner the join changes, so *)
 (* a (void) entry naming the joiner is uncovered too (rev 1's J2).         *)
+(* Its ring is R1's (Addenda 45, 46; join.rs of_joiner, record.rs          *)
+(* evidence_ring): the listed members with no held stale beat of their     *)
+(* listed incarnation, an unstamped one kept; never C3's unfiltered        *)
+(* fallback, so it can be empty, and then nothing is uncovered. The model's *)
+(* held stale beat stands for the code's settled watch of it. Control      *)
+(* (EvidenceCovers FALSE): an empty ring falls back to the listed members  *)
+(* within the count (C3), as the join did before Addendum 45.              *)
+CoverRing(j) ==
+    LET R == NowRing(j) \cup {m \in Listed \ {j} : doc.members[m] = Unstamped} IN
+    IF Design = "record" /\ ~EvidenceCovers /\ R = {}
+    THEN {m \in Listed : Ord(m) <= count} ELSE R
 Uncovered(j) ==
-    LET R == NowRing(j) IN
-    IF Design = "record" /\ NobodyCovers /\ Listed = {} THEN {}
+    LET R == CoverRing(j) IN
+    IF Design = "record" /\ NobodyCovers /\ (Listed = {} \/ (EvidenceCovers /\ R = {})) THEN {}
     ELSE IF CoverRule = "ruled"
     THEN {x \in Leaves : Home(x, R \cup {j}) = j /\ doc.entries[x].to \notin R}
     ELSE {x \in Leaves : OwnerOf(R \cup {j}, doc.entries, x) # OwnerOf(R, doc.entries, x)}
@@ -358,15 +452,16 @@ Uncovered(j) ==
 (* membership task runs between a drain's announce and its stop).         *)
 Joiner(j) ==
     /\ Up(j) /\ Ord(j) <= count /\ ~(DrainNoJoin /\ draining[j])
-    /\ IF Design = "record" THEN doc.members[j] = 0 ELSE ~claim[j]
+    /\ IF Design = "record" THEN doc.members[j] = 0 /\ ~doc.bare ELSE ~claim[j]
 
 (* C7: one CAS naming itself for each leaf the document gives it that the  *)
 (* ring with every unlisted counted ordinal would give to another.        *)
 PinsOf(m) ==
     {x \in Leaves : /\ DocOwner(m, x) = m /\ doc.entries[x].to # m
                     /\ OwnerOf(NowRing(m) \cup Unlisted, doc.entries, x) # m}
+(* A leaver pins as any listed member (Addendum 44 Q7; join.rs of_member).  *)
 Pin(m) ==
-    /\ Design = "record" /\ Up(m) /\ Member(m) /\ ~Leaving(m)
+    /\ Design = "record" /\ Up(m) /\ Member(m) /\ (LeaverPins \/ ~Leaving(m))
     /\ PinsOf(m) # {}
     /\ LET d == [doc EXCEPT !.entries = [x \in Leaves |->
                     IF x \in PinsOf(m) THEN [to |-> m, pin |-> None] ELSE @[x]]]
@@ -390,7 +485,8 @@ NoOpDrop(n, x) ==
 (* C6 (c): anyone drops an entry naming an instance the document does not list. *)
 DropUnlisted(n, x) ==
     /\ Design = "record" /\ Up(n)
-    /\ doc.entries[x].to # None /\ doc.entries[x].to \notin Listed
+    /\ doc.entries[x].to # None
+    /\ IF doc.bare THEN doc.entries[x].to \notin NowRing(n) ELSE doc.entries[x].to \notin Listed
     /\ LET d == [doc EXCEPT !.entries[x] = NoEntry]
        IN /\ doc' = d /\ PublishFrom(n, d)
     /\ UNCHANGED <<dead, inc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
@@ -402,7 +498,7 @@ JoinStep(j, fallback) ==
     /\ IF fallback THEN JoinFallbackOn /\ Uncovered(j) # {}
        ELSE ~CoverageGuard \/ Uncovered(j) = {}
     /\ LET d == [doc EXCEPT !.members[j] = inc[j]]
-       IN /\ doc' = d /\ PublishFrom(j, d)
+       IN /\ doc' = d /\ PublishFromAs(j, d, NotedAtCommit(j))
     /\ excused' = IF fallback THEN Leaves ELSE excused
     /\ ghost' = [ghost EXCEPT !.joinFallback = @ \/ fallback,
                                !.rejoined = @ \/ (ghost.drained /\ inc[j] > 1)]
@@ -418,36 +514,48 @@ JoinerWaits(j) ==
     /\ \E x \in Uncovered(j) : \E h \in Nodes : Member(h) /\ eng[h][x]
     /\ ghost' = [ghost EXCEPT !.joinerWaited = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed, draining,
-                   announced, claim, seen, counters, excused>>
+                   announced, claim, seen, counters, excused, decided>>
 
-(* C10: the seal, one step under the gate: holds nothing, no move running. *)
+(* C10: the seal, one step under the gate: holds nothing, no move running; *)
+(* a leaver's only once its view gives it no leaf (leave.rs look).          *)
 Seal(n) ==
     /\ Up(n) /\ Leaving(n) /\ ~sealed[n]
     /\ \A x \in Leaves : ~eng[n][x]
     /\ hand[n] = NoHand
+    /\ draining[n] \/ \A x \in Leaves : Owner(view[n], x) # n
     /\ sealed' = [sealed EXCEPT ![n] = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, draining,
-                   announced, claim, seen, counters, excused, ghost>>
+                   announced, claim, seen, counters, excused, ghost, decided>>
 
+(* The seal lifts once it is not leaving and holds nothing (Addendum 60 §1). *)
 Unseal(n) ==
-    /\ sealed[n] /\ ~Leaving(n)
+    /\ sealed[n] /\ ~Leaving(n) /\ \A x \in Leaves : ~eng[n][x]
     /\ sealed' = [sealed EXCEPT ![n] = FALSE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, draining,
-                   announced, claim, seen, counters, excused, ghost>>
+                   announced, claim, seen, counters, excused, ghost, decided>>
 
+(* A successor (leave.rs, drain::successors; C11, R1d): a member of its    *)
+(* ring within the count, not leaving, whose beat it holds fresh.          *)
+HasSuccessor(n) == \E t \in NowRing(n) \ {n} : Ord(t) <= count /\ ~Leaving(t) /\ t \in qual[n]
 (* C10, C12: the CAS removing itself, then its view. A drain's announce is *)
-(* its own step (Announce, M3), before or after this one.                 *)
-(* LEAVE_PHASE's fallback releases holding (flagged).                      *)
+(* its own step (Announce, M3), before or after this one. A leaver's       *)
+(* release (join.rs `Write::Released`) only while a member within the count *)
+(* is listed (Addendum 44 Q4). LEAVE_PHASE's fallback releases holding     *)
+(* (flagged); its clock does not run with no successor (Addendum 41 B 3).   *)
+(* Its own release clears C18's note.                                       *)
 ReleaseStep(n, fallback) ==
     /\ Up(n) /\ Leaving(n)
-    /\ IF fallback THEN LeaveFallbackOn /\ ~sealed[n] /\ \E x \in Leaves : eng[n][x]
+    /\ draining[n] \/ \E m \in Nodes \ {n} : doc.members[m] # 0 /\ Ord(m) <= count
+    /\ IF fallback THEN /\ LeaveFallbackOn /\ ~sealed[n] /\ \E x \in Leaves : eng[n][x]
+                        /\ draining[n] \/ HasSuccessor(n)
        ELSE sealed[n]
     /\ IF Design = "record"
        THEN LET d == [doc EXCEPT !.members[n] = 0]
-            IN /\ doc' = d /\ PublishFrom(n, d) /\ UNCHANGED claim
+            IN /\ doc' = d /\ UNCHANGED claim
+               /\ PublishFromAs(n, d, IF DecidedOn THEN [decided EXCEPT ![n] = FALSE] ELSE decided)
        ELSE /\ claim' = [claim EXCEPT ![n] = FALSE]
             /\ view' = [view EXCEPT ![n] = [@ EXCEPT !.ring = @ \ {n}]]
-            /\ UNCHANGED <<cand, candDead, doc>>
+            /\ UNCHANGED <<cand, candDead, doc, decided>>
     /\ sealed' = [sealed EXCEPT ![n] = FALSE]
     /\ excused' = IF fallback THEN Leaves ELSE excused
     /\ ghost' = [ghost EXCEPT !.leaveFallback = @ \/ fallback]
@@ -463,7 +571,7 @@ Announce(n) ==
     /\ IF AnnounceAfterRemoval THEN ~Member(n) /\ doc.members[n] = 0 ELSE sealed[n] \/ ~Member(n)
     /\ announced' = [announced EXCEPT ![n] = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed,
-                   draining, claim, seen, counters, excused, ghost>>
+                   draining, claim, seen, counters, excused, ghost, decided>>
 
 (* A drained instance stops once it announced and its removal landed (an   *)
 (* orderly stop, no flag). The platform may start the name again (M2).     *)
@@ -473,7 +581,7 @@ Stop(n) ==
     /\ boot' = [boot EXCEPT ![n] = "off"]
     /\ view' = [view EXCEPT ![n] = NoView]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, qual, cand, eng, hand, slot, sealed, draining, announced, claim,
-                   seen, counters, excused, ghost>>
+                   seen, counters, excused, ghost, decided>>
 
 (* One planned drain per behaviour (the model's bound).                     *)
 Drain(n) ==
@@ -481,20 +589,80 @@ Drain(n) ==
     /\ draining' = [draining EXCEPT ![n] = TRUE]
     /\ ghost' = [ghost EXCEPT !.drainInLeave = @ \/ Ord(n) > count, !.drained = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed,
-                   announced, claim, seen, counters, excused>>
+                   announced, claim, seen, counters, excused, decided>>
 
 (* C14 with R1c and M4: a ring member removes a listed instance on evidence *)
 (* only, a held beat of the listed boot read stale or draining (the bound's *)
 (* wait abstracted); removing a live incarnation is flagged.               *)
+(* An unstamped listing is judged on a held stale beat of any boot (dead.rs).*)
 DeadRemoval(n, m) ==
     /\ DeadRemovalOn /\ Design = "record" /\ Up(n) /\ Member(n)
-    /\ m # n /\ doc.members[m] # 0 /\ dead[n][m] = doc.members[m]
+    /\ m # n /\ doc.members[m] # 0
+    /\ IF doc.members[m] = Unstamped THEN dead[n][m] # 0 ELSE dead[n][m] = doc.members[m]
     /\ LET d == [doc EXCEPT !.members[m] = 0]
        IN /\ doc' = d /\ PublishFrom(n, d)
-    /\ excused' = IF alive[m] /\ inc[m] = doc.members[m] THEN Leaves ELSE excused
+    /\ excused' = IF alive[m] /\ doc.members[m] \in {inc[m], Unstamped} THEN Leaves ELSE excused
     /\ ghost' = [ghost EXCEPT !.deadRemoved = TRUE]
     /\ UNCHANGED <<dead, inc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
                    claim, seen, counters>>
+
+-----------------------------------------------------------------------------
+(* The foreign write, an environment step (Addendum 41 B item 9; Addenda   *)
+(* 33, 35): an unconditional write of the document by another writer that  *)
+(* keeps the entries and drops a running member's boot id, or drops        *)
+(* `members` whole. Not flagged: C17, C18 and C18b are its repairs (the    *)
+(* obligation's scope says which cases they do not repair).                *)
+ForeignUnstamp(m) ==
+    /\ Design = "record" /\ ForeignWrite \in {"unstamp", "both"}
+    /\ counters.fw < MaxForeignWrites
+    /\ alive[m] /\ Member(m)
+    /\ ForeignNeedsBeats => \A k \in Nodes \ {m} : alive[k] => m \in cand[k]
+    /\ doc' = [doc EXCEPT !.members[m] = Unstamped]
+    /\ counters' = [counters EXCEPT !.fw = @ + 1]
+    /\ UNCHANGED <<dead, candDead, inc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed, draining,
+                   announced, claim, seen, excused, ghost, decided>>
+
+ForeignBare ==
+    /\ Design = "record" /\ ForeignWrite \in {"members", "both"}
+    /\ counters.fw < MaxForeignWrites /\ ~doc.bare
+    /\ doc' = [doc EXCEPT !.members = [m \in Nodes |-> 0], !.bare = TRUE]
+    /\ counters' = [counters EXCEPT !.fw = @ + 1]
+    /\ UNCHANGED <<dead, candDead, inc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed, draining,
+                   announced, claim, seen, excused, ghost, decided>>
+
+(* C18 (join.rs plan, `Write::Restamped`): a decided member found unstamped *)
+(* stamps its own boot id back in place, whatever the count.               *)
+Restamp(n) ==
+    /\ Design = "record" /\ Up(n) /\ decided[n] /\ ~doc.bare /\ doc.members[n] = Unstamped
+    /\ LET d == [doc EXCEPT !.members[n] = inc[n]]
+       IN /\ doc' = d /\ PublishFrom(n, d)
+    /\ ghost' = [ghost EXCEPT !.restampedLeaver = @ \/
+                    (Ord(n) > count /\ excused = {} /\ \E x \in Leaves : eng[n][x])]
+    /\ UNCHANGED <<dead, inc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
+                   claim, seen, counters, excused>>
+
+(* An undecided boot found unstamped (join.rs of_restart, `Write::Stamped` *)
+(* or `Write::Unlisted`): stamps in place on C13's boot-time verdict, or    *)
+(* removes its listing and joins again. C18 does not cover a boot that has  *)
+(* neither committed nor read its own listing (Addenda 33, 63).             *)
+UnstampedRestart(n) ==
+    /\ Design = "record" /\ Up(n) /\ ~decided[n] /\ ~doc.bare /\ doc.members[n] = Unstamped
+    /\ \E v \in {inc[n], 0} :
+        LET d == [doc EXCEPT !.members[n] = v]
+        IN /\ doc' = d
+           /\ PublishFromAs(n, d, IF v = inc[n] THEN NotedAtCommit(n) ELSE Noted(n))
+    /\ UNCHANGED <<dead, inc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
+                   claim, seen, counters, excused, ghost>>
+
+(* C17 (join.rs plan, `Write::Listed`): a member of today's ring lists      *)
+(* today's ordinals, itself stamped, every other name unstamped.           *)
+Relist(n) ==
+    /\ Design = "record" /\ Up(n) /\ doc.bare /\ n \in TodayRing(qual[n])
+    /\ LET d == [doc EXCEPT !.bare = FALSE, !.members = [m \in Nodes |->
+                    IF m = n THEN inc[n] ELSE IF Ord(m) <= count THEN Unstamped ELSE 0]]
+       IN /\ doc' = d /\ PublishFrom(n, d)
+    /\ UNCHANGED <<dead, inc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
+                   claim, seen, counters, excused, ghost>>
 
 -----------------------------------------------------------------------------
 (* The membership task, Design "beat" (rev 1: J1-J5, §3.1, L3)              *)
@@ -548,7 +716,7 @@ BeatJoin(j) ==
     /\ cand' = [cand EXCEPT ![j] = qual[j]]
     /\ candDead' = [candDead EXCEPT ![j] = dead[j]]
     /\ UNCHANGED <<dead, inc, doc, count, alive, boot, qual, eng, hand, slot, sealed, draining, announced,
-                   seen, counters, excused, ghost>>
+                   seen, counters, excused, ghost, decided>>
 
 -----------------------------------------------------------------------------
 (* Planned moves, giver first (return-home, count balance, the lag and room *)
@@ -567,7 +735,7 @@ MoveStart(g, x, t) ==
     /\ slot' = IF SlotOn THEN [slot EXCEPT ![t] = g] ELSE slot
     /\ counters' = IF Leaving(g) THEN counters ELSE [counters EXCEPT !.mv = @ + 1]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, sealed, draining, announced,
-                   claim, seen, excused, ghost>>
+                   claim, seen, excused, ghost, decided>>
 
 (* K3, rev 2's witness: a second giver is refused the slot while a first   *)
 (* move-in to the same target runs (no state change but the ghost).        *)
@@ -575,14 +743,14 @@ SlotRefused(g, x, t) ==
     /\ MoveTarget(g, x, t) /\ slot[t] # None /\ slot[t] # g /\ ~ghost.slotRefused
     /\ ghost' = [ghost EXCEPT !.slotRefused = TRUE]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, hand, slot, sealed, draining,
-                   announced, claim, seen, counters, excused>>
+                   announced, claim, seen, counters, excused, decided>>
 
 MoveClose(g) ==
     /\ alive[g] /\ hand[g].st = "held"
     /\ eng' = [eng EXCEPT ![g][hand[g].x] = FALSE]
     /\ hand' = [hand EXCEPT ![g].st = "closed"]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, slot, sealed, draining, announced,
-                   claim, seen, counters, excused, ghost>>
+                   claim, seen, counters, excused, ghost, decided>>
 
 (* The CAS, only while the document still gives the leaf to the giver; a  *)
 (* target that is the leaf's ring home gets no entry (Change::Return) or    *)
@@ -604,7 +772,7 @@ MoveCas(g) ==
                /\ slot' = [slot EXCEPT ![t] = None]
                /\ UNCHANGED <<doc, view, ghost>>
     /\ UNCHANGED <<dead, candDead, inc, count, alive, boot, qual, cand, eng, sealed, draining, announced, claim,
-                   seen, counters, excused>>
+                   seen, counters, excused, decided>>
 
 (* K10: the move ends at the target's Ready, or at its hold's lapse.       *)
 MoveEnd(g) ==
@@ -613,16 +781,18 @@ MoveEnd(g) ==
     /\ slot' = [slot EXCEPT ![hand[g].t] = None]
     /\ ghost' = [ghost EXCEPT !.readyEnd = @ \/ eng[hand[g].t][hand[g].x]]
     /\ UNCHANGED <<dead, candDead, inc, doc, count, alive, boot, qual, cand, view, eng, sealed, draining, announced,
-                   claim, seen, counters, excused>>
+                   claim, seen, counters, excused, decided>>
 
 -----------------------------------------------------------------------------
 Next ==
     \/ \E c \in 1..3 : SetCount(c)
+    \/ ForeignBare
     \/ \E n \in Nodes :
         \/ Start(n) \/ Decide(n) \/ Crash(n) \/ ReadBeats(n) \/ Publish(n) \/ Refresh(n)
         \/ Pin(n) \/ Join(n) \/ JoinFallback(n) \/ JoinerWaits(n) \/ Seal(n) \/ Unseal(n)
         \/ Release(n) \/ LeaveFallback(n) \/ Announce(n) \/ Stop(n) \/ Drain(n)
         \/ BeatPin(n) \/ BeatJoin(n)
+        \/ ForeignUnstamp(n) \/ Restamp(n) \/ UnstampedRestart(n) \/ Relist(n)
         \/ MoveClose(n) \/ MoveCas(n) \/ MoveEnd(n)
         \/ \E x \in Leaves : Yield(n, x) \/ Open(n, x) \/ NoOpDrop(n, x) \/ DropUnlisted(n, x)
                              \/ BeatPinDrop(n, x) \/ BeatNoOpDrop(n, x)
@@ -631,15 +801,22 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+(* A leaver's look (leave.rs): a hand-off of some leaf to some successor.    *)
+LeaveMove(g) == Leaving(g) /\ \E x \in Leaves, t \in Nodes : MoveStart(g, x, t)
+
 (* M5: weak fairness on the steps the code retries: the platform's start,  *)
 (* the boot's decision, the tick's beat read and publication, the pin, the *)
-(* join, both drops and a running move's steps. The environment (the count, *)
-(* crashes, drains, requests) and the refresh are not fair.                 *)
+(* join, both drops, a running move's steps, and the leave's (its look's   *)
+(* hand-off, the seal, the release). The environment (the count, crashes,  *)
+(* drains, requests, foreign writes), the refresh and the fallbacks are not *)
+(* fair. C17's and C18's repairs are retried too, but no liveness run has a *)
+(* foreign write, so they are left out of this conjunction.                 *)
 Fair ==
     \A n \in Nodes :
         /\ WF_vars(Start(n)) /\ WF_vars(Decide(n)) /\ WF_vars(ReadBeats(n))
         /\ WF_vars(Publish(n)) /\ WF_vars(Pin(n)) /\ WF_vars(Join(n))
         /\ WF_vars(MoveClose(n)) /\ WF_vars(MoveCas(n)) /\ WF_vars(MoveEnd(n))
+        /\ WF_vars(LeaveMove(n)) /\ WF_vars(Seal(n)) /\ WF_vars(Release(n))
         /\ \A x \in Leaves : WF_vars(NoOpDrop(n, x)) /\ WF_vars(DropUnlisted(n, x))
 LSpec == Spec /\ Fair
 
@@ -650,6 +827,12 @@ JoinCompletes ==
         (alive[j] /\ boot[j] = "up" /\ Ord(j) <= count /\ doc.members[j] = 0)
             ~> (Member(j) \/ ~alive[j] \/ Ord(j) > count)
 
+(* A leaver within reach of a successor completes its leave: it is released *)
+(* (no member), or it is no longer leaving (the count came back), or it    *)
+(* stopped. Shape (B), Addendum 44 Q7.                                     *)
+LeaveCompletes ==
+    \A n \in Nodes : (Up(n) /\ Member(n) /\ Ord(n) > count) ~> (~Member(n) \/ Ord(n) <= count \/ ~alive[n])
+
 (* The configurations' action constraint: no step leaves a state a flagged *)
 (* step reached. The invariant excuses every leaf from there, so a later   *)
 (* state can violate nothing; the flagged state itself is still checked.  *)
@@ -657,7 +840,8 @@ FlagStops == excused = {}
 
 -----------------------------------------------------------------------------
 TypeOK ==
-    /\ \A m \in Nodes : doc.members[m] \in 0..inc[m]
+    /\ \A m \in Nodes : doc.members[m] \in {Unstamped} \cup 0..inc[m]
+    /\ doc.bare => \A m \in Nodes : doc.members[m] = 0
     /\ \A x \in Leaves : doc.entries[x].to \in Nodes \cup {None}
     /\ count \in 1..3
     /\ \A n \in Nodes : boot[n] \in {"off", "deciding", "up"} /\ qual[n] \subseteq Nodes
@@ -698,5 +882,8 @@ Witness_RejoinsAfterDrain == ~(ghost.rejoined /\ excused = {})
 (* one whose removal landed, stopping before it announced: both crashes.   *)
 Witness_DrainCrashUnremoved == ~ghost.crashUnremoved
 Witness_DrainCrashRemoved == ~ghost.crashRemoved
+(* A leaver holding an open engine, found unstamped by a foreign write,    *)
+(* restamps itself in place (C18) with nothing flagged.                     *)
+Witness_LeaverRestamped == ~ghost.restampedLeaver
 Witness_JoinerServes == ~(\E n \in Nodes : n \notin InitUp /\ \E x \in Leaves : eng[n][x])
 =============================================================================
