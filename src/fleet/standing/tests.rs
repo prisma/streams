@@ -519,3 +519,20 @@ async fn a_stale_beat_counts_gone_only_after_it_stood_still_two_periods() {
         "a stated end at once"
     );
 }
+
+/// The tests' skew stamps this runtime's beats that far behind the wall clock, never ahead, so a
+/// peer reads them as stale (Addendum 46's skew DST; #193's survivor `-` to `+` in
+/// `Standing::beat_stamp`).
+#[test]
+fn a_skewed_runtime_stamps_its_beats_behind_the_wall_clock() {
+    let standing = Standing::default();
+    let before = crate::shard::now_ms();
+    assert!(standing.beat_stamp() >= before, "no skew: the wall clock");
+    standing.skew_beats(40_000);
+    let stamp = standing.beat_stamp();
+    let after = crate::shard::now_ms();
+    assert!(
+        (before - 40_000..=after - 40_000).contains(&stamp),
+        "{stamp} is 40 s behind {before}..={after}"
+    );
+}
