@@ -686,4 +686,48 @@ mod tests {
         );
         assert_eq!(gone, reader(&[]).evidence_ring(&[]));
     }
+
+    /// The beats the watch reads (`Standing::settled`, Addendum 46): each held beat that does not
+    /// qualify, with its boot, its own time and whether it states its end (withdrawn or draining,
+    /// either alone), as `planning::active_members` holds them; a qualifying beat is not one, and
+    /// a beat given no time is left out.
+    #[test]
+    fn the_unqualified_beats_carry_their_boot_time_and_stated_end() {
+        const NOW: i64 = 1_000_000;
+        let stale = NOW - crate::fleet::planning::RING_LIVENESS_MS;
+        let heartbeat = |name: &str, ts: i64, end: &str| {
+            let document = format!(
+                r#"{{"instance":"{name}","ts_ms":{ts},"rps":0.0,"owned_shards":[],"boot_id":"{name}-b"{end}}}"#
+            );
+            let heartbeat: crate::fleet::Heartbeat = serde_json::from_str(&document).unwrap();
+            (name.to_string(), heartbeat.candidacy(NOW))
+        };
+        let candidacies = [
+            heartbeat("streams-1", NOW, r#","draining":false"#),
+            heartbeat(
+                "streams-2",
+                NOW - 10,
+                r#","draining":false,"withdrawn":"stopping""#,
+            ),
+            heartbeat("streams-3", NOW - 20, r#","draining":true"#),
+            heartbeat("streams-4", stale, r#","draining":false"#),
+            heartbeat("streams-5", NOW, r#","draining":false"#),
+        ];
+        let me = crate::fleet::planning::active_members(5, "streams-1", &candidacies.into());
+        let boot = |name: &str| super::boot_of(&format!("{name}-b"));
+        let unqualified: Vec<_> = me.unqualified().collect();
+        let expected = [
+            ("streams-2", boot("streams-2"), NOW - 10, true),
+            ("streams-3", boot("streams-3"), NOW - 20, true),
+            ("streams-4", boot("streams-4"), stale, false),
+        ];
+        assert_eq!(unqualified, expected);
+        let held = vec![beat("streams-2", "b1", false)];
+        let untimed = Candidates::held(2, "streams-1", held);
+        assert_eq!(
+            untimed.unqualified().count(),
+            0,
+            "no time, no beat to watch"
+        );
+    }
 }
