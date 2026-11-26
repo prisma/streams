@@ -125,7 +125,10 @@ impl FleetRepository {
         let Some(store) = self.store.as_ref() else {
             return Ok(Vec::new());
         };
+        // C14's R1c watch counts on every read answering (`fleet::dead`).
+        self.standing.dead().note_read();
         let beats = self.members.heartbeats(store.as_ref()).await?;
+        self.standing.dead().note_answered();
         self.standing.read(
             beats
                 .iter()

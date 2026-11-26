@@ -44,6 +44,10 @@ pub(super) fn ordinal_key(name: &str) -> (u64, &str) {
     (index.unwrap_or(u64::MAX), name)
 }
 
+/// A held beat's own time, whether it states its end (draining or withdrawn), and whether it is
+/// draining (`Candidates::with_beats`).
+pub(super) type Beat = (i64, bool, bool);
+
 /// Whether the fleet instance `instance` is an ordinal within `count` (C5, C8, C11).
 pub(super) fn within_count(instance: &str, count: u64) -> bool {
     instance
@@ -88,9 +92,9 @@ pub(super) struct Candidates {
     my_boot: Option<u64>,
     /// Whether a pass of this boot has read it a member (C18b, `with_decided`).
     decided: bool,
-    /// Every held beat's own time and whether it states its end (draining or withdrawn), by name,
-    /// sorted (`with_beats`): what Addendum 46's guard watches.
-    beats: Vec<(String, (i64, bool))>,
+    /// Every held beat's own time, whether it states its end (draining or withdrawn) and whether
+    /// it is draining, by name, sorted (`with_beats`): what Addendum 46's guard and C14 read.
+    beats: Vec<(String, Beat)>,
     /// The listed members this boot's watch of their beats has settled as gone (`with_settled`,
     /// `Standing::settled`), sorted.
     settled: Vec<String>,
@@ -129,9 +133,9 @@ impl Candidates {
         self
     }
 
-    /// The same, with each held beat's own time and whether it states its end
-    /// (`planning::active_members`).
-    pub(super) fn with_beats(mut self, mut beats: Vec<(String, (i64, bool))>) -> Self {
+    /// The same, with each held beat's own time, whether it states its end and whether it is
+    /// draining (`planning::active_members`).
+    pub(super) fn with_beats(mut self, mut beats: Vec<(String, Beat)>) -> Self {
         beats.sort_by(|a, b| a.0.cmp(&b.0));
         self.beats = beats;
         self
@@ -145,9 +149,20 @@ impl Candidates {
             .filter(|(_, (_, ok))| !ok)
             .filter_map(|(name, (boot, _))| {
                 let at = self.beats.binary_search_by(|beat| beat.0.cmp(name)).ok()?;
-                let (ts_ms, stated) = self.beats[at].1;
+                let (ts_ms, stated, _) = self.beats[at].1;
                 Some((name.as_str(), *boot, ts_ms, stated))
             })
+    }
+
+    /// The held beat of `instance` with its own time: its boot, its time and whether it is
+    /// draining (C14's evidence, `fleet::dead`). None for a beat `with_beats` gave no time.
+    pub(super) fn timed_beat(&self, instance: &str) -> Option<(u64, i64, bool)> {
+        let (boot, _) = self.beat_of(instance)?;
+        let at = self
+            .beats
+            .binary_search_by(|beat| beat.0.as_str().cmp(instance));
+        let (ts_ms, _, draining) = self.beats[at.ok()?].1;
+        Some((boot, ts_ms, draining))
     }
 
     /// The same, `settled` the members `Standing::settled` found gone.

@@ -489,7 +489,7 @@ async fn a_stale_beat_counts_gone_only_after_it_stood_still_two_periods() {
     let standing = Standing::default();
     let pass = |ts_ms: i64, stated: bool, qualifies: bool| {
         let held = vec![("streams-2".to_string(), (boot_of("b"), qualifies))];
-        let beats = vec![("streams-2".to_string(), (ts_ms, stated))];
+        let beats = vec![("streams-2".to_string(), (ts_ms, stated, false))];
         Candidates::held(2, "streams-1", held).with_beats(beats)
     };
     let gone = vec!["streams-2".to_string()];

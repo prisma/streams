@@ -227,7 +227,7 @@ async fn act(
     partner: Option<&str>,
     backoff: &mut Backoff,
 ) -> Decision {
-    if cell.fleet.standing().drain_begun() {
+    if cell.fleet.standing().departing() {
         return Decision::Hold(super::policy::Hold::Steady);
     }
     if let Some(parent) = partner {

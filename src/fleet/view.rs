@@ -52,6 +52,8 @@ pub(super) async fn published(
     state.fleet.standing().tags().set(tag_of(version.as_ref()));
     state.peer.set_peers(peers.clone());
     state.fleet.standing().mark_progress();
+    // Publish, then lift a leave's seal (`fleet::leave`).
+    super::leave::published(state);
     Ok((overrides, version))
 }
 

@@ -135,7 +135,7 @@ pub(super) fn active_members(
     let stated = |c: &Candidacy| c.withdrawn || c.draining;
     let beats = candidacies
         .iter()
-        .map(|(name, c)| (name.clone(), (c.ts_ms, stated(c))));
+        .map(|(name, c)| (name.clone(), (c.ts_ms, stated(c), c.draining)));
     super::record::Candidates::held(count, instance, held.collect()).with_beats(beats.collect())
 }
 

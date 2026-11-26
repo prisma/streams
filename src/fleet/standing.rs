@@ -102,6 +102,10 @@ pub(crate) struct Standing {
     /// found something uncovered (the `JOIN_PHASE` clock), and the joins past it.
     join: Mutex<JoinState>,
     joins_unpinned: AtomicU64,
+    /// The leave (§22 step 6, `fleet::leave`): whether this boot is leaving, and its phase.
+    leave: super::leave::Leave,
+    /// C14's evidence watch (`fleet::dead`).
+    dead: super::dead::Dead,
     /// Addendum 46's watch of beats that do not qualify, by name: the boot and own time last read,
     /// and when this boot first read that beat (`settled`).
     beat_watch: Mutex<BeatWatch>,
@@ -256,6 +260,8 @@ impl Default for Standing {
             candidates: Mutex::new(None),
             join: Mutex::new(JoinState::default()),
             joins_unpinned: AtomicU64::new(0),
+            leave: super::leave::Leave::default(),
+            dead: super::dead::Dead::default(),
             beat_watch: Mutex::new(Vec::new()),
             #[cfg(test)]
             beat_skew_ms: AtomicU64::new(0),
@@ -921,6 +927,22 @@ impl Standing {
     /// topology change and no move but the drain's own (G5).
     pub(crate) fn drain_begun(&self) -> bool {
         self.handing_off_all.load(Ordering::SeqCst) || self.draining()
+    }
+
+    /// C14's evidence watch (`fleet::dead`).
+    pub(crate) fn dead(&self) -> &super::dead::Dead {
+        &self.dead
+    }
+
+    /// This boot's leave (`fleet::leave`).
+    pub(crate) fn leave(&self) -> &super::leave::Leave {
+        &self.leave
+    }
+
+    /// Whether this runtime is departing, by a planned drain or a leave: it starts no topology
+    /// change and no move but its departure's own (G5; Addendum 41 B, the draft §2).
+    pub(crate) fn departing(&self) -> bool {
+        self.drain_begun() || self.leave.leaving()
     }
 
     /// This runtime's planned drain is announced: its next beat, published

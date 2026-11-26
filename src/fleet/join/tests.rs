@@ -144,6 +144,8 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         young: Some(false),
         member: false,
         phase_over,
+        leaving: None,
+        dead: None,
     };
     let waiting = plan(&facts(true, false), &doc, "b2");
     assert!(waiting.next.is_none() && waiting.uncovered_now);
@@ -172,6 +174,8 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         young: None,
         member: false,
         phase_over: true,
+        leaving: None,
+        dead: None,
     };
     assert!(
         plan(&facts, &doc, "b2").next.is_none(),
@@ -185,6 +189,8 @@ fn a_joiner_joins_only_covered_within_the_count_and_under_r3() {
         young: None,
         member: false,
         phase_over: true,
+        leaving: None,
+        dead: None,
     };
     assert!(
         plan(&facts, &doc, "b2").next.is_none(),
@@ -208,6 +214,8 @@ fn a_listed_instance_decides_stamps_and_lists_as_c13_and_c17_rule() {
         young,
         member: false,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     let restarted = document(
         vec![
@@ -251,6 +259,8 @@ fn a_listed_instance_decides_stamps_and_lists_as_c13_and_c17_rule() {
         young: Some(true),
         member: false,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     assert_eq!(
         plan(&facts_unbeaten, &interim, "a2")
@@ -270,10 +280,11 @@ fn a_listed_instance_decides_stamps_and_lists_as_c13_and_c17_rule() {
     );
 }
 
-/// C7 and the interim's removal half: a member pins in one CAS and drops the listed names beyond
-/// the count in the same one; with nothing to pin and nobody beyond, it writes nothing.
+/// C7 with the interim's removal half gone (Addendum 41 B item 13): a member pins in one CAS and
+/// unlists nobody, a listed member beyond the count included; with nothing to pin it writes
+/// nothing.
 #[test]
-fn a_member_pins_and_unlists_beyond_the_count_in_one_write() {
+fn a_member_pins_in_one_write_and_unlists_nobody() {
     // Enough leaves that `streams-2`, unlisted within the count, wins some of `streams-1`'s over
     // the ring with `streams-4`. Not `streams-3`: FNV-1a orders names that differ in their last
     // byte by its low bits, and `streams-1` beats `streams-2` on every leaf `streams-3` loses.
@@ -286,18 +297,17 @@ fn a_member_pins_and_unlists_beyond_the_count_in_one_write() {
         young: Some(true),
         member: false,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
-    let doc = document(
-        vec![
-            member("streams-1", Some("a1")),
-            member("streams-4", Some("streams-4")),
-        ],
-        &[],
-    );
-    let Some((next, Write::Pinned(pinned, beyond))) = plan(&facts, &doc, "a1").next else {
+    let listed = vec![
+        member("streams-1", Some("a1")),
+        member("streams-4", Some("streams-4")),
+    ];
+    let doc = document(listed.clone(), &[]);
+    let Some((next, Write::Pinned(pinned, None))) = plan(&facts, &doc, "a1").next else {
         panic!("a member writes");
     };
-    assert_eq!(beyond, names(&["streams-4"]));
     assert!(
         !pinned.is_empty(),
         "streams-2, unlisted within the count, would win some"
@@ -308,48 +318,58 @@ fn a_member_pins_and_unlists_beyond_the_count_in_one_write() {
             .all(|leaf| next.entries[leaf].to == "streams-1"
                 && next.entries[leaf].ms == super::PIN_MS)
     );
-    assert_eq!(next.members.unwrap(), vec![member("streams-1", Some("a1"))]);
+    assert_eq!(next.members.unwrap(), listed, "nobody is unlisted");
+    let one = [member("streams-1", Some("a1"))];
+    let pinned_all = document(one.to_vec(), &[]);
+    let c = reader(1, "streams-1", "a1", &[]);
+    let facts = Facts {
+        candidates: &c,
+        ..facts
+    };
+    assert!(
+        plan(&facts, &pinned_all, "a1").next.is_none(),
+        "nothing to pin"
+    );
 }
 
-/// The interim's removal half unlists only for the count (the join ruling §3): a listed member
-/// within the count stays listed when its beat of its listed boot is dead (it leaves each ring on
-/// that evidence, R1); one beyond the count is unlisted whatever its beats say.
+/// The leave's release (Addendum 41 B item 1, Addendum 44 Q4): a member beyond the count writes
+/// one CAS removing its own name only once its gate is sealed for the leave and a member within
+/// the count is listed; unsealed, or with nobody within the count listed, it releases nothing.
 #[test]
-fn the_removal_half_unlists_only_beyond_the_count_never_on_liveness() {
+fn a_leaver_releases_itself_only_sealed_with_a_member_within_the_count_listed() {
     let all = leaves();
-    let held = vec![
-        ("streams-1".to_string(), (boot_of("a1"), true)),
-        ("streams-2".to_string(), (boot_of("b1"), false)),
-        ("streams-3".to_string(), (boot_of("c1"), true)),
-    ];
-    let c = Candidates::held(2, "streams-1", held).with_boot("a1");
-    let facts = Facts {
+    let c = reader(2, "streams-3", "c1", &["streams-1"]);
+    let facts = |leaving| Facts {
         candidates: &c,
         leaves: &all,
         may_join: true,
         young: Some(true),
-        member: false,
+        member: true,
         phase_over: false,
+        leaving,
+        dead: None,
     };
-    let doc = document(
-        vec![
-            member("streams-1", Some("a1")),
-            member("streams-2", Some("b1")),
-            member("streams-3", Some("c1")),
-        ],
-        &[],
-    );
-    let Some((next, Write::Pinned(_, beyond))) = plan(&facts, &doc, "a1").next else {
-        panic!("a member unlists beyond the count");
+    let listed = vec![
+        member("streams-1", Some("streams-1")),
+        member("streams-3", Some("c1")),
+    ];
+    let doc = document(listed, &[("00", "streams-1")]);
+    let released = |leaving, doc: &Overrides| match plan(&facts(leaving), doc, "c1").next {
+        Some((next, Write::Released)) => Some((next.members, next.entries.len())),
+        _ => None,
     };
-    let kept: Vec<String> = next.members.unwrap().into_iter().map(|m| m.name).collect();
     assert_eq!(
-        (beyond, kept),
-        (names(&["streams-3"]), names(&["streams-1", "streams-2"]))
+        released(Some(true), &doc),
+        Some((Some(vec![member("streams-1", Some("streams-1"))]), 1)),
+        "its own name, and nothing else"
     );
+    assert_eq!(released(Some(false), &doc), None, "unsealed");
+    assert_eq!(released(None, &doc), None, "not leaving");
+    let alone = document(vec![member("streams-3", Some("c1"))], &[]);
     assert_eq!(
-        c.ring(Some(&doc.members.unwrap())),
-        names(&["streams-1", "streams-3"])
+        released(Some(true), &alone),
+        None,
+        "nobody within the count listed"
     );
 }
 
@@ -473,6 +493,8 @@ fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
         young,
         member,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     let what = |young, member, doc: &Overrides| plan(&facts(young, member), doc, "a1").next;
     let peer = member("streams-2", Some("streams-2"));
@@ -556,6 +578,8 @@ fn a_member_beyond_the_count_found_unstamped_stamps_itself_back() {
         young: Some(false),
         member: true,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     let past_count = document(
         vec![
@@ -651,6 +675,8 @@ fn a_young_restart_that_may_not_join_writes_nothing() {
         young: Some(true),
         member: false,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     let blocked = plan(&facts(false), &doc, "a2");
     let free = plan(&facts(true), &doc, "a2");
@@ -676,6 +702,8 @@ fn a_covered_join_leaves_no_wait_and_a_late_one_does() {
         young: None,
         member: false,
         phase_over,
+        leaving: None,
+        dead: None,
     };
     let doc = document(vec![member("streams-1", Some("streams-1"))], &[]);
     let late = plan(&facts(true), &doc, "b2");
@@ -760,15 +788,17 @@ fn a_member_writes_no_second_pin_for_a_leaf_pinned_to_it() {
         young: Some(false),
         member: true,
         phase_over: false,
+        leaving: None,
+        dead: None,
     };
     let listed = vec![member("streams-1", Some("a1"))];
-    let Some((_, Write::Pinned(moving, _))) =
+    let Some((_, Write::Pinned(moving, None))) =
         plan(&facts, &document(listed.clone(), &[]), "a1").next
     else {
         panic!("a member pins what streams-2 would win");
     };
     let held = document(listed, &[(moving[0].as_str(), "streams-1")]);
-    let Some((written, Write::Pinned(again, _))) = plan(&facts, &held, "a1").next else {
+    let Some((written, Write::Pinned(again, None))) = plan(&facts, &held, "a1").next else {
         panic!("the other leaves are still pinned");
     };
     assert_eq!(again, moving[1..].to_vec());
@@ -796,6 +826,8 @@ fn only_a_joiner_within_the_count_reports_a_wait() {
             young,
             member,
             phase_over: false,
+            leaving: None,
+            dead: None,
         };
         plan(&facts, &doc, "b2").uncovered_now
     };
@@ -811,6 +843,8 @@ fn only_a_joiner_within_the_count_reports_a_wait() {
             young: Some(true),
             member: false,
             phase_over: false,
+            leaving: None,
+            dead: None,
         };
         plan(&facts, &restart, "b2").uncovered_now
     };
@@ -835,6 +869,8 @@ fn joining<'a>(c: &'a Candidates, all: &'a [String]) -> Facts<'a> {
         young: Some(false),
         member: false,
         phase_over: false,
+        leaving: None,
+        dead: None,
     }
 }
 
@@ -899,26 +935,42 @@ fn the_second_joiner_of_an_empty_document_waits_for_the_firsts_pins() {
     assert!(waiting.next.is_none() && waiting.uncovered_now);
 }
 
-/// Until the leave: a member beyond the count that is the last one listed unlists itself (the
-/// interim's removal half), its pins then naming nobody listed, and the joiner that finds the list
-/// empty joins at once (Addendum 44 §1: E5's scale-in class).
+/// The leave behind a joiner (Addendum 44 §2 Q7): a member beyond the count that is the last one
+/// listed pins what the joiner would win and unlists nobody, so the joiner finds everything
+/// covered and joins at once over the pins; the leaver, sealed, then releases itself, a member
+/// within the count now listed. E5's scale-in class: no 139 s and no fence.
 #[test]
-fn a_joiner_follows_the_interims_removal_of_the_last_listed_member() {
+fn a_joiner_behind_the_last_listed_leaver_joins_over_its_pins_and_the_leaver_releases() {
     let all = leaves();
     let leaver = reader(1, "streams-2", "b1", &["streams-1"]);
     let listed = document(vec![member("streams-2", Some("b1"))], &[]);
-    let facts = Facts {
+    let facts = |leaving| Facts {
         member: true,
+        leaving,
+        dead: None,
         ..joining(&leaver, &all)
     };
-    let (emptied, why) = plan(&facts, &listed, "b1").next.expect("the removal");
-    assert!(matches!(why, Write::Pinned(ref pins, ref beyond)
-        if !pins.is_empty() && beyond == &names(&["streams-2"])));
-    assert_eq!(emptied.members, Some(Vec::new()));
+    let (pinned, why) = plan(&facts(Some(false)), &listed, "b1")
+        .next
+        .expect("the leaver pins");
+    assert!(matches!(why, Write::Pinned(ref pins, None) if !pins.is_empty()));
+    assert_eq!(pinned.members, listed.members, "nobody is unlisted");
     let joiner = reader(1, "streams-1", "a2", &["streams-2"]);
-    let (joined, why) = plan(&joining(&joiner, &all), &emptied, "a2")
+    let (joined, why) = plan(&joining(&joiner, &all), &pinned, "a2")
         .next
         .expect("the join is written");
     assert_eq!(why, Write::Joined { uncovered: vec![] });
-    assert_eq!(joined.members, Some(vec![member("streams-1", Some("a2"))]));
+    let both = vec![
+        member("streams-1", Some("a2")),
+        member("streams-2", Some("b1")),
+    ];
+    assert_eq!(joined.members, Some(both));
+    let (released, why) = plan(&facts(Some(true)), &joined, "b1")
+        .next
+        .expect("the sealed leaver releases");
+    assert_eq!(why, Write::Released);
+    assert_eq!(
+        released.members,
+        Some(vec![member("streams-1", Some("a2"))])
+    );
 }

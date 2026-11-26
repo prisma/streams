@@ -53,6 +53,8 @@ mod fleet_handoff_reads;
 mod fleet_join;
 #[path = "tests/fleet_join_boot.rs"]
 mod fleet_join_boot;
+#[path = "tests/fleet_leave.rs"]
+mod fleet_leave;
 #[path = "tests/fleet_moves.rs"]
 mod fleet_moves;
 #[path = "tests/fleet_record.rs"]
