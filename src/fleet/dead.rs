@@ -24,7 +24,7 @@ use super::record::{Candidates, boot_of, ordinal_key};
 
 /// How old a held beat of the listed boot, or how long no beat of it answered, before its name is
 /// removed: `PROGRESS_DEADLINE` plus `RING_LIVENESS`, 169 s.
-pub(super) const DEAD_MS: i64 = PROGRESS_DEADLINE_MS.cast_signed() + RING_LIVENESS_MS;
+pub(crate) const DEAD_MS: i64 = PROGRESS_DEADLINE_MS.cast_signed() + RING_LIVENESS_MS;
 
 /// A listed name and boot with no beat of that boot answered, and this boot's first such read.
 type Watched = ((String, u64), tokio::time::Instant);

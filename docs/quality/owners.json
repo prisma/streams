@@ -91,9 +91,17 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::leave_cell",
+      "owner": "crate::leave_cell_over",
       "path": "src/dst/tests/fleet_leave.rs",
       "reason": "The leave cell's peer table (fleet/urls.json) naming both members' listeners, as the fleet stores it; serde macro output is compiled and read by the members.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_leaver_with_no_live_member_within_the_count_keeps_serving_until_one_comes",
+      "path": "src/dst/tests/fleet_leave.rs",
+      "reason": "The peer table rewritten for streams-1's next boot, naming both members' listeners as the fleet stores it; serde macro output is compiled and read by the members.",
       "syntax": "serde_json::json"
     },
     {
@@ -1629,7 +1637,7 @@
       "count": 1,
       "owner": "crate::fleet_leave",
       "path": "src/dst/dst_tests.rs",
-      "reason": "§22's leave (GATE-DECISION-s22-join-2026-11-20 Addendum 41 B, Addenda 44 and 60) and C14: a scale-in moves its shards without fencing, a leaver past its phase releases and what it gave up is counted once, a count that comes back mid-leave ends it, and a member removed while alive joins again; compiler and the full DST suite exercise the module.",
+      "reason": "§22's leave (GATE-DECISION-s22-join-2026-11-20 Addendum 41 B, Addenda 44 and 60) and C14: a scale-in moves its shards without fencing, a leaver past its phase releases and what it gave up is counted once, a count that comes back mid-leave or after the release, a leaver with no successor, a drain during a leave, a late request at a sealed leaver, a leave from three to one, an idle fleet with a listed leaver, and C14's stale and draining arms and a member removed while alive; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/fleet_leave.rs\""
     },
     {
