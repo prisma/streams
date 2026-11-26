@@ -457,10 +457,11 @@ async fn a_join_cas_answered_without_a_version_or_lost_is_read_back() {
 }
 
 /// C18 (the join ruling, Addendum 33): a member found unstamped stamps its own boot id back in
-/// place, whatever C13's boot-time verdict, and keeps every entry and every other listing as
-/// read. Unchanged, each by its own rule: an undecided boot (C13), a listing with another boot id
-/// (R1a), a name removed outright (a joiner, never restamped), a member beyond the count (C13), and
-/// a document without `members` (C17's listing, this writer stamped).
+/// place, whatever C13's boot-time verdict (and whatever the count:
+/// `a_member_beyond_the_count_found_unstamped_stamps_itself_back`), and keeps every entry and every
+/// other listing as read. Unchanged, each by its own rule: an undecided boot (C13), a listing with another boot id (R1a),
+/// a name removed outright (a joiner, never restamped), and a document without `members` (C17's
+/// listing, this writer stamped).
 #[test]
 fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
     let all = leaves();
@@ -539,6 +540,14 @@ fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
         ),
         "no members: C17"
     );
+}
+
+/// C18 beyond the count (Addendum 41 B item 8): a decided member whose ordinal is beyond the
+/// count has not released, so found unstamped it stamps itself back in place as one within it
+/// does, never unlisted on C13's verdict.
+#[test]
+fn a_member_beyond_the_count_found_unstamped_stamps_itself_back() {
+    let all = leaves();
     let beyond = reader(1, "streams-2", "b1", &["streams-1"]);
     let beyond_facts = Facts {
         candidates: &beyond,
@@ -555,14 +564,36 @@ fn a_member_found_unstamped_stamps_itself_back_and_no_other_branch_changes() {
         ],
         &[],
     );
-    let past = plan(&beyond_facts, &past_count, "b1")
-        .next
-        .map(|(_, why)| why);
+    let past = plan(&beyond_facts, &past_count, "b1").next;
+    let restored = vec![
+        member("streams-1", Some("streams-1")),
+        member("streams-2", Some("b1")),
+    ];
     assert_eq!(
-        past,
-        Some(Write::Unlisted),
-        "a member beyond the count: C13"
+        past.map(|(next, why)| (why, next.members)),
+        Some((Write::Restamped, Some(restored))),
+        "a member beyond the count, C13 verdict old"
     );
+}
+
+/// Item 8's clearing point (Addendum 41 B): a document that lists members without this name finds
+/// it unlisted, whatever the other listings; one that lists it with any boot id, or has no
+/// `members` (C17's older cell), does not.
+#[test]
+fn a_member_finds_itself_unlisted_only_in_a_listing_without_its_name() {
+    let peer = member("streams-2", Some("b1"));
+    let cases = [
+        document(vec![peer.clone()], &[]),
+        document(Vec::new(), &[]),
+        document(vec![member("streams-1", None), peer.clone()], &[]),
+        document(vec![member("streams-1", Some("z9")), peer], &[]),
+        Overrides::default(),
+    ];
+    let got: Vec<bool> = cases
+        .iter()
+        .map(|doc| super::unlisted(doc, "streams-1"))
+        .collect();
+    assert_eq!(got, [true, true, false, false, false]);
 }
 
 /// C13's young bound is exact: a previous beat 11.999 s old stays in place, one 12 s old does not

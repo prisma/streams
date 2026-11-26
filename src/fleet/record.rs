@@ -11,8 +11,8 @@
 //! when the document lists its name with its own boot id (R1b, C4); until then (an unlisted
 //! joiner, or a restart whose R1a CAS has not landed, C13) its publications leave it out. A boot
 //! that has read itself so listed (`Standing::decided_member`) also counts a listing of its name
-//! with no boot id within the count (C18b, the join ruling, Addendum 35), for the passes until its
-//! C18 stamp lands; never a listing with another boot id.
+//! with no boot id, whatever the count (C18b, the join ruling, Addendum 35; Addendum 41 B item 8),
+//! for the passes until its C18 stamp lands; never a listing with another boot id.
 //!
 //! A listed member with no boot id (the step 4 interim wrote members so, Addendum 14) is judged
 //! by name, as today's rule judged it, until it stamps its own boot id on its next pass
@@ -243,8 +243,8 @@ impl Candidates {
         if member.name == self.me {
             // Never by the listing alone: an unstamped listing of its own name is another boot's
             // until it stamps it (the join ruling §2), unless this boot already read itself a
-            // member and its name is within the count (C18b): C18 stamps it back in place.
-            let unstamped = listed.is_none() && self.decided && within_count(&self.me, self.count);
+            // member (C18b), whatever the count (Addendum 41 B item 8): C18 stamps it back in place.
+            let unstamped = listed.is_none() && self.decided;
             let mine = (listed.is_some() && listed == self.my_boot) || unstamped;
             // A member never judges its own liveness, but leaves its own ring when its own beat of
             // this boot withdrew, drains or stopped progressing: today's rule for itself.
@@ -361,12 +361,13 @@ mod tests {
         assert!(!me.is_member(Some(&listed)));
     }
 
-    /// **C18b** (the join ruling, Addendum 35): a boot that has read itself a member counts a
-    /// listing of its own name with no boot id, within the count, as membership in its own ring
-    /// until its C18 stamp lands; an undecided boot does not (R1b), a listing with another boot
-    /// id is never its own (supersession), and a name beyond the count is not counted.
+    /// **C18b** (the join ruling, Addendum 35; Addendum 41 B item 8): a boot that has read itself
+    /// a member counts a listing of its own name with no boot id as membership in its own ring
+    /// until its C18 stamp lands, whatever the count (a member beyond it has not released); an
+    /// undecided boot does not (R1b), and a listing with another boot id is never its own
+    /// (supersession).
     #[test]
-    fn a_decided_member_counts_its_own_unstamped_listing_within_the_count() {
+    fn a_decided_member_counts_its_own_unstamped_listing_whatever_the_count() {
         let held = |me: &str| {
             let beats = vec![beat(me, "a1", true), beat("streams-2", "b1", true)];
             Candidates::held(3, me, beats).with_boot("a1")
@@ -388,7 +389,7 @@ mod tests {
             names(&["streams-1", "streams-2"]),
             names(&["streams-2"]),
             names(&["streams-2"]),
-            names(&["streams-2"]),
+            names(&["streams-2", "streams-4"]),
         );
         assert_eq!(got, want);
         assert!(

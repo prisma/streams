@@ -169,7 +169,8 @@ struct JoinState {
     passes: u32,
     /// The pass whose join CAS was written (`note_joined`); `None` before it.
     joined_at_pass: Option<u32>,
-    /// C18: a pass of this boot read it listed with its own boot id (`note_member`); one-way.
+    /// C18: a pass of this boot read it listed with its own boot id (`note_member`), until a pass
+    /// finds it unlisted (`forget_member`).
     member: bool,
 }
 
@@ -498,10 +499,18 @@ impl Standing {
     }
 
     /// C18 (the join ruling, Addendum 33): a pass of this boot read it listed with its own boot
-    /// id: it is a member, and C13's boot-time verdict is not consulted again. One-way.
+    /// id: it is a member, and C13's boot-time verdict is not consulted again while it stays one.
     pub(super) fn note_member(&self) {
         if let Ok(mut join) = self.join.lock() {
             join.member = true;
+        }
+    }
+
+    /// Item 8's clearing (Addendum 41 B): a pass found this boot unlisted, so it is no member
+    /// until a pass reads it listed again. C13's boot-time verdict is not touched.
+    pub(super) fn forget_member(&self) {
+        if let Ok(mut join) = self.join.lock() {
+            join.member = false;
         }
     }
 
