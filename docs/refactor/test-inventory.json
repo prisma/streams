@@ -1946,6 +1946,17 @@
     "scenarios": []
   },
   {
+    "name": "a_joiners_step_does_not_rest_on_one_clock_comparison",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "e5aef401e0571100aa09a0b3b061a3b740c499bf6b49634822b0d204682ab8b8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_keyed_read_follows_the_lineage_when_the_clocks_disagree",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2, crate = \"crate::test_rt\")]"
@@ -2281,6 +2292,17 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_count_balance.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_member_back_behind_a_peer_that_stays_down_serves_within_the_joins_bound",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "5784daf27f5128882862c7a2b45dd031b77ef87f295e29d32d9efd2d3a4f5d27",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_join_boot.rs",
     "scenarios": []
   },
   {

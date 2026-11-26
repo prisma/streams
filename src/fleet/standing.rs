@@ -102,6 +102,12 @@ pub(crate) struct Standing {
     /// found something uncovered (the `JOIN_PHASE` clock), and the joins past it.
     join: Mutex<JoinState>,
     joins_unpinned: AtomicU64,
+    /// Addendum 46's watch of beats that do not qualify, by name: the boot and own time last read,
+    /// and when this boot first read that beat (`settled`).
+    beat_watch: Mutex<BeatWatch>,
+    /// Tests: how far behind the wall clock this runtime stamps its beats (`skew_beats`).
+    #[cfg(test)]
+    beat_skew_ms: AtomicU64,
     /// Planned moves H1 kept: the document gave the leaf to no listed other instance.
     h1_kept: AtomicU64,
     /// Listed members logged unstamped while live (the join ruling §2).
@@ -118,6 +124,34 @@ pub(crate) struct Standing {
     /// Tests: the heartbeat's first beat pauses once allowed, before it is written.
     #[cfg(test)]
     first_beat_pause: ViewPause,
+}
+
+/// Addendum 46's watch, by name: the beat's boot and own time last read, and when it was first read.
+type BeatWatch = Vec<(String, (u64, i64, tokio::time::Instant))>;
+
+/// How long a stale beat must stand still before a joiner's coverage counts its member gone:
+/// two beat periods, since reads one period apart can fall either side of a single PUT (Addendum 46).
+const WATCH: std::time::Duration = super::heartbeat::PERIOD.saturating_mul(2);
+
+/// When this boot first read the beat `member` holds now (`beat`: its boot and own time), as
+/// `watch` keeps it; a newer time or another boot starts the watch at `now`.
+fn watched_since(
+    watch: &mut BeatWatch,
+    member: &str,
+    (boot, ts_ms): (u64, i64),
+    now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    match watch.iter_mut().find(|(held, _)| held == member) {
+        Some((_, (held, at, since))) if *held == boot && *at >= ts_ms => *since,
+        Some((_, entry)) => {
+            *entry = (boot, ts_ms, now);
+            now
+        }
+        None => {
+            watch.push((member.to_string(), (boot, ts_ms, now)));
+            now
+        }
+    }
 }
 
 /// The join's state this runtime keeps between passes (`fleet::join`).
@@ -221,6 +255,9 @@ impl Default for Standing {
             candidates: Mutex::new(None),
             join: Mutex::new(JoinState::default()),
             joins_unpinned: AtomicU64::new(0),
+            beat_watch: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            beat_skew_ms: AtomicU64::new(0),
             h1_kept: AtomicU64::new(0),
             unstamped_listings: AtomicU64::new(0),
             handoffs_recorded: AtomicU64::new(0),
@@ -379,6 +416,47 @@ impl Standing {
     pub(crate) fn within_count(&self, instance: &str) -> bool {
         self.pass_count()
             .is_none_or(|count| super::record::within_count(instance, count))
+    }
+
+    /// Addendum 46's guard: the members whose held beat this boot may count as gone for a joiner's
+    /// coverage (`Candidates::evidence_ring`). A beat that states its end (draining or withdrawn)
+    /// counts at once. One that is only stale counts once this boot has read that same beat (its
+    /// boot, no newer time) at least `WATCH` apart on its own monotonic clock, so a reader's clock
+    /// skew alone cannot count a live peer gone in its first pass. A newer beat, another boot, or a
+    /// beat that qualifies again starts the watch over. No store read is added (C16). The watch
+    /// guards the joiner's step only: once the reader is a member, R1 judges the same beat by its
+    /// clock alone, so this is no protection against skew (Addendum 58).
+    pub(super) fn settled(&self, candidates: &super::record::Candidates) -> Vec<String> {
+        let now = tokio::time::Instant::now();
+        let Ok(mut watch) = self.beat_watch.lock() else {
+            return Vec::new();
+        };
+        let mut seen = Vec::new();
+        let mut settled = Vec::new();
+        for (name, boot, ts_ms, stated) in candidates.unqualified() {
+            seen.push(name);
+            let first = watched_since(&mut watch, name, (boot, ts_ms), now);
+            if stated || now.duration_since(first) >= WATCH {
+                settled.push(name.to_string());
+            }
+        }
+        watch.retain(|(name, _)| seen.contains(&name.as_str()));
+        settled
+    }
+
+    /// Tests: this runtime stamps its beats `skew_ms` behind the wall clock, as a peer reads a
+    /// beat when its own clock is that far ahead (Addendum 46's skew DST).
+    #[cfg(test)]
+    pub(crate) fn skew_beats(&self, skew_ms: u64) {
+        self.beat_skew_ms.store(skew_ms, Ordering::Relaxed);
+    }
+
+    /// The time a beat is stamped with: the wall clock, less the tests' skew.
+    pub(super) fn beat_stamp(&self) -> i64 {
+        let now = crate::shard::now_ms();
+        #[cfg(test)]
+        let now = now - i64::try_from(self.beat_skew_ms.load(Ordering::Relaxed)).unwrap_or(0);
+        now
     }
 
     /// Tests: the tick's last pass read `count` with `names` its candidates.

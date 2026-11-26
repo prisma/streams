@@ -262,10 +262,11 @@ impl Planned {
         if !r3(facts) || !within_count(c.me(), c.count()) {
             return Self::default();
         }
-        let ring = c.ring(Some(listed));
-        // A document that lists nobody has no member to pin (Addendum 44). Not an empty `ring`: a
-        // listed member this reader alone judges dead may hold engines.
-        let uncovered = if listed.is_empty() {
+        // Coverage is over the evidence ring, never C3's unfiltered fallback (Addenda 45 and 46): a
+        // listed member counts gone only once this boot's watch of its beat settled it. Empty, there
+        // is no member to pin, as over a document that lists nobody (Addendum 44).
+        let ring = c.evidence_ring(listed);
+        let uncovered = if ring.is_empty() {
             Vec::new()
         } else {
             uncovered(facts.leaves, &ring, c.me(), &document.entries)
@@ -345,6 +346,9 @@ pub(super) async fn pass(
 ) -> (Overrides, Option<UpdateVersion>) {
     let standing = state.fleet.standing();
     standing.next_join_pass();
+    let candidates = &candidates
+        .clone()
+        .with_settled(standing.settled(candidates));
     if candidates.is_member(read.0.members.as_deref()) {
         standing.note_member();
     }

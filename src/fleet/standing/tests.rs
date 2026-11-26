@@ -469,3 +469,53 @@ fn an_unpinned_join_and_an_h1_kept_move_are_counted() {
     standing.note_h1_kept();
     assert_eq!((standing.joins_unpinned(), standing.h1_kept()), (1, 2));
 }
+
+/// Addendum 46's guard (`Standing::settled`): a beat that is only stale counts its member gone once
+/// this boot has read that same beat `WATCH` apart; one read short of it does not, a newer beat
+/// starts the watch over, a beat that qualifies again leaves it, and a beat that states its end
+/// (draining or withdrawn) counts at once.
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
+async fn a_stale_beat_counts_gone_only_after_it_stood_still_two_periods() {
+    use super::super::record::{Candidates, boot_of};
+    let standing = Standing::default();
+    let pass = |ts_ms: i64, stated: bool, qualifies: bool| {
+        let held = vec![("streams-2".to_string(), (boot_of("b"), qualifies))];
+        let beats = vec![("streams-2".to_string(), (ts_ms, stated))];
+        Candidates::held(2, "streams-1", held).with_beats(beats)
+    };
+    let gone = vec!["streams-2".to_string()];
+    assert!(
+        standing.settled(&pass(100, false, false)).is_empty(),
+        "stale once"
+    );
+    tokio::time::advance(super::WATCH - Duration::from_millis(1)).await;
+    assert!(
+        standing.settled(&pass(100, false, false)).is_empty(),
+        "short of two periods"
+    );
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(
+        standing.settled(&pass(100, false, false)),
+        gone,
+        "stood still"
+    );
+    assert!(
+        standing.settled(&pass(200, false, false)).is_empty(),
+        "a newer beat"
+    );
+    tokio::time::advance(super::WATCH).await;
+    assert_eq!(standing.settled(&pass(200, false, false)), gone);
+    assert!(
+        standing.settled(&pass(300, false, true)).is_empty(),
+        "qualifies again"
+    );
+    assert!(
+        standing.settled(&pass(300, false, false)).is_empty(),
+        "the watch starts over"
+    );
+    assert_eq!(
+        standing.settled(&pass(300, true, false)),
+        gone,
+        "a stated end at once"
+    );
+}

@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::{AppState, cpu_time_secs, rss_bytes, standing};
-use crate::shard::now_ms;
 use crate::tasks::{Cancellation, Policy, TaskResult, TaskSupervisor};
 
 mod shard_load;
@@ -506,7 +505,7 @@ impl Sampler {
             .iter()
             .map(|(_, engine)| engine.resident_streams() as u64)
             .collect();
-        let ts_ms = now_ms();
+        let ts_ms = state.fleet.standing().beat_stamp();
         // The sequence first: a beat numbered from the drain's first on
         // reads the drain that began before its number was taken.
         let seq = state.fleet.standing().next_beat();

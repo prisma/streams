@@ -44,6 +44,8 @@ pub(super) struct Candidacy {
     reserved_shards: u32,
     /// The incarnation it is a beat of (§22 R1: evidence counts only against that boot id).
     boot: u64,
+    /// The beat's own time, which a newer beat of the boot advances (Addendum 46's guard).
+    ts_ms: i64,
 }
 
 impl super::Heartbeat {
@@ -58,6 +60,7 @@ impl super::Heartbeat {
             draining: self.draining,
             reserved_shards: self.reserved_shards,
             boot: super::record::boot_of(&self.boot_id),
+            ts_ms: self.ts_ms,
         }
     }
 }
@@ -129,7 +132,11 @@ pub(super) fn active_members(
     let held = candidacies
         .iter()
         .map(|(name, candidacy)| (name.clone(), candidacy.judged(name.as_str() == instance)));
-    super::record::Candidates::held(count, instance, held.collect())
+    let stated = |c: &Candidacy| c.withdrawn || c.draining;
+    let beats = candidacies
+        .iter()
+        .map(|(name, c)| (name.clone(), (c.ts_ms, stated(c))));
+    super::record::Candidates::held(count, instance, held.collect()).with_beats(beats.collect())
 }
 
 /// One candidate's ring membership (see `active_members`).

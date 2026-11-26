@@ -142,9 +142,9 @@ jobs:
           # ...and the suite must have RUN: every inventoried test but
           # the capacity leg below, the convergence DST the topology
           # job runs alone, the 12 co-location DSTs it runs in its
-          # policy and co-location legs, and the 23 join DSTs it runs in
+          # policy and co-location legs, and the 25 join DSTs it runs in
           # its join leg (a filter that matches nothing still exits 0).
-          python3 scripts/quality/tests_ran.py /tmp/suite.log --inventory docs/refactor/test-inventory.json --skipped 37
+          python3 scripts/quality/tests_ran.py /tmp/suite.log --inventory docs/refactor/test-inventory.json --skipped 39
       # The capacity-mechanism gate runs ALONE — its measurement owns
       # the runner (the test's own precondition): inside the parallel
       # suite, contention lands one-sidedly on the post-split phase and
@@ -267,7 +267,7 @@ jobs:
       # The join's DSTs the suite skips (Addendum 47): its scale-outs, its foreign writes and its
       # boots, each test run and asserted on every push. The leave's go into this leg with it.
       - name: The fleet's membership join (§22)
-        run: 'scripts/test-leg.sh target/legs/fleet-join.log --min 23 -- --release --lib -- dst::dst_tests::fleet_join:: dst::dst_tests::fleet_join_boot::'
+        run: 'scripts/test-leg.sh target/legs/fleet-join.log --min 25 -- --release --lib -- dst::dst_tests::fleet_join:: dst::dst_tests::fleet_join_boot::'
       # The topology's convergence runs ALONE (DESIGN-DECISION-dst-load-under-hog-2026-11-11 §3,
       # decided under the owner's gate-selection delegation): 8-11 minutes green and up to about
       # 17 red, past the rust job's hang watcher, and its grow half must not share the

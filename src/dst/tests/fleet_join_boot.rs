@@ -9,8 +9,8 @@ use super::fixture_requests::hreq;
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::mem;
 use super::fleet_join::{
-    BOUND, LEAVES, beat_boot, desired, listed, listed_boot, member, nothing_fenced, open_owned,
-    previous_beat, stop, stored, until, until_joined,
+    BOUND, JOIN_BOUND, LEAVES, beat_boot, desired, listed, listed_boot, member, nothing_fenced,
+    open_owned, previous_beat, stop, stored, until, until_joined,
 };
 use crate::dst::fault_store::{FaultPlan, FaultProfile, FaultStore};
 use crate::dst::trace_store::{StoreTraceEvent, TraceOutcome, TraceStore};
@@ -672,4 +672,126 @@ async fn stamped(fleet: &Arc<dyn ObjectStore>, rigs: &[&HttpRig]) -> usize {
         members.iter().any(|(n, b)| n == name && b.as_ref() == boot)
     };
     rigs.iter().filter(own).count()
+}
+
+/// **A member back behind a peer that stays down serves within the join's bound** (the second gap,
+/// GATE-DECISION-s22-join-2026-11-20 Addenda 45 and 46). A two-member cell stopped whole: both are
+/// listed with the boot `before`, each with a beat 60 s old; `streams-1` boots again and
+/// `streams-2` stays down. `streams-1` unlists its old boot and joins behind `streams-2`, whose
+/// stale beat its watch settles after two beat periods: the coverage ring is empty, so it joins
+/// over nothing to cover, its own ring holds it within `JOIN_BOUND`, no join is counted unpinned
+/// and nothing is fenced. Before, its coverage was over C3's unfiltered fallback, which put
+/// `streams-2` back, and it waited out `JOIN_PHASE` (146 s measured, `joins_unpinned` 1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_member_back_behind_a_peer_that_stays_down_serves_within_the_joins_bound() {
+    let (data, fleet) = (mem(), mem());
+    desired(&fleet, 2, 1).await;
+    for name in ["streams-1", "streams-2"] {
+        super::fixture_members::seed_joined(&fleet, name, "before").await;
+        previous_beat(&fleet, name, 60_000).await;
+    }
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    let me = "streams-1".to_string();
+    let t0 = tokio::time::Instant::now();
+    while !a.state.ownership.ring_active().contains(&me) && t0.elapsed() < JOIN_BOUND {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (ring, unpinned) = (
+        a.state.ownership.ring_active(),
+        a.state.fleet.standing().joins_unpinned(),
+    );
+    assert_eq!(
+        (ring, unpinned, nothing_fenced(&[&a])),
+        (vec![me], 0, vec![(0, 0)]),
+        "streams-1's ring within {JOIN_BOUND:?} ({:?} elapsed), joins unpinned, fences",
+        t0.elapsed()
+    );
+    stop(a).await;
+}
+
+/// **A joiner's step does not rest on one comparison of two hosts' clocks** (Addendum 46's guard,
+/// as Addendum 58 states it). A scale-out with `streams-1`'s beats stamped 40 s behind the wall
+/// clock, as a joiner whose own clock is that far ahead reads them: each is stale on arrival, but
+/// each read finds a newer one, so the watch never settles it. `streams-1`'s pass is held so it
+/// cannot pin; `streams-2` stays unlisted while the hold lasts, then joins covered (no join
+/// unpinned) by a document that carries `streams-1`'s pins of the leaves it wins. Red with the
+/// watch at zero: `streams-2` joins over an empty coverage ring while `streams-1` is held. It does
+/// not assert on fences: once `streams-2` is a member, R1 judges the same beats stale by the same
+/// clock and both members ring themselves alone, so a writer is fenced with the guard or without
+/// (4 of 5 runs and 3 of 5, 1 to 4 writers): R1's skew exposure, recorded in NEXT-WORK.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_joiners_step_does_not_rest_on_one_clock_comparison() {
+    let (data, fleet) = (mem(), mem());
+    desired(&fleet, 1, 1).await;
+    let a = member(&data, fleet.clone(), "streams-1", RigRuntime::first()).await;
+    a.state.fleet.standing().skew_beats(40_000);
+    until("streams-1 is listed", async || {
+        listed(&fleet).await == ["streams-1"]
+    })
+    .await;
+    let (reached, reached_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go) = tokio::sync::oneshot::channel();
+    let point = crate::topology::gate::PausePoint { reached, go };
+    a.state.fleet.standing().pause_view_publication(point);
+    reached_rx.await.expect("streams-1's pass is held");
+    desired(&fleet, 2, 2).await;
+    let b = member(
+        &data,
+        fleet.clone(),
+        "streams-2",
+        RigRuntime::incarnation(1),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let held = listed(&fleet).await;
+    assert!(go_tx.send(()).is_ok());
+    let joined = first_listing(&fleet, 2).await;
+    let both = ["streams-1".to_string(), "streams-2".to_string()];
+    let won: Vec<String> = LEAVES
+        .iter()
+        .filter(|leaf| both[crate::ownership::ring_pick(leaf, &both)] == "streams-2")
+        .map(|leaf| (*leaf).to_string())
+        .collect();
+    let pinned: Vec<String> = won
+        .iter()
+        .filter(|leaf| {
+            joined
+                .entries
+                .get(*leaf)
+                .is_some_and(|entry| entry.to == "streams-1")
+        })
+        .cloned()
+        .collect();
+    let unpinned = b.state.fleet.standing().joins_unpinned();
+    assert_eq!(
+        (held, unpinned, pinned),
+        (vec!["streams-1".to_string()], 0, won),
+        "(the listing while streams-1 was held, streams-2's joins unpinned, the leaves it won that \
+         the join's document pins to streams-1)"
+    );
+    for rig in [a, b] {
+        stop(rig).await;
+    }
+}
+
+/// The first overrides document on `fleet` that lists `members` members, read every 10 ms within
+/// [`BOUND`].
+async fn first_listing(fleet: &Arc<dyn ObjectStore>, members: usize) -> crate::fleet::Overrides {
+    let t0 = tokio::time::Instant::now();
+    loop {
+        let got = fleet.get(&Path::from("fleet/overrides.json")).await;
+        if let Ok(got) = got {
+            let doc: crate::fleet::Overrides =
+                serde_json::from_slice(&got.bytes().await.unwrap()).unwrap();
+            if doc
+                .members
+                .as_ref()
+                .is_some_and(|listed| listed.len() == members)
+            {
+                return doc;
+            }
+        }
+        assert!(t0.elapsed() < BOUND, "a document lists {members} members");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

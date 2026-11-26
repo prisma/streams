@@ -78,6 +78,12 @@ pub(super) struct Candidates {
     my_boot: Option<u64>,
     /// Whether a pass of this boot has read it a member (C18b, `with_decided`).
     decided: bool,
+    /// Every held beat's own time and whether it states its end (draining or withdrawn), by name,
+    /// sorted (`with_beats`): what Addendum 46's guard watches.
+    beats: Vec<(String, (i64, bool))>,
+    /// The listed members this boot's watch of their beats has settled as gone (`with_settled`,
+    /// `Standing::settled`), sorted.
+    settled: Vec<String>,
 }
 
 impl Candidates {
@@ -110,6 +116,34 @@ impl Candidates {
     /// The same, the reader's own boot id known (R1b).
     pub(super) fn with_boot(mut self, boot_id: &str) -> Self {
         self.my_boot = Some(boot_of(boot_id));
+        self
+    }
+
+    /// The same, with each held beat's own time and whether it states its end
+    /// (`planning::active_members`).
+    pub(super) fn with_beats(mut self, mut beats: Vec<(String, (i64, bool))>) -> Self {
+        beats.sort_by(|a, b| a.0.cmp(&b.0));
+        self.beats = beats;
+        self
+    }
+
+    /// Each held beat that does not qualify: its name, boot, own time and whether it states its
+    /// end. The beats `with_beats` gave no time are left out.
+    pub(super) fn unqualified(&self) -> impl Iterator<Item = (&str, u64, i64, bool)> {
+        self.held
+            .iter()
+            .filter(|(_, (_, ok))| !ok)
+            .filter_map(|(name, (boot, _))| {
+                let at = self.beats.binary_search_by(|beat| beat.0.cmp(name)).ok()?;
+                let (ts_ms, stated) = self.beats[at].1;
+                Some((name.as_str(), *boot, ts_ms, stated))
+            })
+    }
+
+    /// The same, `settled` the members `Standing::settled` found gone.
+    pub(super) fn with_settled(mut self, mut settled: Vec<String>) -> Self {
+        settled.sort();
+        self.settled = settled;
         self
     }
 
@@ -178,6 +212,27 @@ impl Candidates {
                 .filter(|member| within_count(&member.name, self.count));
             kept = within.map(|member| member.name.as_str()).collect();
         }
+        kept.sort_by_key(|name| ordinal_key(name));
+        kept.into_iter().map(str::to_string).collect()
+    }
+
+    /// A joiner's coverage ring (GATE-DECISION-s22-join-2026-11-20 Addenda 45 and 46): `listed`
+    /// less each member this reader holds settled evidence against, a held beat of its listed boot
+    /// that does not qualify and that `settled` names. Never C3's unfiltered fallback, so it can be
+    /// empty: a joiner behind listed members that are all gone has nothing to cover. A member with
+    /// no beat of its listed boot held, or unstamped, has no evidence against it and stays.
+    pub(super) fn evidence_ring(&self, listed: &[Member]) -> Vec<String> {
+        let gone = |member: &&Member| {
+            let boot = member.boot_id.as_deref().map(boot_of);
+            let held = self.beat_of(&member.name);
+            let against = matches!((boot, held), (Some(boot), Some((held, false))) if boot == held);
+            against && self.settled.binary_search(&member.name).is_ok()
+        };
+        let mut kept: Vec<&str> = listed
+            .iter()
+            .filter(|member| !gone(member))
+            .map(|member| member.name.as_str())
+            .collect();
         kept.sort_by_key(|name| ordinal_key(name));
         kept.into_iter().map(str::to_string).collect()
     }
@@ -595,5 +650,40 @@ mod tests {
             .map(|(m, f, w)| ((*m).to_string(), (*f).to_string(), (*w).to_string()))
             .collect();
         assert_eq!(view_writers(), expected);
+    }
+
+    /// A joiner's coverage ring (Addenda 45 and 46): the listed members less those with settled
+    /// evidence against their listed boot; never the unfiltered fallback, so it can be empty. A
+    /// stale beat the watch has not settled stays, as do a member with no beat of its listed boot
+    /// held (C14's corner), an unstamped listing and a member whose beat qualifies.
+    #[test]
+    fn a_joiners_coverage_ring_drops_only_settled_evidence() {
+        let listed = vec![
+            member("streams-1", Some("a1")),
+            member("streams-2", Some("b1")),
+            member("streams-3", Some("c1")),
+            member("streams-4", None),
+        ];
+        let held = vec![
+            beat("streams-1", "a1", false),
+            beat("streams-2", "b1", false),
+            beat("streams-3", "other", false),
+            beat("streams-4", "d1", false),
+        ];
+        let reader = |settled: &[&str]| {
+            Candidates::held(4, "streams-5", held.clone()).with_settled(names(settled))
+        };
+        let all = names(&["streams-1", "streams-2", "streams-3", "streams-4"]);
+        assert_eq!(reader(&[]).evidence_ring(&listed), all, "nothing settled");
+        let settled = reader(&["streams-1", "streams-3", "streams-4"]).evidence_ring(&listed);
+        assert_eq!(settled, names(&["streams-2", "streams-3", "streams-4"]));
+        let two = &listed[..2];
+        let gone = reader(&["streams-1", "streams-2"]).evidence_ring(two);
+        assert_eq!(
+            gone,
+            Vec::<String>::new(),
+            "every listed member gone: empty, no fallback"
+        );
+        assert_eq!(gone, reader(&[]).evidence_ring(&[]));
     }
 }
