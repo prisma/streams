@@ -37,7 +37,7 @@
 //!   chose (the billing sweep, a shutdown) is not evidence: see `holdoff`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,8 @@ mod adoption;
 /// A planned drain's seal of the gate and its fence observation (F6, the drain addendum).
 mod drain;
 mod health;
+/// The gate's two stops: the one-way stop and a leaver's reversible seal (C10).
+mod leave;
 pub(crate) use health::ShardHealth;
 /// The anti-flap ledger's verdict on a departure: evidence, or a release.
 mod holdoff;
@@ -334,7 +336,7 @@ fn holdoff_for(strikes: u32) -> Duration {
 
 struct GateInner {
     health: ShardHealth,
-    stopping: AtomicBool,
+    stopping: leave::Stops,
     shards: ServingMap,
     opener: OpenFn,
     /// Incarnations are minted per open attempt, per gate.
@@ -474,7 +476,7 @@ impl OpenGate {
         OpenGate {
             inner: Arc::new(GateInner {
                 health: ShardHealth::default(),
-                stopping: AtomicBool::new(false),
+                stopping: leave::Stops::default(),
                 shards,
                 opener: unwind::unwind_proof(opener),
                 next_incarnation: AtomicU64::new(0),
