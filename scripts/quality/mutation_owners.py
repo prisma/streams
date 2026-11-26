@@ -473,6 +473,11 @@ OWNERS = (
     owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record:: dst_tests::fleet_join::'),
     # §22's join: its units, and the join DSTs (a scale-out, a waiting joiner, a restart in place).
     owner('fleet_join', 'src/fleet/join.rs', 'fleet::join:: dst_tests::fleet_join:: dst_tests::fleet_join_boot::'),
+    # §22's leave (Addendum 41 B): the phase clock's units, the plan's release row, and the leave DSTs
+    # (a scale-in, a leaver past its phase, a count that comes back mid-leave).
+    owner('fleet_leave', 'src/fleet/leave.rs', 'fleet::leave:: fleet::join:: dst_tests::fleet_leave::'),
+    # C14's evidence table and R1c's watch, and the removal of a member while alive.
+    owner('fleet_dead', 'src/fleet/dead.rs', 'fleet::dead:: fleet::join:: dst_tests::fleet_leave::a_member_removed_while_alive'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',

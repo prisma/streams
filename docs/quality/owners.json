@@ -82,6 +82,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::run",
+      "path": "src/fleet/leave.rs",
+      "reason": "The leave's task: expression selection between supervised cancellation and its look period, and between cancellation and the look it runs (handoffs, then the seal); compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::leave_cell",
+      "path": "src/dst/tests/fleet_leave.rs",
+      "reason": "The leave cell's peer table (fleet/urls.json) naming both members' listeners, as the fleet stores it; serde macro output is compiled and read by the members.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
       "count": 5,
       "owner": "crate::run",
       "path": "src/fleet/heartbeat.rs",
@@ -1607,6 +1623,14 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "§22's join at boot (GATE-DECISION-s22-join-2026-11-20 §2, Addenda 1-3): the upgrade from unstamped listings, a boot killed between its stamp and its first beat, and an unlisted boot beating with its tick held; compiler and the full DST suite exercise the module.",
       "syntax": "path = \"tests/fleet_join_boot.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_leave",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "§22's leave (GATE-DECISION-s22-join-2026-11-20 Addendum 41 B, Addenda 44 and 60) and C14: a scale-in moves its shards without fencing, a leaver past its phase releases and what it gave up is counted once, a count that comes back mid-leave ends it, and a member removed while alive joins again; compiler and the full DST suite exercise the module.",
+      "syntax": "path = \"tests/fleet_leave.rs\""
     },
     {
       "category": "macro-dsl",

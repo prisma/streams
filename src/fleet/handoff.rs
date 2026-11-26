@@ -89,17 +89,17 @@ pub(crate) struct Request {
 pub(crate) type Queue = mpsc::Sender<Request>;
 
 /// Move `prefix` by `change`, giver first; its end. Without a runner (a fleet-off runtime, or one
-/// whose runner stopped) nothing is moved, and neither is anything once this runtime's planned
-/// drain has begun: from then on only the drain moves its shards (the drain addendum G5,
-/// [`drained`]).
+/// whose runner stopped) nothing is moved, and neither is anything once this runtime is departing
+/// (a planned drain begun, or a leave): from then on only its departure moves its shards (the
+/// drain addendum G5, [`departing_move`]).
 pub(crate) async fn hand_off(
     fleet: &super::FleetRepository,
     prefix: &str,
     change: Change,
     evacuable: bool,
 ) -> Outcome {
-    if fleet.standing().drain_begun() {
-        return not_started(fleet.standing(), "drain");
+    if fleet.standing().departing() {
+        return not_started(fleet.standing(), "departing");
     }
     queued(fleet, prefix, change, (evacuable, false)).await
 }
@@ -113,14 +113,15 @@ pub(crate) async fn hand_off_paced(
     change: Change,
     evacuable: bool,
 ) -> Outcome {
-    if fleet.standing().drain_begun() {
-        return not_started(fleet.standing(), "drain");
+    if fleet.standing().departing() {
+        return not_started(fleet.standing(), "departing");
     }
     queued(fleet, prefix, change, (evacuable, true)).await
 }
 
-/// A planned drain's move of `prefix` by `change`, giver first (G1); its end.
-pub(crate) async fn drained(
+/// A departing member's own move of `prefix` by `change`, giver first (G1): a planned drain's or a
+/// leaver's (Addendum 41 B item 11, one entry); its end.
+pub(crate) async fn departing_move(
     fleet: &super::FleetRepository,
     prefix: &str,
     change: Change,

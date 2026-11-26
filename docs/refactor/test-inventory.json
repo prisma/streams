@@ -796,6 +796,17 @@
     "scenarios": []
   },
   {
+    "name": "a_count_that_comes_back_mid_leave_ends_it_and_the_leaver_keeps_serving",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "49e65243a46d5f730038e2d6791cdeabc95d08fefc287f5c5ea8dac36b1380c4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_leave.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_count_that_drops_while_a_member_joins_moves_nothing",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2140,6 +2151,17 @@
     "scenarios": []
   },
   {
+    "name": "a_leaver_past_its_phase_releases_and_what_it_gave_up_is_counted_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "a873b0ddd811d6ed24c326bfea891341627e332581d5ff80fc48a2fee4aa1e55",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_leave.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_listed_member_stale_on_one_reader_leaves_that_readers_ring_alone",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
@@ -2339,6 +2361,17 @@
       ".put(&Path::from(\"fleet/desired.json\"), PutPayload::from(seed))"
     ],
     "file": "src/dst/tests/fleet_desired.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_member_removed_while_alive_counts_it_and_joins_again",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "ddbd5b76cbbd20dcb81be03bbca387b1ae29478ddfccb70d0ca8e0c372ea76e9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_leave.rs",
     "scenarios": []
   },
   {
@@ -4494,6 +4527,17 @@
       "crate::failpoints::release_consumer_saga_before_refresh(\"qc18b\");"
     ],
     "file": "src/dst/tests/consumer_saga.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_scale_in_moves_its_shards_without_fencing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "00f2260a43711925771d86f13ea31bc09f4e99b0db990f453b1935cc5ae487aa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_leave.rs",
     "scenarios": []
   },
   {

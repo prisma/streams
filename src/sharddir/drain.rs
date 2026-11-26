@@ -18,10 +18,16 @@ use std::sync::atomic::Ordering;
 use super::{EngineIncarnation, OpenGate};
 
 impl OpenGate {
-    /// Stop starting opens if this instance holds nothing: no resident, no open in flight, no
-    /// close unsettled, judged under the gate's state and then the serving map, the one order.
-    /// Whether it sealed; a gate already stopping is sealed.
+    /// Stop starting opens if this instance holds nothing (`hold_nothing_then`). Whether it sealed;
+    /// a gate already stopping is sealed.
     pub(crate) fn seal_for_drain(&self) -> bool {
+        self.hold_nothing_then(|stops| stops.store(true, Ordering::SeqCst))
+    }
+
+    /// Apply `seal` to the gate's stops if this instance holds nothing: no resident, no open in
+    /// flight, no close unsettled, judged under the gate's state and then the serving map, the one
+    /// order. Whether it applied. The drain's seal and a leaver's (`sharddir::leave`) share it.
+    pub(super) fn hold_nothing_then(&self, seal: impl FnOnce(&super::leave::Stops)) -> bool {
         let Ok(state) = self.inner.st.lock() else {
             return false;
         };
@@ -35,7 +41,7 @@ impl OpenGate {
         if !serving.is_empty() || state.values().any(unsettled) {
             return false;
         }
-        self.inner.stopping.store(true, Ordering::SeqCst);
+        seal(&self.inner.stopping);
         true
     }
 
@@ -54,11 +60,5 @@ impl OpenGate {
             resident.incarnation == incarnation && closed
         };
         serving.get(prefix).is_some_and(fenced)
-    }
-
-    /// Whether the gate starts no more opens for good: a stop, a drain's seal, or its evacuation;
-    /// a leaver's reversible seal is not one.
-    pub(crate) fn sealed(&self) -> bool {
-        self.inner.stopping.stopped()
     }
 }

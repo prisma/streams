@@ -528,7 +528,8 @@ async fn scaled_in_to_two(state: &crate::http::AppState) {
 /// whose home is an ordinal within the count, so the drained member is the one the count leaves
 /// out): `streams-3` drains the leaf it holds to `streams-2` and announces, the count drops to
 /// two, and `streams-2` prunes the entry the move wrote (a no-op once `streams-3` is beyond the
-/// count and unlisted; aged past the return window here, as its passing would). `streams-1`'s
+/// count and unlisted; aged past the return window here, as its passing would, and `streams-3`
+/// unlisted by hand, as the drain's half will before it announces, R4). `streams-1`'s
 /// view is then set back to what it was before the drain, as if its tick had not run since: an
 /// append through it, naming `streams-3`, is acked after at most one `409` and one replay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
@@ -593,7 +594,9 @@ async fn a_peer_whose_view_the_drain_overtook_is_answered_after_one_replay() {
 }
 
 /// Move `leaf`'s entry back past the return window, through the overrides CAS, as the window's
-/// passing would: return-home then prunes it once it is a no-op.
+/// passing would: return-home then prunes it once it is a no-op. In the same CAS `streams-3`, the
+/// drained member, is unlisted: the drain's half (R4) will remove it before it announces; until
+/// it lands, by hand (before the leave the interim's removal half did, as beyond the count).
 async fn aged_past_the_window(state: &crate::http::AppState, leaf: &str) {
     let window_ms = i64::try_from(state.config.fleet.rebalance_return_secs).unwrap() * 1000;
     let t0 = Instant::now();
@@ -601,6 +604,9 @@ async fn aged_past_the_window(state: &crate::http::AppState, leaf: &str) {
         let (mut doc, version) = state.fleet.read_overrides().await.unwrap();
         let entry = doc.entries.get_mut(leaf).expect("the move's entry");
         entry.ms -= window_ms + 60_000;
+        if let Some(members) = doc.members.as_mut() {
+            members.retain(|member| member.name != "streams-3");
+        }
         let raw = serde_json::to_vec(&doc).unwrap();
         let doc = crate::fleet::FleetDocument::Overrides;
         if state.fleet.replace_document(doc, raw, version).await {

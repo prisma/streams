@@ -68,12 +68,34 @@ impl ShardDirectory {
         self.inner.gate.stop();
     }
 
-    /// A drain whose handoff phase ran out gives up `held`, the shards it still holds: each is
-    /// taken by fence or by this instance's own yield, not by a move, and counts as a writer
-    /// fenced ahead of a move (G3, G6).
+    /// Seal this instance against opens for its leave, if it holds nothing (C10,
+    /// `sharddir::leave`). Whether it is sealed.
+    pub(crate) fn seal_for_leave(&self) -> bool {
+        self.inner.gate.seal_for_leave()
+    }
+
+    /// The leave's fallback past its phase: refuse opens whatever this instance still holds,
+    /// reversibly.
+    pub(crate) fn stop_for_leave(&self) {
+        self.inner.gate.stop_for_leave();
+    }
+
+    /// Lift this instance's leave seal once it holds nothing (Addendum 60 §1); whether none is left.
+    pub(crate) fn unseal_leave(&self) -> bool {
+        self.inner.gate.unseal_leave()
+    }
+
+    /// Whether this instance's leave seal is set.
+    pub(crate) fn leave_sealed(&self) -> bool {
+        self.inner.gate.leave_sealed()
+    }
+
+    /// A drain whose handoff phase ran out, or a leaver whose leave phase did, gives up `held`, the
+    /// shards it still holds: each is taken by fence or by this instance's own yield, not by a
+    /// move, and counts as a writer fenced ahead of a move (G3, G6).
     pub(crate) fn note_evacuated(&self, held: &[String]) {
         for prefix in held {
-            tracing::warn!(shard = %prefix, "planned drain: evacuated, not handed off");
+            tracing::warn!(shard = %prefix, "planned departure: evacuated, not handed off");
             self.inner.handoffs.note_fenced();
         }
     }
@@ -93,14 +115,17 @@ impl ShardDirectory {
 
 /// An engine of `prefix` (`incarnation`) closed: count it as fenced ahead of a planned move when
 /// its storage closed fenced while this instance's view named it the owner (G6). Judged before the
-/// eviction drops the resident. Once the gate is stopped nothing is counted here: a drain's
-/// evacuation counted what it gave up itself ([`ShardDirectory::note_evacuated`]).
+/// eviction drops the resident. Once the gate refuses opens, for either of its stops, nothing is
+/// counted here (Addendum 60 §1): a drain's evacuation past its handoff phase, under the one-way
+/// stop, and a leaver's fallback past its phase, under the leave's seal, each counted what it gave
+/// up itself ([`ShardDirectory::note_evacuated`], and the leave's `leave_evacuated` beside it). A
+/// leaver's ordinary seal is set only once it holds nothing, so it leaves nothing to judge.
 pub(super) fn judge_fence(
     dir: &super::DirInner,
     prefix: &str,
     incarnation: crate::sharddir::EngineIncarnation,
 ) {
-    let ahead = dir.ownership.foreign_owner(prefix).is_none() && !dir.gate.sealed();
+    let ahead = dir.ownership.foreign_owner(prefix).is_none() && !dir.gate.closed_to_opens();
     if ahead && dir.gate.resident_fenced(prefix, incarnation) {
         tracing::warn!(shard = %prefix, "a writer here was fenced ahead of a planned move");
         dir.handoffs.note_fenced();

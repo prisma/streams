@@ -293,7 +293,7 @@ async fn hand_off_held(state: &AppState, instance: &str) {
     for prefix in state.shards.held_prefixes() {
         let to = successors[crate::ownership::ring_pick(&prefix, &successors)].clone();
         let change = super::handoff::Change::To(to);
-        let outcome = super::handoff::drained(&state.fleet, &prefix, change).await;
+        let outcome = super::handoff::departing_move(&state.fleet, &prefix, change).await;
         tracing::info!(shard = %prefix, ?outcome, "drain: handing a shard off");
     }
 }

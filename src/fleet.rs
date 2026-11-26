@@ -33,6 +33,10 @@ mod hysteresis;
 mod join;
 #[cfg(test)]
 pub(crate) use join::JOIN_PHASE;
+// Dead names (C14, R1c): a listed name removed on evidence, never by the count.
+mod dead;
+// The leave (§22 step 6): a member beyond the count hands off, seals and releases itself.
+mod leave;
 // The tick's return-home and lag move.
 mod moves;
 mod outbox;
@@ -445,6 +449,7 @@ pub(crate) fn start_configured(state: Arc<AppState>, tasks: &crate::tasks::TaskS
     heartbeat::start(state.clone(), cfg.instance.clone(), tasks);
     // Every planned move runs giver first on this runtime's runner (F6).
     handoff::start(state.clone(), tasks);
+    leave::start(state.clone(), tasks);
     count_balance::start(state.clone(), cfg.instance.clone(), tasks);
     let revalidation = crate::topology::revalidate::Revalidation {
         registry: state.registry.clone(),

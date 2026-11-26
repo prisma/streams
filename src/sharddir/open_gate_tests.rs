@@ -868,10 +868,9 @@ fn a_shard_db_path_reads_back_as_its_prefix() {
     assert_eq!(crate::sharddir::prefix_of_db_path("rigs/a"), "rigs/a");
 }
 
-/// Kills `|| with &&` in `seal_for_drain`'s unsettled check and both constants of
-/// `OpenGate::sealed`: an open in flight, then the resident it installed, keeps a drain's seal
-/// off; a gate that holds nothing seals, reports itself sealed and turns a caller away as a stop
-/// does, starting no open.
+/// Kills `|| with &&` in `seal_for_drain`'s unsettled check: an open in flight, then the resident
+/// it installed, keeps a drain's seal off; a gate that holds nothing seals, refuses opens and turns
+/// a caller away as a stop does, starting no open.
 #[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
 async fn a_drain_seals_only_a_gate_that_holds_nothing() {
     let rig = Rig::new(Script::Held, OPEN_DEADLINE);
@@ -880,7 +879,7 @@ async fn a_drain_seals_only_a_gate_that_holds_nothing() {
         verdict(rig.gate.get_or_open(PREFIX, patience).await),
         Verdict::Wait("shard_opening", 3)
     );
-    let seal = |gate: &OpenGate| (gate.seal_for_drain(), gate.sealed());
+    let seal = |gate: &OpenGate| (gate.seal_for_drain(), gate.closed_to_opens());
     assert_eq!(seal(&rig.gate), (false, false), "an open in flight");
     rig.release.send_replace(true);
     let engine = ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
@@ -942,4 +941,44 @@ async fn a_drain_reads_a_resident_as_fenced_only_for_its_own_incarnation() {
     assert_eq!(judged, [true, false, false]);
     drop(engine.await_terminated(OPEN_WAIT).await);
     newer.close().await.expect("the newer writer closes");
+}
+
+/// A leaver's seal (C10, Addendum 60 §1): a gate holding a resident does not seal for a leave; the
+/// fallback's stop seals it anyway and refuses opens as a stop does; its seal is not lifted while
+/// the resident it gave up is held or closing, and lifts once nothing is held. `closed_to_opens`,
+/// the fence judge's test, answers for either stop over the four states: none, the leave's, the
+/// drain's and both (lifting the leave's seal of both leaves the drain's).
+#[tokio::test(flavor = "current_thread", crate = "crate::test_rt")]
+async fn a_leavers_seal_lifts_only_once_its_gate_holds_nothing() {
+    let rig = Rig::new(Script::Open, OPEN_DEADLINE);
+    let engine = ready(rig.gate.get_or_open(PREFIX, OPEN_WAIT).await);
+    let state = |gate: &OpenGate| (gate.leave_sealed(), gate.closed_to_opens());
+    assert!(!rig.gate.seal_for_leave(), "a resident");
+    assert_eq!(state(&rig.gate), (false, false), "no stop");
+    rig.gate.stop_for_leave();
+    assert_eq!(state(&rig.gate), (true, true), "the fallback's");
+    let other = rig.gate.get_or_open("1", Duration::from_millis(20)).await;
+    assert_eq!(verdict(other), Verdict::Wait("shard_closing", 1));
+    assert!(!rig.gate.unseal_leave(), "the resident it gave up");
+    let retired = rig
+        .gate
+        .retire_resident(PREFIX, RetirementReason::Shutdown, |_, _| true);
+    assert!(matches!(retired, Retirement::Retired(_)));
+    assert!(!rig.gate.unseal_leave(), "its close unsettled");
+    engine.begin_close();
+    assert_eq!(engine.await_terminated(OPEN_WAIT).await, Ok(()));
+    assert!(rig.gate.unseal_leave(), "nothing held");
+    assert_eq!(state(&rig.gate), (false, false), "lifted");
+    assert!(rig.gate.unseal_leave(), "no seal left");
+
+    let drain = Rig::new(Script::Open, OPEN_DEADLINE);
+    drain.gate.stop();
+    assert_eq!(state(&drain.gate), (false, true), "the drain's");
+    let both = Rig::new(Script::Open, OPEN_DEADLINE);
+    assert!(both.gate.seal_for_leave(), "an ordinary leaver's seal");
+    both.gate.stop();
+    assert_eq!(state(&both.gate), (true, true), "both");
+    assert!(both.gate.unseal_leave());
+    assert_eq!(state(&both.gate), (false, true), "the drain's stays");
+    assert_eq!(rig.attempts() + drain.attempts() + both.attempts(), 1);
 }

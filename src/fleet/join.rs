@@ -6,9 +6,11 @@
 //! publication (`view::published`), [`pass`] writes at most one CAS:
 //! - **a member** (listed with its own boot id, R1b) **pins** (C7): an entry naming itself for each
 //!   leaf the document gives it that the ring with every unlisted ordinal within the count would
-//!   give another. It needs no beat from any joiner. In the same CAS it drops the listed names
-//!   beyond the count: the interim's removal half, today's class at scale-in, until the leave
-//!   (step 6) replaces it (Addendum 14). The model's `Pin`.
+//!   give another. It needs no beat from any joiner. A member beyond the count pins too (Addendum
+//!   44 Q7): it is leaving (`fleet::leave`), and once its gate is sealed for the leave and a member
+//!   within the count is listed, it **releases**: one CAS removes its own name (Addendum 41 B item
+//!   1). In the CAS of its pins a member removes at most one other name, a dead one (C14,
+//!   `fleet::dead`), never by the count. The model's `Pin`, `Release` and `DeadRemoval`.
 //! - **a listed instance without a boot id** (the step 4 interim's write) stamps its own: the
 //!   upgrade, one CAS. A listed instance with another boot id (a restart, C13) replaces it when its
 //!   previous beat is young (R1a, in place) and otherwise removes its listing and then joins; both
@@ -142,6 +144,10 @@ pub(super) struct Facts<'a> {
     pub(super) member: bool,
     /// Whether [`JOIN_PHASE`] has run out since the first pass that found something uncovered.
     pub(super) phase_over: bool,
+    /// While this instance is leaving (`fleet::leave::step`): whether its gate is sealed.
+    pub(super) leaving: Option<bool>,
+    /// The one dead listed name a member's pass may remove (C14, `fleet::dead`).
+    pub(super) dead: Option<String>,
 }
 
 /// The one write a pass makes, and what it is (for the INFO line and the counters).
@@ -157,8 +163,10 @@ pub(super) enum Write {
     InPlace,
     /// C13: a restart that is not young removes its listing (it joins on a later pass).
     Unlisted,
-    /// C7 pins and the interim's removal half: the leaves pinned, the names unlisted.
-    Pinned(Vec<String>, Vec<String>),
+    /// C7 pins and C14's removal: the leaves pinned, and the dead name unlisted.
+    Pinned(Vec<String>, Option<String>),
+    /// The leave's release: a sealed leaver removes its own name (Addendum 41 B item 1).
+    Released,
     /// C5: the join; `uncovered` is non-empty only for the fallback past [`JOIN_PHASE`].
     Joined { uncovered: Vec<String> },
 }
@@ -204,9 +212,20 @@ impl Planned {
         }
     }
 
-    /// A member's pass: its pins (C7) and the interim's removal half, in one CAS if either.
+    /// A member's pass: a sealed leaver's release, else its pins (C7) and a dead name's removal
+    /// (C14) in one CAS if either.
     fn of_member(facts: &Facts<'_>, document: &Overrides, listed: &[Member]) -> Self {
         let c = facts.candidates;
+        // Not while no member within the count is listed (Addendum 44 Q4): its leaves would have
+        // no member to go to.
+        let within =
+            |member: &Member| member.name != c.me() && within_count(&member.name, c.count());
+        if facts.leaving == Some(true) && listed.iter().any(within) {
+            let mut next = document.clone();
+            let kept = listed.iter().filter(|member| member.name != c.me());
+            next.members = Some(kept.cloned().collect());
+            return Self::write(Some(next), Write::Released);
+        }
         let ring = c.ring(Some(listed));
         let mut prospective = ring.clone();
         let unlisted = ordinal(c.count()).into_iter();
@@ -214,12 +233,8 @@ impl Planned {
             .extend(unlisted.filter(|name| listed.iter().all(|member| &member.name != name)));
         prospective.sort_by(|a, b| ordinal_key(a).cmp(&ordinal_key(b)));
         let pinned = pins(facts.leaves, &ring, &prospective, c.me(), &document.entries);
-        let beyond: Vec<String> = listed
-            .iter()
-            .filter(|member| !within_count(&member.name, c.count()))
-            .map(|member| member.name.clone())
-            .collect();
-        if pinned.is_empty() && beyond.is_empty() {
+        let dead = facts.dead.clone();
+        if pinned.is_empty() && dead.is_none() {
             return Self::default();
         }
         let mut next = document.clone();
@@ -230,11 +245,11 @@ impl Planned {
             };
             next.entries.insert(leaf.clone(), entry);
         }
-        let kept = listed
-            .iter()
-            .filter(|member| !beyond.contains(&member.name));
-        next.members = Some(kept.cloned().collect());
-        Self::write(Some(next), Write::Pinned(pinned, beyond))
+        if let Some(name) = &dead {
+            let kept = listed.iter().filter(|member| member.name != *name);
+            next.members = Some(kept.cloned().collect());
+        }
+        Self::write(Some(next), Write::Pinned(pinned, dead))
     }
 
     /// A boot listed with another boot id, or unstamped (C13, R1a): in place when young and R3's
@@ -353,7 +368,7 @@ pub(super) async fn pass(
     if candidates.is_member(read.0.members.as_deref()) {
         standing.note_member();
     } else if unlisted(&read.0, candidates.me()) {
-        standing.forget_member();
+        removed(standing);
     }
     let leaves = state.shards.prefixes().to_vec();
     let facts = Facts {
@@ -365,6 +380,11 @@ pub(super) async fn pass(
         phase_over: standing
             .join_phase_since()
             .is_some_and(|since| since.elapsed() >= JOIN_PHASE),
+        leaving: super::leave::step(state, candidates, &read.0),
+        dead: read.0.members.as_deref().and_then(|listed| {
+            let now = (crate::shard::now_ms(), tokio::time::Instant::now());
+            standing.dead().removal(candidates, listed, now)
+        }),
     };
     let planned = plan(&facts, &read.0, &state.runtime.identity.boot_id);
     unstamped(standing, candidates, &read.0);
@@ -386,6 +406,17 @@ fn released(state: &AppState, candidates: &Candidates, document: &Overrides) {
     if may_beat(candidates, document) {
         state.fleet.standing().allow_beats();
     }
+}
+
+/// A pass found this boot unlisted: a decided member, which its own release would already have
+/// cleared, was removed while alive (C14): warned and counted `removed_while_listed`; its engines
+/// yield with the view without it, and it is a joiner.
+fn removed(standing: &Standing) {
+    if standing.decided_member() {
+        tracing::warn!("fleet member removed from the listing while alive; joining again");
+        standing.dead().note_removed_while_listed();
+    }
+    standing.forget_member();
 }
 
 /// Whether `document` lists members and not `me` under any boot id: item 8's clearing point
@@ -469,6 +500,10 @@ async fn answered(
 /// (E5's `joins_unpinned`).
 fn reported(state: &AppState, read: &Overrides, written: bool, why: &Write) {
     tracing::info!(written, ?why, "fleet membership");
+    if written && *why == Write::Released {
+        // Its own release clears the member note (Addendum 41 B item 8).
+        state.fleet.standing().forget_member();
+    }
     let Write::Joined { uncovered } = why else {
         return;
     };
