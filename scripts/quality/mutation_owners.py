@@ -470,14 +470,14 @@ OWNERS = (
     owner('fleet_planning', 'src/fleet/planning.rs', 'fleet::'),
     # The membership of record and its interim writer (§22 step 4, Addendum 14): its unit tests and
     # the record DSTs (a count rise and drop, an older document, a lost write answer), each ~10-20 s.
-    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record:: dst_tests::fleet_join::'),
+    owner('fleet_record', 'src/fleet/record.rs', 'fleet::record dst_tests::fleet_record:: dst_tests::fleet_join:: dst_tests::fleet_leave::'),
     # §22's join: its units, and the join DSTs (a scale-out, a waiting joiner, a restart in place).
-    owner('fleet_join', 'src/fleet/join.rs', 'fleet::join:: dst_tests::fleet_join:: dst_tests::fleet_join_boot::'),
+    owner('fleet_join', 'src/fleet/join.rs', 'fleet::join:: dst_tests::fleet_join:: dst_tests::fleet_join_boot:: dst_tests::fleet_leave::'),
     # §22's leave (Addendum 41 B): the phase clock's units, the plan's release row, and the leave DSTs
     # (a scale-in, a leaver past its phase, a count that comes back mid-leave).
     owner('fleet_leave', 'src/fleet/leave.rs', 'fleet::leave:: fleet::join:: dst_tests::fleet_leave::'),
     # C14's evidence table and R1c's watch, and the removal of a member while alive.
-    owner('fleet_dead', 'src/fleet/dead.rs', 'fleet::dead:: fleet::join:: dst_tests::fleet_leave::a_member_removed_while_alive'),
+    owner('fleet_dead', 'src/fleet/dead.rs', 'fleet::dead:: fleet::join:: dst_tests::fleet_leave:: dst_tests::fleet_join_boot::a_boot_stamped_and_killed_before_its_first_beat_is_removed_at_r1cs_bound'),
     # The publish rule and the in-flight window: the replay over the review's
     # trace, and the tick's wiring in the desired-count DSTs.
     owner('fleet_hysteresis', 'src/fleet/hysteresis.rs',
@@ -492,7 +492,7 @@ OWNERS = (
     owner('sharddir_drain', 'src/sharddir/drain.rs', 'dst_tests::fleet_handoff_drain:: sharddir::open_gate_tests::a_drain_'),
     owner('sharddir_leave', 'src/sharddir/leave.rs', 'sharddir::leave:: sharddir::open_gate_tests:: dst_tests::fleet_handoff_drain::'),
     owner('sharddir_handoff', 'src/sharddir/handoff.rs', 'sharddir::handoff:: shard::task_lifecycle_tests::a_retirement_because_ownership_moved_is_counted_as_a_tick_yield dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced::'),
-    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced:: dst_tests::parked_waits::writes_'),
+    owner('shard_directory_handoff', 'src/shard_directory/handoff.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_handoff_paced:: dst_tests::parked_waits::writes_ dst_tests::fleet_leave::'),
     owner('fleet_moves', 'src/fleet/moves.rs',
           'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet::moves:: dst_tests::fleet_moves:: dst_tests::fleet_controller:: '
           'dst_tests::fleet_birth::exactly_one_child_returns_home_after_the_window '
@@ -511,7 +511,7 @@ OWNERS = (
     # Overrides that name no stored leaf, dropped by the writers that rewrite the document.
     owner('fleet_stale', 'src/fleet/stale.rs',
           'fleet::stale:: dst_tests::fleet_controller::count_balance::a_count_move_prunes'),
-    owner('fleet_standing', 'src/fleet/standing.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_topology:: dst_tests::fleet_handoff_drain::'),
+    owner('fleet_standing', 'src/fleet/standing.rs', 'dst_tests::fleet_handoff:: dst_tests::fleet_handoff_cases:: ' 'fleet:: dst_tests::fleet_topology:: dst_tests::fleet_handoff_drain:: dst_tests::fleet_leave::'),
     # The beat loop and the tick's pressure reading are proven by the rigs.
     # The beat's open of a live intent's unopened sources is pinned by the fleet_topology DSTs that
     # call it directly. fleet_topology::the_fleet_tick_opens_no_override_whose_prefix_is_no_leaf
