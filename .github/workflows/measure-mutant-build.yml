@@ -1,0 +1,53 @@
+name: measure-mutant-build
+# Addendum 66 item 5: where a mutant's rebuild time goes on these runners, each lever alone.
+# Lives only on measure/** branches; never lands. Each job runs the same two owners' few
+# mutants as the driver does (profile quality, incremental, --jobs 1), then prints cargo-mutants'
+# own build/test seconds per baseline and mutant.
+on:
+  push:
+    branches: ['measure/**']
+permissions:
+  contents: read
+jobs:
+  lever:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        lever: [base, in-place, opt0, opt0-in-place]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: Two owners in sequence, a few mutants each
+        env:
+          CARGO_INCREMENTAL: "1"
+          LEVER: ${{ matrix.lever }}
+        run: |
+          set -uo pipefail
+          extra=()
+          case "$LEVER" in *opt0*) export CARGO_PROFILE_QUALITY_OPT_LEVEL=0 ;; esac
+          case "$LEVER" in *in-place*) extra+=(--in-place) ;; esac
+          out=$PWD/target/measure
+          mkdir -p "$out/tmp"
+          export TMPDIR=$out/tmp
+          run() {
+            local owner=$1 file=$2 re=$3 filter=$4
+            local started=$SECONDS
+            cargo mutants --cargo-arg=--locked --cargo-arg=--lib --cargo-arg=--target-dir="$out/build" \
+              --baseline run --file "$file" --package streams-slate --re "$re" \
+              --cargo-test-arg="$filter" --profile quality --jobs 1 --minimum-test-timeout 90 \
+              --timeout-multiplier 3 --build-timeout 1800 --gitignore true --output "$out/$owner" \
+              ${extra[@]+"${extra[@]}"} 2>&1 | tee "$out/$owner.log" | grep -E 'baseline|build \+|mutants? tested'
+            echo "MEASURE $LEVER $owner wall $((SECONDS - started)) s"
+          }
+          run dead src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
+          run leave src/fleet/leave.rs 'leave.rs:13[0-9]:' fleet::leave::
+          run dead2 src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
+          du -sh "$out/build" || true
