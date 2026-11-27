@@ -30,10 +30,11 @@ jobs:
           CARGO_INCREMENTAL: "1"
           LEVER: ${{ matrix.lever }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           extra=()
           case "$LEVER" in *opt0*) export CARGO_PROFILE_QUALITY_OPT_LEVEL=0 ;; esac
-          case "$LEVER" in *in-place*) extra+=(--in-place) ;; esac
+          gitignore=(--gitignore true)
+          case "$LEVER" in *in-place*) extra+=(--in-place); gitignore=() ;; esac
           out=$PWD/target/measure
           mkdir -p "$out/tmp"
           export TMPDIR=$out/tmp
@@ -43,11 +44,11 @@ jobs:
             cargo mutants --cargo-arg=--locked --cargo-arg=--lib --cargo-arg=--target-dir="$out/build" \
               --baseline run --file "$file" --package streams-slate --re "$re" \
               --cargo-test-arg="$filter" --profile quality --jobs 1 --minimum-test-timeout 90 \
-              --timeout-multiplier 3 --build-timeout 1800 --gitignore true --output "$out/$owner" \
-              ${extra[@]+"${extra[@]}"} 2>&1 | tee "$out/$owner.log" | grep -E 'baseline|build \+|mutants? tested'
+              --timeout-multiplier 3 --build-timeout 1800 ${gitignore[@]+"${gitignore[@]}"} --output "$out/$owner" \
+              ${extra[@]+"${extra[@]}"} 2>&1 | tee "$out/$owner.log" | grep -E 'baseline|build \+|mutants? tested|rror' || true
             echo "MEASURE $LEVER $owner wall $((SECONDS - started)) s"
           }
           run dead src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
-          run leave src/fleet/leave.rs 'leave.rs:13[0-9]:' fleet::leave::
+          run leave src/fleet/leave.rs 'leave.rs:13[0-9]:' dst_tests::fleet_leave::
           run dead2 src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
           du -sh "$out/build" || true
