@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::{LEAVE_PHASE, Leave};
+use super::{LEAVE_PHASE, Leave, hands_off};
 
 /// The phase runs over leaving passes on this instance's monotonic clock, not while its clock is
 /// held (no successor, or a held source of the live intent), and is over at `LEAVE_PHASE`, eight
@@ -37,4 +37,22 @@ fn the_leave_phase_runs_only_over_leaving_passes_whose_clock_runs() {
     ];
     assert_eq!(again, [false, false, true], "started afresh");
     assert_eq!(leave.evacuated(), 0);
+}
+
+/// A look hands off only while leaving, with no drain begun and its gate unsealed (G5; Addendum
+/// 68 §1): a drain begun stops it even while the pass that ends the leave has not yet run.
+#[test]
+fn a_look_hands_off_only_while_leaving_undrained_and_unsealed() {
+    for leaving in [false, true] {
+        for drain_begun in [false, true] {
+            for sealed in [false, true] {
+                let expected = (leaving, drain_begun, sealed) == (true, false, false);
+                assert_eq!(
+                    hands_off((leaving, drain_begun, sealed)),
+                    expected,
+                    "leaving {leaving}, drain begun {drain_begun}, sealed {sealed}"
+                );
+            }
+        }
+    }
 }

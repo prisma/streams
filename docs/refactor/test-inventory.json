@@ -1152,7 +1152,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "7fd75b4d9ce692b08f036438aa5c822c53b2999e43cb9d577592e32c812205f0",
+    "function_sha256": "3949e40455c79d0bfed8b5c9b018bcc35f97b79e0e4ff627cea85d858a6493c2",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_leave.rs",

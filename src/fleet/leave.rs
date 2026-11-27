@@ -41,6 +41,8 @@ const LOOK: Duration = super::planning::TICK_PERIOD;
 pub(crate) struct Leave {
     phase: Mutex<Option<Phase>>,
     evacuated: AtomicU64,
+    /// The moves this boot's looks asked the runner for, since boot.
+    asked: AtomicU64,
 }
 
 /// A leave's phase: how long its clock has run, and the pass it was last advanced at.
@@ -82,6 +84,12 @@ impl Leave {
     #[cfg(test)]
     pub(crate) fn evacuated(&self) -> u64 {
         self.evacuated.load(Ordering::Relaxed)
+    }
+
+    /// Tests: the moves this boot's looks asked the runner for, since boot.
+    #[cfg(test)]
+    pub(crate) fn asked(&self) -> u64 {
+        self.asked.load(Ordering::Relaxed)
     }
 }
 
@@ -166,7 +174,7 @@ async fn run(state: Arc<AppState>, cancel: Cancellation) -> TaskResult {
 /// is moved and the next look tries again.
 async fn look(state: &AppState) {
     let standing = state.fleet.standing();
-    if !standing.leave().leaving() || standing.drain_begun() || state.shards.leave_sealed() {
+    if !handing_off(state) {
         return;
     }
     let Ok((document, _)) = state.fleet.read_overrides().await else {
@@ -178,7 +186,13 @@ async fn look(state: &AppState) {
         return;
     }
     for prefix in owned(state) {
+        // A drain begun mid-look moves the rest itself, and a count that came back ends the leave
+        // (G5; Addendum 67 §2): no further leaf is asked for.
+        if !handing_off(state) {
+            return;
+        }
         let to = successors[crate::ownership::ring_pick(&prefix, &successors)].clone();
+        standing.leave().asked.fetch_add(1, Ordering::Relaxed);
         let change = super::handoff::Change::To(to);
         let outcome = super::handoff::departing_move(&state.fleet, &prefix, change).await;
         tracing::info!(shard = %prefix, ?outcome, "leave: handing a leaf off");
@@ -188,6 +202,23 @@ async fn look(state: &AppState) {
     if owned(state).is_empty() && state.shards.seal_for_leave() {
         tracing::info!("leave: nothing held; the gate is sealed for the release");
     }
+}
+
+/// Whether a look hands off: this instance is leaving, no drain has begun (the drain moves its
+/// shards itself, G5) and its gate is not sealed (it holds nothing).
+fn handing_off(state: &AppState) -> bool {
+    let standing = state.fleet.standing();
+    let facts = (
+        standing.leave().leaving(),
+        standing.drain_begun(),
+        state.shards.leave_sealed(),
+    );
+    hands_off(facts)
+}
+
+/// `handing_off` over its facts: (leaving, drain begun, sealed).
+fn hands_off((leaving, drain_begun, sealed): (bool, bool, bool)) -> bool {
+    leaving && !drain_begun && !sealed
 }
 
 /// The leaves this instance's view gives it.

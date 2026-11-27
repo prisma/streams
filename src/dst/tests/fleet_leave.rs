@@ -556,11 +556,14 @@ async fn a_leaver_with_no_live_member_within_the_count_keeps_serving_until_one_c
     stopped([a, b]).await;
 }
 
-/// **A drain during a leave moves each shard once** (the draft's test 6). `streams-2` holds `10`
-/// with its committer held, so its leave cannot finish; the count drops to one, and once it is
-/// leaving the hold is released and `streams-2` drains: the leave stops (a drain moves its
-/// shards itself) and the drain ends `HandedOff`, `streams-1` holding every leaf, and no writer
-/// is fenced or given up on either member.
+/// **A drain during a leave moves each shard once** (the draft's test 6; Addendum 67 §2).
+/// `streams-2` holds `10` and `11` with `10`'s committer held, so its leave's look waits on `10`'s
+/// move with `11` still to ask for; the count drops to one, and once it is leaving `streams-2`
+/// drains, the hold released only once the drain has begun. From the drain's start the leave asks
+/// for no further move (the drain moves its shards itself, G5), the drain ends `HandedOff`, the
+/// next pass ends the leave, `streams-1` holds every leaf, and no writer is fenced or given up on
+/// either member. Its controls (the look's loop without its recheck, and `handing_off` without its
+/// drain) ask for `11`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_drain_during_a_leave_moves_each_shard_once() {
     let ((fleet, _), a, b) = leave_cell().await;
@@ -570,21 +573,36 @@ async fn a_drain_during_a_leave_moves_each_shard_once() {
     put(&fleet, "fleet/desired.json", desired(1, 2)).await;
     let standing = b.state.fleet.standing();
     let t0 = Instant::now();
-    while !standing.leave().leaving() {
-        assert!(t0.elapsed() < BOUND, "streams-2 leaves");
+    while !standing.leave().leaving() || standing.leave().asked() == 0 {
+        assert!(
+            t0.elapsed() < BOUND,
+            "streams-2 leaves and asks for its first move"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    drop(held);
     let drained = crate::fleet::drain::drain(&b.state, "streams-2", crate::fleet::drain::BUDGET);
-    let outcome = tokio::time::timeout(BOUND, drained)
-        .await
-        .expect("the drain ends");
+    let begun = async {
+        while !standing.drain_begun() {
+            assert!(t0.elapsed() < BOUND * 2, "the drain begins");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let asked = standing.leave().asked();
+        drop(held);
+        asked
+    };
+    let (outcome, asked) = tokio::join!(tokio::time::timeout(BOUND, drained), begun);
+    let outcome = outcome.expect("the drain ends");
     assert_eq!(outcome, crate::fleet::drain::DrainOutcome::HandedOff);
     // The leave is the last pass's verdict: the next pass, a drain begun, ends it.
     while standing.leave().leaving() {
-        assert!(t0.elapsed() < BOUND * 2, "a drain ends the leave");
+        assert!(t0.elapsed() < BOUND * 3, "a drain ends the leave");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert_eq!(
+        standing.leave().asked(),
+        asked,
+        "the leave asks for no move once the drain has begun"
+    );
     assert!(
         b.state.shards.held_prefixes().is_empty(),
         "streams-2 holds nothing"
