@@ -1,0 +1,45 @@
+name: measure-suite-opt
+# Addendum 66 item 5: what opt-level 0 costs each lib test under the mutants' quality profile.
+# Lives only on measure/** branches; never lands. Builds the lib test binary once per level and
+# runs the whole suite with libtest's per-test times (RUSTC_BOOTSTRAP only on the run, so the
+# build is the driver's), printing every test over 5 s and the suite's verdict.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-suite-opt.yml']
+permissions:
+  contents: read
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        opt: ['1', '0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - name: Build the lib test binary under profile quality
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_QUALITY_OPT_LEVEL: ${{ matrix.opt }}
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          cargo test --locked --lib --profile quality --no-run --message-format json > build.json
+          echo "MEASURE opt${{ matrix.opt }} build $((SECONDS - started)) s"
+          python3 -c 'import json,sys; [print(m["executable"]) for m in map(json.loads, open("build.json")) if m.get("reason")=="compiler-artifact" and m.get("executable") and m["target"]["kind"]==["lib"]]' > binary.txt
+          cat binary.txt
+      - name: Run the suite with per-test times
+        run: |
+          set +e -uo pipefail
+          started=$SECONDS
+          RUSTC_BOOTSTRAP=1 "$(head -1 binary.txt)" -Z unstable-options --report-time > suite.log 2>&1
+          code=$?
+          echo "MEASURE opt${{ matrix.opt }} suite exit $code wall $((SECONDS - started)) s"
+          grep -E '^test result' suite.log || true
+          grep -E '^test .* (FAILED|ok) <[0-9.]+s>$' suite.log | sed -E 's/^test (.*) \.\.\. (ok|FAILED) <([0-9.]+)s>$/\3 \2 \1/' | sort -rn > times.txt
+          echo "tests timed: $(wc -l < times.txt)"
+          awk '$1 >= 5' times.txt | sed 's/^/TIME /'
+          grep -E '^test .* FAILED' suite.log | sed 's/^/FAILED /' || true

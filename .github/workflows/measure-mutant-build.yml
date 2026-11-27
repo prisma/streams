@@ -6,6 +6,7 @@ name: measure-mutant-build
 on:
   push:
     branches: ['measure/**']
+    paths: ['.github/workflows/measure-mutant-build.yml']
 permissions:
   contents: read
 jobs:
