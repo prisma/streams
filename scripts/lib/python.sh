@@ -27,7 +27,12 @@ if ! _streams_python_ok python3; then
   fi
   _streams_shim="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/target/python3-shim"
   mkdir -p "$_streams_shim"
-  ln -sf "$_streams_python" "$_streams_shim/python3"
+  # Concurrent callers (scripts/dev/local_mutants.py starts several drivers at once) race on
+  # ln -sf, which unlinks and recreates: keep a link that already points at this interpreter,
+  # and accept the one a racing caller made.
+  [[ "$(readlink "$_streams_shim/python3" 2>/dev/null)" = "$_streams_python" ]] ||
+    ln -sf "$_streams_python" "$_streams_shim/python3" 2>/dev/null ||
+    [[ "$(readlink "$_streams_shim/python3")" = "$_streams_python" ]]
   export PATH="$_streams_shim:$PATH"
   unset _streams_found _streams_shim
 fi

@@ -111,6 +111,8 @@ def main():
     parser.add_argument('--out', required=True, type=Path, help='a directory outside the checkout')
     parser.add_argument('--parallel', type=int, default=4)
     parser.add_argument('--base', default='origin/slate')
+    parser.add_argument('--groups', type=lambda text: [int(g) for g in text.split(',')],
+                        help='only these group indices, e.g. 0,2,3 (a rerun of groups that errored)')
     args = parser.parse_args()
     out = args.out.expanduser().resolve()
     if out.is_relative_to(ROOT.resolve()):
@@ -125,16 +127,20 @@ def main():
         return
     print(f'local deal: {width} group(s), digest {digest}, {args.parallel} at a time, HEAD '
           f'{env["QUALITY_HEAD_SHA"]} against {args.base} {env["QUALITY_BEFORE_SHA"]}', flush=True)
-    logs = [out / f'g{index}.log' for index in range(width)]
+    chosen = args.groups if args.groups is not None else list(range(width))
+    if any(index not in range(width) for index in chosen):
+        sys.exit(f'--groups must name indices below {width}')
+    logs = [out / f'g{index}.log' for index in chosen]
     stop = threading.Event()
     watcher = threading.Thread(target=watch, args=(logs, stop), daemon=True)
     watcher.start()
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
-        results = list(pool.map(lambda i: run_group(i, width, digest, out, env), range(width)))
+        results = list(pool.map(lambda i: run_group(i, width, digest, out, env), chosen))
     stop.set()
     bad = [(index, verdict, found) for index, verdict, found in results if verdict != 'clean']
     if not bad:
-        print(f'LOCAL_MUTANTS_OK: {width} group(s) clean')
+        verdict = 'LOCAL_MUTANTS_OK' if len(chosen) == width else 'LOCAL_MUTANTS_PART_OK'
+        print(f'{verdict}: {len(chosen)} of {width} group(s) clean')
         return
     for index, verdict, found in bad:
         print(f'g{index}: {verdict}')
