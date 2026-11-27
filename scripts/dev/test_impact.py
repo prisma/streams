@@ -34,6 +34,28 @@ class ImpactTest(unittest.TestCase):
                                     'src/shard/maintenance_tests.rs'])
         cls.files = {f.path: f for f in cls.mixed.files}
 
+    def test_a_new_test_module_an_owner_does_not_wholly_select_is_a_gap(self):
+        text = (
+            '#[test]\nfn a_unit() {}\n'
+            '#[tokio::test(flavor = "multi_thread", worker_threads = 4)]\n'
+            '#[expect(clippy::too_many_lines, reason = "x")]\nasync fn a_dst() {}\n'
+            'fn helper() {}\n'
+        )
+        owner = impact.mutation_owners.MutationOwner
+        owners = [owner('whole', ('src/a.rs',), ('dst_tests::fleet_new::',)),
+                  owner('one', ('src/b.rs',), ('fleet::', 'dst_tests::fleet_new::a_dst')),
+                  owner('kin', ('src/c.rs',), ('dst_tests::fleet_old::',)),
+                  owner('stranger', ('src/d.rs',), ('fleet::', 'dst_tests::billing_x::')),
+                  owner('all', ('src/e.rs',), ())]
+        gaps = impact.filter_gaps([('dst::dst_tests::fleet_new', text)], owners)
+        self.assertEqual(gaps, [('dst::dst_tests::fleet_new', 2, (('one', 1), ('kin', 0)))])
+        self.assertEqual(impact.test_family('fleet::dead::tests'), 'fleet::dead::')
+        units = impact.filter_gaps([('fleet::dead::tests', text)], [
+            owner('dead', ('src/f.rs',), ('fleet::dead::',)),
+            owner('join', ('src/g.rs',), ('fleet::join::',)),
+            owner('broad', ('src/h.rs',), ('fleet::dead::tests::a_unit',))])
+        self.assertEqual(units, [('fleet::dead::tests', 2, (('broad', 1),))])
+
     def test_registered_owner_gives_its_gate_filters(self):
         segmap = self.files['src/segmap.rs']
         self.assertEqual(segmap.owner['name'], 'segmap')

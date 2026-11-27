@@ -569,6 +569,55 @@ def read_text(path):
         return None
 
 
+# A test function's name: `#[test]` or `#[tokio::test(...)]`, other attributes, then its `fn`.
+TEST_FN = re.compile(r'#\[(?:tokio::)?test\b[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*'
+                     r'(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)')
+NEW_STATUSES = ('A', '??', 'new')
+
+
+def test_family(module):
+    """The filter prefix of a test module's kin: a DST's `dst_tests::<first word>_` (its
+    `fleet_leave` is kin to `fleet_handoff`), else its parent module's path."""
+    parent, _, leaf = module.rpartition('::')
+    if parent.endswith('dst_tests'):
+        return f'dst_tests::{leaf.split("_")[0]}_'
+    return f'{parent}::' if parent else f'{leaf}::'
+
+
+def filter_gaps(added, owners):
+    """Each test module this change adds that a mutation owner it selects, and that already
+    tests the module's kin (`test_family`), does not wholly select (Addendum 66 item 2):
+    (module, total, ((owner, selected), ...)). `added` is each new test module's (module path,
+    text); a filter selects a test whose full name contains it."""
+    gaps = []
+    for module, text in added:
+        tests = [f'{module}::{name}' for name in TEST_FN.findall(text or '')]
+        family = test_family(module)
+        short = []
+        for owner in owners:
+            filters = owner.test_filters or ('',)
+            kin = any(value and (value.startswith(family) or family.startswith(value))
+                      for value in filters)
+            chosen = sum(any(value in name for value in filters) for name in tests)
+            if tests and kin and chosen < len(tests):
+                short.append((owner.name, chosen))
+        if short:
+            gaps.append((module, len(tests), tuple(short)))
+    return gaps
+
+
+def note_filter_gaps(files, plan, notes):
+    added = [(r.module, read_text(r.path)) for r in files
+             if r.status in NEW_STATUSES and r.test_only and r.exists and r.path.endswith('.rs')]
+    selected = set(plan.get('selected_mutation_owners', ()))
+    owners = [o for o in mutation_owners.OWNERS if o.name in selected and o.target == 'service-lib']
+    for module, total, short in filter_gaps(added, owners):
+        owned = ', '.join(name if chosen == 0 else f'{name} ({chosen}/{total})' for name, chosen in short)
+        notes.append(f'mutation filter gap: the new module {module} ({total} tests) is not wholly '
+                     f'selected by owners that test its kin: {owned}; widen their rows in '
+                     'scripts/quality/mutation_owners.py, or know why not')
+
+
 def immutable_status(report, text, ledgers):
     if report.path not in ledgers.immutable:
         return
@@ -1086,6 +1135,7 @@ def analyze(paths=(), base=None, commits=0, verbose=False):
     for report in files:
         report.unregistered = report.path in plan.get('unregistered_mutation_source_files', ())
     formal_result = formal_impact(changed, diff_base, mode == 'paths', notes)
+    note_filter_gaps(files, plan, notes)
     tests, release = test_commands(files, plan)
     checks = list(dict.fromkeys(check for report in files for check in report.checks))
     return Impact(mode, diff_base, label, ratchet, files, plan, formal_result, tests, release, checks, notes,
