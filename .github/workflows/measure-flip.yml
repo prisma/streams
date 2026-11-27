@@ -1,0 +1,69 @@
+name: measure-flip
+# Addendum 70 (d) control 1: three fleet_join mutants of 3d3dba96e were TIMEOUT on CI at opt 1
+# (45108113946, groups 2 and 3) and caught in the shadow deal under the profile under test
+# (46061589091). Each alone, through the tip's own driver command (owner fleet_join, no diff),
+# under both profiles; prints which tests failed, how, and when. Lives only on measure/**; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-flip.yml']
+permissions:
+  contents: read
+jobs:
+  flip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [opt1, new]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d3dba96e6d4e6a6b45809117c3315c82a9cd536
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile
+        run: |
+          if [ "${{ matrix.profile }}" = new ]; then home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"; cp m/measure/mutation-profile.toml "$home/config.toml"; fi
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: The three mutants, each alone
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: |
+          set +e -uo pipefail
+          out=$PWD/target/flip; mkdir -p "$out/tmp"; export TMPDIR=$out/tmp
+          for re in 'join.rs:82:63: replace != with ==' 'join.rs:250:9: replace Planned::of_joiner' 'join.rs:283:5: replace r3 -> bool with false'; do
+            tag=$(echo "$re" | cut -d: -f2)
+            python3 - "$out" "$tag" "$re" > cmd.txt <<'PY'
+          import shlex, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/quality')
+          from mutation_owners import OWNERS
+          from mutation_driver import mutation_command
+          out, tag, re = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          entry = next(o for o in OWNERS if o.name == 'fleet_join')
+          command = mutation_command(entry, out, out / f'm{tag}', None) + ['--re', re]
+          print(shlex.join(command))
+          PY
+            echo "FLIP ${{ matrix.profile }} $re: $(cat cmd.txt)" | cut -c1-400
+            started=$SECONDS
+            eval "$(cat cmd.txt)" > "$out/m$tag.txt" 2>&1
+            echo "FLIP ${{ matrix.profile }} $re exit $? wall $((SECONDS - started)) s"
+            grep -E 'Unmutated|MISSED|TIMEOUT|caught|mutants? tested' "$out/m$tag.txt" | sed 's/^/  /'
+            for log in "$out/m$tag"/mutants.out/log/*.log; do
+              case "$log" in *baseline*) continue ;; esac
+              echo "  LOG $(basename "$log")"
+              grep -E '^test .*(FAILED|has been running)|panicked at|^test result|finished in|timed out|TIMEOUT|^\*\*\* result' "$log" | cut -c1-300 | sed 's/^/    /' | head -40
+            done
+          done
