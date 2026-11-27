@@ -385,6 +385,23 @@ class VerdictEvidence(unittest.TestCase):
         self.assertIn('outcomes.json records 1 mutant(s); the driver listed 2', summary)
 
 
+class SurvivorAnnotations(unittest.TestCase):
+    def test_each_listed_survivor_is_annotated_at_its_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            listing = Path(tmp)
+            (listing / 'missed.txt').write_text('src/fleet/dead.rs:27:68: replace + with - in x\n\n')
+            (listing / 'timeout.txt').write_text('src/fleet/standing.rs:45:9: replace f with ()\n')
+            (listing / 'incomplete.txt').write_text('an unplaced mutant\n')
+            self.assertEqual(mutation_driver.annotations(listing), [
+                '::error file=src/fleet/dead.rs,line=27,title=mutant missed::'
+                'src/fleet/dead.rs:27:68: replace + with - in x',
+                '::error file=src/fleet/standing.rs,line=45,title=mutant timeout::'
+                'src/fleet/standing.rs:45:9: replace f with ()',
+                '::error title=mutant incomplete::an unplaced mutant',
+            ])
+            self.assertEqual(mutation_driver.annotations(listing / 'none'), [])
+
+
 class TempCopy(unittest.TestCase):
     """cargo-mutants copies the tree under TMPDIR; a host's cleaner of its
     temp directory removed files from that copy mid-run (2026-11-10), so the

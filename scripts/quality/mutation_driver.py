@@ -271,7 +271,25 @@ def run_owner(command, listing, listed, env=None):
     incomplete = incomplete_mutants(listing, listed)  # listed whatever the answer
     for name, reason, log in incomplete:
         print(f'INCOMPLETE {name} ({reason}) [{log}]', flush=True)
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        for line in annotations(listing):
+            print(line, flush=True)
     return status in SURVIVOR_STATUSES or bool(incomplete)
+
+
+def annotations(listing):
+    """A GitHub error annotation for each survivor an owner's run listed, as the owner finishes
+    (Addendum 66 item 3): the job's annotations and the pull request's files name each one
+    without waiting for the leg's end or reading its log. The verdict stays the leg's."""
+    found = []
+    for kind in SURVIVOR_KINDS:
+        path = listing / f'{kind}.txt'
+        lines = path.read_text().splitlines() if path.is_file() else []
+        for line in (line.strip() for line in lines if line.strip()):
+            at =re.match(r'([^:\s]+\.rs):(\d+):\d+: ', line)
+            where = f' file={at[1]},line={at[2]},' if at else ' '
+            found.append(f'::error{where}title=mutant {kind}::{line}')
+    return found
 
 
 def report_survivors(survivors, owners):
