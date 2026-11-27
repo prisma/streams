@@ -137,10 +137,15 @@ fn fall_back(state: &AppState, held: &[String]) {
 /// holds nothing (Addendum 60 §1). Publish, then lift: an open after a release is refused by
 /// ownership, not by the gate.
 pub(super) fn published(state: &AppState) {
-    if state.shards.leave_sealed() && !state.fleet.standing().leave().leaving() {
+    if lifts(state.shards.leave_sealed(), state.fleet.standing().leave()) {
         let lifted = state.shards.unseal_leave();
         tracing::info!(lifted, "leave: no longer leaving; the gate's leave seal");
     }
+}
+
+/// Whether a publication lifts the leave's seal: it is set and this instance is no longer leaving.
+fn lifts(sealed: bool, leave: &Leave) -> bool {
+    sealed && !leave.leaving()
 }
 
 /// Start this runtime's leave task beside its handoff runner.

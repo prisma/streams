@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::{LEAVE_PHASE, Leave, hands_off};
+use super::{LEAVE_PHASE, Leave, hands_off, lifts};
 
 /// The phase runs over leaving passes on this instance's monotonic clock, not while its clock is
 /// held (no successor, or a held source of the live intent), and is over at `LEAVE_PHASE`, eight
@@ -37,6 +37,30 @@ fn the_leave_phase_runs_only_over_leaving_passes_whose_clock_runs() {
     ];
     assert_eq!(again, [false, false, true], "started afresh");
     assert_eq!(leave.evacuated(), 0);
+}
+
+/// A publication lifts the leave's seal only while it is set and this instance is no longer
+/// leaving (Addendum 60 §1): a sealed leaver keeps its seal, and an unsealed instance has none to
+/// lift (Addendum 67 §1).
+#[test]
+fn a_publication_lifts_the_seal_only_once_no_longer_leaving() {
+    let leaving = Leave::default();
+    assert!(!leaving.note_pass(Some(true), tokio::time::Instant::now()));
+    let not_leaving = Leave::default();
+    let table = [
+        ((true, &not_leaving), true),
+        ((true, &leaving), false),
+        ((false, &not_leaving), false),
+        ((false, &leaving), false),
+    ];
+    for ((sealed, leave), lifted) in table {
+        let state = leave.leaving();
+        assert_eq!(
+            lifts(sealed, leave),
+            lifted,
+            "sealed {sealed}, leaving {state}"
+        );
+    }
 }
 
 /// A look hands off only while leaving, with no drain begun and its gate unsealed (G5; Addendum
