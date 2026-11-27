@@ -1,0 +1,35 @@
+name: measure-c3-detail
+# Addendum 70 (d) control 3's evidence: the two split_compacting tests that failed at opt-level 0,
+# 20 times each alone at plain opt 0 (where they failed), printing each failure's whole stdout
+# block (left/right values, the stored log shown). Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-c3-detail.yml']
+permissions:
+  contents: read
+jobs:
+  detail:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c4163d7a1220994d96d08bc09ce5940dbecddc60
+      - uses: ./.github/actions/rust-toolchain
+      - name: Each test 20 times alone at opt-level 0, whole failure blocks
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_QUALITY_OPT_LEVEL: "0"
+        run: |
+          set +e -uo pipefail
+          for name in a_split_of_a_compacting_parent_with_l0_room_parks_at_once a_compaction_landing_after_preparings_read_is_read_again_before_the_park; do
+            pass=0
+            for round in $(seq 1 20); do
+              cargo test --locked --lib --profile quality -- --exact dst::dst_tests::split_compacting::$name > r.log 2>&1
+              code=$?
+              echo "DETAIL $name round $round exit $code $(grep -E '^test result' r.log)"
+              if [ $code -eq 0 ]; then pass=$((pass + 1)); else sed -n '/^---- /,/^failures:$/p' r.log | cut -c1-1500 | sed 's/^/  BLOCK | /'; fi
+            done
+            echo "DETAILTOTAL $name $pass/20"
+          done
