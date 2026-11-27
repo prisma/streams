@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lever: [base, in-place, opt0, opt0-in-place]
+        lever: [in-place, opt0-in-place]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-toolchain
@@ -34,7 +34,8 @@ jobs:
           extra=()
           case "$LEVER" in *opt0*) export CARGO_PROFILE_QUALITY_OPT_LEVEL=0 ;; esac
           gitignore=(--gitignore true)
-          case "$LEVER" in *in-place*) extra+=(--in-place); gitignore=() ;; esac
+          jobs=(--jobs 1)
+          case "$LEVER" in *in-place*) extra+=(--in-place); gitignore=(); jobs=() ;; esac
           out=$PWD/target/measure
           mkdir -p "$out/tmp"
           export TMPDIR=$out/tmp
@@ -43,7 +44,7 @@ jobs:
             local started=$SECONDS
             cargo mutants --cargo-arg=--locked --cargo-arg=--lib --cargo-arg=--target-dir="$out/build" \
               --baseline run --file "$file" --package streams-slate --re "$re" \
-              --cargo-test-arg="$filter" --profile quality --jobs 1 --minimum-test-timeout 90 \
+              --cargo-test-arg="$filter" --profile quality ${jobs[@]+"${jobs[@]}"} --minimum-test-timeout 90 \
               --timeout-multiplier 3 --build-timeout 1800 ${gitignore[@]+"${gitignore[@]}"} --output "$out/$owner" \
               ${extra[@]+"${extra[@]}"} 2>&1 | tee "$out/$owner.log" | grep -E 'baseline|build \+|mutants? tested|rror' || true
             echo "MEASURE $LEVER $owner wall $((SECONDS - started)) s"
