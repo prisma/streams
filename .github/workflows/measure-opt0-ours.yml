@@ -1,0 +1,79 @@
+name: measure-opt0-ours
+# Addendum 66 item 5, lever opt0-ours: only streams-slate at opt-level 0, every dependency at the
+# quality profile's 1 (a mutant rebuilds only streams-slate; SlateDB's compaction, zstd and the
+# crypto stay optimised). Set by cargo --config, so Cargo.toml is untouched. Lives only on
+# measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-opt0-ours.yml']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: "1"
+  OURS: profile.quality.package.streams-slate.opt-level=0
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - name: Build the lib test binary
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          cargo test --locked --lib --profile quality --config "$OURS" --no-run --message-format json > build.json
+          echo "MEASURE opt0-ours build $((SECONDS - started)) s"
+          python3 -c 'import json; [print(m["executable"]) for m in map(json.loads, open("build.json")) if m.get("reason")=="compiler-artifact" and m.get("executable") and m["target"]["kind"]==["lib"]]' > binary.txt
+      - name: The suite with per-test times
+        run: |
+          set +e -uo pipefail
+          started=$SECONDS
+          RUSTC_BOOTSTRAP=1 "$(head -1 binary.txt)" -Z unstable-options --report-time > suite.log 2>&1
+          echo "MEASURE opt0-ours suite exit $? wall $((SECONDS - started)) s"
+          grep -E '^test result' suite.log || true
+          grep -E '^test .* (FAILED|ok) <[0-9.]+s>$' suite.log | sed -E 's/^test (.*) \.\.\. (ok|FAILED) <([0-9.]+)s>$/\3 \2 \1/' | sort -rn > times.txt
+          awk '$1 >= 5' times.txt | sed 's/^/TIME /'
+          grep -E '^test .* FAILED' suite.log | sed 's/^/FAILED /' || true
+          grep -E '^---- |panicked at|landed:' suite.log | cut -c1-600 || true
+      - name: split_compacting five times alone
+        run: |
+          set +e -uo pipefail
+          for round in 1 2 3 4 5; do
+            "$(head -1 binary.txt)" dst::dst_tests::split_compacting:: > round.log 2>&1
+            echo "MEASURE opt0-ours split_compacting round $round exit $? $(grep -E '^test result' round.log)"
+            grep -E '^---- |panicked at|landed:' round.log | cut -c1-600
+          done
+  mutants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: Two owners in sequence, a few mutants each
+        run: |
+          set +e -uo pipefail
+          out=$PWD/target/measure
+          mkdir -p "$out/tmp"
+          export TMPDIR=$out/tmp
+          run() {
+            local owner=$1 file=$2 re=$3 filter=$4
+            local started=$SECONDS
+            cargo mutants --cargo-arg=--locked --cargo-arg=--lib --cargo-arg=--target-dir="$out/build" \
+              --cargo-arg=--config="$OURS" \
+              --baseline run --file "$file" --package streams-slate --re "$re" \
+              --cargo-test-arg="$filter" --profile quality --jobs 1 --minimum-test-timeout 90 \
+              --timeout-multiplier 3 --build-timeout 1800 --gitignore true --output "$out/$owner" \
+              2>&1 | tee "$out/$owner.log" | grep -E 'baseline|build \+|mutants? tested|rror' || true
+            echo "MEASURE opt0-ours $owner wall $((SECONDS - started)) s"
+          }
+          run dead src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
+          run leave src/fleet/leave.rs 'leave.rs:13[0-9]:' dst_tests::fleet_leave::
+          run dead2 src/fleet/dead.rs 'dead.rs:27:' fleet::dead::
