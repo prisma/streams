@@ -93,6 +93,10 @@ fn check_rows(rows: &[([u8; 16], DirEntry)]) {
         assert_eq!(Some(entry.chunk_off), at, "the chunks tile the object");
         at = entry.chunk_off.checked_add(u64::from(entry.chunk_len));
         assert!(entry.first <= entry.last, "a chunk covers first..=last");
+        assert!(
+            i64::try_from(entry.max_ts_ms).is_ok(),
+            "a decoded max_ts is a chunk's time"
+        );
         for anchor in &entry.anchors {
             assert!(
                 anchor.offset >= entry.first,
@@ -125,7 +129,7 @@ fn chunk_of(hash: [u8; 16], entry: &DirEntry) -> EncodedChunk {
             len: entry.chunk_len,
             page_count: entry.page_count,
             stored: 0,
-            max_ts: 0,
+            max_ts: i64::try_from(entry.max_ts_ms).unwrap_or(i64::MAX),
         },
         anchors: entry.anchors.clone(),
     }

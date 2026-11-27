@@ -9,6 +9,7 @@ previous session.
 
 Contents:
 
+- [Open defect: the seal directory row decodes a max_ts no chunk can carry](#open-defect-the-seal-directory-row-decodes-a-max_ts-no-chunk-can-carry)
 - [Next: a deep read charges its request state](#next-a-deep-read-charges-its-request-state)
 - [Public beta (decided 2026-10-11)](#public-beta-decided-2026-10-11)
 - [0. How work is done in this repository](#0-how-work-is-done-in-this-repository)
@@ -30,6 +31,28 @@ Contents:
 - [18. Follow-ups from S5, the topology policy (2026-11-10)](#18-follow-ups-from-s5-the-topology-policy-2026-11-10)
 
 ---
+
+## Open defect: the seal directory row decodes a max_ts no chunk can carry
+
+Found 2026-11-27 by the nightly fuzz of `seal_directory` (Addenda 66 item 4, 68 §2, 69);
+**waits on the owner's exception-growth row.**
+
+`decode_row` (`src/spill/directory/row.rs`) accepts a chunk's `max_ts_ms` above `i64::MAX`,
+which `encode_row` never writes (every writer encodes a chunk's `i64` time), so such a row
+decodes and re-encodes to other bytes: the reader is not canonical. No stored row is affected.
+The fix is one expression on its line,
+`get_varint(&mut input).filter(|&ts| i64::try_from(ts).is_ok())?`, with the unit
+`spill::directory_tests::a_row_whose_max_ts_no_chunk_can_carry_is_refused` (red on today's tree:
+"one past i64::MAX"); the patch is kept at
+`~/.streams-k2/analysis/speed/fuzz/decoder-bound.patch`. `row.rs` is compiled by `#[path]`
+into `fuzz/fuzz_targets/seal_directory.rs` and `run_index.rs` under `#[allow(dead_code)]` on
+`mod row`, whose frozen rows make the expression exception growth.
+
+Proposed row (both paths): owner/scope `crate::row`, module, lint `dead_code`, metrics
+`syntax_facts` 519 -> 526; rationale: the sealed directory row's decoder refuses a max_ts no
+chunk can carry, so decoding is canonical; one expression, no line added, no stored row
+affected. Fable recommends approval (Addendum 69). Until it lands the nightly's fuzz job may
+stay red on this true report: the harness now fails "a decoded max_ts is a chunk's time" on such a row instead of masking it.
 
 ## Next: a deep read charges its request state
 
