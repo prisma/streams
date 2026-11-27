@@ -1,0 +1,46 @@
+name: measure-record
+# Addendum 71: does record.rs's read_own_beat -> true (MISSED at 3d3dba96e's shadow group 5) survive
+# at today's slate c4163d7a1, through its owner fleet_record's own driver command at today's profile?
+# Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-record.yml']
+permissions:
+  contents: read
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c4163d7a1220994d96d08bc09ce5940dbecddc60
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: The mutant alone
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: |
+          set +e -uo pipefail
+          out=$PWD/target/rec; mkdir -p "$out/tmp"; export TMPDIR=$out/tmp
+          python3 - "$out" > cmd.txt <<'PY'
+          import shlex, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/quality')
+          from mutation_owners import OWNERS
+          from mutation_driver import mutation_command
+          out = Path(sys.argv[1])
+          entry = next(o for o in OWNERS if o.name == 'fleet_record')
+          print(shlex.join(mutation_command(entry, out, out / 'record', None) + ['--re', 'read_own_beat -> bool with true', '-v']))
+          PY
+          cat cmd.txt
+          eval "$(cat cmd.txt)" > rec.txt 2>&1
+          echo "RECORD exit $?"
+          grep -E 'Unmutated|MISSED|TIMEOUT|caught|unviable|mutants? tested' rec.txt
