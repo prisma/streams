@@ -1,0 +1,95 @@
+name: measure-baselines
+# Addendum 70 (d) controls 2, 3 and 4 on slate c4163d7a1: every mutation owner's baseline three
+# times under the profile under test (no failure allowed) and once at today's opt 1 (seconds per
+# owner on both); the two split_compacting tests that failed at plain opt 0, 20 times each alone.
+# Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-baselines.yml']
+permissions:
+  contents: read
+jobs:
+  new:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c4163d7a1220994d96d08bc09ce5940dbecddc60
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile and script
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          cp m/measure/baselines.py /tmp/baselines.py
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: Every owner's baseline in this shard
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: python3 /tmp/baselines.py --shard ${{ matrix.shard }}/16 --rounds 3 --label new
+  old:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c4163d7a1220994d96d08bc09ce5940dbecddc60
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile and script
+        run: |
+          set -euo pipefail
+          cp m/measure/baselines.py /tmp/baselines.py
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: Every owner's baseline in this shard
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: python3 /tmp/baselines.py --shard ${{ matrix.shard }}/8 --rounds 1 --label old
+  split-compacting:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c4163d7a1220994d96d08bc09ce5940dbecddc60
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile
+        run: |
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: The two tests that failed at opt 0, 20 times each alone
+        env:
+          CARGO_INCREMENTAL: "1"
+        run: |
+          set +e -uo pipefail
+          for name in a_compaction_landing_after_preparings_read_is_read_again_before_the_park a_split_of_a_compacting_parent_with_l0_room_parks_at_once; do
+            pass=0
+            for round in $(seq 1 20); do
+              cargo test --locked --lib --profile quality -- --exact dst::dst_tests::split_compacting::$name > r.log 2>&1
+              code=$?
+              echo "C3 $name round $round exit $code $(grep -E '^test result' r.log)"
+              [ $code -eq 0 ] && pass=$((pass + 1)) || grep -E 'panicked at|landed:|^---- ' r.log | cut -c1-400
+            done
+            echo "C3TOTAL $name $pass/20"
+          done

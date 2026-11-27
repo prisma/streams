@@ -1,0 +1,182 @@
+name: measure-shadow
+# Addendum 70 (d) control 1: the deals of two red tips with known survivors (171eb5555: 14 MISSED
+# in 45895229553; 3d3dba96e: 45108113946) under the profile under test, each group exactly as CI's
+# mutants job runs it but with measure/mutation-profile.toml as the runner's cargo config. The
+# MISSED set must be the same. Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-shadow.yml']
+permissions:
+  contents: read
+jobs:
+  plan-a:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      QUALITY_EVENT_NAME: pull_request
+      QUALITY_HEAD_SHA: 171eb55558060ea4fb261896d05998ebb3b75673
+      QUALITY_BEFORE_SHA: ''
+      QUALITY_BASE_REF: origin/shadow-base
+      SHADOW_BASE: 70ec9bbc2ad7b1e69b04f3a82a3ba978a17bacbd
+    outputs:
+      width: ${{ steps.width.outputs.width }}
+      shards: ${{ steps.width.outputs.shards }}
+      digest: ${{ steps.width.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 171eb55558060ea4fb261896d05998ebb3b75673
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: The profile under test, for every cargo run on this runner
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+          git update-ref refs/remotes/origin/shadow-base "$SHADOW_BASE"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: Deal the mutants over jobs
+        id: width
+        run: |
+          cargo build --locked -p streams-quality-syntax
+          python3 scripts/quality/mutants_width.py --out target/quality-plan
+  mutants-a:
+    runs-on: ubuntu-24.04
+    needs: plan-a
+    timeout-minutes: 360
+    env:
+      QUALITY_EVENT_NAME: pull_request
+      QUALITY_HEAD_SHA: 171eb55558060ea4fb261896d05998ebb3b75673
+      QUALITY_BEFORE_SHA: ''
+      QUALITY_BASE_REF: origin/shadow-base
+      SHADOW_BASE: 70ec9bbc2ad7b1e69b04f3a82a3ba978a17bacbd
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan-a.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 171eb55558060ea4fb261896d05998ebb3b75673
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: The profile under test, for every cargo run on this runner
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+          git update-ref refs/remotes/origin/shadow-base "$SHADOW_BASE"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: This group of the red tip's deal under the profile under test
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+          QUALITY_MUTANT_GROUP: ${{ format('{0}/{1}', matrix.shard, needs.plan-a.outputs.width) }}
+          QUALITY_MUTANT_DIGEST: ${{ needs.plan-a.outputs.digest }}
+        run: |
+          cargo build --locked -p streams-quality-syntax
+          scripts/quality/mutations.sh
+  plan-b:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      QUALITY_EVENT_NAME: pull_request
+      QUALITY_HEAD_SHA: 3d3dba96e6d4e6a6b45809117c3315c82a9cd536
+      QUALITY_BEFORE_SHA: ''
+      QUALITY_BASE_REF: origin/shadow-base
+      SHADOW_BASE: a726882a4a737fcf128abe0f2f8ee5949ec46364
+    outputs:
+      width: ${{ steps.width.outputs.width }}
+      shards: ${{ steps.width.outputs.shards }}
+      digest: ${{ steps.width.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d3dba96e6d4e6a6b45809117c3315c82a9cd536
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: The profile under test, for every cargo run on this runner
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+          git update-ref refs/remotes/origin/shadow-base "$SHADOW_BASE"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: Deal the mutants over jobs
+        id: width
+        run: |
+          cargo build --locked -p streams-quality-syntax
+          python3 scripts/quality/mutants_width.py --out target/quality-plan
+  mutants-b:
+    runs-on: ubuntu-24.04
+    needs: plan-b
+    timeout-minutes: 360
+    env:
+      QUALITY_EVENT_NAME: pull_request
+      QUALITY_HEAD_SHA: 3d3dba96e6d4e6a6b45809117c3315c82a9cd536
+      QUALITY_BEFORE_SHA: ''
+      QUALITY_BASE_REF: origin/shadow-base
+      SHADOW_BASE: a726882a4a737fcf128abe0f2f8ee5949ec46364
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan-b.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d3dba96e6d4e6a6b45809117c3315c82a9cd536
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: The profile under test, for every cargo run on this runner
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+          git update-ref refs/remotes/origin/shadow-base "$SHADOW_BASE"
+      - uses: ./.github/actions/rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cargo-mutants
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("quality-tools.toml","rb"))["tools"]["cargo-mutants"])')
+          cargo install cargo-mutants --locked --version "=$version"
+      - name: This group of the red tip's deal under the profile under test
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+          QUALITY_MUTANT_GROUP: ${{ format('{0}/{1}', matrix.shard, needs.plan-b.outputs.width) }}
+          QUALITY_MUTANT_DIGEST: ${{ needs.plan-b.outputs.digest }}
+        run: |
+          cargo build --locked -p streams-quality-syntax
+          scripts/quality/mutations.sh

@@ -1,0 +1,52 @@
+# Addendum 70 (a): the mutation profile under test. Opt-level 0 so rustc shares generics among
+# the crates a mutant rebuild links; the 16 CPU-heavy crates at 1.
+[profile.quality]
+opt-level = 0
+
+[profile.quality.package.zstd-sys]
+opt-level = 1
+
+[profile.quality.package.lz4-sys]
+opt-level = 1
+
+[profile.quality.package.aws-lc-sys]
+opt-level = 1
+
+[profile.quality.package.ring]
+opt-level = 1
+
+[profile.quality.package.libmimalloc-sys]
+opt-level = 1
+
+[profile.quality.package.aes]
+opt-level = 1
+
+[profile.quality.package.aes-gcm]
+opt-level = 1
+
+[profile.quality.package.aes-gcm-siv]
+opt-level = 1
+
+[profile.quality.package.sha2]
+opt-level = 1
+
+[profile.quality.package.crc-fast]
+opt-level = 1
+
+[profile.quality.package.crc32fast]
+opt-level = 1
+
+[profile.quality.package.zstd]
+opt-level = 1
+
+[profile.quality.package.zstd-safe]
+opt-level = 1
+
+[profile.quality.package.lz4]
+opt-level = 1
+
+[profile.quality.package.aws-lc-rs]
+opt-level = 1
+
+[profile.quality.package.slatedb]
+opt-level = 1
