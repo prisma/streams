@@ -1,0 +1,33 @@
+name: measure-opt0-failure
+# Addendum 66 item 5: split_compacting::a_compaction_landing_after_preparings_read_is_read_again_before_the_park
+# failed at opt-level 0 in measure-suite-opt (46039342289); passed at 1. Its module three times per level,
+# alone, with the failure text. Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-opt0-failure.yml']
+permissions:
+  contents: read
+jobs:
+  module:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        opt: ['1', '0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+      - name: split_compacting three times alone, then with the whole suite's thread count
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_PROFILE_QUALITY_OPT_LEVEL: ${{ matrix.opt }}
+        run: |
+          set +e -uo pipefail
+          cargo test --locked --lib --profile quality --no-run > /dev/null 2>&1
+          for round in 1 2 3; do
+            cargo test --locked --lib --profile quality -- dst::dst_tests::split_compacting:: > round$round.log 2>&1
+            echo "MEASURE opt${{ matrix.opt }} round $round exit $? $(grep -E '^test result' round$round.log)"
+            grep -E '^---- |panicked|assertion|left:|right:' round$round.log | head -20
+          done
