@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,17 @@ class LocalMutants(unittest.TestCase):
             'TIMEOUT  src/fleet/leave.rs:12:5: replace f with ()',
             'INCOMPLETE src/a.rs:1:1: m (signal) [log]',
         ])
+
+    def test_a_finished_groups_builds_and_copies_go_and_its_outcomes_stay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            group = Path(directory) / 'g3'
+            for name in ('build/quality', 'pilot-build/x', 'tmp/cargo-mutants-copy', 'fleet_dead/mutants.out'):
+                (group / name).mkdir(parents=True)
+            (group / 'fleet_dead' / 'mutants.out' / 'missed.txt').write_text('m\n')
+            self.assertEqual(local_mutants.drop_builds(group), ['build', 'pilot-build', 'tmp'])
+            self.assertEqual(sorted(p.name for p in group.iterdir()), ['fleet_dead'])
+            self.assertEqual((group / 'fleet_dead' / 'mutants.out' / 'missed.txt').read_text(), 'm\n')
+            self.assertEqual(local_mutants.drop_builds(group), [])
 
 
 if __name__ == '__main__':

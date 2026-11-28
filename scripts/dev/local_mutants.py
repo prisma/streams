@@ -16,6 +16,10 @@ Run it alone on the machine (under ~/.streams-k2/bin/locked.sh), on a clean comm
 the background, and edit nothing in the checkout while it runs (the driver lists from it):
 
     python3 scripts/dev/local_mutants.py --out ~/.streams-k2/mut/<name> --parallel 4
+
+Each group's build and tree-copy directories are deleted once its outcomes are read (a 12-group
+run at --parallel 4 reached 62 GiB, 2026-11-28); its owner outcome directories and logs stay.
+`--keep-builds` keeps them.
 """
 import sys
 
@@ -89,7 +93,23 @@ def watch(logs, stop):
                     print(f'{log.stem}: {line}', flush=True)
 
 
-def run_group(index, width, digest, out, env):
+# The driver's per-run scratch under its QUALITY_MUTANTS_OUT: target directories and tree copies.
+SCRATCH = ('build', 'pilot-build', 'tmp')
+
+
+def drop_builds(group_out):
+    """Delete a finished group's build and tree-copy directories; its owner outcomes and logs
+    stay. The space they free (about 5 GiB a group) is what lets a 12-group run fit the disk."""
+    freed = []
+    for name in SCRATCH:
+        path = group_out / name
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            freed.append(name)
+    return freed
+
+
+def run_group(index, width, digest, out, env, keep_builds=False):
     log = out / f'g{index}.log'
     group_env = {**env, 'QUALITY_MUTANT_GROUP': f'{index}/{width}', 'QUALITY_MUTANT_DIGEST': digest,
                  'QUALITY_MUTANTS_OUT': str(out / f'g{index}')}
@@ -101,6 +121,8 @@ def run_group(index, width, digest, out, env):
     found = survivors(text)
     verdict = 'clean' if code == 0 else 'survivors' if 'Mutation survivors' in text else f'ERROR exit {code}'
     tested = re.findall(r'^\d+ mutants? tested in [^\n]*', text, re.M)
+    if not keep_builds:
+        drop_builds(out / f'g{index}')
     print(f'g{index}: {verdict} in {(time.monotonic() - started) / 60:.0f} min; '
           f'{"; ".join(tested) or "nothing tested"} [{log}]', flush=True)
     return index, verdict, found
@@ -111,6 +133,8 @@ def main():
     parser.add_argument('--out', required=True, type=Path, help='a directory outside the checkout')
     parser.add_argument('--parallel', type=int, default=4)
     parser.add_argument('--base', default='origin/slate')
+    parser.add_argument('--keep-builds', action='store_true',
+                        help="keep each group's build and tree-copy directories")
     parser.add_argument('--groups', type=lambda text: [int(g) for g in text.split(',')],
                         help='only these group indices, e.g. 0,2,3 (a rerun of groups that errored)')
     args = parser.parse_args()
@@ -135,7 +159,7 @@ def main():
     watcher = threading.Thread(target=watch, args=(logs, stop), daemon=True)
     watcher.start()
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
-        results = list(pool.map(lambda i: run_group(i, width, digest, out, env), chosen))
+        results = list(pool.map(lambda i: run_group(i, width, digest, out, env, args.keep_builds), chosen))
     stop.set()
     bad = [(index, verdict, found) for index, verdict, found in results if verdict != 'clean']
     if not bad:
