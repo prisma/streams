@@ -334,7 +334,8 @@ fn a_member_pins_in_one_write_and_unlists_nobody() {
 
 /// The leave's release (Addendum 41 B item 1, Addendum 44 Q4): a member beyond the count writes
 /// one CAS removing its own name only once its gate is sealed for the leave and a member within
-/// the count is listed; unsealed, or with nobody within the count listed, it releases nothing.
+/// the count is listed; unsealed, or with nobody within the count listed (a member beyond it is
+/// none), it releases nothing.
 #[test]
 fn a_leaver_releases_itself_only_sealed_with_a_member_within_the_count_listed() {
     let all = leaves();
@@ -370,6 +371,15 @@ fn a_leaver_releases_itself_only_sealed_with_a_member_within_the_count_listed() 
         released(Some(true), &alone),
         None,
         "nobody within the count listed"
+    );
+    let beyond = vec![
+        member("streams-3", Some("c1")),
+        member("streams-4", Some("d1")),
+    ];
+    assert_eq!(
+        released(Some(true), &document(beyond, &[])),
+        None,
+        "a member beyond the count is none to go to"
     );
 }
 
