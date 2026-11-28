@@ -810,3 +810,35 @@ async fn a_leave_from_three_to_one_hands_off_only_within_the_count() {
         super::fleet_handoff_cases::stop(rig).await;
     }
 }
+
+/// **A cell within its count asks for no leave move** (`handing_off`, Addendum 67 §2): in a
+/// settled cell of three at a count of three no member is leaving, so over three further passes
+/// on each no look asks for a move, though every member has the others as its successors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
+async fn a_cell_within_its_count_asks_for_no_leave_move() {
+    let (_fleet, rigs) = three_cell().await;
+    let from: Vec<u32> = rigs
+        .iter()
+        .map(|rig| rig.state.fleet.standing().join_passes())
+        .collect();
+    let t0 = Instant::now();
+    for (rig, from) in rigs.iter().zip(&from) {
+        let standing = rig.state.fleet.standing();
+        while standing.join_passes() < from + 3 {
+            assert!(t0.elapsed() < BOUND, "three more passes");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let asked: Vec<u64> = rigs
+        .iter()
+        .map(|rig| rig.state.fleet.standing().leave().asked())
+        .collect();
+    assert_eq!(
+        asked,
+        [0, 0, 0],
+        "a member within the count asks the leave for no move"
+    );
+    for rig in rigs {
+        super::fleet_handoff_cases::stop(rig).await;
+    }
+}

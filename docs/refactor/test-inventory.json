@@ -397,6 +397,17 @@
     "scenarios": []
   },
   {
+    "name": "a_cell_within_its_count_asks_for_no_leave_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
+    ],
+    "function_sha256": "2d70d3a743339bf55324cacffbe884da935929db6195a146052c9ea003ce31b7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_leave.rs",
+    "scenarios": []
+  },
+  {
     "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
