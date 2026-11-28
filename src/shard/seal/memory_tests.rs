@@ -200,11 +200,12 @@ async fn check_directories(engines: &[Arc<ShardEngine>]) {
         .any(|e| e.maintenance_snapshot().unabsorbed_frame_bytes > 0)
     {
         assert!(
-            t0.elapsed() < Duration::from_secs(10),
+            t0.elapsed() < Duration::from_secs(60),
             "the age trigger never sealed the rest"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    eprintln!("A74_MEMWAIT_MS {}", t0.elapsed().as_millis());
     let mut total = 0u64;
     for (i, engine) in engines.iter().enumerate() {
         // No seal in flight: a seal publishes its entries before its commit

@@ -943,13 +943,23 @@ async fn a_flush_that_brings_the_parent_to_its_line_after_preparings_read_is_set
         go: park_wait,
     });
     let clock = cell.state.runtime.clock.clone();
-    let split = crate::topology::split::split(
-        &cell.state.shards,
-        &parent,
-        "op-resettle",
-        "inst-a",
-        &*clock,
-    );
+    let a74_before = a74_rows(&parent).await;
+    let a74_mark = _trace.events().last().map_or(0, |event| event.seq);
+    println!("A74_SPLIT_START l0={} rows={}", parent.l0_now(), a74_before.len());
+    let split = async {
+        let ended = crate::topology::split::split(
+            &cell.state.shards,
+            &parent,
+            "op-resettle",
+            "inst-a",
+            &*clock,
+        )
+        .await;
+        if ended.is_err() {
+            a74_report(&parent, &a74_before, &_trace, a74_mark).await;
+        }
+        ended
+    };
     let begun = std::time::Instant::now();
     let control = async {
         let at = |step: &str| println!("RESETTLE_AT {step} {:?}", begun.elapsed());
@@ -994,4 +1004,47 @@ async fn a_flush_that_brings_the_parent_to_its_line_after_preparings_read_is_set
     tokio::time::timeout(HELD_WAIT, engine_shutdown(&cell.state))
         .await
         .expect("the cell shuts down within 30 s");
+}
+
+/// Measure only (A74, never lands): every row of `parent`'s log, by key, with its value's length and hash.
+async fn a74_rows(parent: &Engine) -> std::collections::BTreeMap<Vec<u8>, (usize, u64)> {
+    use std::hash::{Hash, Hasher};
+    let mut rows = std::collections::BTreeMap::new();
+    let mut scan = parent.db.scan(..).await.unwrap();
+    while let Some(row) = scan.next().await.unwrap() {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        row.value.hash(&mut hasher);
+        rows.insert(row.key.to_vec(), (row.value.len(), hasher.finish()));
+    }
+    rows
+}
+
+/// Measure only (A74): after a refused split, the rows that changed since its start and the store's
+/// operations since then, so the write that made the sixth L0 table is named.
+async fn a74_report(
+    parent: &Engine,
+    before: &std::collections::BTreeMap<Vec<u8>, (usize, u64)>,
+    trace: &TraceStore,
+    mark: u64,
+) {
+    let after = a74_rows(parent).await;
+    let hex = |key: &[u8]| crate::crypto::hex(&key[..key.len().min(24)]);
+    println!("A74_REFUSED l0={} rows={}", parent.l0_now(), after.len());
+    for (key, value) in &after {
+        match before.get(key) {
+            None => println!("A74_ROW added {} len={} key_len={}", hex(key), value.0, key.len()),
+            Some(old) if old != value => {
+                println!("A74_ROW changed {} len={}->{} key_len={}", hex(key), old.0, value.0, key.len());
+            }
+            Some(_) => {}
+        }
+    }
+    for key in before.keys().filter(|key| !after.contains_key(*key)) {
+        println!("A74_ROW removed {} key_len={}", hex(key), key.len());
+    }
+    let log = parent.log_path();
+    for event in trace.events().into_iter().filter(|event| event.seq > mark).take(300) {
+        let ours = if event.path.contains(log.as_str()) { "parent" } else { "other" };
+        println!("A74_OP {} {ours} {:?} {:?} {:?} {}", event.seq, event.kind, event.op, event.class, event.path);
+    }
 }
