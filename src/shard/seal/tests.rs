@@ -162,18 +162,22 @@ pub(super) async fn rig(label: &str, settings: SealSettings, gap: Duration) -> R
 }
 
 /// Close the rig's engine and open a fresh one on the same store and path
-/// (a restart: nothing in memory survives).
+/// (a restart: nothing in memory survives). The old engine's one storage close is awaited to its
+/// end, never raced by a close of the helper's own: a second close answers `Closed(Clean)` before
+/// the first has finished its flush, and a writer opened then can lose what that flush carried.
 pub(super) async fn reopen(rig: Rig) -> Rig {
-    rig.engine.begin_close();
-    if tokio::time::timeout(Duration::from_secs(10), rig.engine.closed())
-        .await
-        .is_err()
-    {
-        eprintln!("seal reopen: the old engine did not close within 10 s");
-    }
-    if let Err(e) = rig.engine.db.close().await {
-        eprintln!("seal reopen: close of the old writer: {e}");
-    }
+    let terminated = rig.engine.await_terminated(Duration::from_secs(10)).await;
+    assert_eq!(
+        terminated,
+        Ok(()),
+        "seal reopen: the old engine's storage close ends"
+    );
+    let again = rig.engine.db.close().await.map_err(|error| error.kind());
+    assert_eq!(
+        again,
+        Err(slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean)),
+        "seal reopen: the old engine's storage close closed its Db"
+    );
     let engine = open(
         rig.store.clone(),
         &rig.prefix,
