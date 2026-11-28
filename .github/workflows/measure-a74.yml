@@ -1,0 +1,57 @@
+name: measure-a74
+# Addendum 74 on the seal fix plus measure-only instrumentation (40229ae8d, measure/a74-instr; never lands),
+# under the profile under test:
+# - mem: 20 runs (4 jobs x 5) of shard_seal_fold's baseline, each printing the memory test's age-trigger wait
+#   (A74_MEMWAIT_MS; its bound widened to 60 s for the measurement only);
+# - split: 40 runs (4 jobs x 10) of topology_split_warm's baseline; a refused re-settle split prints the rows
+#   changed since its start and the store's operations since then (A74_ROW, A74_OP).
+# Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-a74.yml']
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [mem-1, mem-2, mem-3, mem-4, split-1, split-2, split-3, split-4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 40229ae8ddc004c8d20104e30b65ad8c9730c3f2
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: Baseline runs of the leg's owner
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: |
+          set +e -uo pipefail
+          case "${{ matrix.leg }}" in
+            mem-*) owner=shard_seal_fold; rounds=5 ;;
+            split-*) owner=topology_split_warm; rounds=10 ;;
+          esac
+          filters=$(python3 -c "import sys; sys.path.insert(0, 'scripts/quality'); from mutation_owners import OWNERS; print(' '.join(next(e for e in OWNERS if e.name == '$owner').test_filters))")
+          echo "A74 owner $owner filters: $filters"
+          cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality --no-run > /dev/null 2>&1
+          for round in $(seq 1 $rounds); do
+            started=$(date +%s)
+            cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality -- $filters --nocapture > r.log 2>&1
+            code=$?
+            echo "A74_ROUND ${{ matrix.leg }} $owner round $round exit $code $(( $(date +%s) - started )) s $(grep -E '^test result' r.log)"
+            grep -E 'A74_MEMWAIT_MS|A74_SPLIT_START|A74_REFUSED|A74_ROW|A74_OP|COMPACTING_SETUP|RESETTLE_AT' r.log | cut -c1-400
+            [ $code -eq 0 ] || grep -E 'panicked at|\.\.\. FAILED' -A2 r.log | cut -c1-400
+          done
