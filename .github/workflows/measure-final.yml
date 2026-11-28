@@ -1,0 +1,56 @@
+name: measure-final
+# Slate b45406d16's rust-quality red (run 46152770822, mutants (9), owner fleet_view's baseline):
+# fleet_handoff_cases::a_month_final_the_giver_left_is_written_by_the_next_owner wrote September's final twice.
+# Its frequency at today's profile (Cargo.toml's quality, no override) on slate 94d8db4ef: 4 jobs x 50 runs of
+# the test alone, 4 jobs x 10 runs of fleet_view's baseline; a failure's whole output tail is printed.
+# Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-final.yml']
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {leg: alone-1, rounds: 50}
+          - {leg: alone-2, rounds: 50}
+          - {leg: alone-3, rounds: 50}
+          - {leg: alone-4, rounds: 50}
+          - {leg: owner-1, rounds: 10}
+          - {leg: owner-2, rounds: 10}
+          - {leg: owner-3, rounds: 10}
+          - {leg: owner-4, rounds: 10}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 94d8db4efc46dc0eb982fdf236e5738eeb938a5e
+      - uses: ./.github/actions/rust-toolchain
+      - name: Runs
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: |
+          set +e -uo pipefail
+          T=dst::dst_tests::fleet_handoff_cases::a_month_final_the_giver_left_is_written_by_the_next_owner
+          case "${{ matrix.leg }}" in
+            alone-*) args="--exact $T" ;;
+            owner-*) args=$(python3 -c "import sys; sys.path.insert(0, 'scripts/quality'); from mutation_owners import OWNERS; print(' '.join(next(e for e in OWNERS if e.name == 'fleet_view').test_filters))") ;;
+          esac
+          echo "FINAL args: $args"
+          cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality --no-run > /dev/null 2>&1
+          for round in $(seq 1 ${{ matrix.rounds }}); do
+            started=$(date +%s)
+            cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality -- $args > r.log 2>&1
+            code=$?
+            echo "FINAL_ROUND ${{ matrix.leg }} round $round exit $code $(( $(date +%s) - started )) s $(grep -E '^test result' r.log)"
+            if [ $code -ne 0 ]; then
+              grep -E '\.\.\. FAILED' r.log | cut -c1-300
+              awk '/^failures:/{p=1} p' r.log | head -80 | cut -c1-600
+            fi
+          done
