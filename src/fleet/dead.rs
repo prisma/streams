@@ -53,6 +53,12 @@ impl Dead {
         self.answered.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Tests: the tick's heartbeat reads begun (`note_read`).
+    #[cfg(test)]
+    pub(crate) fn reads(&self) -> u64 {
+        self.reads.load(Ordering::SeqCst)
+    }
+
     /// This boot was removed while it was a decided member, with no release of its own.
     pub(super) fn note_removed_while_listed(&self) {
         self.removed_while_listed.fetch_add(1, Ordering::Relaxed);

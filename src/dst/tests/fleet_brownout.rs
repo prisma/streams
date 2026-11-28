@@ -68,6 +68,27 @@ async fn in_order(
     vec![a, b]
 }
 
+/// The tick's membership passes a rig completes before its heartbeat reads must show (Addendum 72).
+const FIRST_PASSES: u32 = 2;
+
+/// Fails, by state, once a rig's tick has completed its first passes with no heartbeat read
+/// counted (Addendum 72): every pass follows its tick's heartbeat read, however slow the store, so
+/// a late read only delays the pass, and passes with none begun mean the tick reads none. Never
+/// returns.
+async fn reads_beats(rigs: &[HttpRig]) {
+    loop {
+        for (index, rig) in rigs.iter().enumerate() {
+            let standing = rig.state.fleet.standing();
+            let (passes, reads) = (standing.join_passes(), standing.dead().reads());
+            assert!(
+                passes < FIRST_PASSES || reads > 0,
+                "rig {index}'s tick completed {passes} passes with no heartbeat read counted"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The brownout scenario with `first` booted first.
 async fn browned_out(first: &str) {
     let inner = mem();
@@ -77,7 +98,10 @@ async fn browned_out(first: &str) {
         ..HeldDocument::held(inner.clone(), "", false)
     });
     let rigs = in_order(&store, &inner, first).await;
-    super::super::fixture_members::all_joined(&inner, &rigs, Duration::from_secs(180)).await;
+    tokio::select! {
+        () = super::super::fixture_members::all_joined(&inner, &rigs, Duration::from_secs(180)) => {}
+        () = reads_beats(&rigs) => {}
+    }
     let ring = vec!["streams-1".to_string(), "streams-2".to_string()];
     let both = || {
         rigs.iter()
