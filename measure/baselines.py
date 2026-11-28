@@ -25,9 +25,14 @@ def main():
     parser.add_argument('--shard', required=True)
     parser.add_argument('--rounds', type=int, default=1)
     parser.add_argument('--label', required=True)
+    parser.add_argument('--covering', default='',
+                        help='comma-separated test paths: only the owners whose filters select one of them')
     args = parser.parse_args()
     k, n = map(int, args.shard.split('/'))
-    mine = [entry for index, entry in enumerate(OWNERS) if index % n == k]
+    tests = [t for t in args.covering.split(',') if t]
+    owners = [entry for entry in OWNERS if not tests or any(
+        token in test for token in entry.test_filters if not token.startswith('-') for test in tests)]
+    mine = [entry for index, entry in enumerate(owners) if index % n == k]
     for entry in mine:
         subprocess.run(command(entry, ['--no-run'])[:-1 - len(entry.test_filters)], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)

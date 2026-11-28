@@ -1,0 +1,41 @@
+name: measure-a71
+# Addendum 71's precondition for adopting the mutation profile: on a tree with the seal test fix
+# (a4259f686 on slate b45406d16), 20 baseline rounds under the profile under test for every owner
+# whose filters select the seal test or either split_compacting test that failed at plain opt 0.
+# One round of all of them per job, 20 jobs. Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-a71.yml']
+permissions:
+  contents: read
+jobs:
+  round:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        round: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a4259f68613f0707475e552ab112b76ae7b86103
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile and script
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          cp m/measure/baselines.py /tmp/baselines.py
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: One baseline round of every covering owner
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: >-
+          python3 /tmp/baselines.py --shard 0/1 --rounds 1 --label a71r${{ matrix.round }}
+          --covering shard::seal::lifecycle_tests::a_close_while_the_sealers_open_is_fenced_settles_within_its_grace,dst::dst_tests::split_compacting::a_compaction_landing_after_preparings_read_is_read_again_before_the_park,dst::dst_tests::split_compacting::a_split_of_a_compacting_parent_with_l0_room_parks_at_once
