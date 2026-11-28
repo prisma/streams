@@ -80,3 +80,27 @@ fn a_look_hands_off_only_while_leaving_undrained_and_unsealed() {
         }
     }
 }
+
+/// A runtime departs by a begun drain or by a leave, each alone, and not otherwise: it then starts
+/// no topology change and no move but its departure's own (G5; Addendum 41 B, the draft §2).
+#[test]
+fn a_runtime_departs_by_a_begun_drain_or_a_leave_each_alone() {
+    let now = tokio::time::Instant::now();
+    let departing = |drain: bool, leaving: bool| {
+        let standing = crate::fleet::standing::Standing::default();
+        if drain {
+            standing.begin_draining();
+        }
+        if leaving {
+            standing.leave().note_pass(Some(true), now);
+        }
+        standing.departing()
+    };
+    let table = [(false, false), (true, false), (false, true), (true, true)];
+    let found: Vec<bool> = table.iter().map(|&(d, l)| departing(d, l)).collect();
+    assert_eq!(
+        found,
+        [false, true, true, true],
+        "drain begun, leaving: {table:?}"
+    );
+}
