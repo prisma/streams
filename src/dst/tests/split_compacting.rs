@@ -99,11 +99,14 @@ async fn compacting(
     let trace = TraceStore::verbatim(fault.clone());
     let cell = super::fixture_split::cell_over(trace.clone()).await;
     cell.parent.gc_state().configure(|s| s.auto = false);
+    // Only explicit seals (A75): a background seal adds an L0 table no held compaction can clear.
+    cell.parent.configure_seal(|s| s.auto = false);
     let names = queues_in_00(&cell, QUEUES).await;
     trimmed(&cell, &names).await;
     flush(&cell.parent).await;
     let body = super::fixture_split::body(9);
     let parent = reopened_cold(&cell.state, cell.addr, ("00", &cell.low), &body, true).await;
+    parent.configure_seal(|s| s.auto = false);
     if let Some(line) = line {
         parent.set_l0_line(line);
     }
