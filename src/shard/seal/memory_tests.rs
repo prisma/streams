@@ -195,10 +195,15 @@ fn check_folds(engines: &[Arc<ShardEngine>], sealed: &[Sealed]) {
 /// is under `ENTRY_MAX`.
 async fn check_directories(engines: &[Arc<ShardEngine>]) {
     let t0 = Instant::now();
+    let mut dumps = vec![55u64, 10, 2];
     while engines
         .iter()
         .any(|e| e.maintenance_snapshot().unabsorbed_frame_bytes > 0)
     {
+        if dumps.last().is_some_and(|at| t0.elapsed() >= Duration::from_secs(*at)) {
+            let at = dumps.pop().unwrap_or(0);
+            a75_sealers(engines, at);
+        }
         assert!(
             t0.elapsed() < Duration::from_secs(60),
             "the age trigger never sealed the rest"
@@ -245,5 +250,28 @@ async fn check_directories(engines: &[Arc<ShardEngine>]) {
     );
     for engine in engines {
         engine.begin_close();
+    }
+}
+
+/// Measure only (A75, never lands): each engine still holding unsealed bytes, with its sealer's view.
+fn a75_sealers(engines: &[Arc<ShardEngine>], at: u64) {
+    for (i, engine) in engines.iter().enumerate() {
+        let unabsorbed = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+        if unabsorbed == 0 {
+            continue;
+        }
+        let settings = engine.layout.seal.settings();
+        let counters = &engine.layout.seal.counters;
+        eprintln!(
+            "A75_SEALER at={at}s engine={i} unabsorbed={unabsorbed} auto={} age_seal={:?} measure={:?} seals={} empty={} failures={} refused={} task_failure={:?}",
+            settings.auto,
+            settings.age_seal,
+            engine.seal_measure(),
+            counters.seals.load(Ordering::Relaxed),
+            counters.empty_seals.load(Ordering::Relaxed),
+            counters.failures.load(Ordering::Relaxed),
+            counters.refused.load(Ordering::Relaxed),
+            engine.required_task_failure(),
+        );
     }
 }
