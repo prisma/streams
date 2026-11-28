@@ -1,0 +1,63 @@
+name: measure-a75b
+# Addendum 75, the memory test's failing state: 480 rounds (8 jobs x 60) of commit_plan's baseline on fe5d0a0c8
+# (measure-only; measure/a75-mem), printing its wait and, past 2 s, each unsealed engine's sealer at 2, 10, 55 s.
+# Earlier legs (measure-a75):
+# - split: the fixture fix 65daf9cd0 (compacting() seals only by explicit calls; measure/a75-fix): 40 rounds
+#   (4 jobs x 10) of topology_split_warm's baseline; the green is no failure of any test in it;
+# - mem: 24 rounds (4 jobs x 6) of commit_plan's baseline on fe5d0a0c8 (measure-only; measure/a75-mem), the memory
+#   test printing its wait (A74_MEMWAIT_MS, bound 60 s) and each unsealed engine's sealer at 2, 10, 55 s (A75_SEALER).
+# Lives only on measure/** branches; never lands.
+on:
+  push:
+    branches: ['measure/**']
+    paths: ['.github/workflows/measure-a75b.yml']
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {leg: mem-1, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-2, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-3, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-4, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-5, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-6, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-7, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+          - {leg: mem-8, ref: fe5d0a0c8a27ec2871a94b8f1ccc28bd745002ca, owner: commit_plan, rounds: 60}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/checkout@v4
+        with:
+          path: m
+      - name: Profile
+        run: |
+          set -euo pipefail
+          home=${CARGO_HOME:-$HOME/.cargo}; mkdir -p "$home"
+          cp m/measure/mutation-profile.toml "$home/config.toml"
+          rm -rf m
+      - uses: ./.github/actions/rust-toolchain
+      - name: Baseline rounds of the leg's owner
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=10737418240:10737418240 --
+        run: |
+          set +e -uo pipefail
+          owner=${{ matrix.owner }}
+          filters=$(python3 -c "import sys; sys.path.insert(0, 'scripts/quality'); from mutation_owners import OWNERS; print(' '.join(next(e for e in OWNERS if e.name == '$owner').test_filters))")
+          echo "A75 owner $owner filters: $filters"
+          cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality --no-run > /dev/null 2>&1
+          for round in $(seq 1 ${{ matrix.rounds }}); do
+            started=$(date +%s)
+            cargo test --locked --lib --target-dir=target/mb --package streams-slate --profile quality -- $filters --nocapture > r.log 2>&1
+            code=$?
+            echo "A75_ROUND ${{ matrix.leg }} $owner round $round exit $code $(( $(date +%s) - started )) s $(grep -E '^test result' r.log)"
+            grep -E 'A74_MEMWAIT_MS|A75_SEALER' r.log | cut -c1-600
+            [ $code -eq 0 ] || grep -E 'panicked at|\.\.\. FAILED' -A2 r.log | cut -c1-400
+          done
