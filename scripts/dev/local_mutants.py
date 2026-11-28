@@ -70,6 +70,8 @@ def plan(out, env):
     """(width, digest) of the push's deal, as the mutants-plan job computes it."""
     outputs = out / 'plan.outputs'
     outputs.unlink(missing_ok=True)
+    # The planner's syntax facts come from this binary; CI's plan and mutants jobs build it first.
+    subprocess.run(['cargo', 'build', '--locked', '-p', 'streams-quality-syntax'], cwd=ROOT, check=True)
     subprocess.run([sys.executable, 'scripts/quality/mutants_width.py', '--out', str(out / 'plan')],
                    cwd=ROOT, env={**env, 'GITHUB_OUTPUT': str(outputs)}, check=True)
     values = parse_outputs(outputs.read_text())
