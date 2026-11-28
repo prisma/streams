@@ -106,6 +106,22 @@
     },
     {
       "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_drain_during_a_leave_moves_each_shard_once",
+      "path": "src/dst/tests/fleet_leave.rs",
+      "reason": "The drain, bounded, runs beside the wait that releases the held commit once the drain has begun and reads the leave's asked count then; both futures must make progress at once, and the compiler checks expansion.",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::browned_out",
+      "path": "src/dst/tests/fleet_brownout.rs",
+      "reason": "The browned-out cell's wait for every member to join races the check that each rig's tick counts a heartbeat read once past its first passes; whichever ends first is the verdict, and the compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
       "count": 5,
       "owner": "crate::run",
       "path": "src/fleet/heartbeat.rs",
