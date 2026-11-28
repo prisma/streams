@@ -169,7 +169,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4, crate = \"crate::test_rt\")]"
     ],
-    "function_sha256": "9e19ccb5fe6a51f0a442558904431fa75b61ad1c135215ecf58084cb99848392",
+    "function_sha256": "2a254ebee79ea49e1bb974228c39663eadf0ae2ab8b08ad8ee440e0e0f9262fe",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/fleet_join_boot.rs",

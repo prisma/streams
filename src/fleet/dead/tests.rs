@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::{DEAD_MS, Dead};
 use crate::fleet::Member;
-use crate::fleet::planning::RING_LIVENESS_MS;
+use crate::fleet::planning::{PROGRESS_DEADLINE_MS, RING_LIVENESS_MS};
 use crate::fleet::record::{Candidates, boot_of};
 
 const NOW: i64 = 10_000_000;
@@ -30,6 +30,28 @@ fn reader(beats: &[(&str, &str, i64, bool)]) -> Candidates {
     Candidates::held(2, "streams-1", held)
         .with_boot("a1")
         .with_beats(timed)
+}
+
+/// R1c's bound in absolute time (Addendum 41 B item 6): the progress deadline, 139 s, plus the
+/// ring's liveness, 30 s. A listed boot's beat 169 s old is dead and one a millisecond younger is
+/// not; the table below judges by `DEAD_MS` itself, so only this pins the sum.
+#[tokio::test(start_paused = true, crate = "crate::test_rt")]
+async fn a_listed_boots_beat_is_dead_at_169_s_and_not_a_millisecond_sooner() {
+    assert_eq!((PROGRESS_DEADLINE_MS, RING_LIVENESS_MS), (139_000, 30_000));
+    let at = (NOW, tokio::time::Instant::now());
+    let verdict = |age: i64| {
+        let listed = [member("streams-1", "a1"), member("streams-2", "b1")];
+        let c = reader(&[
+            ("streams-1", "a1", age, false),
+            ("streams-2", "b1", age, false),
+        ]);
+        Dead::default().removal(&c, &listed, at)
+    };
+    assert_eq!(
+        [verdict(168_999), verdict(169_000)],
+        [None, Some("streams-2".to_string())],
+        "R1c's bound is 169 s"
+    );
 }
 
 /// The first arm, by the listed boot's held beat (Addendum 41 B items 6 and 7): 169 s old, or

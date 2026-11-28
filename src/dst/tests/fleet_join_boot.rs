@@ -804,7 +804,9 @@ async fn first_listing(fleet: &Arc<dyn ObjectStore>, members: usize) -> crate::f
 /// removed after. Real time, as ruled: in the join's leg, not the suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4, crate = "crate::test_rt")]
 async fn a_boot_stamped_and_killed_before_its_first_beat_is_removed_at_r1cs_bound() {
-    let bound = Duration::from_millis(crate::fleet::DEAD_MS.cast_unsigned());
+    // 139 s + 30 s as written, not `DEAD_MS`: a wrong `DEAD_MS` moves the removal out of this
+    // window (and the test fails at its end) instead of moving the window with it.
+    let bound = Duration::from_secs(139 + 30);
     let (fleet, a) = super::fleet_leave::gone_cell(&[("streams-2", None)]).await;
     let tick = Duration::from_secs(2);
     let took = super::fleet_leave::listed_after(
