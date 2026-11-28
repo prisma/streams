@@ -492,7 +492,16 @@ async fn a_close_while_the_sealers_open_is_fenced_settles_within_its_grace() {
     rig.engine.begin_close();
     let closed = tokio::time::timeout(Duration::from_secs(10), rig.engine.closed()).await;
     assert!(closed.is_ok(), "the first engine closes");
-    rig.engine.db.close().await.unwrap();
+    // The engine's storage close closes its Db: the test waits for it rather than racing it
+    // with a close of its own, so the Db is closed Clean, in one order, before the reopen.
+    let terminated = rig.engine.await_terminated(Duration::from_secs(10)).await;
+    assert_eq!(terminated, Ok(()), "the first engine's storage close ends");
+    let again = rig.engine.db.close().await.map_err(|error| error.kind());
+    assert_eq!(
+        again,
+        Err(slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean)),
+        "the first engine's storage close closed its Db"
+    );
     crate::shard::test_support::inject_seal_open_load_fences(&rig.prefix, u32::MAX);
     let engine = start(
         rig.store.clone(),
